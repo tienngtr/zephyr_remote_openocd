@@ -2,15 +2,22 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import ipaddress
 import os
 from pathlib import Path
 import shutil
+import shlex
 import socket
+import tempfile
 import time
 import unittest
 
 from tests.support import is_wsl2
 from zephyr_remote_openocd.remote.ssh import SshCommand
+from zephyr_remote_openocd.remote import (
+    RemoteSession, RemoteSessionRequest, Service, SshHelperBackend, StagedFile,
+)
+from zephyr_remote_openocd.remote.deploy import deploy_helper
 
 
 REMOTE_ECHO = b"""\
@@ -192,6 +199,44 @@ class SshTransportIntegrationTests(unittest.TestCase):
             timeout=20,
         )
         self.assertEqual(failed.returncode, 7)
+
+    def test_protocol_1_fake_helper_vertical_slice(self):
+        """Permanent fake-workload coverage for the production transport path."""
+        first = deploy_helper(self.ssh, self.host)
+        second = deploy_helper(self.ssh, self.host)
+        self.assertEqual(first.path, second.path)
+        self.assertTrue(second.reused)
+        local_port = free_loopback_port()
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "payload.bin"
+            source.write_bytes(bytes(range(256)) + b"\0remote")
+            request = RemoteSessionRequest(
+                self.host,
+                self.ssh,
+                (StagedFile(source, "nested/payload.bin"),),
+                (Service("gdb", local_port, 3333),),
+            )
+            session = RemoteSession(request, SshHelperBackend())
+            descriptor = session.start()
+            try:
+                address = ipaddress.ip_address(descriptor.remote_address)
+                self.assertIn(address, ipaddress.ip_network("127.64.0.0/10"))
+                check = self.ssh.run(
+                    self.host,
+                    "python3 -c " + shlex.quote(
+                        "import os,pathlib,sys; p=pathlib.Path(sys.argv[1]); "
+                        "print(oct(p.stat().st_mode&0o777), (p/'staged/nested/payload.bin').stat().st_size)"
+                    ) + " " + shlex.quote(descriptor.remote_workspace),
+                    timeout=20,
+                )
+                self.assertEqual(check.returncode, 0, check.stderr.decode(errors="replace"))
+                self.assertEqual(check.stdout.strip(), b"0o700 263")
+                wait_for_echo(local_port, b"fake-helper-round-trip", 20)
+            finally:
+                workspace = descriptor.remote_workspace
+                session.close()
+            gone = self.ssh.run(self.host, f"test ! -e {shlex.quote(workspace)}", timeout=20)
+            self.assertEqual(gone.returncode, 0, gone.stderr.decode(errors="replace"))
 
 
 if __name__ == "__main__":

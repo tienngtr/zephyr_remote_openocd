@@ -1,6 +1,6 @@
 # Zephyr Remote OpenOCD Custom Runner
 ## Software Architecture Document
-### V1 — Draft 0.4
+### V1 — Draft 0.5
 
 # 1. Purpose
 
@@ -1276,12 +1276,8 @@ The remaining implementation-level questions are:
 
 1. Exact distribution instructions.
 2. Final setup-script invocation/name.
-3. Exact helper protocol encoding.
-4. Whether optional multiplexing is worthwhile when available.
-5. Exact staging archive format.
-6. Exact remote-service readiness mechanism.
-7. Loopback collision retry parameters.
-8. Final internal Python module layout beyond the validated compatibility boundary.
+3. Whether optional multiplexing is worthwhile when available.
+4. Final internal Python module layout beyond the validated compatibility boundary.
 
 None currently require an additional product decision before the next implementation phase.
 
@@ -1296,14 +1292,8 @@ Zephyr integration prototype
 Permanent regression transformation
     COMPLETE
 
-Next: remote-session vertical slice
-    configuration and setup completion
-    helper protocol and deployment
-    session lifecycle
-    staging and path translation
-    loopback allocation
-    SSH forwarding integration
-    fake-backend lifecycle tests
+Remote-session fake-helper vertical slice
+    COMPLETE (native-Linux integration remains fixture-gated)
 
 Then
     real OpenOCD flash
@@ -1311,3 +1301,39 @@ Then
     RTT
     semihosting console
 ```
+
+---
+
+# 50. Protocol-1 Fake-Helper Vertical Slice
+
+The first production transport slice uses a single-file, Python-standard-library
+helper and protocol version 1. Control messages and events are newline-delimited
+JSON objects carrying mandatory `version` and `type` fields. Helper stdout is
+reserved for those objects. Child stdout and stderr are captured and represented
+as typed `CHILD_OUTPUT` events.
+
+The helper is streamed through the configured SSH command and atomically installed
+at `~/.local/libexec/zephyr-remote-openocd/protocol-1/helper.py`. A SHA-256 match
+reuses the existing mode-0700 file; replacement does not accumulate versioned
+copies. No administrative privilege is required.
+
+Each controller owns an unpredictable, mode-0700 workspace below
+`$XDG_RUNTIME_DIR/zephyr-remote-openocd`, or below
+`~/.cache/zephyr-remote-openocd/sessions` when no runtime directory is available.
+It owns cleanup after normal stop, malformed protocol, signal, child failure, or
+control-channel EOF.
+
+Staging uses a POSIX tar archive held in `SpooledTemporaryFile`, spilling beyond
+its memory bound. It is therefore bounded-buffer staging, not end-to-end
+streaming. Extraction does not use `extractall()` or Python's version-dependent
+default filters: every member must be a unique, normalized relative regular file;
+links, special files, traversal, and escaping destinations are rejected before
+content is written.
+
+The helper attempts up to 32 random IPv4 addresses in `127.64.0.0/10` and reports
+one only after all fake-service listeners are bound. The client creates separate
+`ssh -L` processes with `ControlMaster=no`, `ExitOnForwardFailure=yes`, exact
+ports, and a `127.0.0.1` local bind. Port preflight is advisory; the forwarding
+process is authoritative. Session health is process-driven through `poll()` and
+`wait()`, and cleanup unwinds forwards in reverse creation order before stopping
+the controller.

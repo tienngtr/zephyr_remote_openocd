@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path, PurePosixPath
 
 from runners.openocd import OpenOcdBinaryRunner
 
 from zephyr_remote_openocd.config import ConfigError, load_config
+from zephyr_remote_openocd.remote.model import RemoteSessionRequest, Service, StagedFile
+from zephyr_remote_openocd.remote.ssh import SshCommand
 
 
 class RemoteOpenOcdBinaryRunner(OpenOcdBinaryRunner):
@@ -87,6 +90,9 @@ class RemoteOpenOcdBinaryRunner(OpenOcdBinaryRunner):
             "runner_args": runner_args,
             "runner_config": common,
             "selected_config": selected.printable(),
+            "remote_session_request": _request_record(
+                _remote_session_request(selected, self.prototype_cfg, self.prototype_args)
+            ) if selected.remote_host else None,
         }
         print(json.dumps(payload, indent=2, sort_keys=True, default=str))
 
@@ -95,3 +101,48 @@ def _json_value(value):
     if hasattr(value, "value"):
         return value.value
     return value
+
+
+def _remote_session_request(selected, cfg, args):
+    """Translate Zephyr's public runner data into the generic session model."""
+    if not selected.remote_host:
+        raise ConfigError("remote.host is required to construct a remote session")
+    staged = []
+    destinations = set()
+    for field in ("elf_file", "hex_file", "bin_file", "file"):
+        value = getattr(cfg, field, None)
+        if not value:
+            continue
+        source = Path(value)
+        destination = PurePosixPath("artifacts") / source.name
+        if destination not in destinations:
+            staged.append(StagedFile(source, destination))
+            destinations.add(destination)
+    services = []
+    definitions = (
+        ("gdb", getattr(args, "gdb_client_port", None), getattr(args, "gdb_port", None)),
+        ("tcl", getattr(args, "tcl_port", None), getattr(args, "tcl_port", None)),
+        ("telnet", getattr(args, "telnet_port", None), getattr(args, "telnet_port", None)),
+        ("rtt", getattr(args, "rtt_port", None), getattr(args, "rtt_port", None)),
+    )
+    for name, local_port, remote_port in definitions:
+        if local_port and remote_port:
+            services.append(Service(name, int(local_port), int(remote_port)))
+    return RemoteSessionRequest(
+        selected.remote_host, SshCommand(selected.ssh_command), tuple(staged), tuple(services)
+    )
+
+
+def _request_record(request):
+    return {
+        "host": request.host,
+        "ssh_command": list(request.ssh_command.argv_prefix),
+        "staged_files": [
+            {"source": str(item.source), "destination": str(item.destination)}
+            for item in request.staged_files
+        ],
+        "services": [
+            {"name": item.name, "local_port": item.local_port, "remote_port": item.remote_port}
+            for item in request.services
+        ],
+    }

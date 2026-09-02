@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import shutil
 import subprocess
+from typing import BinaryIO
 
 
 @dataclass(frozen=True)
@@ -49,3 +51,21 @@ class SshCommand:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
+
+    def run_stream(
+        self, host: str, remote_command: str, stream: BinaryIO, *, timeout: float = 60
+    ) -> subprocess.CompletedProcess[bytes]:
+        """Copy a file-like payload without first materializing it as bytes."""
+        process = self.popen(host, remote_command)
+        assert process.stdin is not None
+        try:
+            shutil.copyfileobj(stream, process.stdin, length=1024 * 1024)
+            process.stdin.close()
+            process.stdin = None
+            stdout, stderr = process.communicate(timeout=timeout)
+        except BaseException:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            raise
+        return subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
