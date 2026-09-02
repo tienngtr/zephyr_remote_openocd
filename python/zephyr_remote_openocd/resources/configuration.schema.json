@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zephyr-remote-openocd.invalid/schema/configuration.json",
+  "title": "zephyr_remote_openocd user configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "default_runner": {
+      "type": "string",
+      "enum": ["openocd", "remote_openocd"]
+    },
+    "default_remote": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"},
+    "presets": {
+      "type": "object", "additionalProperties": false,
+      "patternProperties": {"^[A-Za-z0-9][A-Za-z0-9._-]*$": {"$ref": "#/$defs/preset"}}
+    },
+    "remotes": {
+      "type": "object", "additionalProperties": false,
+      "patternProperties": {"^[A-Za-z0-9][A-Za-z0-9._-]*$": {"$ref": "#/$defs/remote"}}
+    }
+  },
+  "$defs": {
+    "command": {
+      "type": "array", "minItems": 1,
+      "prefixItems": [{"$ref": "#/$defs/commandExecutable"}],
+      "items": {"$ref": "#/$defs/commandArgument"}
+    },
+    "commandArgument": {
+      "type": "string", "not": {"pattern": "\\u0000"}
+    },
+    "commandExecutable": {
+      "allOf": [
+        {"$ref": "#/$defs/commandArgument"},
+        {
+          "anyOf": [
+            {"pattern": "^[^~/\\u0000][^/\\u0000]*$"},
+            {"pattern": "^/[^/\\u0000][^\\u0000]*$"},
+            {"pattern": "^~/[^/\\u0000][^\\u0000]*$"}
+          ]
+        }
+      ]
+    },
+    "environment": {
+      "type": "array", "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1, "pattern": "^[^=\\u0000]+$"}
+    },
+    "localPath": {
+      "type": "string",
+      "anyOf": [
+        {"pattern": "^/[^\\u0000]*$"},
+        {"pattern": "^~/[^\\u0000]*$"},
+        {"const": "~"}
+      ]
+    },
+    "remotePath": {
+      "type": "string",
+      "anyOf": [
+        {"const": "/"},
+        {"const": "~"},
+        {"pattern": "^/(?!\\.{1,2}(?:/|$))[^/\\u0000]+(?:/(?!\\.{1,2}(?:/|$))[^/\\u0000]+)*$"},
+        {"pattern": "^~/(?!\\.{1,2}(?:/|$))[^/\\u0000]+(?:/(?!\\.{1,2}(?:/|$))[^/\\u0000]+)*$"}
+      ]
+    },
+    "paths": {
+      "type": "object", "additionalProperties": {"$ref": "#/$defs/remotePath"},
+      "propertyNames": {"$ref": "#/$defs/localPath"}
+    },
+    "preset": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "openocd_command": {"$ref": "#/$defs/command"},
+        "ssh_command": {"$ref": "#/$defs/command"},
+        "forward_env": {"$ref": "#/$defs/environment"},
+        "path_mappings": {"$ref": "#/$defs/paths"}
+      }
+    },
+    "remote": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "preset": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"},
+        "ssh_host": {
+          "type": "string", "minLength": 1, "pattern": ".*\\S.*",
+          "not": {"pattern": "\\u0000"}
+        },
+        "openocd_command": {"$ref": "#/$defs/command"},
+        "ssh_command": {"$ref": "#/$defs/command"},
+        "forward_env": {"$ref": "#/$defs/environment"},
+        "path_mappings": {"$ref": "#/$defs/paths"}
+      }
+    }
+  }
+}
