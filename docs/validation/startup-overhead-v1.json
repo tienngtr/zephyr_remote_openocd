@@ -1,0 +1,23 @@
+{
+  "benchmark_version": "1",
+  "schema": "zro.startup-overhead.v1",
+  "baseline_treatment": "built-in openocd --context is a conservative lower-bound proxy, not an exact command-path execution comparison",
+  "date": "2026-09-04",
+  "environment": {
+    "python": "3.14.7",
+    "platform": "Linux-7.2.2-arch1-1-x86_64-with-glibc2.44",
+    "revision": "1cf39b4a702328a5cb8b3fa432dea369a9515010",
+    "warmup": 5,
+    "iterations": 100,
+    "percentile": "inclusive rank p*(n-1), linear interpolation",
+    "normative_statistic": "median additional startup",
+    "threshold_seconds": 0.5
+  },
+  "cases": {
+    "flash": {"first": 0.027982624, "median": 0.036643767, "p95": 0.085231771, "worst": 0.116061588, "pass": true},
+    "debug": {"first": 0.029972276, "median": 0.0385362865, "p95": 0.090944728, "worst": 0.109385808, "pass": true},
+    "attach": {"first": 0.054121877, "median": 0.03864215, "p95": 0.093852903, "worst": 0.137404861, "pass": true},
+    "debugserver": {"first": 0.030611023, "median": 0.037952908, "p95": 0.087794208, "worst": 0.220820297, "pass": true},
+    "rtt": {"first": 0.158483277, "median": 0.12025298699999998, "p95": 0.18021210925, "worst": 0.200635696, "pass": true}
+  }
+}

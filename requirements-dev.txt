@@ -1,0 +1,6 @@
+# Developer and test tooling only. Product use does not install these packages.
+pytest>=8
+pytest-timeout>=2
+ruff>=0.6
+pylint>=3
+vermin>=1.6

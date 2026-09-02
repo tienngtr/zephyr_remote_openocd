@@ -1,10 +1,10 @@
-# Zephyr Remote OpenOCD Custom Runner
+# Zephyr west runner for remote OpenOCD
 ## Software Architecture Document
-### V1 — Draft 0.4
+### V1 — Product 0.1.0 (initial development)
 
 # 1. Purpose
 
-This document describes the V1 architecture for the Zephyr Remote OpenOCD Custom Runner.
+This document describes the V1 architecture for the Zephyr west runner for remote OpenOCD.
 
 The SRS defines externally required behavior.
 
@@ -100,10 +100,10 @@ WSL 2 is not treated as a compatibility port of a Linux-only design.
 
 V1 is distributed as a self-contained Zephyr module rather than an installed Python distribution.
 
-Provisional structure:
+Current implementation structure:
 
 ```text
-zephyr-remote-openocd/
+zephyr_remote_openocd/
     zephyr/
         module.yml
         CMakeLists.txt
@@ -120,32 +120,23 @@ zephyr-remote-openocd/
                 runner.py
 
             remote/
-                model.py
-                paths.py
-                staging.py
-                ssh.py
-                services.py
-                session.py
-                helper_client.py
+                model.py, paths.py, staging.py, ssh.py
+                services.py, session.py, protocol.py
+                backend.py, deploy.py, debug.py, flash.py, rtt.py
 
-            helper/
-                protocol.py
-                deploy.py
-
-    remote_helper/
-        main.py
-        session.py
-        openocd.py
-        cleanup.py
+            remote_helper.py
 
     resources/
         config.toml.example
 
     scripts/
+        config_default.py
         setup.py
 ```
 
-Exact filenames are not architectural contracts.
+The implementation is intentionally self-contained in the module tree. Exact
+filenames are not architectural contracts. User setup is implemented by
+`scripts/setup.py`; pip packaging is not required for V1.
 
 ---
 
@@ -171,83 +162,94 @@ from zephyr_remote_openocd.zephyr44.runner import (
 
 The substantive implementation remains split into normal Python modules.
 
-No pip installation is required.
+The local runner may use `pyelftools` for ELF inspection, consistent with
+Zephyr 4.4's built-in OpenOCD runner. It is an accepted V1 runtime dependency,
+not functionality to reimplement. Setup and diagnostics should verify that
+`elftools` is importable and report that the supported Zephyr Python environment
+is expected to provide it when it is missing. The module itself still does not
+require pip packaging or a separate bespoke installation path.
 
 ---
 
 # 7. Distribution and User Setup
 
-Distribution places the complete module at an arbitrary persistent path.
-
-User setup is a separate operation.
-
-A typical documented flow may be:
+Distribution places the complete module at an arbitrary persistent path. A
+convenient documented example is:
 
 ```text
-1. Obtain the module.
-2. Place it at a persistent path.
-3. Run scripts/setup.py.
-4. Edit ~/.config/zephyr-remote-openocd/config.toml.
-5. Add the module path to EXTRA_ZEPHYR_MODULES using the user's preferred mechanism.
+~/zephyrproject/zephyr_remote_openocd
 ```
 
-`setup.py` is Python rather than a shell script to reduce platform-specific setup logic.
+This path is only an example; the module may live anywhere persistent.
+
+User setup is a separate, non-invasive operation:
+
+```text
+python3 scripts/setup.py
+```
+
+The setup script copies `resources/config.toml.example` only when the canonical
+per-user configuration is absent, reports the created/reused status and both
+absolute paths, and prints guidance for `EXTRA_ZEPHYR_MODULES`. It creates the
+`zephyr_remote_openocd` configuration directory with mode `0700` and the file
+with mode `0600`; existing parents, directories, and files are never chmodded.
+It does not edit shell startup files, repositories, or `.zephyrrc`.
 
 ---
 
 # 8. Configuration Template
 
-Representative configuration:
+The canonical V1 template is `resources/config.toml.example`:
 
 ```toml
-# Zephyr Remote OpenOCD
+# Zephyr west runner for remote OpenOCD V1 configuration
+#
+# This file lists every supported V1 key. Unknown keys are rejected so that
+# spelling mistakes and unsupported settings fail with an actionable error.
 
-[zephyr]
-
-# "local"  -> built-in openocd
-# "remote" -> remote-openocd
-default = "local"
-
+[runner]
+# Default runner for OpenOCD-capable builds: "openocd" or "remote_openocd".
+default = "openocd"
 
 [remote]
+# OpenSSH host or alias. Required when remote_openocd is used.
+# host = "openocd-host"
 
-# SSH host or alias understood by the selected SSH client.
-#
-# host = "board-lab"
-
-# Absolute OpenOCD path on the remote host.
-#
-# openocd = "/home/user/openocd/bin/openocd"
-
+# Normalized absolute POSIX path to OpenOCD on the remote Linux host.
+# Required when remote_openocd is used.
+# openocd = "/absolute/path/to/openocd"
 
 [ssh]
-
-# OpenSSH-compatible client command.
-#
-# Default:
+# Non-empty OpenSSH-compatible command argv. Fixed arguments are allowed.
 command = ["ssh"]
-
-# WSL 2 example using Windows OpenSSH:
-#
+# command = ["ssh", "-F", "/home/user/.ssh/lab_config"]
+# WSL 2 may select Windows OpenSSH explicitly:
 # command = ["/mnt/c/Windows/System32/OpenSSH/ssh.exe"]
 
-# Fixed arguments can be included if required:
-#
-# command = ["ssh", "-F", "/home/user/.ssh/lab_config"]
-
-
 [openocd]
-
-# Local environment variables forwarded to remote OpenOCD.
+# Unique local environment-variable names forwarded when present.
 forward_env = []
 
-
+# Zero or more recursive local-to-remote path mappings. Local paths must be
+# absolute after optional '~' expansion. Remote paths must be normalized,
+# absolute POSIX paths. The longest matching local prefix wins.
 # [[paths.map]]
-# local = "/local/openocd/scripts"
-# remote = "/remote/openocd/scripts"
+# local = "/home/user/openocd/share/openocd/scripts"
+# remote = "/opt/openocd/share/openocd/scripts"
 ```
 
-The SSH command is represented provisionally as an argv list rather than a shell command string.
+The parser rejects all unknown keys. Optional remote settings may be absent
+while the local runner is selected, but both are required by every production
+`remote_openocd` operation. Local mapping paths are expanded and resolved once
+when loading configuration; remote paths are validated lexically because they
+belong to the remote Linux filesystem. Exact duplicate mappings and conflicting
+mappings for the same normalized local path are both errors.
+
+This enumerated schema is frozen for V1. Field additions, removals, renames, type
+changes, or validation changes require an explicit compatibility and migration
+decision rather than silent extension of the V1 schema.
+
+The SSH command is represented as an argv list rather than a shell command string.
 
 Rationale:
 
@@ -282,7 +284,7 @@ Documentation shall show at least one convenient repository-independent approach
 `zephyr/module.yml` declares:
 
 ```yaml
-name: zephyr-remote-openocd
+name: zephyr_remote_openocd
 
 runners:
   - file: runners/remote_openocd.py
@@ -291,7 +293,7 @@ runners:
 The custom Python runner reports:
 
 ```text
-remote-openocd
+remote_openocd
 ```
 
 Python discovery is complemented by CMake integration because west also validates runner availability from generated build runner state.
@@ -309,12 +311,12 @@ openocd
 the module adds:
 
 ```text
-remote-openocd
+remote_openocd
 ```
 
 and mirrors applicable built-in OpenOCD runner arguments.
 
-For a build without `openocd`, the module does not add `remote-openocd`.
+For a build without `openocd`, the module does not add `remote_openocd`.
 
 No board name, vendor name, architecture, or SoC family participates in this decision.
 
@@ -352,7 +354,7 @@ openocd
 to:
 
 ```text
-remote-openocd
+remote_openocd
 ```
 
 Representative result:
@@ -366,7 +368,7 @@ args:
     - verify_image
     - --file-type=elf
 
-  remote-openocd:
+  remote_openocd:
     - --cmd-load
     - flash write_image erase
     - --cmd-verify
@@ -383,22 +385,22 @@ The mechanism is independent of which board generated those arguments.
 User configuration specifies:
 
 ```toml
-[zephyr]
-default = "local"
+[runner]
+default = "openocd"
 ```
 
 or:
 
 ```toml
-[zephyr]
-default = "remote"
+[runner]
+default = "remote_openocd"
 ```
 
 During CMake configuration:
 
 ```text
-local  -> openocd
-remote -> remote-openocd
+openocd        -> openocd
+remote_openocd -> remote_openocd
 ```
 
 is written into generated flash/debug runner defaults.
@@ -407,7 +409,7 @@ Only two actual runner identities exist:
 
 ```text
 openocd
-remote-openocd
+remote_openocd
 ```
 
 ---
@@ -417,7 +419,7 @@ remote-openocd
 The module adds:
 
 ```text
-~/.config/zephyr-remote-openocd/config.toml
+~/.config/zephyr_remote_openocd/config.toml
 ```
 
 to the CMake configure dependencies.
@@ -445,19 +447,21 @@ west reads new default
 
 When rebuilding is explicitly suppressed, stale generated state may remain until reconfiguration.
 
-This behavior remains a prototype gate.
-
 ---
 
 # 16. Zephyr Runner Reuse Strategy
 
-V1 may subclass and use documented/public portions of Zephyr 4.4's `OpenOcdBinaryRunner`.
+V1 may subclass and reuse the non-private interface of Zephyr 4.4's `OpenOcdBinaryRunner` where this materially reduces duplication.
 
 The compatibility policy is:
 
-> The custom runner MAY subclass and use documented/public behavior of Zephyr 4.4's `OpenOcdBinaryRunner`, but SHALL NOT depend on private attributes or private methods solely to avoid implementing remote behavior.
+> `runners.core` is Zephyr's explicitly supported external-runner API. `OpenOcdBinaryRunner` is reusable but is not covered by that compatibility guarantee. Any coupling to its non-private interface is Zephyr-version-specific, remains in the Zephyr compatibility layer, and excludes private attributes and methods.
 
-The Zephyr-specific adapter may be updated when supporting a new Zephyr release.
+The Zephyr 4.4 adapter reuses `capabilities()`, `do_add_parser()`, and the
+constructor. It overrides `name()`, `do_create()`, and `do_run()`. Constructor
+and version coupling is isolated in `zephyr44/runner.py`.
+
+Supporting a new Zephyr release requires validation of this boundary or a version-specific adapter update.
 
 ---
 
@@ -642,19 +646,31 @@ Flow:
 ```text
 start remote OpenOCD
        |
-establish GDB transport
+establish enabled GDB/Tcl/telnet transports
        |
-establish RTT transport
-       |
-run local batch GDB
+run local batch GDB (standalone west rtt)
        |
        +-- RTT setup
        +-- RTT start
        +-- RTT server start <port>
        |
+establish RTT transport
+       |
 launch local RTT client
 ```
 
+The RTT forward's local listener check is not treated as proof that its remote
+channel opened. The foreground RTT client's connection is authoritative for
+end-to-end reachability. The dedicated standard-library client provides
+bidirectional channel-0 bytes, uses noncanonical/no-echo TTY input without
+disabling normal signal handling, and restores the complete terminal state on
+every exit path. Non-TTY input is supported without terminal operations.
+
+For `debug --rtt-server` and `debugserver --rtt-server`, RTT setup is included
+in OpenOCD's startup command sequence before its unique final readiness marker;
+the RTT socket joins initial readiness and forwarding. These operations expose
+the endpoint but do not launch a local RTT client. Standalone `rtt` reuses the
+same remote OpenOCD version and Zephyr thread-info decision as debug/attach.
 No GDB RSP observer is needed.
 
 ---
@@ -828,13 +844,11 @@ No user-visible feature is lost solely because multiplexing is unavailable.
 
 ---
 
-# 33. Candidate Cross-Client SSH Topologies
+# 33. Cross-Client SSH Topology
 
-The exact V1 topology remains a prototype decision.
+The V1 topology uses multiple SSH processes without requiring ControlMaster.
 
-Two viable designs are retained.
-
-## 33.1 Multiple SSH processes
+## 33.1 Selected baseline: multiple SSH processes
 
 One SSH connection controls the helper.
 
@@ -849,7 +863,7 @@ Disadvantages:
 
 - may perform multiple authentications when no agent or multiplexing is available.
 
-## 33.2 One control session plus generic forwarding tunnel
+## 33.2 Retained alternative: one control session plus generic forwarding tunnel
 
 A long-lived SSH connection may provide a generic forwarding facility while simultaneously running the helper.
 
@@ -864,13 +878,17 @@ Disadvantages:
 
 - more local proxy logic.
 
-The prototype shall compare these approaches on both native Linux OpenSSH and Windows OpenSSH invoked from WSL 2.
+The alternative remains available if WSL testing or operational experience shows that repeated authentication is unacceptable. PG-012 and PG-013 shall validate the selected baseline with WSL Linux OpenSSH and Windows OpenSSH invoked from WSL 2.
 
 ---
 
 # 34. Staging Transport
 
 Staging SHOULD use the configured SSH command rather than require a separate `scp` executable.
+
+The configured SSH command carries arbitrary byte streams, including empty,
+textual, binary/NUL-containing, and large payloads, with remote failure
+propagation. Production flash uses this transport for session staging.
 
 A preferred candidate is:
 
@@ -890,9 +908,14 @@ Advantages include:
 - only one configurable SSH executable;
 - consistent authentication behavior;
 - no separate `scp` configuration;
-- compatibility with Linux `ssh` and WSL-invoked Windows `ssh.exe`.
+- use of the same configurable abstraction for Linux `ssh` and Windows `ssh.exe`.
 
-The exact archive encoding remains an implementation decision.
+WSL-specific validation remains tracked separately in the requirements and
+validation documents.
+
+The staging manifest, safe archive encoding and extraction, private remote
+filesystem layout, path rewriting, helper deployment protocol, and real OpenOCD
+artifact staging are implemented by the protocol-1 helper and flash slice.
 
 ---
 
@@ -901,7 +924,7 @@ The exact archive encoding remains an implementation decision.
 The helper is automatically deployed to a per-user location such as:
 
 ```text
-~/.local/libexec/zephyr-remote-openocd/
+~/.local/libexec/zephyr_remote_openocd/
 ```
 
 Deployment also uses the configured SSH command.
@@ -912,45 +935,23 @@ No assumption is made that the local SSH executable comes from the local Linux d
 
 # 36. Remote Helper Protocol
 
-The protocol is versioned.
-
-Logical operations may include:
-
-```text
-HELLO
-CREATE_SESSION
-STAGE
-START_OPENOCD
-PROCESS_EVENT
-STOP
-```
-
-The protocol communicates:
-
-- compatibility version;
-- session ID;
-- loopback address;
-- staging results;
-- process state;
-- exit status;
-- termination reason.
-
-Bulk binary content should use stream-oriented transfer rather than JSON/base64 where practical.
-
----
+The exact frozen Protocol 1 wire contract is maintained in
+[protocol-v1.md](protocol-v1.md). This architecture document retains only the
+ownership boundary: the helper is versioned, stdout is JSON-lines protocol only,
+and incompatible client/helper behavior requires a new protocol version.
 
 # 37. Remote Session Storage
 
 Preferred:
 
 ```text
-$XDG_RUNTIME_DIR/zephyr-remote-openocd/<session-id>/
+$XDG_RUNTIME_DIR/zephyr_remote_openocd/<session-id>/
 ```
 
 Fallback:
 
 ```text
-~/.cache/zephyr-remote-openocd/sessions/<session-id>/
+~/.cache/zephyr_remote_openocd/sessions/<session-id>/
 ```
 
 Session data is private to the remote Unix user.
@@ -1026,9 +1027,14 @@ Flash omits local-client stages when unnecessary.
 
 A dependent local client is not started until the required remote service is ready.
 
-Preferred readiness mechanisms should probe service availability rather than parse human-readable OpenOCD logs.
+For persistent OpenOCD operations, the adapter appends a unique final `echo`
+marker after the intended startup commands. The helper reports readiness only
+after observing that marker and confirming that every requested service socket
+is connectable. Disabled services impose no readiness check. The startup timeout
+is 30 seconds.
 
-Exact implementation remains a prototype decision.
+This combines command completion with socket availability instead of depending
+on ordinary human-readable OpenOCD diagnostics.
 
 ---
 
@@ -1113,133 +1119,27 @@ Platform-specific SSH behavior, if any is eventually needed, shall remain inside
 
 # 44. Test Architecture
 
-## 44.1 Board-agnostic runner tests
-
-Runner registration and argument inheritance tests use generated Zephyr runner state without encoding specific board names in implementation logic.
-
-Hardware test fixtures may use concrete boards, but product code and general documentation remain board-agnostic.
-
-## 44.2 Multi-board validation
-
-Hardware validation SHOULD include at least two OpenOCD-capable target configurations with materially different board/SoC characteristics.
-
-At least one validation target SHOULD exercise RTT.
-
-At least one SHOULD exercise semihosting console output.
-
-## 44.3 Linux platform tests
-
-Exercise:
-
-- setup;
-- module discovery;
-- flash;
-- debug;
-- forwarding;
-- cleanup
-
-using native Linux.
-
-## 44.4 WSL 2 platform tests
-
-Exercise the same normal workflow under WSL 2.
-
-## 44.5 SSH client matrix
-
-At minimum, test:
-
-```text
-native Linux + Linux OpenSSH
-
-WSL 2 + WSL Linux OpenSSH
-
-WSL 2 + Windows OpenSSH ssh.exe
-```
-
-The latter validates that the SSH command abstraction does not depend on the WSL distribution's credentials or agent.
-
-## 44.6 SSH fixed-argument test
-
-Verify a command definition containing additional fixed arguments works correctly.
-
-Example use cases include custom SSH configuration files.
+The maintained test suite separates self-contained unit tests, local process and
+socket integration, Zephyr integration, SSH integration, destructive hardware
+validation, and manual release validation. External layers consume explicitly
+configured environments and ignored fixture data. Recording mode remains free of
+SSH, helper, OpenOCD, GDB, and hardware I/O. Hardware capabilities are selected
+independently so an unsupported optional capability does not suppress other
+operations. The separate validation record maps acceptance criteria to executed
+evidence; this document describes only the architecture of that test boundary.
 
 ---
 
-# 45. Prototype Gates
-
-## PG-001
-
-Discover a self-contained module through `EXTRA_ZEPHYR_MODULES`.
-
-## PG-002
-
-Use the module from an in-tree Zephyr application without repository changes.
-
-## PG-003
-
-Use it from an out-of-tree application without repository changes.
-
-## PG-004
-
-Register `remote-openocd` only when `openocd` exists.
-
-## PG-005
-
-Mirror applicable OpenOCD runner arguments.
-
-## PG-006
-
-Reuse common `RunnerConfig`.
-
-## PG-007
-
-Preserve `-r openocd`.
-
-## PG-008
-
-Instantiate `-r remote-openocd`.
-
-## PG-009
-
-Regenerate runner defaults after configuration changes during normal incremental west operation.
-
-## PG-010
-
-Reuse only acceptable public/documented `OpenOcdBinaryRunner` behavior.
-
-## PG-011
-
-Run a basic remote helper command using native Linux `ssh`.
-
-## PG-012
-
-Run the same helper command from WSL 2 using WSL's Linux `ssh`.
-
-## PG-013
-
-Run the same helper command from WSL 2 using configured Windows `ssh.exe`.
-
-## PG-014
-
-Determine the SSH forwarding topology which provides acceptable behavior without requiring ControlMaster.
-
-## PG-015
-
-Validate file/helper streaming using the same configurable SSH command.
-
----
-
-# 46. Architecture Decisions Considered Final
+# 45. Architecture Decisions
 
 Selected for V1:
 
 - board-agnostic custom runner;
 - no board/vendor-specific product behavior;
 - native Linux and WSL 2 equally supported;
-- runner name `remote-openocd`;
+- runner name `remote_openocd`;
 - built-in `openocd` retained;
-- per-user local/remote default;
+- per-user default runner selection;
 - two runner identities only;
 - `EXTRA_ZEPHYR_MODULES`;
 - self-contained Zephyr module;
@@ -1247,9 +1147,9 @@ Selected for V1:
 - split Python implementation;
 - Python setup script;
 - commented configuration template;
-- local default initially;
+- `openocd` default initially;
 - CMake configure dependency;
-- public/documented `OpenOcdBinaryRunner` reuse only;
+- Zephyr-version-specific reuse of the non-private `OpenOcdBinaryRunner` interface only;
 - configurable OpenSSH-compatible client command;
 - default SSH command `ssh`;
 - WSL 2 may use Windows `ssh.exe`;
@@ -1269,22 +1169,3 @@ Selected for V1:
 - fail-fast cleanup after SSH loss.
 
 ---
-
-# 47. Remaining Implementation Decisions
-
-The remaining implementation-level questions are:
-
-1. Exact distribution instructions.
-2. Final setup-script invocation/name.
-3. Exact CMake runner-registration code.
-4. Exact reusable surface of `OpenOcdBinaryRunner`.
-5. Exact helper protocol encoding.
-6. Exact SSH topology when ControlMaster is unavailable.
-7. Whether optional multiplexing is worthwhile when available.
-8. Exact staging archive format.
-9. Exact remote-service readiness mechanism.
-10. Loopback collision retry parameters.
-11. Exact internal Python module layout.
-12. Test framework and development-only dependencies.
-
-None currently require an additional product decision before prototyping.
