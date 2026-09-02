@@ -524,19 +524,19 @@ V1 SHALL NOT be required to translate arbitrary local paths embedded in arbitrar
 
 ## REQ-NFUNC-COMPAT-001
 
-The custom runner MAY subclass and use documented/public behavior of Zephyr 4.4's `OpenOcdBinaryRunner`.
+The Zephyr 4.4 adapter MAY subclass `OpenOcdBinaryRunner` and reuse its non-private interface where this materially reduces duplication.
 
 ## REQ-NFUNC-COMPAT-002
 
-The custom runner SHALL NOT depend on private attributes or private methods of `OpenOcdBinaryRunner` solely to avoid implementing remote behavior.
+Because `OpenOcdBinaryRunner` is not part of Zephyr's explicit external-runner compatibility guarantee, all such coupling SHALL be treated as Zephyr-version-specific and confined to the Zephyr compatibility layer.
 
 ## REQ-NFUNC-COMPAT-003
 
-Compatibility with a new Zephyr release MAY require updating the Zephyr-specific runner adapter.
+The custom runner SHALL NOT depend on private attributes or private methods of `OpenOcdBinaryRunner`.
 
 ## REQ-NFUNC-COMPAT-004
 
-Zephyr-version-specific compatibility code SHOULD be isolated from generic remote transport, staging, session, and helper code.
+Supporting a new Zephyr version SHALL require either validation of the existing adapter or a version-specific adapter update.
 
 ---
 
@@ -1065,55 +1065,15 @@ V1 does not include:
 
 # 29. Major Risks
 
-## RISK-001 — Runner registration
+## RISK-003 — Zephyr-version API coupling
 
-External Python runner discovery alone may not make `remote-openocd` available to a build.
-
-Severity: High.
-
-Mitigation:
-
-Use module CMake integration for builds already supporting `openocd`.
-
-## RISK-002 — Board argument inheritance
-
-Boards may provide important OpenOCD-specific runner arguments.
-
-Severity: High.
-
-Mitigation:
-
-Derive custom-runner arguments from existing OpenOCD runner state.
-
-## RISK-003 — Zephyr API coupling
-
-Reusing `OpenOcdBinaryRunner` may introduce version coupling.
+Zephyr explicitly guarantees `runners.core` as its external-runner API, but does not extend that guarantee to `OpenOcdBinaryRunner`. Reusing the latter's non-private interface therefore creates version-specific maintenance coupling.
 
 Severity: Medium.
 
 Mitigation:
 
-Use only documented/public behavior and isolate the Zephyr-specific adapter.
-
-## RISK-004 — CMake runner-state integration
-
-Mirroring runner registration and arguments may interact with Zephyr CMake state with weaker stability guarantees.
-
-Severity: Medium/High.
-
-Mitigation:
-
-Confine this behavior to the Zephyr 4.4 adapter and test it.
-
-## RISK-005 — Default-runner regeneration
-
-A default preference modifies generated runner configuration.
-
-Severity: Low/Medium.
-
-Mitigation:
-
-Register user configuration as a CMake configure dependency and retain explicit runner selection.
+Confine all `OpenOcdBinaryRunner` coupling to the Zephyr 4.4 compatibility layer, use no private attributes or methods, and validate or update the adapter for each newly supported Zephyr version.
 
 ## RISK-006 — Path mapping mismatch
 
@@ -1125,15 +1085,24 @@ Mitigation:
 
 Use explicit mappings with staging fallback.
 
-## RISK-007 — SSH client capability differences
+## RISK-007 — SSH client differences, especially WSL with Windows `ssh.exe`
 
-Different OpenSSH clients may not provide identical optional capabilities.
+Native Linux validation proves that V1 does not require ControlMaster and that separate controlling and `ssh -L` processes work. WSL Linux OpenSSH and Windows `ssh.exe` invoked from WSL remain unvalidated and may differ in subprocess, path, authentication, or forwarding behavior.
 
 Severity: Medium.
 
 Mitigation:
 
-Base V1 correctness only on required OpenSSH-compatible behavior and keep optional optimizations such as connection multiplexing capability-dependent.
+Base V1 correctness only on required OpenSSH-compatible behavior, keep multiplexing optional, and complete PG-012 and PG-013 before claiming WSL 2 compatibility.
+
+## Retired feasibility risks
+
+The following identifiers are retired and SHALL NOT be reused:
+
+- **RISK-001 — Runner registration:** retired by PG-001, PG-004, PG-007, and PG-008.
+- **RISK-002 — Board argument inheritance:** retired as a V1 feasibility risk by PG-005 and PG-006. Future-version regression exposure is covered by RISK-003.
+- **RISK-004 — CMake runner-state integration:** retired by PG-004, PG-005, PG-007, and PG-008. Future-version maintenance exposure is covered by RISK-003.
+- **RISK-005 — Default-runner regeneration:** retired for the supported normal incremental-build workflow by PG-009. Suppressed rebuilding retains the behavior specified by REQ-FUNC-SELECT-010.
 
 ---
 
@@ -1190,7 +1159,7 @@ A build configured with remote default selects `remote-openocd` when no explicit
 
 Changing the configuration default followed by a normal west runner invocation which performs the standard incremental build updates the generated default without requiring a pristine build.
 
-This criterion is subject to prototype validation.
+PG-009 validated this criterion for the supported normal incremental-build workflow.
 
 ## AC-FLASH-001
 
@@ -1254,10 +1223,15 @@ An SSH command containing fixed user-configured arguments can be used without th
 
 No unresolved stakeholder/product decision currently blocks V1 implementation.
 
-Remaining questions are implementation and prototype concerns, principally:
+The integration prototype resolved the V1 feasibility questions concerning:
 
 - CMake registration of `remote-openocd`;
-- inheritance of built-in OpenOCD runner arguments;
-- automatic regeneration of runner defaults;
-- exact public reuse boundary of `OpenOcdBinaryRunner`;
-- exact cross-platform SSH subprocess topology.
+- inheritance of built-in OpenOCD runner arguments and common `RunnerConfig`;
+- automatic regeneration of runner defaults during normal incremental west operations;
+- native-Linux SSH operation, streaming, and forwarding without ControlMaster.
+
+PG-010 characterized, rather than eliminated, the `OpenOcdBinaryRunner` compatibility risk. `runners.core` is the explicit external-runner contract; reuse of the non-private `OpenOcdBinaryRunner` interface is Zephyr-version-specific and governed by REQ-NFUNC-COMPAT-001 through REQ-NFUNC-COMPAT-004.
+
+WSL validation remains open: PG-012 covers WSL Linux `ssh`, and PG-013 covers Windows `ssh.exe` invoked from WSL.
+
+The remote helper, staging and path translation, remote-session lifecycle, loopback allocation, integrated service forwarding, and real OpenOCD operation remain unimplemented. They are subsequent implementation work, not failed prototype validation. No unresolved stakeholder/product decision currently blocks V1 implementation.

@@ -445,19 +445,21 @@ west reads new default
 
 When rebuilding is explicitly suppressed, stale generated state may remain until reconfiguration.
 
-This behavior remains a prototype gate.
+This behavior was validated by PG-009 for the normal incremental west workflow.
 
 ---
 
 # 16. Zephyr Runner Reuse Strategy
 
-V1 may subclass and use documented/public portions of Zephyr 4.4's `OpenOcdBinaryRunner`.
+V1 may subclass and reuse the non-private interface of Zephyr 4.4's `OpenOcdBinaryRunner` where this materially reduces duplication.
 
 The compatibility policy is:
 
-> The custom runner MAY subclass and use documented/public behavior of Zephyr 4.4's `OpenOcdBinaryRunner`, but SHALL NOT depend on private attributes or private methods solely to avoid implementing remote behavior.
+> `runners.core` is Zephyr's explicitly supported external-runner API. `OpenOcdBinaryRunner` is reusable but is not covered by that compatibility guarantee. Any coupling to its non-private interface is Zephyr-version-specific, remains in the Zephyr compatibility layer, and excludes private attributes and methods.
 
-The Zephyr-specific adapter may be updated when supporting a new Zephyr release.
+The validated Zephyr 4.4 adapter reuses `capabilities()`, `do_add_parser()`, and the constructor. It overrides `name()`, `do_create()`, and `do_run()`. Constructor and version coupling is isolated in `zephyr44/runner.py`.
+
+Supporting a new Zephyr release requires validation of this boundary or a version-specific adapter update.
 
 ---
 
@@ -828,13 +830,11 @@ No user-visible feature is lost solely because multiplexing is unavailable.
 
 ---
 
-# 33. Candidate Cross-Client SSH Topologies
+# 33. Cross-Client SSH Topology
 
-The exact V1 topology remains a prototype decision.
+PG-014 validated multiple SSH processes as the V1 baseline topology without ControlMaster.
 
-Two viable designs are retained.
-
-## 33.1 Multiple SSH processes
+## 33.1 Selected baseline: multiple SSH processes
 
 One SSH connection controls the helper.
 
@@ -849,7 +849,7 @@ Disadvantages:
 
 - may perform multiple authentications when no agent or multiplexing is available.
 
-## 33.2 One control session plus generic forwarding tunnel
+## 33.2 Retained alternative: one control session plus generic forwarding tunnel
 
 A long-lived SSH connection may provide a generic forwarding facility while simultaneously running the helper.
 
@@ -864,13 +864,15 @@ Disadvantages:
 
 - more local proxy logic.
 
-The prototype shall compare these approaches on both native Linux OpenSSH and Windows OpenSSH invoked from WSL 2.
+The alternative remains available if WSL testing or operational experience shows that repeated authentication is unacceptable. PG-012 and PG-013 shall validate the selected baseline with WSL Linux OpenSSH and Windows OpenSSH invoked from WSL 2.
 
 ---
 
 # 34. Staging Transport
 
 Staging SHOULD use the configured SSH command rather than require a separate `scp` executable.
+
+PG-015 validated arbitrary byte streaming through the configured native-Linux SSH command, including empty, textual, binary/NUL-containing, and 1 MiB payloads, with remote failure propagation. This establishes the transport primitive only.
 
 A preferred candidate is:
 
@@ -890,9 +892,11 @@ Advantages include:
 - only one configurable SSH executable;
 - consistent authentication behavior;
 - no separate `scp` configuration;
-- compatibility with Linux `ssh` and WSL-invoked Windows `ssh.exe`.
+- validated native-Linux `ssh` operation and use of the same configurable abstraction intended for WSL Linux `ssh` and Windows `ssh.exe`.
 
-The exact archive encoding remains an implementation decision.
+The WSL client variants remain subject to PG-012 and PG-013.
+
+The staging manifest, archive encoding and extraction, remote filesystem layout, path rewriting, helper deployment protocol, and real OpenOCD artifact staging remain implementation decisions.
 
 ---
 
@@ -1113,124 +1117,82 @@ Platform-specific SSH behavior, if any is eventually needed, shall remain inside
 
 # 44. Test Architecture
 
-## 44.1 Board-agnostic runner tests
+Successful prototype findings are protected by permanent regression suites organized as:
+
+```text
+tests/unit
+tests/zephyr_integration
+tests/ssh_integration
+```
+
+The exact directory layout is non-normative.
+
+## 44.1 Unit tests
+
+Unit tests cover configuration parsing and SSH command construction without Zephyr, SSH connectivity, OpenOCD, or hardware.
+
+## 44.2 Hardware-free Zephyr integration
 
 Runner registration and argument inheritance tests use generated Zephyr runner state without encoding specific board names in implementation logic.
 
+The recording runner is permanent test infrastructure for the path:
+
+```text
+west
+  -> runners.yaml
+  -> runner argument parsing
+  -> RunnerConfig
+  -> remote-openocd adapter
+  -> structured recording
+```
+
+Recording requires:
+
+```text
+ZEPHYR_REMOTE_OPENOCD_RECORD=1
+```
+
+Without that explicit test setting, the unimplemented runner fails clearly. These tests use a harmless OpenOCD stub and do not access physical hardware or execute real OpenOCD behavior.
+
+## 44.3 SSH integration
+
+SSH integration tests cover native-Linux command selection, fixed arguments, streaming, remote failure propagation, and separate controller/forwarding processes without ControlMaster.
+
+PG-012 and PG-013 remain present as permanent WSL-specific tests. They skip explicitly outside WSL 2 rather than being treated as passed.
+
+## 44.4 Later hardware integration
+
 Hardware test fixtures may use concrete boards, but product code and general documentation remain board-agnostic.
 
-## 44.2 Multi-board validation
-
-Hardware validation SHOULD include at least two OpenOCD-capable target configurations with materially different board/SoC characteristics.
+Later real OpenOCD validation SHOULD include at least two OpenOCD-capable target configurations with materially different board/SoC characteristics.
 
 At least one validation target SHOULD exercise RTT.
 
-At least one SHOULD exercise semihosting console output.
+At least one validation target SHOULD exercise semihosting console output.
 
-## 44.3 Linux platform tests
+## 44.5 Platform matrix
 
-Exercise:
+The completed native-Linux regression suite exercises:
 
-- setup;
 - module discovery;
-- flash;
-- debug;
-- forwarding;
-- cleanup
+- recording flash and debug integration;
+- SSH command execution and fixed arguments;
+- forwarding without ControlMaster;
+- binary streaming, failure propagation, and cleanup.
 
-using native Linux.
-
-## 44.4 WSL 2 platform tests
-
-Exercise the same normal workflow under WSL 2.
-
-## 44.5 SSH client matrix
-
-At minimum, test:
+The remaining WSL validation shall exercise the corresponding SSH behavior with:
 
 ```text
-native Linux + Linux OpenSSH
-
 WSL 2 + WSL Linux OpenSSH
 
 WSL 2 + Windows OpenSSH ssh.exe
 ```
 
-The latter validates that the SSH command abstraction does not depend on the WSL distribution's credentials or agent.
-
-## 44.6 SSH fixed-argument test
-
-Verify a command definition containing additional fixed arguments works correctly.
-
-Example use cases include custom SSH configuration files.
+The Windows-client case validates that the SSH command abstraction does not depend on the WSL distribution's credentials or agent. Full real OpenOCD workflows on both native Linux and WSL 2 remain later hardware-integration work.
 
 ---
 
-# 45. Prototype Gates
-
-## PG-001
-
-Discover a self-contained module through `EXTRA_ZEPHYR_MODULES`.
-
-## PG-002
-
-Use the module from an in-tree Zephyr application without repository changes.
-
-## PG-003
-
-Use it from an out-of-tree application without repository changes.
-
-## PG-004
-
-Register `remote-openocd` only when `openocd` exists.
-
-## PG-005
-
-Mirror applicable OpenOCD runner arguments.
-
-## PG-006
-
-Reuse common `RunnerConfig`.
-
-## PG-007
-
-Preserve `-r openocd`.
-
-## PG-008
-
-Instantiate `-r remote-openocd`.
-
-## PG-009
-
-Regenerate runner defaults after configuration changes during normal incremental west operation.
-
-## PG-010
-
-Reuse only acceptable public/documented `OpenOcdBinaryRunner` behavior.
-
-## PG-011
-
-Run a basic remote helper command using native Linux `ssh`.
-
-## PG-012
-
-Run the same helper command from WSL 2 using WSL's Linux `ssh`.
-
-## PG-013
-
-Run the same helper command from WSL 2 using configured Windows `ssh.exe`.
-
-## PG-014
-
-Determine the SSH forwarding topology which provides acceptable behavior without requiring ControlMaster.
-
-## PG-015
-
-Validate file/helper streaming using the same configurable SSH command.
-
----
-
-# 46. Architecture Decisions Considered Final
+# 45. Architecture Decisions Considered Final
 
 Selected for V1:
 
@@ -1249,7 +1211,7 @@ Selected for V1:
 - commented configuration template;
 - local default initially;
 - CMake configure dependency;
-- public/documented `OpenOcdBinaryRunner` reuse only;
+- Zephyr-version-specific reuse of the non-private `OpenOcdBinaryRunner` interface only;
 - configurable OpenSSH-compatible client command;
 - default SSH command `ssh`;
 - WSL 2 may use Windows `ssh.exe`;
@@ -1270,21 +1232,82 @@ Selected for V1:
 
 ---
 
-# 47. Remaining Implementation Decisions
+# 46. Validated Prototype Results
+
+The permanent native-Linux suite contains 18 tests: 16 pass and the two WSL-specific tests for PG-012 and PG-013 skip explicitly.
+
+The following gate identifiers are retained for traceability and SHALL NOT be reused:
+
+- **PG-001 — PASS:** discovered the self-contained module through `EXTRA_ZEPHYR_MODULES` alone.
+- **PG-002 — PASS:** used the module with an in-tree Zephyr sample without repository changes.
+- **PG-003 — PASS:** used the same module with an out-of-tree application without repository changes.
+- **PG-004 — PASS:** registered `remote-openocd` only when `openocd` was present.
+- **PG-005 — PASS:** mirrored applicable OpenOCD runner arguments exactly.
+- **PG-006 — PASS:** received common `RunnerConfig` normally.
+- **PG-007 — PASS:** retained and explicitly selected `-r openocd`.
+- **PG-008 — PASS:** instantiated the recording runner with `-r remote-openocd` under the explicit test-only recording setting.
+- **PG-009 — PASS:** a configuration-only default change triggered CMake regeneration before runner selection during normal `west flash` and `west debug` operation.
+- **PG-010 — PASS:** characterized the reuse boundary. The Zephyr 4.4 adapter reuses `capabilities()`, `do_add_parser()`, and the constructor; overrides `name()`, `do_create()`, and `do_run()`; accesses no private `OpenOcdBinaryRunner` implementation; and confines constructor/version coupling to `zephyr44/runner.py`.
+- **PG-011 — PASS:** ran a basic remote command against the configured SSH fixture with native Linux `ssh`, including a configured command with fixed arguments.
+- **PG-014 — PASS:** validated separate controlling and `ssh -L` processes with `ControlMaster=no`, including removal of the remote endpoint when the controlling session closed.
+- **PG-015 — PASS:** validated empty, textual, binary/NUL-containing, and 1 MiB streams through the configured SSH command, verified byte count and SHA-256, and propagated remote failure.
+
+---
+
+# 47. Remaining Prototype Gates
+
+## PG-012 — DEFERRED
+
+Run the same helper command from WSL 2 using WSL's Linux `ssh`.
+
+This gate requires a WSL 2 test environment.
+
+## PG-013 — DEFERRED
+
+Run the same helper command from WSL 2 using configured Windows `ssh.exe`.
+
+This gate requires a WSL 2 test environment and remains especially relevant to RISK-007.
+
+---
+
+# 48. Remaining Implementation Decisions
 
 The remaining implementation-level questions are:
 
 1. Exact distribution instructions.
 2. Final setup-script invocation/name.
-3. Exact CMake runner-registration code.
-4. Exact reusable surface of `OpenOcdBinaryRunner`.
-5. Exact helper protocol encoding.
-6. Exact SSH topology when ControlMaster is unavailable.
-7. Whether optional multiplexing is worthwhile when available.
-8. Exact staging archive format.
-9. Exact remote-service readiness mechanism.
-10. Loopback collision retry parameters.
-11. Exact internal Python module layout.
-12. Test framework and development-only dependencies.
+3. Exact helper protocol encoding.
+4. Whether optional multiplexing is worthwhile when available.
+5. Exact staging archive format.
+6. Exact remote-service readiness mechanism.
+7. Loopback collision retry parameters.
+8. Final internal Python module layout beyond the validated compatibility boundary.
 
-None currently require an additional product decision before prototyping.
+None currently require an additional product decision before the next implementation phase.
+
+---
+
+# 49. Phase Transition
+
+```text
+Zephyr integration prototype
+    COMPLETE except deferred WSL-specific PG-012 and PG-013
+
+Permanent regression transformation
+    COMPLETE
+
+Next: remote-session vertical slice
+    configuration and setup completion
+    helper protocol and deployment
+    session lifecycle
+    staging and path translation
+    loopback allocation
+    SSH forwarding integration
+    fake-backend lifecycle tests
+
+Then
+    real OpenOCD flash
+    debug, attach, and debugserver
+    RTT
+    semihosting console
+```
