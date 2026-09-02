@@ -1,0 +1,2 @@
+"""Generic remote prototype components."""
+

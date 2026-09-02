@@ -1,0 +1,14 @@
+# Zephyr Remote OpenOCD integration prototype
+
+[zephyr]
+default = "local"
+
+[remote]
+# host = "board-lab"
+# openocd = "/absolute/path/to/openocd"
+
+[ssh]
+command = ["ssh"]
+# Fixed arguments are supported:
+# command = ["ssh", "-F", "/home/user/.ssh/lab_config"]
+

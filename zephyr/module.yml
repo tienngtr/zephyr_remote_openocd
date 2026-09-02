@@ -1,0 +1,8 @@
+name: zephyr-remote-openocd
+
+build:
+  cmake: zephyr
+
+runners:
+  - file: runners/remote_openocd.py
+

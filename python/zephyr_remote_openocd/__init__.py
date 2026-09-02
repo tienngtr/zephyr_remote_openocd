@@ -1,0 +1,2 @@
+"""Zephyr Remote OpenOCD prototype."""
+
