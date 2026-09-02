@@ -59,7 +59,7 @@ class EventOrder:
         allowed = {
             "new": {"HELLO"},
             "hello": {"SESSION_CREATED", "ERROR"},
-            "created": {"STAGED", "SERVICE_READY", "CHILD_OUTPUT", "PROCESS_EXIT", "ERROR", "STOPPED"},
+            "created": {"STAGED", "SERVICE_READY", "PROCESS_STARTED", "CHILD_OUTPUT", "PROCESS_EXIT", "ERROR", "STOPPED"},
             "ready": {"CHILD_OUTPUT", "PROCESS_EXIT", "ERROR", "STOPPED"},
             "stopped": set(),
         }
@@ -69,7 +69,7 @@ class EventOrder:
             self._state = "hello"
         elif kind == "SESSION_CREATED":
             self._state = "created"
-        elif kind == "SERVICE_READY":
+        elif kind in {"SERVICE_READY", "PROCESS_STARTED"}:
             self._state = "ready"
         elif kind in {"STOPPED", "ERROR"}:
             self._state = "stopped"

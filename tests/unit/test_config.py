@@ -27,7 +27,28 @@ class ConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ConfigError, str(path)):
                 load_config(path)
 
+    def test_environment_and_path_mappings(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as directory:
+            path = Path(directory) / "config.toml"
+            path.write_text(
+                '[openocd]\nforward_env = ["PROBE"]\n'
+                '[[paths.map]]\nlocal = "/opt/tree"\nremote = "/remote/tree"\n'
+                '[[paths.map]]\nlocal = "/opt/tree/specific"\nremote = "/special"\n'
+            )
+            config = load_config(path)
+        self.assertEqual(config.forward_env, ("PROBE",))
+        self.assertEqual(len(config.path_mappings), 2)
+
+    def test_conflicting_mapping_is_actionable(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as directory:
+            path = Path(directory) / "config.toml"
+            path.write_text(
+                '[[paths.map]]\nlocal = "/same"\nremote = "/one"\n'
+                '[[paths.map]]\nlocal = "/same"\nremote = "/two"\n'
+            )
+            with self.assertRaisesRegex(ConfigError, "conflicting mappings"):
+                load_config(path)
+
 
 if __name__ == "__main__":
     unittest.main()
-

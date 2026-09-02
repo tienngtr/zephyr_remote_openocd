@@ -12,3 +12,12 @@ command = ["ssh"]
 # Fixed arguments are supported:
 # command = ["ssh", "-F", "/home/user/.ssh/lab_config"]
 
+[openocd]
+# Only named variables which are present locally are forwarded.
+forward_env = []
+
+# Recursive, component-aware local-to-remote mapping. The longest matching
+# local prefix wins when mappings overlap.
+# [[paths.map]]
+# local = "/home/user/openocd/share/openocd/scripts"
+# remote = "/opt/openocd/share/openocd/scripts"

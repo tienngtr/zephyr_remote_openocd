@@ -69,7 +69,7 @@ class RemoteSession:
             self.termination_returncode = result
             self._session.close()
             if self.state not in {SessionState.STOPPING, SessionState.CLOSED}:
-                self.state = SessionState.FAILED
+                self.state = SessionState.CLOSED if result == 0 else SessionState.FAILED
         return result
 
     def wait(self, timeout: float | None = None) -> int:
@@ -78,8 +78,7 @@ class RemoteSession:
         result = self._session.wait(timeout)
         self.termination_returncode = result
         self._session.close()
-        if self.state not in {SessionState.STOPPING, SessionState.CLOSED}:
-            self.state = SessionState.FAILED
+        self.state = SessionState.CLOSED if result == 0 else SessionState.FAILED
         return result
 
     def close(self) -> None:

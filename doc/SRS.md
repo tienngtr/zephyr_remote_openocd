@@ -1234,4 +1234,8 @@ PG-010 characterized, rather than eliminated, the `OpenOcdBinaryRunner` compatib
 
 WSL validation remains open: PG-012 covers WSL Linux `ssh`, and PG-013 covers Windows `ssh.exe` invoked from WSL.
 
-The remote helper, staging and path translation, remote-session lifecycle, loopback allocation, integrated service forwarding, and real OpenOCD operation remain unimplemented. They are subsequent implementation work, not failed prototype validation. No unresolved stakeholder/product decision currently blocks V1 implementation.
+The remote helper, staging and path translation, remote-session lifecycle,
+loopback allocation, fake-service forwarding, and real OpenOCD flash path are
+implemented. Debug, attach, debugserver, RTT, real-service forwarding, and WSL
+validation remain subsequent work. No unresolved stakeholder/product decision
+currently blocks V1 implementation.

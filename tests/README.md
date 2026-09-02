@@ -27,3 +27,16 @@ python3 -m unittest tests.ssh_integration.test_ssh_integration -v
 
 The SSH tests skip when `ZRO_SSH_TEST_HOST` is absent. PG-012 and PG-013 additionally require WSL 2; PG-013 accepts `ZRO_WINDOWS_SSH` as the path to Windows `ssh.exe`.
 
+Real flash is an explicit, destructive hardware acceptance test. Set
+`ZRO_REAL_FLASH_FIXTURES` to an external JSON fixture file. Each configured
+target entry supplies `ssh_command`, `host`, `build_dir`, `config_path`,
+`serial_device`, `serial_baud`, `expected_pattern`, and `serial_timeout`;
+optional fields are `west`, `workspace`, `runner_args`, an `environment` table,
+`expected_flash_patterns`, and
+`assert_openocd_bindto`. When the latter is true, include a zero-argument
+`--cmd-pre-init=bindto` so the test can compare OpenOCD's active bind name with
+the helper allocation. The remote serial reader uses only Python's standard
+library, configures raw 8N1, discards input until armed, and is test
+infrastructure only. Device paths, baud rates, expected patterns, timeouts, and
+other target-specific values belong in the external fixture and are not
+committed to the repository.

@@ -1314,7 +1314,7 @@ as typed `CHILD_OUTPUT` events.
 
 The helper is streamed through the configured SSH command and atomically installed
 at `~/.local/libexec/zephyr-remote-openocd/protocol-1/helper.py`. A SHA-256 match
-reuses the existing mode-0700 file; replacement does not accumulate versioned
+reuses the existing mode-0600 file; replacement does not accumulate versioned
 copies. No administrative privilege is required.
 
 Each controller owns an unpredictable, mode-0700 workspace below
@@ -1330,10 +1330,34 @@ default filters: every member must be a unique, normalized relative regular file
 links, special files, traversal, and escaping destinations are rejected before
 content is written.
 
-The helper attempts up to 32 random IPv4 addresses in `127.64.0.0/10` and reports
-one only after all fake-service listeners are bound. The client creates separate
+For the fake-service workload only, the helper attempts up to 32 random IPv4
+addresses in `127.64.0.0/10` and reports one only after its listeners are bound.
+The client creates separate
 `ssh -L` processes with `ControlMaster=no`, `ExitOnForwardFailure=yes`, exact
 ports, and a `127.0.0.1` local bind. Port preflight is advisory; the forwarding
 process is authoritative. Session health is process-driven through `poll()` and
 `wait()`, and cleanup unwinds forwards in reverse creation order before stopping
 the controller.
+
+---
+
+# 51. Real OpenOCD Flash Slice
+
+Production `flash` translates the public Zephyr 4.4 runner state into explicit
+remote argv. Search trees, configuration files, and firmware use the longest
+matching component-aware path mapping, with private-session staging as fallback.
+Staged directory symlinks are dereferenced only within their source tree. The
+helper verifies mapped paths before launch.
+
+The helper expands only its workspace and allocated-loopback placeholders and
+executes OpenOCD without a shell in a supervised process group. It injects the
+allocated address through OpenOCD's `bindto` command but does not change GDB,
+Tcl, or telnet port behavior supplied by Zephyr and OpenOCD configuration.
+Output is continuously relayed as protocol events and the OpenOCD exit status
+becomes the west flash result.
+
+`ZEPHYR_REMOTE_OPENOCD_RECORD=1` remains permanent no-I/O integration
+infrastructure and takes precedence over production execution. Debug, attach,
+debugserver, RTT, and real-service forwarding remain later slices. Remote serial
+observation belongs only to explicitly configured hardware acceptance tests and
+is not part of production flash semantics.

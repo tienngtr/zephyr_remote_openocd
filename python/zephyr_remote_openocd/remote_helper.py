@@ -22,10 +22,13 @@ import threading
 
 VERSION = 1
 RANGE = ipaddress.IPv4Network("127.64.0.0/10")
+_emit_lock = threading.Lock()
 
 
 def emit(kind, **values):
-    print(json.dumps({"version": VERSION, "type": kind, **values}, separators=(",", ":"), sort_keys=True), flush=True)
+    line = json.dumps({"version": VERSION, "type": kind, **values}, separators=(",", ":"), sort_keys=True)
+    with _emit_lock:
+        print(line, flush=True)
 
 
 def error(message, code="HELPER_ERROR"):
@@ -158,7 +161,14 @@ def relay(stream, stream_name):
 def controller():
     session_id, work = new_workspace()
     child = None
+    relay_threads = []
     stopping = False
+
+    def close_child_streams():
+        if child is not None:
+            for stream in (child.stdout, child.stderr):
+                if stream is not None and not stream.closed:
+                    stream.close()
 
     def cleanup(*_):
         nonlocal stopping
@@ -173,6 +183,9 @@ def controller():
                 if child.poll() is None:
                     os.killpg(child.pid, signal.SIGKILL)
                     child.wait()
+        for thread in relay_threads:
+            thread.join(timeout=2)
+        close_child_streams()
         shutil.rmtree(work, ignore_errors=True)
 
     signal.signal(signal.SIGTERM, lambda *_: (cleanup(), sys.exit(0)))
@@ -184,7 +197,11 @@ def controller():
         selector.register(sys.stdin.buffer, selectors.EVENT_READ)
         while True:
             if child is not None and child.poll() is not None:
+                for thread in relay_threads:
+                    thread.join(timeout=2)
+                close_child_streams()
                 emit("PROCESS_EXIT", returncode=child.returncode)
+                emit("STOPPED", reason="process-exit")
                 return
             ready_inputs = selector.select(0.2)
             if not ready_inputs:
@@ -227,6 +244,44 @@ def controller():
                     threading.Thread(target=relay, args=(child.stdout, "stdout"), daemon=True).start()
                     threading.Thread(target=relay, args=(child.stderr, "stderr"), daemon=True).start()
                     emit("SERVICE_READY", remote_address=address, services=services, child_pid=child.pid)
+                elif kind == "START_OPENOCD":
+                    if child is not None:
+                        raise ValueError("a child process is already running")
+                    argv = message.get("argv")
+                    environment = message.get("environment", {})
+                    checks = message.get("required_paths", [])
+                    if not isinstance(argv, list) or not argv or not all(isinstance(arg, str) and arg for arg in argv):
+                        raise ValueError("START_OPENOCD requires a non-empty string argv")
+                    if not isinstance(environment, dict) or not all(isinstance(key, str) and isinstance(value, str) for key, value in environment.items()):
+                        raise ValueError("START_OPENOCD environment must contain string values")
+                    address = random_address()
+                    replacements = {"{workspace}": str(work), "{address}": address}
+                    def expand(value):
+                        for token, replacement in replacements.items():
+                            value = value.replace(token, replacement)
+                        return value
+                    expanded_argv = [expand(arg) for arg in argv]
+                    for check in checks:
+                        if not isinstance(check, dict) or check.get("kind") not in ("file", "directory") or not isinstance(check.get("path"), str):
+                            raise ValueError("invalid required-path assertion")
+                        candidate = Path(expand(check["path"]))
+                        valid = candidate.is_file() if check["kind"] == "file" else candidate.is_dir()
+                        if not valid:
+                            raise ValueError(f"required remote {check['kind']} is missing: {candidate}")
+                    child_environment = os.environ.copy()
+                    child_environment.update(environment)
+                    child = subprocess.Popen(
+                        expanded_argv, cwd=work / "staged", env=child_environment,
+                        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        start_new_session=True,
+                    )
+                    relay_threads = [
+                        threading.Thread(target=relay, args=(child.stdout, "stdout"), daemon=True),
+                        threading.Thread(target=relay, args=(child.stderr, "stderr"), daemon=True),
+                    ]
+                    emit("PROCESS_STARTED", remote_address=address, child_pid=child.pid)
+                    for thread in relay_threads:
+                        thread.start()
                 elif kind == "STOP":
                     cleanup()
                     emit("STOPPED", reason="requested")

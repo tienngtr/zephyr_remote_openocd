@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path, PurePosixPath
+from typing import Literal
 
 from .ssh import SshCommand
 
@@ -59,6 +60,7 @@ class RemoteSessionRequest:
     ssh_command: SshCommand
     staged_files: tuple[StagedFile, ...] = field(default_factory=tuple)
     services: tuple[Service, ...] = field(default_factory=tuple)
+    process: "RemoteProcess | None" = None
 
     def __post_init__(self) -> None:
         if not self.host:
@@ -91,3 +93,37 @@ class SessionDescriptor:
     @property
     def remote_workspace(self) -> str:
         return self.allocation.remote_workspace
+
+
+@dataclass(frozen=True)
+class RemotePathCheck:
+    path: str
+    kind: Literal["file", "directory"]
+
+
+@dataclass(frozen=True)
+class RemoteProcess:
+    kind: Literal["openocd"]
+    argv: tuple[str, ...]
+    environment: tuple[tuple[str, str], ...] = field(default_factory=tuple)
+    required_paths: tuple[RemotePathCheck, ...] = field(default_factory=tuple)
+
+    def __post_init__(self) -> None:
+        argv = tuple(self.argv)
+        environment = tuple(self.environment)
+        required_paths = tuple(self.required_paths)
+        if not argv or not all(isinstance(arg, str) and arg for arg in argv):
+            raise ValueError("remote process argv must not be empty")
+        names = [name for name, _ in environment]
+        if len(names) != len(set(names)) or not all(
+            isinstance(name, str) and name and "=" not in name and "\0" not in name
+            for name in names
+        ):
+            raise ValueError("remote environment names must be unique and valid")
+        if not all(isinstance(value, str) and "\0" not in value for _, value in environment):
+            raise ValueError("remote environment values must be strings without NUL")
+        if not all(isinstance(check, RemotePathCheck) for check in required_paths):
+            raise ValueError("remote path checks must be RemotePathCheck values")
+        object.__setattr__(self, "argv", argv)
+        object.__setattr__(self, "environment", environment)
+        object.__setattr__(self, "required_paths", required_paths)

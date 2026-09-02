@@ -28,13 +28,14 @@ except OSError:
 if not reused:
     fd,tmp=tempfile.mkstemp(prefix='.helper-',dir=base)
     try:
-        os.fchmod(fd,0o700)
+        os.fchmod(fd,0o600)
         with os.fdopen(fd,'wb') as out:
             out.write(data);out.flush();os.fsync(out.fileno())
         os.replace(tmp,target)
     finally:
         try: os.unlink(tmp)
         except FileNotFoundError: pass
+os.chmod(target,0o600)
 print(json.dumps({'version':1,'type':'DEPLOYED','status':'reused' if reused else 'deployed','path':str(target.resolve()),'sha256':digest}))
 '''
 

@@ -80,7 +80,10 @@ class ZephyrIntegrationTests(unittest.TestCase):
     @classmethod
     def _write_config(cls, selected: str):
         cls.config.write_text(
-            f'[zephyr]\ndefault = "{selected}"\n\n[ssh]\ncommand = ["ssh"]\n'
+            f'[zephyr]\ndefault = "{selected}"\n\n'
+            '[remote]\nhost = "record-only"\nopenocd = "/remote/openocd"\n\n'
+            '[ssh]\ncommand = ["ssh"]\n\n'
+            '[[paths.map]]\nlocal = "/"\nremote = "/recorded"\n'
         )
 
     @classmethod
@@ -156,6 +159,28 @@ class ZephyrIntegrationTests(unittest.TestCase):
                     self.assertTrue(config[required], required)
                 for optional in ("hex_file", "bin_file", "openocd_search"):
                     self.assertIn(optional, config)
+                if command == "flash":
+                    request = recording["remote_session_request"]
+                    self.assertEqual(request["host"], "record-only")
+                    argv = request["process"]["argv"]
+                    self.assertEqual(argv[0], "/remote/openocd")
+                    self.assertIn("bindto {address}", argv)
+                    self.assertFalse(any(" disabled" in argument for argument in argv))
+                    if recording["runner_args"].get("file_type") == "elf":
+                        self.assertTrue(any(argument.startswith("load_image ") for argument in argv))
+                    else:
+                        self.assertTrue(any(argument.startswith("flash write_image ") for argument in argv))
+                    self.assertEqual(request["process"]["environment"], [])
+
+    def test_explicit_elf_file_type_uses_zephyr_elf_flash_flow(self):
+        result = self._west(
+            "flash", "-d", str(self.build_in_tree), "-r", "remote-openocd",
+            "--no-rebuild", "--", "--file-type=elf",
+        )
+        recording = self._recording(result.stdout)
+        argv = recording["remote_session_request"]["process"]["argv"]
+        self.assertTrue(any(argument.startswith("load_image ") for argument in argv))
+        self.assertFalse(any(argument.startswith("flash write_image ") for argument in argv))
 
     def test_config_change_regenerates_default_runner(self):
         """Regression coverage for prototype gate PG-009."""

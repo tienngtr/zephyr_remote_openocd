@@ -6,8 +6,9 @@ import json
 import shlex
 import socket
 import subprocess
+import threading
 import time
-from typing import Iterable
+from typing import Callable, Iterable
 
 from .deploy import DeploymentResult, deploy_helper
 from .model import RemoteSessionRequest, Service, SessionAllocation, SessionDescriptor, StagedFile
@@ -17,21 +18,26 @@ from .staging import build_archive
 
 
 class SshHelperBackend(SessionBackend):
-    def __init__(self, *, forward_start_timeout: float = 0.5):
+    def __init__(self, *, forward_start_timeout: float = 0.5, output_handler: Callable[[str, str], None] | None = None):
         self.forward_start_timeout = forward_start_timeout
+        self.output_handler = output_handler
 
     def create(self, request: RemoteSessionRequest) -> BackendSession:
         deployment = deploy_helper(request.ssh_command, request.host)
-        return SshHelperSession(request, deployment, self.forward_start_timeout)
+        return SshHelperSession(request, deployment, self.forward_start_timeout, self.output_handler)
 
 
 class SshHelperSession(BackendSession):
-    def __init__(self, request: RemoteSessionRequest, deployment: DeploymentResult, forward_start_timeout: float):
+    def __init__(self, request: RemoteSessionRequest, deployment: DeploymentResult, forward_start_timeout: float, output_handler=None):
         self.request = request
         self.deployment = deployment
         self.forward_start_timeout = forward_start_timeout
         self.forwards: list[subprocess.Popen[bytes]] = []
         self.closed = False
+        self.output_handler = output_handler
+        self.process_returncode: int | None = None
+        self.reader_error: BaseException | None = None
+        self.reader_thread: threading.Thread | None = None
         self.events: list[dict[str, object]] = []
         command = f"python3 {shlex.quote(deployment.path)} control"
         self.controller = request.ssh_command.popen(
@@ -103,6 +109,26 @@ class SshHelperSession(BackendSession):
 
     def start(self, services: Iterable[Service]) -> SessionDescriptor:
         service_list = tuple(services)
+        if self.request.process is not None:
+            if service_list:
+                raise SessionError("one-shot OpenOCD does not accept forwarded services")
+            if self.controller.stdin is None:
+                raise SessionError("controller stdin was not captured")
+            process = self.request.process
+            write_message(
+                self.controller.stdin, "START_OPENOCD", argv=list(process.argv),
+                environment=dict(process.environment),
+                required_paths=[{"path": check.path, "kind": check.kind} for check in process.required_paths],
+            )
+            while True:
+                event = self._read_event()
+                self._dispatch(event)
+                if event["type"] == "PROCESS_STARTED":
+                    address = event["remote_address"]
+                    break
+            self.reader_thread = threading.Thread(target=self._drain_events, daemon=True)
+            self.reader_thread.start()
+            return SessionDescriptor(self.allocation, address)
         if not service_list:
             raise SessionError("at least one service is required")
         advisories = [message for item in service_list if (message := self._preflight(item.local_port))]
@@ -141,10 +167,40 @@ class SshHelperSession(BackendSession):
             raise
 
     def poll(self) -> int | None:
-        return self.controller.poll()
+        if self.process_returncode is not None:
+            return self.process_returncode
+        controller_status = self.controller.poll()
+        if controller_status is not None:
+            return controller_status or 1
+        return None
 
     def wait(self, timeout: float | None = None) -> int:
-        return self.controller.wait(timeout=timeout)
+        controller_status = self.controller.wait(timeout=timeout)
+        if self.reader_thread is not None:
+            self.reader_thread.join(timeout=2)
+        if self.reader_error is not None:
+            raise SessionError(f"helper event stream failed: {self.reader_error}") from self.reader_error
+        if self.process_returncode is not None:
+            return self.process_returncode
+        return controller_status or 1
+
+    def _dispatch(self, event: dict) -> None:
+        if event["type"] == "CHILD_OUTPUT" and self.output_handler is not None:
+            self.output_handler(event["stream"], event.get("payload", ""))
+        elif event["type"] == "PROCESS_EXIT":
+            self.process_returncode = int(event["returncode"])
+
+    def _drain_events(self) -> None:
+        try:
+            while True:
+                event = self._read_event()
+                self._dispatch(event)
+                if event["type"] == "STOPPED":
+                    return
+        except EOFError:
+            return
+        except BaseException as error:
+            self.reader_error = error
 
     @staticmethod
     def _stop_process(process: subprocess.Popen[bytes]) -> None:
