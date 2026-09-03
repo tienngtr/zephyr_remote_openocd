@@ -1,9 +1,12 @@
-from pathlib import Path
+# SPDX-License-Identifier: Apache-2.0
+
 import tempfile
 import unittest
+from pathlib import Path
+
+from zephyr_remote_openocd.config import ConfigError, load_config
 
 from tests.support import ROOT
-from zephyr_remote_openocd.config import ConfigError, load_config
 
 
 class ConfigTests(unittest.TestCase):

@@ -1,20 +1,22 @@
+# SPDX-License-Identifier: Apache-2.0
+
 from __future__ import annotations
 
 import base64
 import ipaddress
 import json
 import os
-from pathlib import Path
 import re
 import selectors
 import shlex
 import shutil
 import subprocess
 import unittest
+from pathlib import Path
 
-from tests.support import ROOT
 from zephyr_remote_openocd.remote.ssh import SshCommand
 
+from tests.support import ROOT
 
 SERIAL_READER = r'''import base64,json,os,re,select,sys,termios,time,tty
 device,baud_text,pattern_text,timeout_text=sys.argv[1:]
@@ -93,7 +95,9 @@ class RealOpenOcdFlashTests(unittest.TestCase):
             document = json.loads(Path(fixture_path).read_text())
             fixtures = list(document["fixtures"])
         except (OSError, KeyError, TypeError, json.JSONDecodeError) as error:
-            raise RuntimeError(f"invalid real-flash fixture file {fixture_path}: {error}") from error
+            raise RuntimeError(
+                f"invalid real-flash fixture file {fixture_path}: {error}"
+            ) from error
         if not fixtures:
             raise unittest.SkipTest("real-flash fixture file configures no fixtures")
         cls.fixtures = fixtures
@@ -105,22 +109,31 @@ class RealOpenOcdFlashTests(unittest.TestCase):
 
     def _run_fixture(self, fixture):
         required = (
-            "ssh_command", "host", "build_dir", "config_path", "serial_device",
-            "serial_baud", "expected_pattern", "serial_timeout",
+            "ssh_command",
+            "host",
+            "build_dir",
+            "config_path",
+            "serial_device",
+            "serial_baud",
+            "expected_pattern",
+            "serial_timeout",
         )
         missing = [key for key in required if key not in fixture]
         if missing:
             self.fail(f"fixture {fixture.get('id')} is missing: {', '.join(missing)}")
         ssh = SshCommand(tuple(fixture["ssh_command"]))
         encoded = base64.b64encode(SERIAL_READER.encode()).decode("ascii")
-        remote_command = " ".join((
-            "python3", "-c",
-            shlex.quote(f"import base64;exec(base64.b64decode('{encoded}'))"),
-            shlex.quote(str(fixture["serial_device"])),
-            shlex.quote(str(fixture["serial_baud"])),
-            shlex.quote(str(fixture["expected_pattern"])),
-            shlex.quote(str(fixture["serial_timeout"])),
-        ))
+        remote_command = " ".join(
+            (
+                "python3",
+                "-c",
+                shlex.quote(f"import base64;exec(base64.b64decode('{encoded}'))"),
+                shlex.quote(str(fixture["serial_device"])),
+                shlex.quote(str(fixture["serial_baud"])),
+                shlex.quote(str(fixture["expected_pattern"])),
+                shlex.quote(str(fixture["serial_timeout"])),
+            )
+        )
         reader = ssh.popen(fixture["host"], remote_command, "-o", "ControlMaster=no")
         try:
             ready = _read_event(reader, 15)
@@ -133,29 +146,45 @@ class RealOpenOcdFlashTests(unittest.TestCase):
             if not west:
                 self.fail("fixture has no west executable and west is not on PATH")
             command = [
-                str(west), "flash", "-d", str(fixture["build_dir"]),
-                "-r", "remote-openocd", "--no-rebuild",
+                str(west),
+                "flash",
+                "-d",
+                str(fixture["build_dir"]),
+                "-r",
+                "remote-openocd",
+                "--no-rebuild",
             ]
             runner_args = fixture.get("runner_args", [])
             if runner_args:
                 command.extend(("--", *map(str, runner_args)))
             environment = os.environ.copy()
             environment.pop("ZEPHYR_REMOTE_OPENOCD_RECORD", None)
-            environment.update({
-                "EXTRA_ZEPHYR_MODULES": str(ROOT),
-                "ZEPHYR_REMOTE_OPENOCD_CONFIG": str(fixture["config_path"]),
-            })
-            environment.update({str(key): str(value) for key, value in fixture.get("environment", {}).items()})
+            environment.update(
+                {
+                    "EXTRA_ZEPHYR_MODULES": str(ROOT),
+                    "ZEPHYR_REMOTE_OPENOCD_CONFIG": str(fixture["config_path"]),
+                }
+            )
+            environment.update(
+                {str(key): str(value) for key, value in fixture.get("environment", {}).items()}
+            )
             flash = subprocess.run(
-                command, cwd=fixture.get("workspace"), env=environment,
-                text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                check=False, timeout=float(fixture["serial_timeout"]) + 180,
+                command,
+                cwd=fixture.get("workspace"),
+                env=environment,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+                timeout=float(fixture["serial_timeout"]) + 180,
             )
             event = _read_event(reader, float(fixture["serial_timeout"]) + 2)
             captured = base64.b64decode(event.get("data", "")).decode("utf-8", "replace")
             self.assertEqual(flash.returncode, 0, flash.stdout + "\nserial:\n" + captured)
             self.assertEqual(event["type"], "MATCH", f"serial oracle failed: {event}\n{captured}")
-            session = re.search(r"Remote OpenOCD session (\S+) workspace=(\S+) bindto=(\S+)", flash.stdout)
+            session = re.search(
+                r"Remote OpenOCD session (\S+) workspace=(\S+) bindto=(\S+)", flash.stdout
+            )
             self.assertIsNotNone(session, flash.stdout)
             assert session is not None
             address = ipaddress.ip_address(session.group(3))

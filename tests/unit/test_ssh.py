@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 import subprocess
 import unittest
 from unittest.mock import patch
@@ -16,24 +18,19 @@ class SshCommandTests(unittest.TestCase):
     @patch("subprocess.run")
     def test_stream_uses_stdin(self, run):
         run.return_value = subprocess.CompletedProcess([], 0, b"ok", b"")
-        result = SshCommand(("ssh", "-p", "2222")).run(
-            "host", "consume", input_data=b"payload"
-        )
+        result = SshCommand(("ssh", "-p", "2222")).run("host", "consume", input_data=b"payload")
         self.assertEqual(result.stdout, b"ok")
         run.assert_called_once_with(
             ["ssh", "-p", "2222", "host", "consume"],
             input=b"payload",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             check=False,
             timeout=15,
         )
 
     @patch("subprocess.Popen")
     def test_long_lived_process_preserves_fixed_arguments(self, popen):
-        SshCommand(("ssh", "-F", "/a file")).popen(
-            "host", "serve", "-o", "ControlMaster=no"
-        )
+        SshCommand(("ssh", "-F", "/a file")).popen("host", "serve", "-o", "ControlMaster=no")
         popen.assert_called_once_with(
             ["ssh", "-F", "/a file", "-o", "ControlMaster=no", "host", "serve"],
             stdin=subprocess.PIPE,
@@ -44,4 +41,3 @@ class SshCommandTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

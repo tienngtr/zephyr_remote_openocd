@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 name: zephyr-remote-openocd
 
 build:
@@ -5,4 +7,3 @@ build:
 
 runners:
   - file: runners/remote_openocd.py
-

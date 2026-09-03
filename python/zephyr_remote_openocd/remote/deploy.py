@@ -1,12 +1,14 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Digest-based installation of the protocol-1 helper."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import json
-from pathlib import Path
 import shlex
+from dataclasses import dataclass
+from pathlib import Path
 
 from .ssh import SshCommand
 
@@ -36,7 +38,8 @@ if not reused:
         try: os.unlink(tmp)
         except FileNotFoundError: pass
 os.chmod(target,0o600)
-print(json.dumps({'version':1,'type':'DEPLOYED','status':'reused' if reused else 'deployed','path':str(target.resolve()),'sha256':digest}))
+print(json.dumps({'version':1,'type':'DEPLOYED','status':'reused' if reused else 'deployed',
+                  'path':str(target.resolve()),'sha256':digest}))
 '''
 
 

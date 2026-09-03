@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Component-aware path mapping and per-session staging plans."""
 
 from __future__ import annotations
@@ -27,7 +29,9 @@ class PlannedPath:
 
 class PathPlanner:
     def __init__(self, mappings: tuple[PathMapping, ...]):
-        self.mappings = tuple(sorted(mappings, key=lambda item: len(item.local.parts), reverse=True))
+        self.mappings = tuple(
+            sorted(mappings, key=lambda item: len(item.local.parts), reverse=True)
+        )
         self.staged_files: list[StagedFile] = []
         self.remote_checks: list[RemotePathCheck] = []
         self._staged_roots: list[tuple[Path, PurePosixPath]] = []
@@ -99,7 +103,9 @@ class PathPlanner:
         self._destinations.add(destination)
         self.staged_files.append(StagedFile(source, destination))
 
-    def _walk(self, physical: Path, root: Path, destination: PurePosixPath, stack: set[Path]) -> None:
+    def _walk(
+        self, physical: Path, root: Path, destination: PurePosixPath, stack: set[Path]
+    ) -> None:
         resolved = physical.resolve()
         if resolved != root and root not in resolved.parents:
             raise PathPlanningError(f"symlink escapes staged root {root}: {physical}")

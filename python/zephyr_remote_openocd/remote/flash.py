@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Pure construction of a remotely executable Zephyr OpenOCD flash plan."""
 
 from __future__ import annotations
@@ -141,13 +143,20 @@ def build_flash_plan(
             argv.extend(("-c", f"{load_command} {quoted_image}{suffix}"))
         if inputs.verify or inputs.verify_only:
             if image_type == "bin" and inputs.verify_command:
-                argv.extend(("-c", inputs.reset_halt, "-c", f"{inputs.verify_command} {quoted_image} {inputs.flash_address}"))
+                argv.extend(
+                    (
+                        "-c",
+                        inputs.reset_halt,
+                        "-c",
+                        f"{inputs.verify_command} {quoted_image} {inputs.flash_address}",
+                    )
+                )
             elif image_type != "bin":
-                argv.extend(("-c", inputs.reset_halt, "-c", f"{inputs.verify_command} {quoted_image}"))
+                argv.extend(
+                    ("-c", inputs.reset_halt, "-c", f"{inputs.verify_command} {quoted_image}")
+                )
         argv.extend(_commands(inputs.post_verify))
         argv.extend(("-c", "reset run", "-c", "shutdown"))
 
-    process = RemoteProcess(
-        "openocd", tuple(argv), environment, tuple(planner.remote_checks)
-    )
+    process = RemoteProcess("openocd", tuple(argv), environment, tuple(planner.remote_checks))
     return FlashPlan(process, tuple(planner.staged_files), remote_image)

@@ -24,6 +24,11 @@ Run all locally available tests with:
 PYTHONPATH=python python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
+Zephyr-style Python checks are configured in `.ruff.toml` and `pylintrc`:
+`ruff check .`, `ruff format --check .`, `pylint --rcfile=pylintrc $(git ls-files
+'*.py')`, and `vermin -f parsable --violations -t=3.12
+--no-make-paths-absolute $(git ls-files '*.py')`.
+
 Zephyr integration uses `ZEPHYR_BASE`, `WEST`, and `OPENOCD_TEST_BOARD`; SSH
 tests use `ZRO_SSH_TEST_HOST`. Read `tests/README.md` before hardware tests;
 they flash targets and require external fixture files. Finish with

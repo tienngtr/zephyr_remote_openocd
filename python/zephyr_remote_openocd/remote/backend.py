@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Production SSH/helper implementation of the session backend."""
 
 from __future__ import annotations
@@ -8,7 +10,7 @@ import socket
 import subprocess
 import threading
 import time
-from typing import Callable, Iterable
+from collections.abc import Callable, Iterable
 
 from .deploy import DeploymentResult, deploy_helper
 from .model import RemoteSessionRequest, Service, SessionAllocation, SessionDescriptor, StagedFile
@@ -18,26 +20,31 @@ from .staging import build_archive
 
 
 class SshHelperBackend(SessionBackend):
-    def __init__(self, *, forward_start_timeout: float = 10.0, output_handler: Callable[[str, str], None] | None = None):
+    def __init__(
+        self,
+        *,
+        forward_start_timeout: float = 10.0,
+        output_handler: Callable[[str, str], None] | None = None,
+    ):
         self.forward_start_timeout = forward_start_timeout
         self.output_handler = output_handler
 
     def create(self, request: RemoteSessionRequest) -> BackendSession:
         deployment = deploy_helper(request.ssh_command, request.host)
-        return SshHelperSession(request, deployment, self.forward_start_timeout, self.output_handler)
+        return SshHelperSession(
+            request, deployment, self.forward_start_timeout, self.output_handler
+        )
 
     def openocd_version(self, ssh_command, host: str, executable: str) -> str:
         deployment = deploy_helper(ssh_command, host)
         command = (
-            f"python3 {shlex.quote(deployment.path)} openocd-version "
-            f"{shlex.quote(executable)}"
+            f"python3 {shlex.quote(deployment.path)} openocd-version {shlex.quote(executable)}"
         )
         result = ssh_command.run(host, command, timeout=30)
         if result.returncode:
             detail = (result.stderr or result.stdout).decode("utf-8", "replace").strip()
             raise SessionError(
-                f"remote OpenOCD version query failed ({result.returncode}): "
-                + detail
+                f"remote OpenOCD version query failed ({result.returncode}): " + detail
             )
         try:
             message = json.loads(result.stdout)
@@ -45,11 +52,19 @@ class SshHelperBackend(SessionBackend):
                 raise ValueError("unexpected version response")
             return message["output"]
         except (KeyError, ValueError, json.JSONDecodeError) as error:
-            raise SessionError(f"invalid remote OpenOCD version response: {result.stdout!r}") from error
+            raise SessionError(
+                f"invalid remote OpenOCD version response: {result.stdout!r}"
+            ) from error
 
 
 class SshHelperSession(BackendSession):
-    def __init__(self, request: RemoteSessionRequest, deployment: DeploymentResult, forward_start_timeout: float, output_handler=None):
+    def __init__(
+        self,
+        request: RemoteSessionRequest,
+        deployment: DeploymentResult,
+        forward_start_timeout: float,
+        output_handler=None,
+    ):
         self.request = request
         self.deployment = deployment
         self.forward_start_timeout = forward_start_timeout
@@ -61,9 +76,7 @@ class SshHelperSession(BackendSession):
         self.reader_thread: threading.Thread | None = None
         self.events: list[dict[str, object]] = []
         command = f"python3 {shlex.quote(deployment.path)} control"
-        self.controller = request.ssh_command.popen(
-            request.host, command, "-o", "ControlMaster=no"
-        )
+        self.controller = request.ssh_command.popen(request.host, command, "-o", "ControlMaster=no")
         try:
             if self.controller.stdout is None:
                 raise SessionError("controller stdout was not captured")
@@ -98,7 +111,10 @@ class SshHelperSession(BackendSession):
     def stage(self, files: Iterable[StagedFile]):
         archive = build_archive(files)
         try:
-            command = f"python3 {shlex.quote(self.deployment.path)} stage {shlex.quote(self.allocation.remote_workspace)}"
+            command = (
+                f"python3 {shlex.quote(self.deployment.path)} stage "
+                f"{shlex.quote(self.allocation.remote_workspace)}"
+            )
             result = self.request.ssh_command.run_stream(
                 self.request.host, command, archive.stream, timeout=60
             )
@@ -135,10 +151,16 @@ class SshHelperSession(BackendSession):
                 raise SessionError("controller stdin was not captured")
             process = self.request.process
             write_message(
-                self.controller.stdin, "START_OPENOCD", argv=list(process.argv),
+                self.controller.stdin,
+                "START_OPENOCD",
+                argv=list(process.argv),
                 environment=dict(process.environment),
-                required_paths=[{"path": check.path, "kind": check.kind} for check in process.required_paths],
-                services=[{"name": item.name, "remote_port": item.remote_port} for item in service_list],
+                required_paths=[
+                    {"path": check.path, "kind": check.kind} for check in process.required_paths
+                ],
+                services=[
+                    {"name": item.name, "remote_port": item.remote_port} for item in service_list
+                ],
                 readiness_marker=process.readiness_marker,
                 readiness_timeout=process.readiness_timeout,
             )
@@ -171,12 +193,17 @@ class SshHelperSession(BackendSession):
             return SessionDescriptor(self.allocation, address)
         if not service_list:
             raise SessionError("at least one service is required")
-        advisories = [message for item in service_list if (message := self._preflight(item.local_port))]
+        advisories = [
+            message for item in service_list if (message := self._preflight(item.local_port))
+        ]
         if self.controller.stdin is None:
             raise SessionError("controller stdin was not captured")
         write_message(
-            self.controller.stdin, "START",
-            services=[{"name": item.name, "remote_port": item.remote_port} for item in service_list],
+            self.controller.stdin,
+            "START",
+            services=[
+                {"name": item.name, "remote_port": item.remote_port} for item in service_list
+            ],
         )
         while True:
             event = self._read_event()
@@ -207,8 +234,15 @@ class SshHelperSession(BackendSession):
         for service in service_list:
             spec = f"127.0.0.1:{service.local_port}:{address}:{service.remote_port}"
             process = self.request.ssh_command.popen(
-                self.request.host, None,
-                "-N", "-o", "ControlMaster=no", "-o", "ExitOnForwardFailure=yes", "-L", spec,
+                self.request.host,
+                None,
+                "-N",
+                "-o",
+                "ControlMaster=no",
+                "-o",
+                "ExitOnForwardFailure=yes",
+                "-L",
+                spec,
             )
             self.forwards.append(process)
             deadline = time.monotonic() + self.forward_start_timeout
@@ -233,7 +267,8 @@ class SshHelperSession(BackendSession):
                 prefix = "; ".join(advisories)
                 raise SessionError(
                     (prefix + "; " if prefix else "")
-                    + f"SSH forwarding failed ({process.returncode}): {detail.decode('utf-8', 'replace').strip()}"
+                    + f"SSH forwarding failed ({process.returncode}): "
+                    f"{detail.decode('utf-8', 'replace').strip()}"
                 )
             if not connected:
                 raise SessionError(
@@ -252,7 +287,9 @@ class SshHelperSession(BackendSession):
         if self.reader_thread is not None:
             self.reader_thread.join(timeout=2)
         if self.reader_error is not None:
-            raise SessionError(f"helper event stream failed: {self.reader_error}") from self.reader_error
+            raise SessionError(
+                f"helper event stream failed: {self.reader_error}"
+            ) from self.reader_error
         if self.process_returncode is not None:
             return self.process_returncode
         return result

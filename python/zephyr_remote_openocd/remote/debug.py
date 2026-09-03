@@ -1,10 +1,12 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Pure construction of persistent remote OpenOCD debug plans."""
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
-import re
 
 from .model import RemoteProcess, Service
 from .paths import ADDRESS_TOKEN, PathPlanner
@@ -140,7 +142,11 @@ def build_debug_plan(
     if inputs.serial:
         argv.extend(("-c", "set _ZEPHYR_BOARD_SERIAL " + inputs.serial))
     argv.extend(("-c", f"bindto {ADDRESS_TOKEN}"))
-    for name, port in (("tcl_port", remote_tcl), ("telnet_port", remote_telnet), ("gdb_port", remote_gdb)):
+    for name, port in (
+        ("tcl_port", remote_tcl),
+        ("telnet_port", remote_telnet),
+        ("gdb_port", remote_gdb),
+    ):
         argv.extend(("-c", f"{name} {port if port is not None else 'disabled'}"))
     argv.extend(_commands(inputs.pre_init))
     if rtos:
@@ -172,10 +178,19 @@ def build_debug_plan(
         gdb_argv = tuple(client)
 
     process = RemoteProcess(
-        "openocd", tuple(argv), environment, tuple(planner.remote_checks),
-        inputs.readiness_marker, 30.0,
+        "openocd",
+        tuple(argv),
+        environment,
+        tuple(planner.remote_checks),
+        inputs.readiness_marker,
+        30.0,
     )
     return DebugPlan(
-        process, tuple(planner.staged_files), tuple(services), gdb_argv,
-        inputs.thread_info_requested, inputs.openocd_version, rtos,
+        process,
+        tuple(planner.staged_files),
+        tuple(services),
+        gdb_argv,
+        inputs.thread_info_requested,
+        inputs.openocd_version,
+        rtos,
     )

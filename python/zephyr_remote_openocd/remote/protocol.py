@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Versioned JSON-lines protocol shared by the client and remote helper."""
 
 from __future__ import annotations
@@ -59,7 +61,15 @@ class EventOrder:
         allowed = {
             "new": {"HELLO"},
             "hello": {"SESSION_CREATED", "ERROR"},
-            "created": {"STAGED", "SERVICE_READY", "PROCESS_STARTED", "CHILD_OUTPUT", "PROCESS_EXIT", "ERROR", "STOPPED"},
+            "created": {
+                "STAGED",
+                "SERVICE_READY",
+                "PROCESS_STARTED",
+                "CHILD_OUTPUT",
+                "PROCESS_EXIT",
+                "ERROR",
+                "STOPPED",
+            },
             "started": {"SERVICE_READY", "CHILD_OUTPUT", "PROCESS_EXIT", "ERROR", "STOPPED"},
             "ready": {"SERVICE_READY", "CHILD_OUTPUT", "PROCESS_EXIT", "ERROR", "STOPPED"},
             "stopped": set(),

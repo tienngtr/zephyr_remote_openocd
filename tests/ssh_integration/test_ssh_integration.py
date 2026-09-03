@@ -1,24 +1,30 @@
+# SPDX-License-Identifier: Apache-2.0
+
 from __future__ import annotations
 
 import base64
 import hashlib
 import ipaddress
 import os
-from pathlib import Path
-import shutil
 import shlex
+import shutil
 import socket
 import tempfile
 import time
 import unittest
+from pathlib import Path
 
-from tests.support import is_wsl2
-from zephyr_remote_openocd.remote.ssh import SshCommand
 from zephyr_remote_openocd.remote import (
-    RemoteSession, RemoteSessionRequest, Service, SshHelperBackend, StagedFile,
+    RemoteSession,
+    RemoteSessionRequest,
+    Service,
+    SshHelperBackend,
+    StagedFile,
 )
 from zephyr_remote_openocd.remote.deploy import deploy_helper
+from zephyr_remote_openocd.remote.ssh import SshCommand
 
+from tests.support import is_wsl2
 
 REMOTE_ECHO = b"""\
 import select, socket, sys
@@ -96,9 +102,7 @@ class LinuxSshIntegrationTests(unittest.TestCase):
     def test_configured_linux_ssh_and_fixed_arguments(self):
         """Regression coverage for prototype gate PG-011."""
         assert_remote_marker(self, SshCommand(("ssh",)), self.host)
-        assert_remote_marker(
-            self, SshCommand(("ssh", "-o", "ConnectTimeout=10")), self.host
-        )
+        assert_remote_marker(self, SshCommand(("ssh", "-o", "ConnectTimeout=10")), self.host)
 
 
 class WslSshIntegrationTests(unittest.TestCase):
@@ -116,14 +120,10 @@ class WslSshIntegrationTests(unittest.TestCase):
 
     def test_windows_ssh_exe_from_wsl(self):
         """Deferred WSL regression coverage for prototype gate PG-013."""
-        configured = os.environ.get(
-            "ZRO_WINDOWS_SSH", "/mnt/c/Windows/System32/OpenSSH/ssh.exe"
-        )
+        configured = os.environ.get("ZRO_WINDOWS_SSH", "/mnt/c/Windows/System32/OpenSSH/ssh.exe")
         executable = Path(configured)
         if not executable.is_file():
-            self.skipTest(
-                "Windows OpenSSH not found; set ZRO_WINDOWS_SSH to ssh.exe"
-            )
+            self.skipTest("Windows OpenSSH not found; set ZRO_WINDOWS_SSH to ssh.exe")
         assert_remote_marker(
             self,
             SshCommand((str(executable), "-o", "ControlMaster=no")),
@@ -142,9 +142,7 @@ class SshTransportIntegrationTests(unittest.TestCase):
         """Regression coverage for prototype gate PG-014."""
         encoded = base64.b64encode(REMOTE_ECHO).decode("ascii")
         command = f"python3 -c \"import base64;exec(base64.b64decode('{encoded}'))\""
-        controller = self.ssh.popen(
-            self.host, command, "-o", "ControlMaster=no"
-        )
+        controller = self.ssh.popen(self.host, command, "-o", "ControlMaster=no")
         tunnel = None
         try:
             assert controller.stdout is not None
@@ -157,8 +155,13 @@ class SshTransportIntegrationTests(unittest.TestCase):
             tunnel = self.ssh.popen(
                 self.host,
                 None,
-                "-N", "-o", "ControlMaster=no", "-o", "ExitOnForwardFailure=yes",
-                "-L", f"127.0.0.1:{local_port}:127.0.0.1:{remote_port}",
+                "-N",
+                "-o",
+                "ControlMaster=no",
+                "-o",
+                "ExitOnForwardFailure=yes",
+                "-L",
+                f"127.0.0.1:{local_port}:127.0.0.1:{remote_port}",
             )
             wait_for_echo(local_port, b"zro-forwarding", 20)
 
@@ -185,9 +188,7 @@ class SshTransportIntegrationTests(unittest.TestCase):
         )
         for payload in payloads:
             with self.subTest(size=len(payload)):
-                result = self.ssh.run(
-                    self.host, command, input_data=payload, timeout=30
-                )
+                result = self.ssh.run(self.host, command, input_data=payload, timeout=30)
                 expected = f"{len(payload)} {hashlib.sha256(payload).hexdigest()}\n".encode()
                 self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
                 self.assertEqual(result.stdout, expected)
@@ -223,10 +224,14 @@ class SshTransportIntegrationTests(unittest.TestCase):
                 self.assertIn(address, ipaddress.ip_network("127.64.0.0/10"))
                 check = self.ssh.run(
                     self.host,
-                    "python3 -c " + shlex.quote(
+                    "python3 -c "
+                    + shlex.quote(
                         "import os,pathlib,sys; p=pathlib.Path(sys.argv[1]); "
-                        "print(oct(p.stat().st_mode&0o777), (p/'staged/nested/payload.bin').stat().st_size)"
-                    ) + " " + shlex.quote(descriptor.remote_workspace),
+                        "print(oct(p.stat().st_mode&0o777), "
+                        "(p/'staged/nested/payload.bin').stat().st_size)"
+                    )
+                    + " "
+                    + shlex.quote(descriptor.remote_workspace),
                     timeout=20,
                 )
                 self.assertEqual(check.returncode, 0, check.stderr.decode(errors="replace"))

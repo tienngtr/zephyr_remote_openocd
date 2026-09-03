@@ -1,10 +1,12 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Small OpenSSH-compatible command abstraction for the SSH spike."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import shutil
 import subprocess
+from dataclasses import dataclass
 from typing import BinaryIO
 
 
@@ -34,13 +36,14 @@ class SshCommand:
         return subprocess.run(
             self.argv(host, remote_command),
             input=input_data,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             check=False,
             timeout=timeout,
         )
 
-    def popen(self, host: str, remote_command: str | None, *extra_args: str) -> subprocess.Popen[bytes]:
+    def popen(
+        self, host: str, remote_command: str | None, *extra_args: str
+    ) -> subprocess.Popen[bytes]:
         """Start a long-lived SSH operation, retaining explicit lifecycle control."""
         argv = [*self.argv_prefix, *extra_args, host]
         if remote_command is not None:

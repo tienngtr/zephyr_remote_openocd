@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Board-independent descriptions of a remote debugging session."""
 
 from __future__ import annotations
@@ -60,7 +62,7 @@ class RemoteSessionRequest:
     ssh_command: SshCommand
     staged_files: tuple[StagedFile, ...] = field(default_factory=tuple)
     services: tuple[Service, ...] = field(default_factory=tuple)
-    process: "RemoteProcess | None" = None
+    process: RemoteProcess | None = None
 
     def __post_init__(self) -> None:
         if not self.host:
@@ -127,7 +129,8 @@ class RemoteProcess:
         if not all(isinstance(check, RemotePathCheck) for check in required_paths):
             raise ValueError("remote path checks must be RemotePathCheck values")
         if self.readiness_marker is not None and (
-            not self.readiness_marker or any(character.isspace() for character in self.readiness_marker)
+            not self.readiness_marker
+            or any(character.isspace() for character in self.readiness_marker)
         ):
             raise ValueError("readiness marker must be a non-empty token")
         if self.readiness_timeout <= 0:

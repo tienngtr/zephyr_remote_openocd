@@ -1,2 +1,3 @@
-"""Hardware-free unit tests."""
+# SPDX-License-Identifier: Apache-2.0
 
+"""Hardware-free unit tests."""

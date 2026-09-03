@@ -1,9 +1,10 @@
+# SPDX-License-Identifier: Apache-2.0
+
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import sys
-
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON_ROOT = ROOT / "python"
@@ -25,4 +26,3 @@ def is_wsl2() -> bool:
     except OSError:
         return False
     return "microsoft" in release and "wsl2" in version
-

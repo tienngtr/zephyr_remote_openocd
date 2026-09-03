@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+
 """Protocol-1 remote helper.  This file is deliberately self-contained."""
 
 from __future__ import annotations
@@ -8,7 +10,6 @@ import hashlib
 import ipaddress
 import json
 import os
-from pathlib import Path, PurePosixPath
 import secrets
 import selectors
 import shutil
@@ -20,6 +21,7 @@ import tarfile
 import tempfile
 import threading
 import time
+from pathlib import Path, PurePosixPath
 
 VERSION = 1
 RANGE = ipaddress.IPv4Network("127.64.0.0/10")
@@ -27,7 +29,9 @@ _emit_lock = threading.Lock()
 
 
 def emit(kind, **values):
-    line = json.dumps({"version": VERSION, "type": kind, **values}, separators=(",", ":"), sort_keys=True)
+    line = json.dumps(
+        {"version": VERSION, "type": kind, **values}, separators=(",", ":"), sort_keys=True
+    )
     with _emit_lock:
         print(line, flush=True)
 
@@ -61,7 +65,12 @@ def new_workspace():
 
 def valid_member(member, seen):
     path = PurePosixPath(member.name)
-    if not member.name or member.name == "." or path.is_absolute() or any(p in ("", ".", "..") for p in path.parts):
+    if (
+        not member.name
+        or member.name == "."
+        or path.is_absolute()
+        or any(p in ("", ".", "..") for p in path.parts)
+    ):
         raise ValueError(f"unsafe archive path: {member.name!r}")
     if path in seen:
         raise ValueError(f"duplicate archive path: {path}")
@@ -80,7 +89,7 @@ def stage(workspace):
     count = 0
     digest = hashlib.sha256()
     names = []
-    spool = tempfile.SpooledTemporaryFile(max_size=1024 * 1024, mode="w+b")
+    spool = tempfile.SpooledTemporaryFile(max_size=1024 * 1024, mode="w+b")  # noqa: SIM115
     try:
         shutil.copyfileobj(sys.stdin.buffer, spool, length=1024 * 1024)
         spool.seek(0)
@@ -116,7 +125,11 @@ def stage(workspace):
 
 def random_address():
     # Exclude network/broadcast endpoints without material bias.
-    return str(ipaddress.IPv4Address(int(RANGE.network_address) + 1 + secrets.randbelow(RANGE.num_addresses - 2)))
+    return str(
+        ipaddress.IPv4Address(
+            int(RANGE.network_address) + 1 + secrets.randbelow(RANGE.num_addresses - 2)
+        )
+    )
 
 
 def fake_child(address, ports):
@@ -194,8 +207,11 @@ def openocd_version(executable):
     if not Path(executable).is_absolute():
         raise ValueError("OpenOCD executable must be an absolute path")
     result = subprocess.run(
-        [executable, "--version"], stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False,
+        [executable, "--version"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
     )
     output = result.stdout.decode("utf-8", "replace")
     if result.returncode:
@@ -233,8 +249,12 @@ def controller():
         close_child_streams()
         shutil.rmtree(work, ignore_errors=True)
 
-    signal.signal(signal.SIGTERM, lambda *_: (cleanup(), sys.exit(0)))
-    signal.signal(signal.SIGINT, lambda *_: (cleanup(), sys.exit(0)))
+    def handle_signal(*_):
+        cleanup()
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, handle_signal)
+    signal.signal(signal.SIGINT, handle_signal)
     try:
         emit("HELLO", helper="zephyr-remote-openocd")
         emit("SESSION_CREATED", session_id=session_id, remote_workspace=str(work))
@@ -266,13 +286,24 @@ def controller():
                     if not isinstance(services, list) or not services:
                         raise ValueError("START requires services")
                     ports = [item["remote_port"] for item in services]
-                    if any(isinstance(p, bool) or not isinstance(p, int) or not 1 <= p <= 65535 for p in ports):
+                    if any(
+                        isinstance(p, bool) or not isinstance(p, int) or not 1 <= p <= 65535
+                        for p in ports
+                    ):
                         raise ValueError("invalid remote service port")
-                    for attempt in range(32):
+                    for _attempt in range(32):
                         address = random_address()
                         child = subprocess.Popen(
-                            [sys.executable, str(Path(__file__).resolve()), "fake-child", address, *map(str, ports)],
-                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            [
+                                sys.executable,
+                                str(Path(__file__).resolve()),
+                                "fake-child",
+                                address,
+                                *map(str, ports),
+                            ],
+                            stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
                             start_new_session=True,
                         )
                         ready = child.stdout.readline()
@@ -286,9 +317,18 @@ def controller():
                         child = None
                     else:
                         raise RuntimeError("loopback allocation exhausted after 32 attempts")
-                    threading.Thread(target=relay, args=(child.stdout, "stdout"), daemon=True).start()
-                    threading.Thread(target=relay, args=(child.stderr, "stderr"), daemon=True).start()
-                    emit("SERVICE_READY", remote_address=address, services=services, child_pid=child.pid)
+                    threading.Thread(
+                        target=relay, args=(child.stdout, "stdout"), daemon=True
+                    ).start()
+                    threading.Thread(
+                        target=relay, args=(child.stderr, "stderr"), daemon=True
+                    ).start()
+                    emit(
+                        "SERVICE_READY",
+                        remote_address=address,
+                        services=services,
+                        child_pid=child.pid,
+                    )
                 elif kind == "START_OPENOCD":
                     if child is not None:
                         raise ValueError("a child process is already running")
@@ -298,48 +338,86 @@ def controller():
                     services = message.get("services", [])
                     marker = message.get("readiness_marker")
                     readiness_timeout = message.get("readiness_timeout", 30.0)
-                    if not isinstance(argv, list) or not argv or not all(isinstance(arg, str) and arg for arg in argv):
+                    if (
+                        not isinstance(argv, list)
+                        or not argv
+                        or not all(isinstance(arg, str) and arg for arg in argv)
+                    ):
                         raise ValueError("START_OPENOCD requires a non-empty string argv")
-                    if not isinstance(environment, dict) or not all(isinstance(key, str) and isinstance(value, str) for key, value in environment.items()):
+                    if not isinstance(environment, dict) or not all(
+                        isinstance(key, str) and isinstance(value, str)
+                        for key, value in environment.items()
+                    ):
                         raise ValueError("START_OPENOCD environment must contain string values")
                     if not isinstance(services, list) or not all(
-                        isinstance(item, dict) and isinstance(item.get("name"), str)
+                        isinstance(item, dict)
+                        and isinstance(item.get("name"), str)
                         and isinstance(item.get("remote_port"), int)
                         and not isinstance(item.get("remote_port"), bool)
                         and 1 <= item["remote_port"] <= 65535
                         for item in services
                     ):
                         raise ValueError("START_OPENOCD services are invalid")
-                    if marker is not None and (not isinstance(marker, str) or not marker or any(c.isspace() for c in marker)):
+                    if marker is not None and (
+                        not isinstance(marker, str)
+                        or not marker
+                        or any(c.isspace() for c in marker)
+                    ):
                         raise ValueError("START_OPENOCD readiness marker is invalid")
-                    if not isinstance(readiness_timeout, (int, float)) or isinstance(readiness_timeout, bool) or readiness_timeout <= 0:
+                    if (
+                        not isinstance(readiness_timeout, (int, float))
+                        or isinstance(readiness_timeout, bool)
+                        or readiness_timeout <= 0
+                    ):
                         raise ValueError("START_OPENOCD readiness timeout is invalid")
                     ports = [item["remote_port"] for item in services]
                     address = allocate_service_address(ports) if ports else random_address()
                     replacements = {"{workspace}": str(work), "{address}": address}
-                    def expand(value):
+
+                    def expand(value, replacements=replacements):
                         for token, replacement in replacements.items():
                             value = value.replace(token, replacement)
                         return value
+
                     expanded_argv = [expand(arg) for arg in argv]
                     for check in checks:
-                        if not isinstance(check, dict) or check.get("kind") not in ("file", "directory") or not isinstance(check.get("path"), str):
+                        if (
+                            not isinstance(check, dict)
+                            or check.get("kind") not in ("file", "directory")
+                            or not isinstance(check.get("path"), str)
+                        ):
                             raise ValueError("invalid required-path assertion")
                         candidate = Path(expand(check["path"]))
-                        valid = candidate.is_file() if check["kind"] == "file" else candidate.is_dir()
+                        valid = (
+                            candidate.is_file() if check["kind"] == "file" else candidate.is_dir()
+                        )
                         if not valid:
-                            raise ValueError(f"required remote {check['kind']} is missing: {candidate}")
+                            raise ValueError(
+                                f"required remote {check['kind']} is missing: {candidate}"
+                            )
                     child_environment = os.environ.copy()
                     child_environment.update(environment)
                     child = subprocess.Popen(
-                        expanded_argv, cwd=work / "staged", env=child_environment,
-                        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        expanded_argv,
+                        cwd=work / "staged",
+                        env=child_environment,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
                         start_new_session=True,
                     )
                     marker_seen = threading.Event()
                     relay_threads = [
-                        threading.Thread(target=relay, args=(child.stdout, "stdout", marker, marker_seen), daemon=True),
-                        threading.Thread(target=relay, args=(child.stderr, "stderr", marker, marker_seen), daemon=True),
+                        threading.Thread(
+                            target=relay,
+                            args=(child.stdout, "stdout", marker, marker_seen),
+                            daemon=True,
+                        ),
+                        threading.Thread(
+                            target=relay,
+                            args=(child.stderr, "stderr", marker, marker_seen),
+                            daemon=True,
+                        ),
                     ]
                     emit("PROCESS_STARTED", remote_address=address, child_pid=child.pid)
                     for thread in relay_threads:
@@ -348,7 +426,10 @@ def controller():
                         deadline = time.monotonic() + readiness_timeout
                         while time.monotonic() < deadline:
                             if child.poll() is not None:
-                                raise RuntimeError(f"OpenOCD exited before readiness with status {child.returncode}")
+                                raise RuntimeError(
+                                    "OpenOCD exited before readiness with status "
+                                    f"{child.returncode}"
+                                )
                             if marker_seen.is_set() and services_connectable(address, ports):
                                 for service in services:
                                     emit("SERVICE_READY", remote_address=address, service=service)
@@ -396,4 +477,4 @@ if __name__ == "__main__":
         main()
     except Exception as exc:
         error(exc)
-        raise SystemExit(1)
+        raise SystemExit(1) from exc

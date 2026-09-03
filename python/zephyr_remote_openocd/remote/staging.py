@@ -1,15 +1,17 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Validated, bounded-buffer POSIX tar staging."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import os
-from pathlib import Path, PurePosixPath
-import shutil
 import tarfile
 import tempfile
-from typing import BinaryIO, Iterable
+from collections.abc import Iterable
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+from typing import BinaryIO
 
 from .model import StagedFile, validated_destination
 
@@ -31,7 +33,7 @@ def build_archive(files: Iterable[StagedFile], *, spool_limit: int = 1024 * 1024
     destinations = [str(item.destination) for item in manifest]
     if len(destinations) != len(set(destinations)):
         raise StagingError("duplicate staged destination")
-    stream = tempfile.SpooledTemporaryFile(max_size=spool_limit, mode="w+b")
+    stream = tempfile.SpooledTemporaryFile(max_size=spool_limit, mode="w+b")  # noqa: SIM115
     try:
         with tarfile.open(fileobj=stream, mode="w", format=tarfile.PAX_FORMAT) as archive:
             for item in manifest:
