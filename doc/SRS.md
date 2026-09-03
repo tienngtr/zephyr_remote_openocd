@@ -304,6 +304,10 @@ V1 SHALL NOT require:
 
 for installation or operation.
 
+This prohibits a project-specific package-installation step; it does not
+prohibit reuse of dependencies supplied by the supported Zephyr runner
+environment, such as `pyelftools` used by the built-in OpenOCD runner.
+
 ## REQ-FUNC-INSTALL-004
 
 V1 SHALL be usable when distributed as an ordinary filesystem directory.
@@ -958,7 +962,9 @@ The custom runner implementation SHOULD use Python 3.12 or newer.
 
 ## REQ-NFUNC-MAINT-002
 
-Runtime implementation SHOULD avoid third-party Python dependencies where standard-library facilities are sufficient.
+Runtime implementation SHOULD minimize additional third-party Python
+dependencies. Dependencies already required by the supported Zephyr runner
+environment MAY be reused where appropriate.
 
 ## REQ-NFUNC-MAINT-003
 
@@ -1029,7 +1035,7 @@ Independent probe channels supported by the underlying hardware and OpenOCD may 
 
 The remote Linux host can run multiple OpenOCD instances using identical TCP port numbers when bound to different loopback addresses.
 
-This behavior has been experimentally validated in the target environment.
+This behavior has been validated in the target environment.
 
 ## ASM-007
 

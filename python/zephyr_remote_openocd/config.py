@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Prototype user configuration loading."""
+"""User configuration loading."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ class ConfigError(ValueError):
 
 
 @dataclass(frozen=True)
-class PrototypeConfig:
+class RemoteOpenOcdConfig:
     path: Path
     default: str
     remote_host: str | None
@@ -50,7 +50,7 @@ def default_config_path() -> Path:
     )
 
 
-def load_config(path: Path | None = None) -> PrototypeConfig:
+def load_config(path: Path | None = None) -> RemoteOpenOcdConfig:
     config_path = path or default_config_path()
     data: dict[str, object] = {}
     if config_path.exists():
@@ -130,7 +130,7 @@ def load_config(path: Path | None = None) -> PrototypeConfig:
             mappings.append(PathMapping(local_path, remote_path))
             local_destinations[local_path] = remote_path
 
-    return PrototypeConfig(
+    return RemoteOpenOcdConfig(
         config_path,
         selected,
         host,

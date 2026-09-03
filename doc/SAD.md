@@ -100,7 +100,7 @@ WSL 2 is not treated as a compatibility port of a Linux-only design.
 
 V1 is distributed as a self-contained Zephyr module rather than an installed Python distribution.
 
-Provisional structure:
+Current implementation structure:
 
 ```text
 zephyr-remote-openocd/
@@ -120,32 +120,22 @@ zephyr-remote-openocd/
                 runner.py
 
             remote/
-                model.py
-                paths.py
-                staging.py
-                ssh.py
-                services.py
-                session.py
-                helper_client.py
+                model.py, paths.py, staging.py, ssh.py
+                services.py, session.py, protocol.py
+                backend.py, deploy.py, debug.py, flash.py, rtt.py
 
-            helper/
-                protocol.py
-                deploy.py
-
-    remote_helper/
-        main.py
-        session.py
-        openocd.py
-        cleanup.py
+            remote_helper.py
 
     resources/
         config.toml.example
 
     scripts/
-        setup.py
+        config_default.py
 ```
 
-Exact filenames are not architectural contracts.
+The implementation is intentionally self-contained in the module tree. Exact
+filenames are not architectural contracts; user setup and packaging automation
+remain deferred follow-up work.
 
 ---
 
@@ -171,7 +161,12 @@ from zephyr_remote_openocd.zephyr44.runner import (
 
 The substantive implementation remains split into normal Python modules.
 
-No pip installation is required.
+The local runner may use `pyelftools` for ELF inspection, consistent with
+Zephyr 4.4's built-in OpenOCD runner. It is an accepted V1 runtime dependency,
+not functionality to reimplement. Setup and diagnostics should verify that
+`elftools` is importable and report that the supported Zephyr Python environment
+is expected to provide it when it is missing. The module itself still does not
+require pip packaging or a separate bespoke installation path.
 
 ---
 
@@ -179,19 +174,19 @@ No pip installation is required.
 
 Distribution places the complete module at an arbitrary persistent path.
 
-User setup is a separate operation.
-
-A typical documented flow may be:
+User setup is a separate operation. The user-facing setup UX and installation
+documentation are intentionally deferred; the eventual flow will be:
 
 ```text
 1. Obtain the module.
 2. Place it at a persistent path.
-3. Run scripts/setup.py.
+3. Run `scripts/setup.py` (when the setup tool is introduced).
 4. Edit ~/.config/zephyr-remote-openocd/config.toml.
 5. Add the module path to EXTRA_ZEPHYR_MODULES using the user's preferred mechanism.
 ```
 
-`setup.py` is Python rather than a shell script to reduce platform-specific setup logic.
+`scripts/setup.py` will be Python rather than a shell script to reduce
+platform-specific setup logic.
 
 ---
 
@@ -247,7 +242,7 @@ forward_env = []
 # remote = "/remote/openocd/scripts"
 ```
 
-The SSH command is represented provisionally as an argv list rather than a shell command string.
+The SSH command is represented as an argv list rather than a shell command string.
 
 Rationale:
 

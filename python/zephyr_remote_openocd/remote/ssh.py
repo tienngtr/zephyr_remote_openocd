@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Small OpenSSH-compatible command abstraction for the SSH spike."""
+"""Small OpenSSH-compatible command abstraction."""
 
 from __future__ import annotations
 

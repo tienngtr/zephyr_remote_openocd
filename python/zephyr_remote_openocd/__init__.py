@@ -1,3 +1,3 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Zephyr Remote OpenOCD prototype."""
+"""Zephyr Remote OpenOCD integration."""

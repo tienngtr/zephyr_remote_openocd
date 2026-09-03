@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 
-"""Print the configured prototype default for CMake."""
+"""Print the configured runner default for CMake."""
 
 import sys
 from pathlib import Path

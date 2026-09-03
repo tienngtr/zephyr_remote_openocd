@@ -68,8 +68,8 @@ class RemoteOpenOcdBinaryRunner(OpenOcdBinaryRunner):
             rtt_port=parsed_args.rtt_port,
             rtt_server=parsed_args.rtt_server,
         )
-        self.prototype_cfg = cfg
-        self.prototype_args = parsed_args
+        self.remote_config = cfg
+        self.parsed_args = parsed_args
 
     @classmethod
     def name(cls):
@@ -179,11 +179,11 @@ class RemoteOpenOcdBinaryRunner(OpenOcdBinaryRunner):
 def _record_runner(runner, command, selected):
     runner_args = {
         key: value
-        for key, value in vars(runner.prototype_args).items()
+        for key, value in vars(runner.parsed_args).items()
         if value not in (None, False, "", [])
     }
     common = {
-        key: _json_value(getattr(runner.prototype_cfg, key, None))
+        key: _json_value(getattr(runner.remote_config, key, None))
         for key in (
             "board_dir",
             "elf_file",
@@ -235,7 +235,7 @@ def _record_runner(runner, command, selected):
             "launches_local_client": plan.launches_rtt_client,
         }
     payload = {
-        "prototype": True,
+        "recording": True,
         "runner": runner.name(),
         "command": command,
         "runner_args": runner_args,
@@ -256,10 +256,10 @@ def _flash_request(runner, selected):
     inputs = FlashInputs(
         executable=executable,
         image_type=_file_type(runner.image_type),
-        file=runner.prototype_cfg.file,
-        elf_file=runner.prototype_cfg.elf_file,
-        hex_file=runner.prototype_cfg.hex_file,
-        bin_file=runner.prototype_cfg.bin_file,
+        file=runner.remote_config.file,
+        elf_file=runner.remote_config.elf_file,
+        hex_file=runner.remote_config.hex_file,
+        bin_file=runner.remote_config.bin_file,
         search_paths=search_paths,
         config_files=tuple(runner.openocd_config or ()),
         pre_init=tuple(runner.pre_init),
@@ -272,10 +272,10 @@ def _flash_request(runner, selected):
         verify=runner.do_verify,
         verify_only=runner.do_verify_only,
         erase=runner.do_erase,
-        serial=runner.prototype_args.serial or None,
+        serial=runner.parsed_args.serial or None,
         flash_address=runner.flash_address,
-        no_init=runner.prototype_args.no_init,
-        no_targets=runner.prototype_args.no_targets,
+        no_init=runner.parsed_args.no_init,
+        no_targets=runner.parsed_args.no_targets,
     )
     planner = PathPlanner(selected.path_mappings)
     plan = build_flash_plan(inputs, planner, environment)
@@ -321,39 +321,39 @@ def _search_paths(runner):
 
 def _debug_plan(runner, command, selected, version):
     planner = PathPlanner(selected.path_mappings)
-    if command == "attach" and runner.prototype_args.rtt_server:
+    if command == "attach" and runner.parsed_args.rtt_server:
         raise DebugPlanError("--rtt-server is not supported with attach")
     rtt_requested = command == "rtt" or (
-        command in {"debug", "debugserver"} and runner.prototype_args.rtt_server
+        command in {"debug", "debugserver"} and runner.parsed_args.rtt_server
     )
     return build_debug_plan(
         DebugInputs(
             command=command,
             executable=_remote_openocd(selected, command),
-            gdb=runner.prototype_cfg.gdb,
-            elf_file=runner.prototype_cfg.elf_file,
+            gdb=runner.remote_config.gdb,
+            elf_file=runner.remote_config.elf_file,
             search_paths=_search_paths(runner),
             config_files=tuple(runner.openocd_config or ()),
             pre_init=tuple(runner.pre_init),
             reset_halt=runner.reset_halt_cmd,
-            serial=runner.prototype_args.serial or None,
-            no_halt=runner.prototype_args.no_halt,
-            no_init=runner.prototype_args.no_init,
-            no_targets=runner.prototype_args.no_targets,
+            serial=runner.parsed_args.serial or None,
+            no_halt=runner.parsed_args.no_halt,
+            no_init=runner.parsed_args.no_init,
+            no_targets=runner.parsed_args.no_targets,
             tcl_port=runner.tcl_port,
             telnet_port=runner.telnet_port,
             gdb_port=runner.gdb_port,
             gdb_client_port=runner.gdb_client_port,
             gdb_init=tuple(runner.gdb_init or ()),
-            tui=bool(runner.prototype_args.tui),
-            load=bool(runner.prototype_args.load),
+            tui=bool(runner.parsed_args.tui),
+            load=bool(runner.parsed_args.load),
             target_handle=runner.target_handle,
             thread_info_requested=runner.thread_info_enabled,
             openocd_version=version,
             readiness_marker="ZRO_READY_" + secrets.token_hex(16),
             rtt_address=runner.get_rtt_address() if rtt_requested else None,
             rtt_port=runner.rtt_port,
-            rtt_server=bool(runner.prototype_args.rtt_server),
+            rtt_server=bool(runner.parsed_args.rtt_server),
         ),
         planner,
         _forwarded_environment(runner, selected),

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Bootstrap the self-contained prototype runner."""
+"""Bootstrap the self-contained remote OpenOCD runner."""
 
 import sys
 from pathlib import Path

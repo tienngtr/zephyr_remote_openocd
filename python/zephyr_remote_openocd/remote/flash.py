@@ -62,7 +62,10 @@ def _elf_entry(path: Path) -> str:
     try:
         from elftools.elf.elffile import ELFFile
     except ImportError as error:
-        raise FlashPlanError('elftools missing; please "pip3 install elftools"') from error
+        raise FlashPlanError(
+            "pyelftools (elftools) is required for ELF flashing; "
+            "use the supported Zephyr Python environment"
+        ) from error
     try:
         with path.open("rb") as stream:
             return f"0x{ELFFile(stream).header['e_entry']:016x}"

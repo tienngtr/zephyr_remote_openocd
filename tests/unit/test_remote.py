@@ -27,7 +27,10 @@ from zephyr_remote_openocd.remote.debug import (
     thread_info_enabled,
 )
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
-from zephyr_remote_openocd.remote.flash import FlashInputs, build_flash_plan
+from zephyr_remote_openocd.remote.flash import (
+    FlashInputs,
+    build_flash_plan,
+)
 from zephyr_remote_openocd.remote.model import (
     RemoteProcess,
     RemoteSessionRequest,
