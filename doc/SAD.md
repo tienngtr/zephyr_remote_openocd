@@ -199,55 +199,55 @@ It does not edit shell startup files, repositories, or `.zephyrrc`.
 
 # 8. Configuration Template
 
-Representative configuration:
+The canonical V1 template is `resources/config.toml.example`:
 
 ```toml
-# Zephyr Remote OpenOCD
+# Zephyr Remote OpenOCD V1 configuration
+#
+# This file lists every supported V1 key. Unknown keys are rejected so that
+# spelling mistakes and unsupported settings fail with an actionable error.
 
 [zephyr]
-
-# "local"  -> built-in openocd
-# "remote" -> remote-openocd
+# Default runner for OpenOCD-capable builds: "local" or "remote".
 default = "local"
 
-
 [remote]
+# OpenSSH host or alias. Required when remote-openocd is used.
+# host = "openocd-host"
 
-# SSH host or alias understood by the selected SSH client.
-#
-# host = "board-lab"
-
-# Absolute OpenOCD path on the remote host.
-#
-# openocd = "/home/user/openocd/bin/openocd"
-
+# Normalized absolute POSIX path to OpenOCD on the remote Linux host.
+# Required when remote-openocd is used.
+# openocd = "/absolute/path/to/openocd"
 
 [ssh]
-
-# OpenSSH-compatible client command.
-#
-# Default:
+# Non-empty OpenSSH-compatible command argv. Fixed arguments are allowed.
 command = ["ssh"]
-
-# WSL 2 example using Windows OpenSSH:
-#
+# command = ["ssh", "-F", "/home/user/.ssh/lab_config"]
+# WSL 2 may select Windows OpenSSH explicitly:
 # command = ["/mnt/c/Windows/System32/OpenSSH/ssh.exe"]
 
-# Fixed arguments can be included if required:
-#
-# command = ["ssh", "-F", "/home/user/.ssh/lab_config"]
-
-
 [openocd]
-
-# Local environment variables forwarded to remote OpenOCD.
+# Unique local environment-variable names forwarded when present.
 forward_env = []
 
-
+# Zero or more recursive local-to-remote path mappings. Local paths must be
+# absolute after optional '~' expansion. Remote paths must be normalized,
+# absolute POSIX paths. The longest matching local prefix wins.
 # [[paths.map]]
-# local = "/local/openocd/scripts"
-# remote = "/remote/openocd/scripts"
+# local = "/home/user/openocd/share/openocd/scripts"
+# remote = "/opt/openocd/share/openocd/scripts"
 ```
+
+The parser rejects all unknown keys. Optional remote settings may be absent
+while the local runner is selected, but both are required by every production
+`remote-openocd` operation. Local mapping paths are expanded and resolved once
+when loading configuration; remote paths are validated lexically because they
+belong to the remote Linux filesystem. Exact duplicate mappings and conflicting
+mappings for the same normalized local path are both errors.
+
+This enumerated schema is frozen for V1. Field additions, removals, renames, type
+changes, or validation changes require an explicit compatibility and migration
+decision rather than silent extension of the V1 schema.
 
 The SSH command is represented as an argv list rather than a shell command string.
 
@@ -1309,15 +1309,16 @@ This gate requires a WSL 2 test environment and remains especially relevant to R
 The remaining implementation-level questions are:
 
 1. Exact distribution instructions.
-2. Final setup-script invocation/name.
-3. Whether optional multiplexing is worthwhile when available.
-4. Final internal Python module layout beyond the validated compatibility boundary.
+2. Whether optional multiplexing is worthwhile when available.
+3. Final internal Python module layout beyond the validated compatibility boundary.
 
 None currently require an additional product decision before the next implementation phase.
 
 Persistent-debug readiness, enabled-service forwarding, remote OpenOCD version
 probing, and Zephyr thread-info command selection are settled implementation
 decisions described in Sections 40 and 52, not remaining questions.
+The Python setup entry point and V1 configuration schema are also complete and
+frozen as described in Sections 7 and 8.
 
 ---
 
@@ -1328,6 +1329,9 @@ Zephyr integration prototype
     COMPLETE except deferred WSL-specific PG-012 and PG-013
 
 Permanent regression transformation
+    COMPLETE
+
+User setup UX and V1 configuration schema
     COMPLETE
 
 Remote-session fake-helper vertical slice

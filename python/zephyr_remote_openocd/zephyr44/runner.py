@@ -8,12 +8,11 @@ import json
 import os
 import secrets
 import sys
-from pathlib import Path
 
 from runners.core import FileType  # pylint: disable=no-name-in-module
 from runners.openocd import OpenOcdBinaryRunner  # pylint: disable=no-name-in-module
 
-from zephyr_remote_openocd.config import ConfigError, load_config
+from zephyr_remote_openocd.config import ConfigError, load_config, require_remote_settings
 from zephyr_remote_openocd.remote import RemoteSession, RemoteSessionRequest, SshHelperBackend
 from zephyr_remote_openocd.remote.debug import (
     DebugInputs,
@@ -289,13 +288,8 @@ def _flash_request(runner, selected):
 
 
 def _remote_openocd(selected, command):
-    if not selected.remote_host:
-        raise ConfigError(f"remote.host is required for remote {command} ({selected.path})")
-    if not selected.remote_openocd:
-        raise ConfigError(f"remote.openocd is required for remote {command} ({selected.path})")
-    if not Path(selected.remote_openocd).is_absolute():
-        raise ConfigError(f"remote.openocd must be an absolute path ({selected.path})")
-    return selected.remote_openocd
+    _, executable = require_remote_settings(selected, command)
+    return executable
 
 
 def _forwarded_environment(runner, selected):

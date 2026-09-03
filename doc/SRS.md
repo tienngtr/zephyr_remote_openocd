@@ -388,6 +388,28 @@ Malformed configuration SHALL result in an actionable configuration error rather
 
 Module upgrades SHALL NOT automatically rewrite an existing user configuration merely to add optional settings or comments.
 
+## REQ-FUNC-CONFIG-010
+
+The V1 configuration schema SHALL contain only:
+
+- `zephyr.default`: `"local"` or `"remote"`, default `"local"`;
+- `remote.host`: optional non-empty SSH host or alias;
+- `remote.openocd`: optional normalized absolute POSIX path;
+- `ssh.command`: non-empty string array, default `["ssh"]`;
+- `openocd.forward_env`: unique non-empty string array, default `[]`;
+- `paths.map`: zero or more tables containing exactly `local` and `remote`.
+
+`remote.host` and `remote.openocd` SHALL be mandatory when a production remote
+operation is requested. Local mapping paths SHALL be absolute after optional
+home expansion and SHALL be normalized locally. Remote mapping paths SHALL be
+normalized absolute POSIX paths.
+
+## REQ-FUNC-CONFIG-011
+
+Unknown keys, disallowed empty strings or command arrays, duplicate environment
+names, duplicate mappings, and conflicting mappings SHALL produce actionable
+configuration errors.
+
 ---
 
 # 9. Runner Availability and Selection

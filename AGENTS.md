@@ -54,6 +54,9 @@ Use configured `SshCommand` for every remote action; never embed fixture hosts o
 assume system `ssh`. Preserve Zephyr 4.4 command semantics and all enabled GDB,
 Tcl, and telnet services. Bind remotely to the allocated loopback and locally to
 `127.0.0.1`. Preserve cleanup on success, failure, interruption, and SSH loss.
+The enumerated V1 TOML schema is frozen; do not add or relax configuration keys
+without an explicit compatibility and migration decision. Unknown keys remain
+errors, and `resources/config.toml.example` is the canonical template.
 
 Protocol 1 is pre-release and unfrozen; client/helper may evolve atomically, but
 post-release incompatible changes require a new version. Keep helper stdout

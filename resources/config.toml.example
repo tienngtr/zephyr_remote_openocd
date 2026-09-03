@@ -1,25 +1,36 @@
 # SPDX-License-Identifier: Apache-2.0
 
-# Zephyr Remote OpenOCD configuration
+# Zephyr Remote OpenOCD V1 configuration
+#
+# This file lists every supported V1 key. Unknown keys are rejected so that
+# spelling mistakes and unsupported settings fail with an actionable error.
 
 [zephyr]
+# Default runner for OpenOCD-capable builds: "local" or "remote".
 default = "local"
 
 [remote]
-# host = "board-lab"
+# OpenSSH host or alias. Required when remote-openocd is used.
+# host = "openocd-host"
+
+# Normalized absolute POSIX path to OpenOCD on the remote Linux host.
+# Required when remote-openocd is used.
 # openocd = "/absolute/path/to/openocd"
 
 [ssh]
+# Non-empty OpenSSH-compatible command argv. Fixed arguments are allowed.
 command = ["ssh"]
-# Fixed arguments are supported:
 # command = ["ssh", "-F", "/home/user/.ssh/lab_config"]
+# WSL 2 may select Windows OpenSSH explicitly:
+# command = ["/mnt/c/Windows/System32/OpenSSH/ssh.exe"]
 
 [openocd]
-# Only named variables which are present locally are forwarded.
+# Unique local environment-variable names forwarded when present.
 forward_env = []
 
-# Recursive, component-aware local-to-remote mapping. The longest matching
-# local prefix wins when mappings overlap.
+# Zero or more recursive local-to-remote path mappings. Local paths must be
+# absolute after optional '~' expansion. Remote paths must be normalized,
+# absolute POSIX paths. The longest matching local prefix wins.
 # [[paths.map]]
 # local = "/home/user/openocd/share/openocd/scripts"
 # remote = "/opt/openocd/share/openocd/scripts"
