@@ -112,6 +112,10 @@ def prepared_hardware(hardware_inventory: Inventory, tmp_path_factory: pytest.Te
     environment.pop("ZEPHYR_REMOTE_OPENOCD_RECORD", None)
     environment["EXTRA_ZEPHYR_MODULES"] = str(ROOT)
     for target in hardware_inventory.targets:
+        if not target.zephyr_base.is_dir():
+            pytest.fail(f"target {target.id} Zephyr tree is missing: {target.zephyr_base}")
+        if not target.west.is_file() or not os.access(target.west, os.X_OK):
+            pytest.fail(f"target {target.id} west executable is unavailable: {target.west}")
         host = hardware_inventory.host(target.host)
         target_root = build_root / target.id
         target_root.mkdir()
