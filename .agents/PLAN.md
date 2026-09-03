@@ -156,14 +156,14 @@ Dependencies: M0.
 Exit: external configuration cleared plus plain `pytest` passes without external
 skips; maintained converted tests contain no `unittest.TestCase` subclasses.
 
-### M4 — Unified TOML Inventory and Build Fixtures `[not started]`
+### M4 — Unified TOML Inventory and Build Fixtures `[in progress]`
 
-- `[not started]` Define and document the test-only schema described above.
-- `[not started]` Add a complete neutral example and strict parser/reference
+- `[done]` Define and document the test-only schema described above.
+- `[done]` Add a complete neutral example and strict parser/reference
   diagnostics.
-- `[not started]` Implement named build recipes, structured serial settings,
+- `[done]` Implement named build recipes, structured serial settings,
   profiles, and independent capabilities.
-- `[not started]` Generate temporary product configs and validate forwarded
+- `[done]` Generate temporary product configs and validate forwarded
   environment keys.
 - `[not started]` Extract the standard-library remote serial reader into reusable
   test support and make framing data-driven.
@@ -173,7 +173,8 @@ skips; maintained converted tests contain no `unittest.TestCase` subclasses.
 Dependencies: M3.
 
 Exit: example and negative schema tests pass; synthetic profiles prove capability
-independence; no actual lab value is tracked.
+independence; no actual lab value is tracked. Remaining serial-reader extraction
+and local fixture conversion are prerequisites for external-test migration.
 
 ### M5 — External Pytest Migration `[not started]`
 

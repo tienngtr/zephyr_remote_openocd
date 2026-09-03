@@ -1,0 +1,92 @@
+# SPDX-License-Identifier: Apache-2.0
+
+# Test-only hardware inventory schema version 1.
+# Copy this file outside the repository and replace placeholders with local
+# values. Do not commit host names, probe serials, device paths, or credentials.
+schema_version = 1
+
+[[hosts]]
+id = "lab"
+address = "ssh-alias"
+ssh_command = ["ssh"]
+openocd = "/absolute/path/to/openocd"
+forward_env = ["FTDI_CHANNEL"]
+
+# Local paths are normalized after '~' expansion; remote paths are absolute
+# normalized POSIX paths. The longest local prefix is selected by the runner.
+[[hosts.path_mappings]]
+local = "/path/to/openocd/scripts"
+remote = "/opt/openocd/share/openocd/scripts"
+
+[[targets]]
+id = "board"
+host = "lab"
+zephyr_base = "/path/to/zephyr"
+west = "/path/to/zephyrproject/.venv/bin/west"
+gdb = "/path/to/toolchain/bin/arm-none-eabi-gdb"
+board = "vendor/board"
+
+[targets.builds.hello]
+application = "samples/hello_world"
+west_args = []
+cmake_args = []
+
+[targets.serial.console]
+device = "/dev/serial/by-id/example"
+baud = 115200
+data_bits = 8
+parity = "none"
+stop_bits = 1
+flow_control = "none"
+pattern = "hello"
+timeout = 30
+
+[targets.profiles.flash]
+capabilities = ["flash"]
+build = "hello"
+serial = "console"
+runner_args = []
+environment = { FTDI_CHANNEL = "0" }
+
+[targets.profiles.flash.expect]
+patterns = ["hello"]
+
+[targets.profiles.debug]
+capabilities = ["debug", "attach", "debugserver"]
+build = "hello"
+serial = "console"
+runner_args = []
+environment = {}
+
+[targets.profiles.debug.expect]
+patterns = ["hello"]
+
+[targets.profiles.rtt]
+capabilities = ["rtt"]
+build = "hello"
+serial = "console"
+runner_args = []
+environment = {}
+
+[targets.profiles.rtt.rtt]
+port = 19021
+input = "help\n"
+response = "help"
+timeout = 30
+
+[targets.profiles.semihosting]
+capabilities = ["semihosting"]
+build = "hello"
+serial = "console"
+runner_args = []
+environment = {}
+
+[targets.profiles.semihosting.semihosting]
+commands = [
+  "lappend post_init_commands {arm semihosting enable}",
+  "lappend post_init_commands {arm semihosting_fileio disable}",
+  "lappend post_init_commands {arm semihosting_redirect disable}",
+]
+gdb_commands = ["continue", "detach", "quit"]
+output = "hello"
+timeout = 30
