@@ -230,7 +230,7 @@ Dependencies: M2-M6.
 Exit: CI passes from a clean checkout; simulated driver outcomes are deterministic
 and missing native-Linux evidence is fatal while WSL-only gates remain deferred.
 
-### M8 — Full Validation and Final Consistency Audit `[in progress]`
+### M8 — Full Validation and Final Consistency Audit `[done]`
 
 - `[done]` Run self-contained, Zephyr, and clean-install layers; SSH and
   configured hardware remain operator-run with the ignored inventory.
