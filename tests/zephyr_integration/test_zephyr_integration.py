@@ -610,10 +610,8 @@ class TestZephyrIntegration:
         assert "capabilities" not in methods
         assert "do_add_parser" not in methods
         assert any(
-            any(
-                isinstance(base, ast.Name) and base.id == "OpenOcdBinaryRunner"
-                for base in adapter.bases
-            )
+            isinstance(base, ast.Name) and base.id == "OpenOcdBinaryRunner"
+            for base in adapter.bases
         )
         for node in ast.walk(adapter):
             if (
