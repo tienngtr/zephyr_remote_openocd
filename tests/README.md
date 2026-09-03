@@ -40,3 +40,10 @@ library, configures raw 8N1, discards input until armed, and is test
 infrastructure only. Device paths, baud rates, expected patterns, timeouts, and
 other target-specific values belong in the external fixture and are not
 committed to the repository.
+
+The hardware acceptance coverage includes two board-agnostic fixture scenarios:
+
+- explicit OpenOCD `--serial` selection together with one forwarded environment
+  variable;
+- normal OpenOCD automatic probe selection without `--serial` when the remote
+  host exposes one applicable probe.

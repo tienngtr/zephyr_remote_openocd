@@ -1075,16 +1075,6 @@ Mitigation:
 
 Confine all `OpenOcdBinaryRunner` coupling to the Zephyr 4.4 compatibility layer, use no private attributes or methods, and validate or update the adapter for each newly supported Zephyr version.
 
-## RISK-006 — Path mapping mismatch
-
-A mapped remote directory may not contain files equivalent to the local directory.
-
-Severity: Medium.
-
-Mitigation:
-
-Use explicit mappings with staging fallback.
-
 ## RISK-007 — SSH client differences, especially WSL with Windows `ssh.exe`
 
 Native Linux validation proves that V1 does not require ControlMaster and that separate controlling and `ssh -L` processes work. WSL Linux OpenSSH and Windows `ssh.exe` invoked from WSL remain unvalidated and may differ in subprocess, path, authentication, or forwarding behavior.
@@ -1103,6 +1093,7 @@ The following identifiers are retired and SHALL NOT be reused:
 - **RISK-002 — Board argument inheritance:** retired as a V1 feasibility risk by PG-005 and PG-006. Future-version regression exposure is covered by RISK-003.
 - **RISK-004 — CMake runner-state integration:** retired by PG-004, PG-005, PG-007, and PG-008. Future-version maintenance exposure is covered by RISK-003.
 - **RISK-005 — Default-runner regeneration:** retired for the supported normal incremental-build workflow by PG-009. Suppressed rebuilding retains the behavior specified by REQ-FUNC-SELECT-010.
+- **RISK-006 — Path mapping mismatch:** retired as a V1 feasibility risk by real-hardware flash validation using staged Zephyr-tree configuration, mapped SDK scripts, and staged firmware. A configured mapping can still point at non-equivalent remote content; remote path preflight and operator-controlled mappings treat that as an ordinary configuration error rather than an architectural feasibility concern.
 
 ---
 
@@ -1164,6 +1155,9 @@ PG-009 validated this criterion for the supported normal incremental-build workf
 ## AC-FLASH-001
 
 `west flash -r remote-openocd` programs the intended remote target.
+
+Status: validated on native Linux with two real-hardware target configurations,
+including both explicit and automatic probe selection.
 
 ## AC-DEBUG-001
 
@@ -1236,6 +1230,11 @@ WSL validation remains open: PG-012 covers WSL Linux `ssh`, and PG-013 covers Wi
 
 The remote helper, staging and path translation, remote-session lifecycle,
 loopback allocation, fake-service forwarding, and real OpenOCD flash path are
-implemented. Debug, attach, debugserver, RTT, real-service forwarding, and WSL
-validation remain subsequent work. No unresolved stakeholder/product decision
-currently blocks V1 implementation.
+implemented. Native-Linux real-hardware validation on two materially different
+targets demonstrated staged Zephyr-tree configuration, mapped SDK scripts,
+staged firmware, explicit probe/environment selection, automatic probe
+selection, isolated loopback binding, output relay, and cleanup. Consequently,
+`west flash -r remote-openocd` is a validated V1 capability. Debug, attach,
+debugserver, RTT, real-service forwarding, and WSL validation remain subsequent
+work. No unresolved stakeholder/product decision currently blocks V1
+implementation.

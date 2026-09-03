@@ -872,7 +872,7 @@ The alternative remains available if WSL testing or operational experience shows
 
 Staging SHOULD use the configured SSH command rather than require a separate `scp` executable.
 
-PG-015 validated arbitrary byte streaming through the configured native-Linux SSH command, including empty, textual, binary/NUL-containing, and 1 MiB payloads, with remote failure propagation. This establishes the transport primitive only.
+PG-015 validated arbitrary byte streaming through the configured native-Linux SSH command, including empty, textual, binary/NUL-containing, and 1 MiB payloads, with remote failure propagation. Production flash now uses this transport for validated session staging.
 
 A preferred candidate is:
 
@@ -896,7 +896,9 @@ Advantages include:
 
 The WSL client variants remain subject to PG-012 and PG-013.
 
-The staging manifest, archive encoding and extraction, remote filesystem layout, path rewriting, helper deployment protocol, and real OpenOCD artifact staging remain implementation decisions.
+The staging manifest, safe archive encoding and extraction, private remote
+filesystem layout, path rewriting, helper deployment protocol, and real OpenOCD
+artifact staging are implemented by the protocol-1 helper and flash slice.
 
 ---
 
@@ -1152,7 +1154,9 @@ Recording requires:
 ZEPHYR_REMOTE_OPENOCD_RECORD=1
 ```
 
-Without that explicit test setting, the unimplemented runner fails clearly. These tests use a harmless OpenOCD stub and do not access physical hardware or execute real OpenOCD behavior.
+These tests use recording mode or a harmless OpenOCD stub and do not access
+physical hardware or execute real OpenOCD behavior. Without the explicit
+recording setting, flash uses the validated production backend.
 
 ## 44.3 SSH integration
 
@@ -1160,11 +1164,13 @@ SSH integration tests cover native-Linux command selection, fixed arguments, str
 
 PG-012 and PG-013 remain present as permanent WSL-specific tests. They skip explicitly outside WSL 2 rather than being treated as passed.
 
-## 44.4 Later hardware integration
+## 44.4 Hardware integration
 
 Hardware test fixtures may use concrete boards, but product code and general documentation remain board-agnostic.
 
-Later real OpenOCD validation SHOULD include at least two OpenOCD-capable target configurations with materially different board/SoC characteristics.
+Real OpenOCD flash validation covers two target configurations with materially
+different board/SoC characteristics. Concrete target, probe, serial-device, and
+expected-output values remain external fixture data.
 
 At least one validation target SHOULD exercise RTT.
 
@@ -1188,7 +1194,7 @@ WSL 2 + WSL Linux OpenSSH
 WSL 2 + Windows OpenSSH ssh.exe
 ```
 
-The Windows-client case validates that the SSH command abstraction does not depend on the WSL distribution's credentials or agent. Full real OpenOCD workflows on both native Linux and WSL 2 remain later hardware-integration work.
+The Windows-client case validates that the SSH command abstraction does not depend on the WSL distribution's credentials or agent. Full real OpenOCD workflows on WSL 2 remain later hardware-integration work; native-Linux flash is validated.
 
 ---
 
@@ -1295,8 +1301,10 @@ Permanent regression transformation
 Remote-session fake-helper vertical slice
     COMPLETE (native-Linux integration remains fixture-gated)
 
+Real OpenOCD flash
+    COMPLETE and validated on native Linux
+
 Then
-    real OpenOCD flash
     debug, attach, and debugserver
     RTT
     semihosting console
@@ -1343,6 +1351,8 @@ the controller.
 
 # 51. Real OpenOCD Flash Slice
 
+Status: **COMPLETE — validated V1 capability on native Linux.**
+
 Production `flash` translates the public Zephyr 4.4 runner state into explicit
 remote argv. Search trees, configuration files, and firmware use the longest
 matching component-aware path mapping, with private-session staging as fallback.
@@ -1361,3 +1371,20 @@ infrastructure and takes precedence over production execution. Debug, attach,
 debugserver, RTT, and real-service forwarding remain later slices. Remote serial
 observation belongs only to explicitly configured hardware acceptance tests and
 is not part of production flash semantics.
+
+## 51.1 Hardware-test evidence
+
+Two target configurations validated the production path end to end. Both used
+real Zephyr-tree OpenOCD configuration staging, a mapped OpenOCD scripts tree,
+firmware-path rewriting, a helper-allocated loopback address, local output relay,
+remote cleanup, and fresh post-flash serial output as a test-only oracle.
+
+- One fixture validated explicit `--serial` probe selection and forwarding of an
+  allow-listed environment variable into OpenOCD.
+- A second fixture validated normal OpenOCD automatic probe selection without
+  `--serial` when a single applicable probe was present.
+
+Concrete target, probe, serial-device, baud-rate, and expected-output values
+remain in external test-fixture configuration. Production configuration,
+translation, staging, helper supervision, and serial-oracle infrastructure
+contain no target-specific behavior.
