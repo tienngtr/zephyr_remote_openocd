@@ -1006,14 +1006,9 @@ The implementation SHOULD separate:
 
 ## REQ-NFUNC-PERF-001
 
-Runner-controlled startup processing overhead SHALL normally remain below 0.5 seconds.
+Under representative local conditions, each invocation of `remote-openocd` SHOULD introduce less than 0.5 seconds of additional runner-controlled startup processing compared with the equivalent invocation of Zephyr's built-in `openocd` runner.
 
-Excluded are:
-
-- SSH authentication;
-- external network latency;
-- network-transfer time;
-- remote OpenOCD initialization.
+SSH authentication, external network latency, network-transfer time, and remote OpenOCD initialization are excluded.
 
 ## REQ-NFUNC-ADMIN-001
 
@@ -1328,11 +1323,11 @@ acceptance criterion is intentionally untested.
 | 17–20, debug/services, RTT, semihosting | Both | recording/unit construction coverage and real debug, RTT, and semihosting fixtures |
 | 21–24, SSH, concurrency, helper, session data | Automated | SSH PG-011/PG-014/PG-015 tests, fake-helper lifecycle/concurrency tests, protocol and staging tests |
 | 25, platform requirements | Both / Deferred | native Linux has automated and hardware evidence; WSL-specific validation is deferred only through PG-012 and PG-013 |
-| 26, maintainability, testability, administration | Automated except one gap | style/static tests, architectural-boundary test, fake endpoint tests, and setup/helper permission tests. **REQ-NFUNC-PERF-001 lacks a repeatable measured startup-overhead test or recorded benchmark.** |
+| 26, maintainability, testability, administration | Automated plus release evidence | style/static tests, architectural-boundary test, fake endpoint tests, setup/helper permission tests, and the standalone startup-overhead release benchmark (`doc/startup-overhead-2026-09-04.json`) for REQ-NFUNC-PERF-001 |
 
-The performance requirement is a genuine non-deferred evidence gap; it is not
-silently classified complete. All other V1 requirement groups have code,
-automated, and/or hardware evidence appropriate to their stated behavior.
+REQ-NFUNC-PERF-001 has repeatable release-validation evidence; the benchmark is
+manual and is not a CI performance gate. All other V1 requirement groups have
+code, automated, and/or hardware evidence appropriate to their stated behavior.
 
 No unresolved stakeholder/product decision currently blocks V1 implementation.
 

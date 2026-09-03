@@ -36,6 +36,23 @@ external TOML fixture and the test reads its configured `remote.host` and
 `remote.openocd` values directly. PG-012 and PG-013 additionally require WSL 2; PG-013
 accepts `ZRO_WINDOWS_SSH` as the path to Windows `ssh.exe`.
 
+Run the manual startup-overhead release benchmark (not part of test discovery)
+from a Zephyr workspace:
+
+```text
+PYTHONPATH=python python3 tests/startup_benchmark.py \
+  --build-dir <build-dir> --config <remote-openocd.toml> \
+  --west <west> --cwd <zephyr-workspace> --command flash \
+  --warmup 5 --iterations 100 > startup-overhead.json
+```
+
+Repeat for each applicable runner command. The benchmark compares built-in
+`openocd --context` dispatch with recording-mode `remote-openocd`. The
+`--context` result is a conservative lower-bound proxy for the corresponding
+built-in command path, not an exact execution comparison. The benchmark reports
+JSON plus a human summary on stderr, and exits nonzero when the median additional
+startup reaches 0.5 seconds.
+
 Real flash is an explicit, destructive hardware acceptance test. Set
 `ZRO_REAL_FLASH_FIXTURES` to an external JSON fixture file. Each configured
 target entry supplies `ssh_command`, `host`, `build_dir`, `config_path`,

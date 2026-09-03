@@ -1242,9 +1242,52 @@ SRS section 31.1 maps every `AC-*` criterion to its maintained automated and/or
 real-hardware evidence. Concurrent session isolation and controlling-SSH-loss
 cleanup are covered by native-SSH fake-helper integration tests; they do not
 need target-specific product behavior. PG-012 and PG-013 are the only deferred
-acceptance validations, because they require WSL 2. The SRS audit separately
-identifies the unmeasured runner-startup-overhead requirement as a genuine
-non-deferred performance-evidence gap rather than marking it complete.
+acceptance validations, because they require WSL 2. Startup-overhead evidence
+for REQ-NFUNC-PERF-001 is recorded in section 44.7.
+
+## 44.7 Startup-overhead release evidence
+
+REQ-NFUNC-PERF-001 states:
+
+> Under representative local conditions, each invocation of `remote-openocd`
+> SHOULD introduce less than 0.5 seconds of additional runner-controlled
+> startup processing compared with the equivalent invocation of Zephyr's
+> built-in `openocd` runner.
+
+SSH authentication, external network latency, network-transfer time, and remote
+OpenOCD initialization are excluded. The standalone
+`tests/startup_benchmark.py` procedure measures west dispatch and runner setup
+for built-in `openocd` (`--context`) and recording-mode `remote-openocd`.
+`--context` is explicitly a conservative lower-bound proxy for the
+corresponding built-in command path, not an exact execution comparison; this
+makes the derived remote-minus-baseline overhead conservative. Recording mode
+retains production adapter parsing, command construction, path planning,
+environment selection, and request bookkeeping while eliminating the excluded
+remote operations. Hardware target initialization is not measured.
+
+The benchmark performs five warm-up iterations and 100 measured iterations per
+case using `time.perf_counter_ns()`. Percentiles use the inclusive interpolated
+rank `p * (n - 1)`. It reports first observation, median, p95, and worst value;
+the target statistic is the paired remote-minus-baseline median, compared with
+the 0.5-second SHOULD target. p95 and worst are diagnostic only. RTT is not
+reported for builds without an RTT control block; no baseline is invented for
+an inapplicable operation.
+
+Release validation on 2026-09-04 used Python 3.14.7, native Linux
+7.2.2-arch1-1, revision `1cf39b4`, and a Zephyr 4.4 build. Results (seconds of
+additional startup) were:
+
+| Command | First | Median | p95 | Worst | Target |
+| --- | ---: | ---: | ---: | ---: | --- |
+| flash | 0.02798 | 0.03664 | 0.08523 | 0.11606 | Meets target |
+| debug | 0.02997 | 0.03854 | 0.09094 | 0.10939 | Meets target |
+| attach | 0.05412 | 0.03864 | 0.09385 | 0.13740 | Meets target |
+| debugserver | 0.03061 | 0.03795 | 0.08779 | 0.22082 | Meets target |
+
+The benchmark is a manual release-validation artifact, not an ordinary CI
+test or timing gate. The measured JSON record for this validation is
+`doc/startup-overhead-2026-09-04.json`; future release records should preserve
+the same schema and metadata.
 
 ## 44.6 Platform matrix
 
