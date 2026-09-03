@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import json
 import os
 import re
@@ -18,7 +17,15 @@ from pathlib import Path
 
 from zephyr_remote_openocd.remote.ssh import SshCommand
 
-from tests.hardware.test_real_flash import SERIAL_READER, _read_event, _stop
+from tests.serial_reader import (
+    read_event as _read_event,
+)
+from tests.serial_reader import (
+    remote_serial_reader_command,
+)
+from tests.serial_reader import (
+    stop_reader as _stop,
+)
 from tests.support import ROOT
 
 SESSION_PATTERN = re.compile(r"Remote OpenOCD session (\S+) workspace=(\S+) bindto=(\S+)")
@@ -83,17 +90,11 @@ class RealOpenOcdDebugTests(unittest.TestCase):
 
     def _serial_reader(self, fixture):
         ssh = SshCommand(tuple(fixture["ssh_command"]))
-        encoded = base64.b64encode(SERIAL_READER.encode()).decode("ascii")
-        remote_command = " ".join(
-            (
-                "python3",
-                "-c",
-                shlex.quote(f"import base64;exec(base64.b64decode('{encoded}'))"),
-                shlex.quote(str(fixture["serial_device"])),
-                shlex.quote(str(fixture["serial_baud"])),
-                shlex.quote(str(fixture["expected_pattern"])),
-                shlex.quote(str(fixture["serial_timeout"])),
-            )
+        remote_command = remote_serial_reader_command(
+            str(fixture["serial_device"]),
+            int(fixture["serial_baud"]),
+            str(fixture["expected_pattern"]),
+            float(fixture["serial_timeout"]),
         )
         return ssh.popen(fixture["host"], remote_command, "-o", "ControlMaster=no")
 

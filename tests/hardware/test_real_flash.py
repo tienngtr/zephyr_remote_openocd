@@ -7,7 +7,6 @@ import ipaddress
 import json
 import os
 import re
-import selectors
 import shlex
 import shutil
 import subprocess
@@ -16,73 +15,16 @@ from pathlib import Path
 
 from zephyr_remote_openocd.remote.ssh import SshCommand
 
+from tests.serial_reader import (
+    read_event as _read_event,
+)
+from tests.serial_reader import (
+    remote_serial_reader_command,
+)
+from tests.serial_reader import (
+    stop_reader as _stop,
+)
 from tests.support import ROOT
-
-SERIAL_READER = r'''import base64,json,os,re,select,sys,termios,time,tty
-device,baud_text,pattern_text,timeout_text=sys.argv[1:]
-baud=int(baud_text); timeout=float(timeout_text)
-def emit(kind,**fields):
- print(json.dumps({'type':kind,**fields},separators=(',',':')),flush=True)
-fd=None
-try:
- fd=os.open(device,os.O_RDONLY|os.O_NOCTTY|os.O_NONBLOCK)
- tty.setraw(fd)
- attrs=termios.tcgetattr(fd)
- speed=getattr(termios,'B'+str(baud),None)
- if speed is None: raise ValueError('unsupported baud rate '+str(baud))
- attrs[2]=(attrs[2]&~(termios.PARENB|termios.CSTOPB|termios.CSIZE))|termios.CS8|termios.CLOCAL|termios.CREAD
- attrs[4]=speed;attrs[5]=speed
- termios.tcsetattr(fd,termios.TCSANOW,attrs)
- termios.tcflush(fd,termios.TCIFLUSH)
- emit('READY')
- while True:
-  ready,_,_=select.select([fd,sys.stdin.buffer],[],[])
-  if fd in ready:
-   try: os.read(fd,65536)
-   except BlockingIOError: pass
-  if sys.stdin.buffer in ready:
-   if sys.stdin.buffer.readline().strip()!=b'ARM': raise RuntimeError('reader was not armed')
-   break
- deadline=time.monotonic()+timeout; data=bytearray(); pattern=re.compile(pattern_text)
- while time.monotonic()<deadline:
-  ready,_,_=select.select([fd],[],[],min(0.2,max(0,deadline-time.monotonic())))
-  if fd in ready:
-   try: data.extend(os.read(fd,65536))
-   except BlockingIOError: pass
-   if pattern.search(data.decode('utf-8','replace')):
-    emit('MATCH',data=base64.b64encode(data).decode('ascii'));sys.exit(0)
- emit('TIMEOUT',data=base64.b64encode(data).decode('ascii'));sys.exit(2)
-except Exception as exc:
- emit('ERROR',message=str(exc));sys.exit(3)
-finally:
- if fd is not None: os.close(fd)
-'''
-
-
-def _read_event(process, timeout):
-    assert process.stdout is not None
-    selector = selectors.DefaultSelector()
-    selector.register(process.stdout, selectors.EVENT_READ)
-    if not selector.select(timeout):
-        raise AssertionError("remote serial reader did not respond before timeout")
-    line = process.stdout.readline()
-    if not line:
-        diagnostic = b"" if process.stderr is None else process.stderr.read()
-        raise AssertionError("remote serial reader exited: " + diagnostic.decode(errors="replace"))
-    return json.loads(line)
-
-
-def _stop(process):
-    if process.poll() is None:
-        process.terminate()
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait()
-    for stream in (process.stdin, process.stdout, process.stderr):
-        if stream is not None and not stream.closed:
-            stream.close()
 
 
 class RealOpenOcdFlashTests(unittest.TestCase):
@@ -122,17 +64,11 @@ class RealOpenOcdFlashTests(unittest.TestCase):
         if missing:
             self.fail(f"fixture {fixture.get('id')} is missing: {', '.join(missing)}")
         ssh = SshCommand(tuple(fixture["ssh_command"]))
-        encoded = base64.b64encode(SERIAL_READER.encode()).decode("ascii")
-        remote_command = " ".join(
-            (
-                "python3",
-                "-c",
-                shlex.quote(f"import base64;exec(base64.b64decode('{encoded}'))"),
-                shlex.quote(str(fixture["serial_device"])),
-                shlex.quote(str(fixture["serial_baud"])),
-                shlex.quote(str(fixture["expected_pattern"])),
-                shlex.quote(str(fixture["serial_timeout"])),
-            )
+        remote_command = remote_serial_reader_command(
+            str(fixture["serial_device"]),
+            int(fixture["serial_baud"]),
+            str(fixture["expected_pattern"]),
+            float(fixture["serial_timeout"]),
         )
         reader = ssh.popen(fixture["host"], remote_command, "-o", "ControlMaster=no")
         try:

@@ -167,7 +167,7 @@ socket tests retain only their documented sandbox skips.
   profiles, and independent capabilities.
 - `[done]` Generate temporary product configs and validate forwarded
   environment keys.
-- `[not started]` Extract the standard-library remote serial reader into reusable
+- `[done]` Extract the standard-library remote serial reader into reusable
   test support and make framing data-driven.
 - `[not started]` Convert current ignored JSON fixtures locally for subsequent
   validation.
