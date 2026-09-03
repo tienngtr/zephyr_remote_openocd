@@ -26,13 +26,12 @@ def arguments(**overrides):
         "west": Path("/west"),
         "board": "native_sim/native/64",
         "hardware_config": Path("/fixtures/hardware.toml"),
-        "benchmark_build_dir": None,
-        "benchmark_config": None,
-        "benchmark_cwd": None,
+        "benchmark_build_dir": Path("/build"),
+        "benchmark_config": Path("/config.toml"),
+        "benchmark_cwd": Path("/workspace"),
         "benchmark_command": "flash",
         "benchmark_warmup": 5,
         "benchmark_iterations": 100,
-        "require_benchmark": False,
         "python_files": ("one.py", "two.py"),
     }
     values.update(overrides)
@@ -50,8 +49,9 @@ def test_build_steps_has_stable_order_and_external_layers():
         "zephyr",
         "ssh",
         "hardware",
+        "benchmark",
     ]
-    assert "--hardware-config" in steps[-1].command
+    assert "--hardware-config" in steps[-2].command
 
 
 def test_source_python_files_falls_back_without_git_metadata(tmp_path):
@@ -68,8 +68,10 @@ def test_build_steps_requires_external_evidence_inputs():
         release.build_steps(arguments(hardware_config=None))
     with pytest.raises(ValueError, match="zephyr-base"):
         release.build_steps(arguments(zephyr_base=None))
-    with pytest.raises(ValueError, match="require-benchmark"):
-        release.build_steps(arguments(require_benchmark=True))
+    with pytest.raises(ValueError, match="benchmark-build-dir"):
+        release.build_steps(
+            arguments(benchmark_build_dir=None, benchmark_config=None, benchmark_cwd=None)
+        )
 
 
 def test_inventory_capability_gate_reports_missing_evidence(tmp_path):
@@ -114,3 +116,25 @@ def test_run_steps_stops_after_first_failure_and_preserves_order():
 
 def test_summary_contract_keeps_wsl_gates_deferred():
     assert release.DEFERRED_GATES == ("PG-012", "PG-013")
+
+
+def test_strict_external_collection_rejects_skips(monkeypatch):
+    class Reporter:
+        stats = {"skipped": [object()]}
+
+    class PluginManager:
+        @staticmethod
+        def get_plugin(name):
+            assert name == "terminalreporter"
+            return Reporter()
+
+    session = SimpleNamespace(
+        config=SimpleNamespace(pluginmanager=PluginManager()),
+        exitstatus=0,
+    )
+    monkeypatch.setenv("ZRO_STRICT_EXTERNAL", "1")
+    # The hook lives in the test conftest because pytest owns the result state.
+    import tests.conftest as conftest
+
+    conftest.pytest_sessionfinish(session, 0)
+    assert session.exitstatus == pytest.ExitCode.TESTS_FAILED

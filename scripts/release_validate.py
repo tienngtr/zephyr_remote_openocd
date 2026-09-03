@@ -91,6 +91,7 @@ def build_steps(args: argparse.Namespace) -> list[Step]:
         environment.update(
             ZEPHYR_BASE=str(args.zephyr_base), WEST=str(args.west), OPENOCD_TEST_BOARD=args.board
         )
+        environment["ZRO_STRICT_EXTERNAL"] = "1"
         steps.append(
             Step(
                 "zephyr",
@@ -104,6 +105,8 @@ def build_steps(args: argparse.Namespace) -> list[Step]:
     if not args.hardware_config:
         raise ValueError("strict validation requires --hardware-config")
     inventory = str(args.hardware_config)
+    external_environment = os.environ.copy()
+    external_environment["ZRO_STRICT_EXTERNAL"] = "1"
     steps.extend(
         (
             Step(
@@ -114,9 +117,12 @@ def build_steps(args: argparse.Namespace) -> list[Step]:
                     "tests/ssh_integration",
                     "-m",
                     "ssh",
+                    "-k",
+                    "not TestWslSshIntegration",
                     "--hardware-config",
                     inventory,
                 ),
+                external_environment,
             ),
             Step(
                 "hardware",
@@ -129,37 +135,37 @@ def build_steps(args: argparse.Namespace) -> list[Step]:
                     "--hardware-config",
                     inventory,
                 ),
+                external_environment,
             ),
         )
     )
-    if args.benchmark_build_dir and args.benchmark_config and args.benchmark_cwd:
-        steps.append(
-            Step(
-                "benchmark",
-                _python_module(
-                    "tests.startup_benchmark",
-                    "--build-dir",
-                    str(args.benchmark_build_dir),
-                    "--config",
-                    str(args.benchmark_config),
-                    "--cwd",
-                    str(args.benchmark_cwd),
-                    "--west",
-                    str(args.west),
-                    "--command",
-                    args.benchmark_command,
-                    "--warmup",
-                    str(args.benchmark_warmup),
-                    "--iterations",
-                    str(args.benchmark_iterations),
-                ),
-            )
-        )
-    elif args.require_benchmark:
+    if not (args.benchmark_build_dir and args.benchmark_config and args.benchmark_cwd):
         raise ValueError(
-            "--require-benchmark needs --benchmark-build-dir, --benchmark-config, "
+            "strict validation requires --benchmark-build-dir, --benchmark-config, "
             "and --benchmark-cwd"
         )
+    steps.append(
+        Step(
+            "benchmark",
+            _python_module(
+                "tests.startup_benchmark",
+                "--build-dir",
+                str(args.benchmark_build_dir),
+                "--config",
+                str(args.benchmark_config),
+                "--cwd",
+                str(args.benchmark_cwd),
+                "--west",
+                str(args.west),
+                "--command",
+                args.benchmark_command,
+                "--warmup",
+                str(args.benchmark_warmup),
+                "--iterations",
+                str(args.benchmark_iterations),
+            ),
+        )
+    )
     return steps
 
 
@@ -173,6 +179,18 @@ def validate_inputs(args: argparse.Namespace) -> None:
         raise ValueError("strict validation requires an executable --west path")
     if not os.access(args.west, os.X_OK):
         raise ValueError(f"west is not executable: {args.west}")
+    for label, path in (
+        ("benchmark-build-dir", args.benchmark_build_dir),
+        ("benchmark-config", args.benchmark_config),
+        ("benchmark-cwd", args.benchmark_cwd),
+    ):
+        if path is None:
+            continue
+        expected_directory = label != "benchmark-config"
+        exists = path.is_dir() if expected_directory else path.is_file()
+        if not exists:
+            kind = "directory" if expected_directory else "file"
+            raise ValueError(f"{label} must name an existing {kind}: {path}")
     for tool in ("ruff", "pylint", "vermin"):
         if shutil.which(tool) is None:
             raise ValueError(f"strict validation requires {tool!r} on PATH")
@@ -278,7 +296,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--benchmark-command", default="flash")
     parser.add_argument("--benchmark-warmup", type=int, default=5)
     parser.add_argument("--benchmark-iterations", type=int, default=100)
-    parser.add_argument("--require-benchmark", action="store_true")
     parser.add_argument(
         "--python-files",
         nargs="*",

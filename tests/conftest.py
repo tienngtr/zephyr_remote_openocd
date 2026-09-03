@@ -82,6 +82,16 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
             )
 
 
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Make strict external runs fail instead of accepting infrastructure skips."""
+    if not os.environ.get("ZRO_STRICT_EXTERNAL"):
+        return
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    skipped = len(reporter.stats.get("skipped", [])) if reporter is not None else 0
+    if skipped:
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
 def _profile_record(request: pytest.FixtureRequest, records: list[dict]) -> dict:
     if request.param.startswith("__"):
         pytest.skip("hardware inventory has no matching capability profile")

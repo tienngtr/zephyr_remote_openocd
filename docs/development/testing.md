@@ -22,12 +22,14 @@ python3 scripts/release_validate.py \
   --hardware-config /path/to/hardware.toml \
   --zephyr-base /path/to/zephyr \
   --west /path/to/west \
-  --board <board>
+  --board <board> \
+  --benchmark-build-dir /path/to/build \
+  --benchmark-config /path/to/remote-openocd.toml \
+  --benchmark-cwd /path/to/zephyr-workspace
 ```
 
 PG-012 and PG-013 remain explicitly reported as deferred until a real WSL2
-environment is available. Add the benchmark arguments to the same command for
-release evidence; the benchmark remains a manual, non-CI timing gate.
+environment is available. The benchmark remains a manual, non-CI timing gate.
 
 Run static checks for changed Python with `ruff check .` and
 `ruff format --check .`; finish changes with `git diff --check`.
