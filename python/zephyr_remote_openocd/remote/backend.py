@@ -75,6 +75,7 @@ class SshHelperSession(BackendSession):
         self.reader_error: BaseException | None = None
         self.reader_thread: threading.Thread | None = None
         self.events: list[dict[str, object]] = []
+        self.descriptor: SessionDescriptor | None = None
         command = f"python3 {shlex.quote(deployment.path)} control"
         self.controller = request.ssh_command.popen(request.host, command, "-o", "ControlMaster=no")
         try:
@@ -190,7 +191,8 @@ class SshHelperSession(BackendSession):
                     raise
             self.reader_thread = threading.Thread(target=self._drain_events, daemon=True)
             self.reader_thread.start()
-            return SessionDescriptor(self.allocation, address)
+            self.descriptor = SessionDescriptor(self.allocation, address)
+            return self.descriptor
         if not service_list:
             raise SessionError("at least one service is required")
         advisories = [
@@ -212,9 +214,24 @@ class SshHelperSession(BackendSession):
                 break
         try:
             self._start_forwards(service_list, address, advisories)
-            return SessionDescriptor(self.allocation, address)
+            self.descriptor = SessionDescriptor(self.allocation, address)
+            return self.descriptor
         except BaseException:
             self._close_forwards()
+            raise
+
+    def forward(self, services: Iterable[Service]) -> None:
+        if self.closed or self.descriptor is None:
+            raise SessionError("remote session is not ready for additional forwarding")
+        service_list = tuple(services)
+        if not service_list:
+            return
+        before = len(self.forwards)
+        try:
+            self._start_forwards(service_list, self.descriptor.remote_address)
+        except BaseException:
+            while len(self.forwards) > before:
+                self._stop_process(self.forwards.pop())
             raise
 
     def poll(self) -> int | None:
@@ -274,6 +291,11 @@ class SshHelperSession(BackendSession):
                 raise SessionError(
                     f"SSH forwarding timed out for {service.name} on 127.0.0.1:{service.local_port}"
                 )
+        # OpenOCD protocol listeners may need one event-loop turn to retire the
+        # short readiness connections before accepting their real clients.
+        # In particular, an immediate GDB connection can otherwise be rejected
+        # while OpenOCD is still closing the probe connection.
+        time.sleep(0.5)
 
     def wait(self, timeout: float | None = None) -> int:
         deadline = None if timeout is None else time.monotonic() + timeout

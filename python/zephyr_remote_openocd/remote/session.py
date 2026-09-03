@@ -22,6 +22,9 @@ class BackendSession(ABC):
     def start(self, services: Iterable[Service]) -> SessionDescriptor: ...
 
     @abstractmethod
+    def forward(self, services: Iterable[Service]) -> None: ...
+
+    @abstractmethod
     def poll(self) -> int | None: ...
 
     @abstractmethod
@@ -44,6 +47,7 @@ class RemoteSession:
         self.descriptor: SessionDescriptor | None = None
         self.termination_returncode: int | None = None
         self._session: BackendSession | None = None
+        self._services = list(request.services)
 
     def start(self) -> SessionDescriptor:
         if self.state is not SessionState.NEW:
@@ -61,6 +65,27 @@ class RemoteSession:
             self.state = SessionState.FAILED
             if self._session is not None:
                 self._session.close()
+            raise
+
+    def forward(self, services: Iterable[Service]) -> None:
+        if self.state is not SessionState.READY or self._session is None:
+            raise SessionError(f"cannot add forwarding in {self.state.name} state")
+        additions = tuple(services)
+        if not additions:
+            return
+        combined = (*self._services, *additions)
+        names = [item.name for item in combined]
+        ports = [item.local_port for item in combined]
+        if len(names) != len(set(names)):
+            raise SessionError("service names must remain unique")
+        if len(ports) != len(set(ports)):
+            raise SessionError("local service ports must remain unique")
+        try:
+            self._session.forward(additions)
+            self._services.extend(additions)
+        except BaseException:
+            self.state = SessionState.FAILED
+            self._session.close()
             raise
 
     def poll(self) -> int | None:

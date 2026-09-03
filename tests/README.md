@@ -55,3 +55,14 @@ oracle, and a `supports_thread_info` capability. Every fixture runs debug,
 attach, and debugserver. At least one capable fixture must also provide a
 thread-info-enabled build and expected GDB thread pattern. All concrete hardware
 identity and capability values remain outside the repository.
+
+Real RTT acceptance is gated separately by `ZRO_REAL_RTT_FIXTURES`. Only entries
+with `supports_rtt: true` run. Such entries provide `rtt_build_dir`,
+`rtt_elf_file`, a non-default `rtt_port`, `expected_rtt_response`, and
+optionally `rtt_input`, `rtt_timeout`, and
+`rtt_runner_args`, in addition to the common remote-debug fixture fields. The
+suite validates standalone bidirectional channel-0 I/O, simultaneous GDB and
+RTT forwarding for `debug --rtt-server`, endpoint-only behavior for
+`debugserver --rtt-server`, and cleanup. No local RTT client is expected for
+either `--rtt-server` operation. All hardware identities and RTT capability
+selection remain in the uncommitted fixture file.

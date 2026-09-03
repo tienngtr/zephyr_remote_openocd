@@ -287,25 +287,67 @@ class ZephyrIntegrationTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("ZEPHYR_REMOTE_OPENOCD_RECORD_VERSION is required", result.stdout)
 
-    def test_rtt_operations_remain_explicitly_unsupported(self):
-        for command in (
-            ("rtt",),
-            ("debug", "--", "--rtt-server"),
-            ("debugserver", "--", "--rtt-server"),
-        ):
+    def test_recording_rtt_reuses_thread_info_decision(self):
+        result = self._west(
+            "rtt",
+            "-d",
+            str(self.build_thread_info),
+            "-r",
+            "remote-openocd",
+            "--no-rebuild",
+            "--",
+            "--rtt-address=0x20001000",
+            extra_env={"ZEPHYR_REMOTE_OPENOCD_RECORD_VERSION": "Open On-Chip Debugger 0.12.0"},
+        )
+        recording = self._recording(result.stdout)
+        self.assertTrue(recording["thread_info"]["rtos_awareness"])
+        self.assertIn(
+            "$_TARGETNAME configure -rtos Zephyr",
+            recording["remote_session_request"]["process"]["argv"],
+        )
+
+    def test_recording_rtt_command_construction_without_io(self):
+        cases = (
+            ("rtt", ("--rtt-address=0x20001000", "--rtt-port=5566")),
+            (
+                "debug",
+                ("--rtt-server", "--rtt-address=0x20001000", "--rtt-port=5566"),
+            ),
+            (
+                "debugserver",
+                ("--rtt-server", "--rtt-address=0x20001000", "--rtt-port=5566"),
+            ),
+        )
+        for command, runner_args in cases:
             with self.subTest(command=command):
                 result = self._west(
-                    command[0],
+                    command,
                     "-d",
                     str(self.build_in_tree),
                     "-r",
                     "remote-openocd",
                     "--no-rebuild",
-                    *command[1:],
-                    check=False,
+                    "--",
+                    *runner_args,
                 )
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("RTT support is not implemented", result.stdout)
+                recording = self._recording(result.stdout)
+                self.assertEqual(recording["rtt"]["address"], 0x20001000)
+                self.assertEqual(recording["rtt"]["port"], 5566)
+                self.assertEqual(
+                    recording["rtt"]["setup"],
+                    "batch-gdb" if command == "rtt" else "openocd-startup",
+                )
+                self.assertEqual(recording["rtt"]["launches_local_client"], command == "rtt")
+                services = recording["remote_session_request"]["services"]
+                self.assertEqual(any(item["name"] == "rtt" for item in services), command != "rtt")
+                if command == "rtt":
+                    self.assertIn("--batch", recording["local_gdb_argv"])
+                    self.assertIn("monitor rtt server start 5566 0", recording["local_gdb_argv"])
+                else:
+                    self.assertIn(
+                        "rtt server start 5566 0",
+                        recording["remote_session_request"]["process"]["argv"],
+                    )
 
     def test_explicit_elf_file_type_uses_zephyr_elf_flash_flow(self):
         result = self._west(

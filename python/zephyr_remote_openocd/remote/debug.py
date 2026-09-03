@@ -71,6 +71,9 @@ class DebugInputs:
     thread_info_requested: bool = False
     openocd_version: OpenOcdVersion | None = None
     readiness_marker: str = ""
+    rtt_address: int | None = None
+    rtt_port: int | str = 5555
+    rtt_server: bool = False
 
 
 @dataclass(frozen=True)
@@ -82,6 +85,9 @@ class DebugPlan:
     thread_info_requested: bool
     openocd_version: OpenOcdVersion | None
     rtos_awareness: bool
+    rtt_service: Service | None
+    rtt_setup: str | None
+    launches_rtt_client: bool
 
 
 def _port(value: int | str, name: str, *, required: bool = False) -> int | None:
@@ -107,7 +113,7 @@ def build_debug_plan(
     planner: PathPlanner,
     environment: tuple[tuple[str, str], ...] = (),
 ) -> DebugPlan:
-    if inputs.command not in {"debug", "attach", "debugserver"}:
+    if inputs.command not in {"debug", "attach", "debugserver", "rtt"}:
         raise DebugPlanError(f"unsupported persistent debug command: {inputs.command}")
     if not inputs.readiness_marker or any(ch.isspace() for ch in inputs.readiness_marker):
         raise DebugPlanError("readiness marker must be a non-empty token")
@@ -122,6 +128,19 @@ def build_debug_plan(
         services.append(Service("tcl", remote_tcl, remote_tcl))
     if remote_telnet is not None:
         services.append(Service("telnet", remote_telnet, remote_telnet))
+
+    rtt_requested = inputs.command == "rtt" or inputs.rtt_server
+    rtt_service = None
+    if rtt_requested:
+        if inputs.rtt_address is None:
+            raise DebugPlanError("RTT control block not found")
+        rtt_port = _port(inputs.rtt_port, "rtt_port", required=True)
+        assert rtt_port is not None
+        if any(rtt_port in (service.local_port, service.remote_port) for service in services):
+            raise DebugPlanError("rtt_port conflicts with an enabled OpenOCD service port")
+        rtt_service = Service("rtt", rtt_port, rtt_port)
+        if inputs.command != "rtt":
+            services.append(rtt_service)
 
     indexed_search = list(enumerate(inputs.search_paths))
     planned_search = {}
@@ -159,6 +178,18 @@ def build_debug_plan(
         argv.extend(("-c", inputs.reset_halt))
     elif not inputs.no_halt:
         argv.extend(("-c", "halt"))
+    if inputs.rtt_server and inputs.command != "rtt":
+        assert inputs.rtt_address is not None and rtt_service is not None
+        argv.extend(
+            (
+                "-c",
+                f'rtt setup 0x{inputs.rtt_address:x} 0x10 "SEGGER RTT"',
+                "-c",
+                "rtt start",
+                "-c",
+                f"rtt server start {rtt_service.remote_port} 0",
+            )
+        )
     argv.extend(("-c", f"echo {inputs.readiness_marker}"))
 
     gdb_argv = None
@@ -168,6 +199,8 @@ def build_debug_plan(
         if not inputs.elf_file:
             raise DebugPlanError(f"cannot {inputs.command}; no ELF file specified")
         client = [inputs.gdb]
+        if inputs.command == "rtt":
+            client.append("--batch")
         if inputs.tui:
             client.append("-tui")
         client.extend(("-ex", f"target extended-remote 127.0.0.1:{local_gdb}", inputs.elf_file))
@@ -175,6 +208,24 @@ def build_debug_plan(
             client.extend(("-ex", "load"))
         for command in inputs.gdb_init:
             client.extend(("-ex", command))
+        if inputs.command == "rtt":
+            assert inputs.rtt_address is not None and rtt_service is not None
+            client.extend(
+                (
+                    "-ex",
+                    f'monitor rtt setup 0x{inputs.rtt_address:x} 0x10 "SEGGER RTT"',
+                    "-ex",
+                    "monitor reset run",
+                    "-ex",
+                    "monitor rtt start",
+                    "-ex",
+                    f"monitor rtt server start {rtt_service.remote_port} 0",
+                    "-ex",
+                    "detach",
+                    "-ex",
+                    "quit",
+                )
+            )
         gdb_argv = tuple(client)
 
     process = RemoteProcess(
@@ -193,4 +244,11 @@ def build_debug_plan(
         inputs.thread_info_requested,
         inputs.openocd_version,
         rtos,
+        rtt_service,
+        "batch-gdb"
+        if inputs.command == "rtt"
+        else "openocd-startup"
+        if inputs.rtt_server
+        else None,
+        inputs.command == "rtt",
     )

@@ -1246,6 +1246,8 @@ readiness uses a final command marker plus enabled-service socket checks; remote
 OpenOCD version probing and the Zephyr 4.4-equivalent thread-info decision are
 implemented, with real thread enumeration validated on a capable hardware
 fixture. These areas are no longer open implementation questions or V1
-feasibility risks. RTT, semihosting-specific validation, and WSL validation
-remain subsequent work. No unresolved stakeholder/product decision currently
-blocks V1 implementation.
+feasibility risks. RTT is implemented and validated on an externally configured,
+RTT-capable hardware fixture, including non-default-port, bidirectional, and
+simultaneous GDB/RTT operation. Semihosting-specific validation and WSL
+validation remain subsequent work. No unresolved stakeholder/product decision
+currently blocks V1 implementation.

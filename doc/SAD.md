@@ -644,19 +644,31 @@ Flow:
 ```text
 start remote OpenOCD
        |
-establish GDB transport
+establish enabled GDB/Tcl/telnet transports
        |
-establish RTT transport
-       |
-run local batch GDB
+run local batch GDB (standalone west rtt)
        |
        +-- RTT setup
        +-- RTT start
        +-- RTT server start <port>
        |
+establish RTT transport
+       |
 launch local RTT client
 ```
 
+The RTT forward's local listener check is not treated as proof that its remote
+channel opened. The foreground RTT client's connection is authoritative for
+end-to-end reachability. The dedicated standard-library client provides
+bidirectional channel-0 bytes, uses noncanonical/no-echo TTY input without
+disabling normal signal handling, and restores the complete terminal state on
+every exit path. Non-TTY input is supported without terminal operations.
+
+For `debug --rtt-server` and `debugserver --rtt-server`, RTT setup is included
+in OpenOCD's startup command sequence before its unique final readiness marker;
+the RTT socket joins initial readiness and forwarding. These operations expose
+the endpoint but do not launch a local RTT client. Standalone `rtt` reuses the
+same remote OpenOCD version and Zephyr thread-info decision as debug/attach.
 No GDB RSP observer is needed.
 
 ---
@@ -1182,7 +1194,8 @@ Real OpenOCD flash validation covers two target configurations with materially
 different board/SoC characteristics. Concrete target, probe, serial-device, and
 expected-output values remain external fixture data.
 
-At least one validation target SHOULD exercise RTT.
+At least one RTT-capable validation target SHALL exercise RTT; incapable
+fixtures skip only RTT-specific assertions.
 
 At least one validation target SHOULD exercise semihosting console output.
 
@@ -1323,8 +1336,10 @@ Real OpenOCD flash
 Debug, attach, and debugserver
     COMPLETE and validated on native Linux
 
+RTT
+    COMPLETE and validated on RTT-capable hardware
+
 Then
-    RTT
     semihosting console
 ```
 
@@ -1385,9 +1400,9 @@ Output is continuously relayed as protocol events and the OpenOCD exit status
 becomes the west flash result.
 
 `ZEPHYR_REMOTE_OPENOCD_RECORD=1` remains permanent no-I/O integration
-infrastructure and takes precedence over production execution. RTT remains a
-later slice. Remote serial observation belongs only to explicitly configured
-hardware acceptance tests and is not part of production runner semantics.
+infrastructure and takes precedence over production execution. Remote serial
+observation belongs only to explicitly configured hardware acceptance tests and
+is not part of production runner semantics.
 
 ## 51.1 Hardware-test evidence
 
@@ -1440,3 +1455,22 @@ during the current unfrozen pre-release phase. Digest deployment replaces an
 older helper with the matching client version; it does not assume every helper
 ever installed at the protocol-1 path implements all future protocol-1
 semantics.
+
+---
+
+# 53. RTT Slice
+
+Status: **COMPLETE — validated on RTT-capable native-Linux hardware.**
+
+Standalone `west rtt` starts persistent remote OpenOCD with the enabled normal
+services, uses local batch GDB for the Zephyr 4.4 RTT command sequence, then adds
+the structured RTT forward and launches the lifecycle-aware local byte client.
+`debug --rtt-server` and `debugserver --rtt-server` instead include RTT setup in
+OpenOCD startup readiness and expose the endpoint without launching that client.
+
+Hardware acceptance used an externally selected capable fixture and validated a
+non-default RTT port, real Zephyr channel-0 output and input, simultaneous GDB
+and RTT forwarding, debugserver endpoint-only behavior, interruption handling,
+and complete remote workspace/process cleanup. Concrete hardware identity and
+RTT capability remain solely in ignored fixture configuration. Semihosting is
+not part of this slice.

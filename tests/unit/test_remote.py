@@ -11,10 +11,13 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import unittest
 from pathlib import Path, PurePosixPath
+from unittest.mock import patch
 
 from zephyr_remote_openocd.config import PathMapping
+from zephyr_remote_openocd.remote import rtt as rtt_module
 from zephyr_remote_openocd.remote.backend import SshHelperSession
 from zephyr_remote_openocd.remote.debug import (
     DebugInputs,
@@ -41,12 +44,18 @@ from zephyr_remote_openocd.remote.protocol import (
     decode_message,
     encode_message,
 )
+from zephyr_remote_openocd.remote.rtt import RttClientError, run_rtt_client
 from zephyr_remote_openocd.remote.services import (
     LOOPBACK_RANGE,
     allocate_loopback,
     random_loopback_address,
 )
-from zephyr_remote_openocd.remote.session import BackendSession, RemoteSession, SessionBackend
+from zephyr_remote_openocd.remote.session import (
+    BackendSession,
+    RemoteSession,
+    SessionBackend,
+    SessionError,
+)
 from zephyr_remote_openocd.remote.ssh import SshCommand
 from zephyr_remote_openocd.remote.staging import StagingError, build_archive, extract_archive
 
@@ -113,6 +122,7 @@ class _FakeSession(BackendSession):
     def __init__(self):
         self.actions = []
         self.returncode = None
+        self.forward_error = None
 
     def stage(self, files):
         self.actions.append(("stage", tuple(files)))
@@ -120,6 +130,11 @@ class _FakeSession(BackendSession):
     def start(self, services):
         self.actions.append(("start", tuple(services)))
         return SessionDescriptor(SessionAllocation("id", "/workspace"), "127.64.0.1")
+
+    def forward(self, services):
+        self.actions.append(("forward", tuple(services)))
+        if self.forward_error is not None:
+            raise self.forward_error
 
     def poll(self):
         return self.returncode
@@ -155,6 +170,27 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(session.poll(), 7)
         self.assertEqual(session.termination_returncode, 7)
         self.assertEqual(session.state, SessionState.FAILED)
+
+    def test_dynamic_forward_and_duplicate_rejection(self):
+        backend = _FakeBackend()
+        session = RemoteSession(self.request(), backend)
+        session.start()
+        rtt = Service("rtt", 5555, 5555)
+        session.forward((rtt,))
+        self.assertIn(("forward", (rtt,)), backend.session.actions)
+        with self.assertRaisesRegex(SessionError, "service names must remain unique"):
+            session.forward((rtt,))
+        session.close()
+
+    def test_dynamic_forward_failure_closes_session(self):
+        backend = _FakeBackend()
+        session = RemoteSession(self.request(), backend)
+        session.start()
+        backend.session.forward_error = RuntimeError("forward failed")
+        with self.assertRaisesRegex(RuntimeError, "forward failed"):
+            session.forward((Service("rtt", 5555, 5555),))
+        self.assertEqual(session.state, SessionState.FAILED)
+        self.assertEqual(backend.session.actions[-1], ("close",))
 
 
 class AllocationTests(unittest.TestCase):
@@ -367,6 +403,154 @@ class DebugPlanningTests(unittest.TestCase):
                 argv.index("adapter speed 1000"), argv.index("$_TARGETNAME configure -rtos Zephyr")
             )
             self.assertTrue(plan.rtos_awareness)
+
+    def test_standalone_rtt_uses_batch_gdb_and_deferred_service(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plan = build_debug_plan(
+                self.inputs(
+                    Path(directory),
+                    "rtt",
+                    rtt_address=0x20001000,
+                    rtt_port=5566,
+                    gdb_init=("set pagination off",),
+                ),
+                PathPlanner(()),
+            )
+            self.assertEqual([item.name for item in plan.services], ["gdb", "tcl", "telnet"])
+            self.assertEqual(plan.rtt_service, Service("rtt", 5566, 5566))
+            self.assertEqual(plan.rtt_setup, "batch-gdb")
+            self.assertTrue(plan.launches_rtt_client)
+            self.assertIn("--batch", plan.gdb_argv)
+            self.assertLess(
+                plan.gdb_argv.index("set pagination off"),
+                plan.gdb_argv.index('monitor rtt setup 0x20001000 0x10 "SEGGER RTT"'),
+            )
+            self.assertIn("monitor rtt server start 5566 0", plan.gdb_argv)
+            self.assertNotIn("rtt server start 5566 0", plan.process.argv)
+
+    def test_rtt_server_is_ready_with_openocd_and_never_launches_client(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for command in ("debug", "debugserver"):
+                with self.subTest(command=command):
+                    plan = build_debug_plan(
+                        self.inputs(
+                            Path(directory),
+                            command,
+                            rtt_address=0x20002000,
+                            rtt_port="5577",
+                            rtt_server=True,
+                        ),
+                        PathPlanner(()),
+                    )
+                    self.assertEqual(plan.services[-1], Service("rtt", 5577, 5577))
+                    self.assertIn("rtt server start 5577 0", plan.process.argv)
+                    self.assertEqual(plan.rtt_setup, "openocd-startup")
+                    self.assertFalse(plan.launches_rtt_client)
+
+    def test_rtt_requires_control_block_and_enabled_port(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaisesRegex(DebugPlanError, "RTT control block not found"):
+                build_debug_plan(self.inputs(root, "rtt"), PathPlanner(()))
+            with self.assertRaisesRegex(DebugPlanError, "rtt_port must be enabled"):
+                build_debug_plan(
+                    self.inputs(root, "rtt", rtt_address=0x2000, rtt_port="disabled"),
+                    PathPlanner(()),
+                )
+            with self.assertRaisesRegex(DebugPlanError, "rtt_port conflicts"):
+                build_debug_plan(
+                    self.inputs(root, "rtt", rtt_address=0x2000, rtt_port=3333),
+                    PathPlanner(()),
+                )
+
+
+class RttClientTests(unittest.TestCase):
+    @staticmethod
+    def _listener(handler):
+        try:
+            listener = socket.socket()
+        except PermissionError as error:
+            raise unittest.SkipTest("sandbox prohibits loopback listeners") from error
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        thread = threading.Thread(target=handler, args=(listener,), daemon=True)
+        thread.start()
+        return listener.getsockname()[1], thread
+
+    def test_bidirectional_non_tty_channel(self):
+        received = []
+
+        def server(listener):
+            with listener, listener.accept()[0] as connection:
+                connection.sendall(b"remote-output")
+                received.append(connection.recv(64))
+
+        port, thread = self._listener(server)
+        input_read, input_write = os.pipe()
+        output_read, output_write = os.pipe()
+        os.write(input_write, b"local-input")
+        os.close(input_write)
+        with (
+            os.fdopen(input_read, "rb", buffering=0) as stdin,
+            os.fdopen(output_write, "wb", buffering=0) as stdout,
+        ):
+            self.assertIsNone(run_rtt_client(port, lambda: None, stdin=stdin, stdout=stdout))
+        thread.join(2)
+        self.assertEqual(received, [b"local-input"])
+        self.assertEqual(os.read(output_read, 64), b"remote-output")
+        os.close(output_read)
+
+    def test_immediate_forwarded_channel_failure_is_authoritative(self):
+        def server(listener):
+            with listener, listener.accept()[0]:
+                pass
+
+        port, thread = self._listener(server)
+        with self.assertRaisesRegex(RttClientError, "remote channel"):
+            run_rtt_client(port, lambda: None, startup_timeout=1)
+        thread.join(2)
+
+    def test_tty_preserves_signals_and_restores_complete_state(self):
+        class Connection:
+            def recv(self, _size):
+                return b""
+
+            def close(self):
+                pass
+
+        original = [
+            1,
+            2,
+            3,
+            rtt_module.termios.ICANON | rtt_module.termios.ECHO | rtt_module.termios.ISIG,
+            5,
+            6,
+            [7],
+        ]
+        connection = Connection()
+        with (
+            tempfile.TemporaryFile("w+b") as stream,
+            patch.object(rtt_module, "_connect", return_value=(connection, b"")),
+            patch.object(rtt_module.os, "isatty", return_value=True),
+            patch.object(rtt_module.os, "read", return_value=b""),
+            patch.object(
+                rtt_module.select,
+                "select",
+                side_effect=[([stream.fileno()], [], []), ([connection], [], [])],
+            ),
+            patch.object(
+                rtt_module.termios,
+                "tcgetattr",
+                side_effect=[list(original), list(original)],
+            ),
+            patch.object(rtt_module.termios, "tcsetattr") as set_attributes,
+        ):
+            self.assertIsNone(run_rtt_client(5555, lambda: None, stdin=stream, stdout=stream))
+        configured = set_attributes.call_args_list[0].args[2]
+        self.assertFalse(configured[3] & rtt_module.termios.ICANON)
+        self.assertFalse(configured[3] & rtt_module.termios.ECHO)
+        self.assertTrue(configured[3] & rtt_module.termios.ISIG)
+        self.assertEqual(set_attributes.call_args_list[-1].args[2], original)
 
 
 class RealProcessHelperTests(unittest.TestCase):

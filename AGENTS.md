@@ -51,8 +51,9 @@ Tcl, and telnet services. Bind remotely to the allocated loopback and locally to
 
 Protocol 1 is pre-release and unfrozen; client/helper may evolve atomically, but
 post-release incompatible changes require a new version. Keep helper stdout
-JSON-only and relay child output as events. Serial observation is test-only;
-RTT remains outside the established flash/debug/attach/debugserver path.
+JSON-only and relay child output as events. Serial observation is test-only.
+RTT uses structured runner state and the configured port; never infer it from
+GDB RSP traffic. Semihosting remains outside the implemented slices.
 
 ## Testing Guidelines
 
