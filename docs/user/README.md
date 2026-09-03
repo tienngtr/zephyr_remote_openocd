@@ -1,4 +1,10 @@
 # User Documentation
 
-User guides will be added here as the documentation refactor proceeds. Start
-with the repository [README](../../README.md) for installation and common usage.
+The root [README](../../README.md) is the quick start. These focused guides
+hold details without duplicating the requirements and architecture documents:
+
+- [Configuration](configuration.md): frozen V1 fields and validation behavior.
+- [Operations](operations.md): flash, debug, attach, debugserver, RTT, and
+  direct semihosting usage.
+- [Troubleshooting](troubleshooting.md): setup, SSH, staging, and lifecycle
+  diagnostics.

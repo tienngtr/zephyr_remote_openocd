@@ -7,6 +7,5 @@ Contributor testing and external fixture guidance:
 - [`testing.md`](testing.md) describes the pytest layers and commands.
 - [`AGENTS.md`](../../AGENTS.md) contains durable repository working rules.
 
-The legacy [`tests/README.md`](../../tests/README.md) remains a compatibility
-reference while external tests are migrated; new fixture work should follow the
-TOML inventory documented above.
+The test-tree [`tests/README.md`](../../tests/README.md) is a short command
+reference; the inventory guide above is the canonical schema and policy.

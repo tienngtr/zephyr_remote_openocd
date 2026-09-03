@@ -196,7 +196,7 @@ Exit: each layer collects independently; debug-class collection no longer
 requires thread-info capability; non-RTT targets retain all other applicable
 coverage; old behavioral scenarios remain represented in traceability.
 
-### M6 — User, Contributor, and Agent Guidance `[in progress]`
+### M6 — User, Contributor, and Agent Guidance `[done]`
 
 - `[done]` Refocus root README on install, setup, activation,
   configuration, and commands.
@@ -214,7 +214,7 @@ Dependencies: M1-M5.
 Exit: every supported user operation and contributor check has one discoverable
 and currently accurate entry point, with no PG/test names in user documentation.
 
-### M7 — CI and Strict Release Driver `[in progress]`
+### M7 — CI and Strict Release Driver `[done]`
 
 - `[done]` Add GitHub Actions for lint/static and self-contained tests; external
   Zephyr/hardware layers remain explicitly operator-selected.
@@ -230,7 +230,7 @@ Dependencies: M2-M6.
 Exit: CI passes from a clean checkout; simulated driver outcomes are deterministic
 and missing native-Linux evidence is fatal while WSL-only gates remain deferred.
 
-### M8 — Full Validation and Final Consistency Audit `[not started]`
+### M8 — Full Validation and Final Consistency Audit `[in progress]`
 
 - `[not started]` Run self-contained, Zephyr, clean-install, SSH, and configured
   hardware layers.

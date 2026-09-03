@@ -92,7 +92,8 @@ WSL2:
 command = ["/mnt/c/Windows/System32/OpenSSH/ssh.exe", "-o", "ControlMaster=no"]
 ```
 
-WSL-specific validation remains deferred (PG-012/PG-013).
+WSL-specific validation is not yet part of the validated native-Linux support
+claim; see [`docs/validation/v1.md`](docs/validation/v1.md) for platform status.
 
 ## Operations
 
@@ -127,5 +128,7 @@ automatically to the remote user account and cleans up sessions on normal or
 abnormal termination. Compatibility rules and the complete wire contract are
 documented in [`docs/architecture/protocol-v1.md`](docs/architecture/protocol-v1.md).
 
-For test-fixture setup and hardware prerequisites, see
-[`tests/README.md`](tests/README.md).
+For detailed user guides, see [`docs/user/`](docs/user/). For contributor
+testing and external fixture prerequisites, see
+[`docs/development/testing.md`](docs/development/testing.md) and
+[`docs/development/hardware-fixtures.md`](docs/development/hardware-fixtures.md).
