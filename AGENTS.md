@@ -53,7 +53,10 @@ Protocol 1 is pre-release and unfrozen; client/helper may evolve atomically, but
 post-release incompatible changes require a new version. Keep helper stdout
 JSON-only and relay child output as events. Serial observation is test-only.
 RTT uses structured runner state and the configured port; never infer it from
-GDB RSP traffic. Semihosting remains outside the implemented slices.
+GDB RSP traffic. Direct semihosting console validation uses fixture-supplied
+OpenOCD `--cmd-pre-init` commands and the normal stdout/stderr relay. It adds
+no semihosting proxy, filesystem virtualization, or GDB File-I/O path; target
+capabilities and commands stay in ignored hardware fixtures.
 
 ## Testing Guidelines
 

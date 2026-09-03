@@ -154,12 +154,14 @@ def build_debug_plan(
 
     rtos = thread_info_enabled(inputs.thread_info_requested, inputs.openocd_version)
     argv = [inputs.executable]
+    # Board configurations can inspect _ZEPHYR_BOARD_SERIAL as they are
+    # loaded, so preserve Zephyr's serial-before-config ordering.
+    if inputs.serial:
+        argv.extend(("-c", "set _ZEPHYR_BOARD_SERIAL " + inputs.serial))
     for path in remote_search:
         argv.extend(("-s", path))
     for path in remote_configs:
         argv.extend(("-f", path))
-    if inputs.serial:
-        argv.extend(("-c", "set _ZEPHYR_BOARD_SERIAL " + inputs.serial))
     argv.extend(("-c", f"bindto {ADDRESS_TOKEN}"))
     for name, port in (
         ("tcl_port", remote_tcl),

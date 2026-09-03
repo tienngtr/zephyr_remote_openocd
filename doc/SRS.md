@@ -1185,6 +1185,11 @@ A custom RTT port works without inspecting GDB RSP traffic.
 
 Semihosting console output emitted by remote OpenOCD appears in the local west terminal.
 
+Status: validated through direct semihosting on every configured capable
+native-Linux fixture, covering both orderly completion and interruption cleanup,
+using the existing OpenOCD stdout/stderr relay. GDB File-I/O, semihosting TCP
+redirection, proxying, and filesystem virtualization remain out of scope.
+
 ## AC-CONC-001
 
 Independent remote target sessions can coexist without OpenOCD service-port collisions.
@@ -1248,6 +1253,9 @@ implemented, with real thread enumeration validated on a capable hardware
 fixture. These areas are no longer open implementation questions or V1
 feasibility risks. RTT is implemented and validated on an externally configured,
 RTT-capable hardware fixture, including non-default-port, bidirectional, and
-simultaneous GDB/RTT operation. Semihosting-specific validation and WSL
-validation remain subsequent work. No unresolved stakeholder/product decision
-currently blocks V1 implementation.
+simultaneous GDB/RTT operation. Direct semihosting console validation is
+implemented through fixture-supplied OpenOCD commands and the existing
+stdout/stderr relay, with all configured capable hardware fixtures passing both
+normal and interruption paths; no semihosting proxy, filesystem virtualization,
+or GDB File-I/O path is included. WSL validation remains subsequent work. No
+unresolved stakeholder/product decision currently blocks V1 implementation.

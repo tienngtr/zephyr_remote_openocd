@@ -193,8 +193,17 @@ def allocate_service_address(ports):
     raise RuntimeError("loopback allocation exhausted after 32 attempts")
 
 
-def services_connectable(address, ports):
-    for port in ports:
+def services_connectable(address, services):
+    """Probe non-GDB listeners without consuming an OpenOCD client slot.
+
+    OpenOCD's GDB server treats a bare TCP connect as a rejected debugger
+    session.  The real GDB client connection is therefore authoritative for
+    that service; Tcl and telnet remain safe to probe here.
+    """
+    for service in services:
+        if service.get("name") == "gdb":
+            continue
+        port = service["remote_port"]
         try:
             with socket.create_connection((address, port), timeout=0.2):
                 pass
@@ -245,7 +254,11 @@ def controller():
                     os.killpg(child.pid, signal.SIGKILL)
                     child.wait()
         for thread in relay_threads:
-            thread.join(timeout=2)
+            # A signal can arrive immediately after PROCESS_STARTED is
+            # emitted, before the relay-start loop below has run.  Joining an
+            # unstarted Thread raises and would skip workspace removal.
+            if thread.is_alive():
+                thread.join(timeout=2)
         close_child_streams()
         shutil.rmtree(work, ignore_errors=True)
 
@@ -419,9 +432,9 @@ def controller():
                             daemon=True,
                         ),
                     ]
-                    emit("PROCESS_STARTED", remote_address=address, child_pid=child.pid)
                     for thread in relay_threads:
                         thread.start()
+                    emit("PROCESS_STARTED", remote_address=address, child_pid=child.pid)
                     if marker is not None:
                         deadline = time.monotonic() + readiness_timeout
                         while time.monotonic() < deadline:
@@ -430,7 +443,7 @@ def controller():
                                     "OpenOCD exited before readiness with status "
                                     f"{child.returncode}"
                                 )
-                            if marker_seen.is_set() and services_connectable(address, ports):
+                            if marker_seen.is_set() and services_connectable(address, services):
                                 for service in services:
                                     emit("SERVICE_READY", remote_address=address, service=service)
                                 break

@@ -107,12 +107,15 @@ def build_flash_plan(
     remote_image = planner.plan_file(source_path, "firmware").remote
 
     argv = [inputs.executable]
+    # Zephyr's OpenOCD runner sets the board serial before loading the board
+    # configuration.  The configuration may consume _ZEPHYR_BOARD_SERIAL
+    # while it is being evaluated (for example via ``adapter serial``).
+    if inputs.serial:
+        argv.extend(("-c", "set _ZEPHYR_BOARD_SERIAL " + inputs.serial))
     for path in remote_search:
         argv.extend(("-s", path))
     for path in remote_configs:
         argv.extend(("-f", path))
-    if inputs.serial:
-        argv.extend(("-c", "set _ZEPHYR_BOARD_SERIAL " + inputs.serial))
     argv.extend(("-c", f"bindto {ADDRESS_TOKEN}"))
     argv.extend(_commands(inputs.pre_init))
     if not inputs.no_init:

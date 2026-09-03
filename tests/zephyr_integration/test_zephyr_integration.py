@@ -349,6 +349,36 @@ class ZephyrIntegrationTests(unittest.TestCase):
                         recording["remote_session_request"]["process"]["argv"],
                     )
 
+    def test_recording_direct_semihosting_commands_without_io(self):
+        commands = (
+            "init",
+            "arm semihosting enable",
+            "arm semihosting_fileio disable",
+            "arm semihosting_redirect disable",
+        )
+        result = self._west(
+            "debug",
+            "-d",
+            str(self.build_in_tree),
+            "-r",
+            "remote-openocd",
+            "--no-rebuild",
+            "--",
+            "--no-load",
+            "--no-init",
+            *(f"--cmd-pre-init={command}" for command in commands),
+            "--gdb-init=monitor reset run",
+        )
+        recording = self._recording(result.stdout)
+        argv = recording["remote_session_request"]["process"]["argv"]
+        for command in commands:
+            self.assertIn(command, argv)
+        self.assertEqual(
+            [item["name"] for item in recording["remote_session_request"]["services"]],
+            ["gdb", "tcl", "telnet"],
+        )
+        self.assertFalse(recording["rtt"]["enabled"])
+
     def test_explicit_elf_file_type_uses_zephyr_elf_flash_flow(self):
         result = self._west(
             "flash",

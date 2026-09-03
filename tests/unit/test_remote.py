@@ -193,6 +193,116 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(backend.session.actions[-1], ("close",))
 
 
+class ForwardingLifecycleTests(unittest.TestCase):
+    class Process:
+        def __init__(self, returncode=None):
+            self.returncode = returncode
+            self.terminate_calls = 0
+            self.kill_calls = 0
+            self.stdin = None
+            self.stdout = None
+            self.stderr = io.BytesIO(b"bind failed")
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.terminate_calls += 1
+            self.returncode = 0
+
+        def kill(self):
+            self.kill_calls += 1
+            self.returncode = -9
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    class Command:
+        def __init__(self, process):
+            self.process = process
+            self.calls = []
+
+        def popen(self, host, remote_command, *extra_args):
+            self.calls.append((host, remote_command, extra_args))
+            return self.process
+
+    @staticmethod
+    def session(command):
+        session = object.__new__(SshHelperSession)
+        session.request = RemoteSessionRequest("dot4", command)
+        session.forward_start_timeout = 1
+        session.forwards = []
+        session.closed = False
+        return session
+
+    @staticmethod
+    def port():
+        try:
+            listener = socket.socket()
+        except PermissionError as error:
+            raise unittest.SkipTest("sandbox prohibits loopback listeners") from error
+        with listener:
+            listener.bind(("127.0.0.1", 0))
+            return listener.getsockname()[1]
+
+    def test_gdb_listener_readiness_does_not_probe_single_client_socket(self):
+        process = self.Process()
+        command = self.Command(process)
+        session = self.session(command)
+        service = Service("gdb", self.port(), 3333)
+        with (
+            patch.object(SshHelperSession, "_listener_ready", return_value=True),
+            patch("zephyr_remote_openocd.remote.backend.socket.create_connection") as connect,
+        ):
+            session._start_forwards((service,), "127.64.1.1")
+        connect.assert_not_called()
+        session._close_forwards()
+        self.assertEqual(process.terminate_calls, 1)
+
+    def test_stale_gdb_forward_cannot_mask_current_forward_failure(self):
+        class RaceProcess(self.Process):
+            def __init__(self):
+                super().__init__()
+                self.poll_count = 0
+
+            def poll(self):
+                self.poll_count += 1
+                return None if self.poll_count == 1 else 255
+
+        stale = RaceProcess()
+        command = self.Command(stale)
+        session = self.session(command)
+        service = Service("gdb", self.port(), 3333)
+        listener = socket.socket()
+        try:
+            listener.bind(("127.0.0.1", service.local_port))
+            listener.listen()
+        except OSError as error:
+            listener.close()
+            raise unittest.SkipTest("sandbox cannot create stale listener") from error
+        with (
+            patch("zephyr_remote_openocd.remote.backend.socket.create_connection") as connect,
+            self.assertRaisesRegex(SessionError, "SSH forwarding failed"),
+        ):
+            try:
+                session._start_forwards((service,), "127.64.1.1")
+            finally:
+                listener.close()
+        connect.assert_not_called()
+        session._close_forwards()
+        self.assertEqual(stale.terminate_calls, 0)
+
+    def test_forward_cleanup_is_reverse_order_and_idempotent(self):
+        first = self.Process()
+        second = self.Process()
+        session = self.session(self.Command(first))
+        session.forwards = [first, second]
+        session._close_forwards()
+        session._close_forwards()
+        self.assertEqual(second.terminate_calls, 1)
+        self.assertEqual(first.terminate_calls, 1)
+
+
 class AllocationTests(unittest.TestCase):
     def test_range_and_exhaustion(self):
         self.assertIn(ipaddress.IPv4Address(random_loopback_address()), LOOPBACK_RANGE)
@@ -300,6 +410,31 @@ class FlashPlanningTests(unittest.TestCase):
             self.assertIn("verify ", joined)
             self.assertIn("0x8000000", joined)
 
+    def test_serial_is_set_before_board_configuration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "openocd.cfg"
+            config.write_text("adapter driver ftdi\n")
+            image = Path(directory) / "image.hex"
+            image.write_text(":00000001FF\n")
+            plan = build_flash_plan(
+                FlashInputs(
+                    executable="openocd",
+                    image_type="hex",
+                    file=str(image),
+                    elf_file=None,
+                    hex_file=str(image),
+                    bin_file=None,
+                    search_paths=(),
+                    config_files=(str(config),),
+                    load_command="program",
+                    verify_command="verify_image",
+                    serial="ES-FT4232H-02",
+                ),
+                PathPlanner(()),
+            )
+            argv = plan.process.argv
+            self.assertLess(argv.index("set _ZEPHYR_BOARD_SERIAL ES-FT4232H-02"), argv.index("-f"))
+
 
 class DebugPlanningTests(unittest.TestCase):
     def inputs(self, root, command="debug", **changes):
@@ -353,6 +488,10 @@ class DebugPlanningTests(unittest.TestCase):
             )
             self.assertIsNone(server.gdb_argv)
             self.assertIn("set _ZEPHYR_BOARD_SERIAL probe", server.process.argv)
+            self.assertLess(
+                server.process.argv.index("set _ZEPHYR_BOARD_SERIAL probe"),
+                server.process.argv.index("-f"),
+            )
             self.assertIn("reset init", server.process.argv)
 
     def test_disabled_services_and_distinct_gdb_ports(self):
@@ -596,7 +735,7 @@ class RealProcessHelperTests(unittest.TestCase):
                         ],
                         environment={},
                         required_paths=[],
-                        services=[{"name": "gdb", "remote_port": remote_port}],
+                        services=[{"name": "tcl", "remote_port": remote_port}],
                         readiness_marker=marker,
                         readiness_timeout=5,
                     )
@@ -676,6 +815,103 @@ class RealProcessHelperTests(unittest.TestCase):
             finally:
                 if process.poll() is None:
                     process.terminate()
+                    process.wait(timeout=5)
+                for stream in (process.stdin, process.stdout, process.stderr):
+                    if stream is not None and not stream.closed:
+                        stream.close()
+
+    def test_controller_signal_cleans_child_and_workspace(self):
+        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as directory:
+            environment = os.environ.copy()
+            environment["XDG_RUNTIME_DIR"] = directory
+            process = subprocess.Popen(
+                [sys.executable, str(helper), "control"],
+                env=environment,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            child_pid = None
+            workspace = None
+            try:
+                assert process.stdout is not None and process.stdin is not None
+                self.assertEqual(json.loads(process.stdout.readline())["type"], "HELLO")
+                created = json.loads(process.stdout.readline())
+                workspace = Path(created["remote_workspace"])
+                command = [sys.executable, "-c", "import time; time.sleep(30)"]
+                process.stdin.write(
+                    encode_message("START_OPENOCD", argv=command, environment={}, required_paths=[])
+                )
+                process.stdin.flush()
+                started = json.loads(process.stdout.readline())
+                self.assertEqual(started["type"], "PROCESS_STARTED")
+                child_pid = started["child_pid"]
+                process.terminate()
+                self.assertEqual(process.wait(timeout=8), 0)
+                self.assertFalse(workspace.exists())
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(child_pid, 0)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=5)
+                for stream in (process.stdin, process.stdout, process.stderr):
+                    if stream is not None and not stream.closed:
+                        stream.close()
+
+    def test_partial_openocd_start_cleans_child_and_workspace(self):
+        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as directory:
+            environment = os.environ.copy()
+            environment["XDG_RUNTIME_DIR"] = directory
+            process = subprocess.Popen(
+                [sys.executable, str(helper), "control"],
+                env=environment,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            try:
+                assert process.stdout is not None and process.stdin is not None
+                self.assertEqual(json.loads(process.stdout.readline())["type"], "HELLO")
+                created = json.loads(process.stdout.readline())
+                workspace = Path(created["remote_workspace"])
+                try:
+                    listener = socket.socket()
+                except PermissionError as error:
+                    raise unittest.SkipTest("sandbox prohibits loopback listeners") from error
+                with listener:
+                    listener.bind(("127.0.0.1", 0))
+                    remote_port = listener.getsockname()[1]
+                marker = "ZRO_READY_partial"
+                command = [
+                    sys.executable,
+                    "-c",
+                    "import sys,time; print(sys.argv[1], flush=True); time.sleep(30)",
+                    marker,
+                ]
+                process.stdin.write(
+                    encode_message(
+                        "START_OPENOCD",
+                        argv=command,
+                        environment={},
+                        required_paths=[],
+                        services=[{"name": "tcl", "remote_port": remote_port}],
+                        readiness_marker=marker,
+                        readiness_timeout=0.5,
+                    )
+                )
+                process.stdin.flush()
+                events = [json.loads(line) for line in process.stdout]
+                self.assertEqual(events[0]["type"], "PROCESS_STARTED")
+                self.assertTrue(any(event["type"] == "CHILD_OUTPUT" for event in events))
+                self.assertEqual(process.wait(timeout=8), 0)
+                self.assertFalse(workspace.exists())
+                self.assertEqual(events[-1]["type"], "ERROR")
+            finally:
+                if process.poll() is None:
+                    process.kill()
                     process.wait(timeout=5)
                 for stream in (process.stdin, process.stdout, process.stderr):
                     if stream is not None and not stream.closed:

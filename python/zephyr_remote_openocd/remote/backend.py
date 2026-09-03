@@ -145,6 +145,21 @@ class SshHelperSession(BackendSession):
         except OSError as error:
             return f"local port 127.0.0.1:{port} appears unavailable: {error}"
 
+    @staticmethod
+    def _listener_ready(port: int) -> bool:
+        """Check for a local TCP listener without opening a client session."""
+        wanted = f":{port:04X}"
+        for proc_file in ("/proc/net/tcp", "/proc/net/tcp6"):
+            try:
+                with open(proc_file, encoding="ascii") as lines:
+                    for line in lines:
+                        fields = line.split()
+                        if len(fields) >= 4 and fields[1].endswith(wanted) and fields[3] == "0A":
+                            return True
+            except OSError:
+                continue
+        return False
+
     def start(self, services: Iterable[Service]) -> SessionDescriptor:
         service_list = tuple(services)
         if self.request.process is not None:
@@ -264,13 +279,26 @@ class SshHelperSession(BackendSession):
             self.forwards.append(process)
             deadline = time.monotonic() + self.forward_start_timeout
             connected = False
+            # A bare connect consumes/rejects an OpenOCD GDB slot and can make
+            # the subsequent real GDB handshake fail.  For GDB, the client
+            # launcher is the authoritative end-to-end readiness check.
             while process.poll() is None and time.monotonic() < deadline:
-                try:
-                    with socket.create_connection(("127.0.0.1", service.local_port), timeout=0.1):
-                        connected = True
-                        break
-                except OSError:
-                    pass
+                if service.name == "gdb":
+                    connected = self._listener_ready(service.local_port)
+                if not connected:
+                    if service.name == "gdb":
+                        time.sleep(0.01)
+                        continue
+                    try:
+                        with socket.create_connection(
+                            ("127.0.0.1", service.local_port), timeout=0.1
+                        ):
+                            connected = True
+                            break
+                    except OSError:
+                        pass
+                else:
+                    break
                 time.sleep(0.01)
             if connected:
                 # Give ExitOnForwardFailure a short authoritative window to

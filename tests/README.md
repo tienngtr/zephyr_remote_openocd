@@ -66,3 +66,23 @@ RTT forwarding for `debug --rtt-server`, endpoint-only behavior for
 `debugserver --rtt-server`, and cleanup. No local RTT client is expected for
 either `--rtt-server` operation. All hardware identities and RTT capability
 selection remain in the uncommitted fixture file.
+
+Direct semihosting-console acceptance is gated by
+`ZRO_REAL_SEMIHOSTING_FIXTURES`. Each entry supplies `supports_semihosting`,
+the common remote/build fields, `semihosting_commands`, GDB control commands,
+`expected_output`, and a timeout. Optional `runner_args` carry fixture-only
+runner selections such as `--serial`. Semihosting commands are OpenOCD commands
+passed through `--cmd-pre-init`; capable fixtures should register them with
+`post_init_commands` so normal runner initialization precedes semihosting setup.
+GDB commands are reserved for actions such as `continue` and orderly
+halt/detach. The preferred fixture application exits or halts through
+semihosting, but that behavior is not required when the test can perform
+separate orderly termination after observing output.
+
+The direct-mode fixture commands enable semihosting and disable both
+`semihosting_fileio` and `semihosting_redirect`. Recording mode verifies the
+generated invocation without I/O; hardware tests match fresh target text in
+relayed OpenOCD stdout/stderr and check normal/interruption cleanup. At least
+one capable fixture must pass, while unsupported combinations skip only this
+capability. No semihosting proxy, filesystem virtualization, or GDB File-I/O
+path is used, and board/device names remain in the external ignored fixture.

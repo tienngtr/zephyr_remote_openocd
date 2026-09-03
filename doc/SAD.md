@@ -1197,7 +1197,8 @@ expected-output values remain external fixture data.
 At least one RTT-capable validation target SHALL exercise RTT; incapable
 fixtures skip only RTT-specific assertions.
 
-At least one validation target SHOULD exercise semihosting console output.
+At least one capability-enabled validation target SHALL exercise semihosting
+console output; unsupported fixtures skip only this capability assertion.
 
 ## 44.5 Platform matrix
 
@@ -1340,7 +1341,7 @@ RTT
     COMPLETE and validated on RTT-capable hardware
 
 Then
-    semihosting console
+    semihosting console (COMPLETE on every configured capable fixture)
 ```
 
 ---
@@ -1429,8 +1430,9 @@ Status: **COMPLETE — validated V1 capability on native Linux.**
 
 One helper-supervised OpenOCD process persists for each operation. A unique
 final OpenOCD `echo` marker proves that command-specific initialization has
-completed; readiness additionally requires every enabled service socket to be
-connectable. Exact loopback-only SSH forwards expose remote GDB, Tcl, and telnet
+completed; readiness additionally checks enabled service sockets without
+consuming OpenOCD's single-client GDB slot (the real GDB handshake is
+authoritative for GDB). Exact loopback-only SSH forwards expose remote GDB, Tcl, and telnet
 services. Disabled services create neither a readiness requirement nor a local
 listener. The remote GDB server port maps to Zephyr's distinct local GDB-client
 port where configured.
@@ -1474,3 +1476,36 @@ and RTT forwarding, debugserver endpoint-only behavior, interruption handling,
 and complete remote workspace/process cleanup. Concrete hardware identity and
 RTT capability remain solely in ignored fixture configuration. Semihosting is
 not part of this slice.
+
+# 54. Direct Semihosting Console Validation
+
+Status: **COMPLETE — validated through the existing OpenOCD stdout/stderr
+relay on every configured capable native-Linux hardware fixture.** Both normal
+completion and interruption-triggered termination passed, including workspace,
+controller, OpenOCD, and forwarding cleanup.
+
+Fixture-supplied OpenOCD commands are passed through `--cmd-pre-init`; the
+validated fixtures register the direct-mode commands with OpenOCD's
+`post_init_commands` so the normal runner sequence remains configuration,
+`init`, semihosting setup, and then GDB load. An explicit fixture-only `init`
+is permitted only as a fallback when a particular OpenOCD build cannot use
+`post_init_commands`. The direct-mode sequence enables semihosting and disables
+GDB File-I/O and TCP redirection. Fixture-supplied GDB commands are limited to
+control actions such as resuming and orderly termination; they do not configure
+semihosting.
+
+The test observes fresh target console text in relayed OpenOCD stdout/stderr
+and exercises both orderly and interruption cleanup. Semihosting exit or halt is
+preferred but not required when the fixture can perform separate orderly
+termination after the output oracle matches. Hardware capability is declared
+externally, so unsupported combinations skip only this assertion. No
+semihosting proxy, filesystem virtualization, GDB File-I/O handling, or
+board-specific production logic was added.
+
+The earlier no-output observation came from the test lifecycle ordering
+(`flash` followed by a no-load debug session), which could let a one-shot
+application run before semihosting was enabled. The permanent flow performs a
+normal GDB load after post-init semihosting configuration. The earlier local GDB
+reset was independently traced to stale local SSH forwarding processes; the
+GDB handshake is now authoritative and no readiness probe consumes OpenOCD's
+single-client GDB socket.
