@@ -91,6 +91,16 @@ fixture files; committed examples must use neutral placeholders. Thread-info
 tests use an injected version in no-I/O modes; production must query the
 configured OpenOCD executable remotely.
 
+## Contributor Playbooks
+
+For an ordinary change, run `pytest`, Ruff, and `git diff --check` before
+committing. For external validation, copy the neutral inventory template,
+run `pytest --collect-only` with `--hardware-config`, then select the desired
+Zephyr, SSH, or hardware layer explicitly. For native-Linux release evidence,
+run `scripts/release_validate.py` with the configured inventory, Zephyr tree,
+west, board, and benchmark arguments. Keep destructive profiles serial and
+inspect cleanup output before reusing a target.
+
 ## Work Tracking
 
 For the repository-comprehension refactor, treat `.agents/GOAL.md` as the stable
