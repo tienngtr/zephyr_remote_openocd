@@ -17,6 +17,9 @@ python3 -m unittest tests.zephyr_integration.test_zephyr_integration -v
 ```
 
 The Zephyr tests compile only `samples/hello_world`, use a harmless fake OpenOCD executable, and place all copied applications, caches, and build trees beneath ignored `.scratch/` directories.
+They also include a clean-install acceptance test: it copies a Git-free module
+tree to a temporary directory, uses an isolated `HOME`, runs setup with West's
+Python environment, and activates only that copy through `EXTRA_ZEPHYR_MODULES`.
 
 Run SSH integration tests:
 

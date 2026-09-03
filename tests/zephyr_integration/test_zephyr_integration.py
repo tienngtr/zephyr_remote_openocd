@@ -8,6 +8,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -410,6 +411,173 @@ class ZephyrIntegrationTests(unittest.TestCase):
         self.assertIn("Re-running CMake", local.stdout)
         self.assertIn("using runner openocd", local.stdout)
         self.assertEqual(self._runner_state(self.build_in_tree)["flash-runner"], "openocd")
+
+    @staticmethod
+    def _west_python(west: Path) -> Path:
+        """Return West's interpreter so setup checks its Zephyr dependencies."""
+        try:
+            first_line = west.read_text(encoding="utf-8").splitlines()[0]
+        except (OSError, UnicodeDecodeError, IndexError):
+            return Path(sys.executable)
+        if not first_line.startswith("#!"):
+            return Path(sys.executable)
+        command = first_line[2:].strip().split()
+        if not command:
+            return Path(sys.executable)
+        if Path(command[0]).name == "env":
+            resolved = shutil.which(command[-1])
+            return Path(resolved) if resolved else Path(sys.executable)
+        candidate = Path(command[0])
+        return candidate if candidate.is_file() else Path(sys.executable)
+
+    def test_clean_install_acceptance_from_git_free_distribution(self):
+        """A copied module works through setup and EXTRA_ZEPHYR_MODULES alone."""
+        with tempfile.TemporaryDirectory(prefix="zro-clean-install-") as directory:
+            root = Path(directory)
+            distribution = root / "zephyr-remote-openocd"
+            home = root / "home"
+            build = root / "build"
+            cache = root / "cache"
+            fake_openocd = root / "fake-openocd"
+            ignored = shutil.ignore_patterns(
+                ".git",
+                ".scratch",
+                ".venv",
+                ".mypy_cache",
+                ".ruff_cache",
+                ".pytest_cache",
+                ".coverage",
+                "build",
+                "dist",
+                "*.egg-info",
+                "__pycache__",
+                "*.pyc",
+            )
+            shutil.copytree(ROOT, distribution, ignore=ignored)
+            self.assertFalse((distribution / ".git").exists())
+            self.assertFalse(str(distribution).startswith(str(ROOT)))
+            fake_openocd.write_text("#!/bin/sh\nprintf 'Open On-Chip Debugger 0.12.0\\n'\n")
+            fake_openocd.chmod(fake_openocd.stat().st_mode | stat.S_IXUSR)
+
+            clean_env = os.environ.copy()
+            for name in (
+                "PYTHONPATH",
+                "ZEPHYR_REMOTE_OPENOCD_CONFIG",
+                "ZEPHYR_REMOTE_OPENOCD_RECORD",
+                "ZEPHYR_REMOTE_OPENOCD_RECORD_VERSION",
+                "EXTRA_ZEPHYR_MODULES",
+                "ZEPHYR_EXTRA_MODULES",
+                "ZEPHYR_MODULES",
+            ):
+                clean_env.pop(name, None)
+            clean_env.update(
+                {
+                    "HOME": str(home),
+                    "EXTRA_ZEPHYR_MODULES": str(distribution),
+                    "CCACHE_DIR": str(root / "ccache"),
+                    "CCACHE_TEMPDIR": str(root / "ccache-tmp"),
+                }
+            )
+            zephyr_python = self._west_python(self.west)
+            self.assertEqual(
+                subprocess.run(
+                    [str(zephyr_python), "-c", "import elftools"],
+                    env=clean_env,
+                    check=False,
+                ).returncode,
+                0,
+                "the Zephyr Python environment must provide pyelftools",
+            )
+            setup_command = [str(zephyr_python), str(distribution / "scripts" / "setup.py")]
+            first_setup = subprocess.run(
+                setup_command,
+                cwd=distribution,
+                env=clean_env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(first_setup.returncode, 0, first_setup.stderr)
+            config = home / ".config" / "zephyr-remote-openocd" / "config.toml"
+            self.assertEqual(
+                config.read_bytes(),
+                (distribution / "resources" / "config.toml.example").read_bytes(),
+            )
+            self.assertEqual(stat.S_IMODE(config.parent.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(config.stat().st_mode), 0o600)
+            self.assertIn(f"Configuration (created): {config}", first_setup.stdout)
+            self.assertIn(f"Module root: {distribution}", first_setup.stdout)
+            self.assertIn("pyelftools: found", first_setup.stdout)
+            self.assertNotIn(str(ROOT), first_setup.stdout)
+
+            config.write_text(
+                '[zephyr]\ndefault = "local"\n\n'
+                '[remote]\nhost = "record-only"\nopenocd = "/remote/openocd"\n\n'
+                '[ssh]\ncommand = ["ssh"]\n\n'
+                '[[paths.map]]\nlocal = "/"\nremote = "/recorded"\n'
+            )
+            configured_contents = config.read_bytes()
+            second_setup = subprocess.run(
+                setup_command,
+                cwd=root,
+                env=clean_env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(second_setup.returncode, 0, second_setup.stderr)
+            self.assertEqual(config.read_bytes(), configured_contents)
+            self.assertIn(f"Configuration (already exists): {config}", second_setup.stdout)
+
+            def west(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+                result = subprocess.run(
+                    [str(self.west), *args],
+                    cwd=self.zephyr_base.parent,
+                    env=clean_env,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    check=False,
+                    timeout=180,
+                )
+                if check and result.returncode:
+                    raise AssertionError(
+                        f"west {' '.join(args)} failed ({result.returncode}):\\n{result.stdout}"
+                    )
+                return result
+
+            sample = self.zephyr_base / "samples" / "hello_world"
+            west(
+                "build",
+                "--cmake-only",
+                "-b",
+                self.openocd_board,
+                str(sample),
+                "-d",
+                str(build),
+                "--",
+                f"-DUSER_CACHE_DIR={cache}",
+                f"-DOPENOCD={fake_openocd}",
+            )
+            modules = (build / "zephyr_modules.txt").read_text()
+            self.assertIn(str(distribution), modules)
+            self.assertNotIn(str(ROOT), modules)
+            initial = self._runner_state(build)
+            self.assertIn("openocd", initial["runners"])
+            self.assertIn("remote-openocd", initial["runners"])
+            self.assertEqual(initial["flash-runner"], "openocd")
+            local_context = west("flash", "-d", str(build), "--context")
+            self.assertIn("openocd capabilities:", local_context.stdout)
+
+            config.write_text(config.read_text().replace('default = "local"', 'default = "remote"'))
+            clean_env["ZEPHYR_REMOTE_OPENOCD_RECORD"] = "1"
+            recorded = west("flash", "-d", str(build))
+            self.assertIn("Re-running CMake", recorded.stdout)
+            self.assertIn("using runner remote-openocd", recorded.stdout)
+            self.assertEqual(self._runner_state(build)["flash-runner"], "remote-openocd")
+            recording = self._recording(recorded.stdout)
+            self.assertEqual(recording["command"], "flash")
+            self.assertEqual(recording["remote_session_request"]["host"], "record-only")
 
     def test_zephyr44_adapter_respects_api_boundary(self):
         """Regression coverage for prototype gate PG-010."""
