@@ -50,6 +50,7 @@ environment = { FTDI_CHANNEL = "0" }
 
 [targets.profiles.flash.expect]
 patterns = ["hello"]
+assert_bindto = false
 
 [targets.profiles.debug]
 capabilities = ["debug", "attach", "debugserver"]

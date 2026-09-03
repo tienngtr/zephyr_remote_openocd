@@ -71,6 +71,7 @@ class SerialEndpoint:
 class Expectations:
     patterns: tuple[str, ...]
     thread_info_pattern: str | None
+    assert_bindto: bool
 
 
 @dataclass(frozen=True)
@@ -327,10 +328,13 @@ def _serial(raw: Any, path: Path, name: str) -> SerialEndpoint:
 
 def _expectations(raw: Any, path: Path, location: str) -> Expectations:
     item = _table(raw if raw is not None else {}, path, location)
-    _keys(item, {"patterns", "thread_info_pattern"}, path, location)
+    _keys(item, {"patterns", "thread_info_pattern", "assert_bindto"}, path, location)
     patterns = _string_array(item.get("patterns", []), path, f"{location}.patterns")
     thread = _optional_string(item, "thread_info_pattern", path, location)
-    return Expectations(patterns, thread)
+    assert_bindto = item.get("assert_bindto", False)
+    if not isinstance(assert_bindto, bool):
+        raise _error(path, f"{location}.assert_bindto", "expected a boolean")
+    return Expectations(patterns, thread, assert_bindto)
 
 
 def _rtt(raw: Any, path: Path, location: str) -> RttExpectation:

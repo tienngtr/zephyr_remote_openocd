@@ -12,10 +12,10 @@ point in `runners/remote_openocd.py`. Requirements and architecture live in
 
 ## Build, Test, and Development Commands
 
-Use Python 3.12 or newer. Run the hardware-free suite with:
+Use Python 3.12 or newer. Run the self-contained suite with:
 
 ```sh
-PYTHONPATH=python python3 -m unittest discover -s tests/unit -v
+pytest
 ```
 
 Initialize per-user setup (without editing repositories or shell files) with:
@@ -24,21 +24,29 @@ Initialize per-user setup (without editing repositories or shell files) with:
 python3 scripts/setup.py
 ```
 
-Run all locally available tests with:
+Run external layers explicitly with:
 
 ```sh
-PYTHONPATH=python python3 -m unittest discover -s tests -p 'test_*.py'
+pytest tests/zephyr_integration -m zephyr
+pytest tests/ssh_integration -m ssh --hardware-config /path/to/hardware.toml
+pytest tests/hardware -m hardware --hardware-config /path/to/hardware.toml
 ```
+
+For serial native-Linux release validation, use
+`python3 scripts/release_validate.py` with the inventory and Zephyr arguments
+documented in `docs/development/testing.md`. It is intentionally separate from
+ordinary pytest discovery.
 
 Zephyr-style Python checks are configured in `.ruff.toml` and `pylintrc`:
 `ruff check .`, `ruff format --check .`, `pylint --rcfile=pylintrc $(git ls-files
-'*.py')`, and `vermin -f parsable --violations -t=3.12
---no-make-paths-absolute $(git ls-files '*.py')`.
+'*.py')`, and `vermin -p=1 -f parsable --violations -t=3.12
+--no-make-paths-absolute $(git ls-files '*.py')` (single-process mode is useful
+in restricted sandboxes).
 
-Zephyr integration uses `ZEPHYR_BASE`, `WEST`, and `OPENOCD_TEST_BOARD`; SSH
-tests use `ZRO_SSH_TEST_HOST`. Read `tests/README.md` before hardware tests;
-they flash targets and require external fixture files. Finish with
-`git diff --check`.
+External tests use the ignored TOML inventory selected by `--hardware-config`
+or `ZRO_HARDWARE_CONFIG`; read `docs/development/hardware-fixtures.md` before
+hardware tests. They may build and flash targets, so inspect nodes with
+`--collect-only` first. Finish with `git diff --check`.
 
 ## Coding Style & Naming Conventions
 
@@ -73,9 +81,10 @@ fixtures.
 
 ## Testing Guidelines
 
-Tests use `unittest`; files and methods start with `test_`. Add focused unit tests
-for protocol ordering, lifecycle failures, cleanup, path safety, and command
-construction. Recording mode (`ZEPHYR_REMOTE_OPENOCD_RECORD=1`) must remain
+Tests use pytest; files and functions/classes follow `test_` naming and external
+profiles are parametrized as separate nodes. Add focused tests for protocol
+ordering, lifecycle failures, cleanup, path safety, and command construction.
+Recording mode (`ZEPHYR_REMOTE_OPENOCD_RECORD=1`) must remain
 strictly free of SSH, OpenOCD, GDB, and hardware I/O. Concrete lab identities,
 serial devices, capability values, and expected output stay in uncommitted
 fixture files; committed examples must use neutral placeholders. Thread-info
@@ -100,5 +109,5 @@ Exclude unrelated changes. Run relevant validation first.
 Avoid arbitrary checkpoint commits.
 Do not rewrite history unless explicitly authorized.
 Use concise imperative subjects.
-Never commit credentials, hosts, device paths, or `.scratch/` artifacts.
-Push after each commit.
+Never commit credentials, hosts, device paths, or `.scratch/` artifacts. Do not
+push unless the user explicitly requests it.

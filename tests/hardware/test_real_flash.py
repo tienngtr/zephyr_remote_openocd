@@ -4,15 +4,13 @@ from __future__ import annotations
 
 import base64
 import ipaddress
-import json
 import os
 import re
 import shlex
 import shutil
 import subprocess
-import unittest
-from pathlib import Path
 
+import pytest
 from zephyr_remote_openocd.remote.ssh import SshCommand
 
 from tests.serial_reader import (
@@ -26,28 +24,12 @@ from tests.serial_reader import (
 )
 from tests.support import ROOT
 
+pytestmark = [pytest.mark.hardware, pytest.mark.destructive]
 
-class RealOpenOcdFlashTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        fixture_path = os.environ.get("ZRO_REAL_FLASH_FIXTURES")
-        if not fixture_path:
-            raise unittest.SkipTest("ZRO_REAL_FLASH_FIXTURES is not configured")
-        try:
-            document = json.loads(Path(fixture_path).read_text())
-            fixtures = list(document["fixtures"])
-        except (OSError, KeyError, TypeError, json.JSONDecodeError) as error:
-            raise RuntimeError(
-                f"invalid real-flash fixture file {fixture_path}: {error}"
-            ) from error
-        if not fixtures:
-            raise unittest.SkipTest("real-flash fixture file configures no fixtures")
-        cls.fixtures = fixtures
 
-    def test_configured_targets_flash_and_emit_fresh_serial_output(self):
-        for fixture in self.fixtures:
-            with self.subTest(fixture=fixture.get("id")):
-                self._run_fixture(fixture)
+class TestRealOpenOcdFlash:
+    def test_configured_target_flashes_and_emits_fresh_serial_output(self, flash_fixture):
+        self._run_fixture(flash_fixture)
 
     def _run_fixture(self, fixture):
         required = (
@@ -62,25 +44,29 @@ class RealOpenOcdFlashTests(unittest.TestCase):
         )
         missing = [key for key in required if key not in fixture]
         if missing:
-            self.fail(f"fixture {fixture.get('id')} is missing: {', '.join(missing)}")
+            pytest.fail(f"fixture {fixture.get('id')} is missing: {', '.join(missing)}")
         ssh = SshCommand(tuple(fixture["ssh_command"]))
         remote_command = remote_serial_reader_command(
             str(fixture["serial_device"]),
             int(fixture["serial_baud"]),
             str(fixture["expected_pattern"]),
             float(fixture["serial_timeout"]),
+            data_bits=int(fixture.get("serial_data_bits", 8)),
+            parity=str(fixture.get("serial_parity", "none")),
+            stop_bits=int(fixture.get("serial_stop_bits", 1)),
+            flow_control=str(fixture.get("serial_flow_control", "none")),
         )
         reader = ssh.popen(fixture["host"], remote_command, "-o", "ControlMaster=no")
         try:
             ready = _read_event(reader, 15)
-            self.assertEqual(ready["type"], "READY", ready)
+            assert ready["type"] == "READY", ready
             assert reader.stdin is not None
             reader.stdin.write(b"ARM\n")
             reader.stdin.flush()
 
             west = fixture.get("west") or shutil.which("west")
             if not west:
-                self.fail("fixture has no west executable and west is not on PATH")
+                pytest.fail("fixture has no west executable and west is not on PATH")
             command = [
                 str(west),
                 "flash",
@@ -116,27 +102,23 @@ class RealOpenOcdFlashTests(unittest.TestCase):
             )
             event = _read_event(reader, float(fixture["serial_timeout"]) + 2)
             captured = base64.b64decode(event.get("data", "")).decode("utf-8", "replace")
-            self.assertEqual(flash.returncode, 0, flash.stdout + "\nserial:\n" + captured)
-            self.assertEqual(event["type"], "MATCH", f"serial oracle failed: {event}\n{captured}")
+            assert flash.returncode == 0, flash.stdout + "\nserial:\n" + captured
+            assert event["type"] == "MATCH", f"serial oracle failed: {event}\n{captured}"
             session = re.search(
                 r"Remote OpenOCD session (\S+) workspace=(\S+) bindto=(\S+)", flash.stdout
             )
-            self.assertIsNotNone(session, flash.stdout)
+            assert session is not None, flash.stdout
             assert session is not None
             address = ipaddress.ip_address(session.group(3))
-            self.assertIn(address, ipaddress.ip_network("127.64.0.0/10"))
+            assert address in ipaddress.ip_network("127.64.0.0/10")
             if fixture.get("assert_openocd_bindto"):
-                self.assertIn(f"bindto name: {address}", flash.stdout)
+                assert f"bindto name: {address}" in flash.stdout
             cleanup = ssh.run(
                 fixture["host"], f"test ! -e {shlex.quote(session.group(2))}", timeout=20
             )
-            self.assertEqual(cleanup.returncode, 0, cleanup.stderr.decode("utf-8", "replace"))
+            assert cleanup.returncode == 0, cleanup.stderr.decode("utf-8", "replace")
             for pattern in fixture.get("expected_flash_patterns", []):
-                self.assertRegex(flash.stdout, pattern)
-            self.assertEqual(reader.wait(timeout=5), 0)
+                assert re.search(pattern, flash.stdout)
+            assert reader.wait(timeout=5) == 0
         finally:
             _stop(reader)
-
-
-if __name__ == "__main__":
-    unittest.main()

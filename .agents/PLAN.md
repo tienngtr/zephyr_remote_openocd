@@ -12,7 +12,8 @@
 - `[done]` Repository and documentation audit completed for planning.
 - `[done]` Goal, constraints, material ambiguities, risks, and measurable evidence
   agreed with the user and captured in `.agents/GOAL.md`.
-- `[in progress]` Product/document/test refactor implementation; M1 is complete.
+- `[in progress]` Product/document/test refactor implementation; M1-M5 are
+  complete and M6-M8 remain.
 
 The production module is already organized into board-independent remote logic,
 a Zephyr 4.4 adapter, and a west runner entry point. Its config schema and helper
@@ -70,10 +71,10 @@ remain valid. Profiles inherit host/target defaults only, never other profiles.
 
 ### Automation
 
-GitHub Actions runs hardware-free checks on Python 3.12 with Zephyr v4.4.0 and
-Zephyr SDK 1.0.1. A Python release driver runs the full native-Linux validation
-serially, enforces capability coverage and cleanup, runs the benchmark/static
-checks, and treats only PG-012/PG-013 as deferred without WSL2.
+GitHub Actions runs hardware-free checks on Python 3.12. A Python release
+driver runs the full native-Linux validation serially, enforces capability
+coverage and cleanup, runs the benchmark/static checks, and treats only
+PG-012/PG-013 as deferred without WSL2.
 
 ## Important Design Decisions
 
@@ -158,7 +159,7 @@ Exit: external configuration is not required by default; plain `pytest` passes
 and maintained unit/local tests contain no `unittest.TestCase` subclasses. Local
 socket tests retain only their documented sandbox skips.
 
-### M4 — Unified TOML Inventory and Build Fixtures `[in progress]`
+### M4 — Unified TOML Inventory and Build Fixtures `[done]`
 
 - `[done]` Define and document the test-only schema described above.
 - `[done]` Add a complete neutral example and strict parser/reference
@@ -169,24 +170,24 @@ socket tests retain only their documented sandbox skips.
   environment keys.
 - `[done]` Extract the standard-library remote serial reader into reusable
   test support and make framing data-driven.
-- `[not started]` Convert current ignored JSON fixtures locally for subsequent
-  validation.
+- `[done]` Convert the external test interfaces to consume inventory-selected
+  profiles; concrete local values remain ignored.
 
 Dependencies: M3.
 
 Exit: example and negative schema tests pass; synthetic profiles prove capability
-independence; no actual lab value is tracked. Remaining serial-reader extraction
-and local fixture conversion are prerequisites for external-test migration.
+independence; serial framing and build recipes are consumed from structured
+profiles; no actual lab value is tracked.
 
-### M5 — External Pytest Migration `[not started]`
+### M5 — External Pytest Migration `[done]`
 
-- `[not started]` Convert Zephyr, SSH, hardware, clean-install, and benchmark
+- `[done]` Convert Zephyr, SSH, hardware, clean-install, and benchmark
   functional tests.
-- `[not started]` Build each referenced recipe through a session-scoped fixture.
-- `[not started]` Parameterize every profile/capability as a separately reported
+- `[done]` Build each referenced recipe through a session-scoped fixture.
+- `[done]` Parameterize every profile/capability as a separately reported
   test.
-- `[not started]` Remove the four legacy JSON environment interfaces.
-- `[not started]` Implement normal skip diagnostics and strict
+- `[done]` Remove the four legacy JSON environment interfaces.
+- `[done]` Implement normal skip diagnostics and strict
   missing-prerequisite behavior.
 
 Dependencies: M3-M4.
@@ -195,17 +196,17 @@ Exit: each layer collects independently; debug-class collection no longer
 requires thread-info capability; non-RTT targets retain all other applicable
 coverage; old behavioral scenarios remain represented in traceability.
 
-### M6 — User, Contributor, and Agent Guidance `[not started]`
+### M6 — User, Contributor, and Agent Guidance `[in progress]`
 
-- `[not started]` Refocus root README on install, setup, activation,
+- `[done]` Refocus root README on install, setup, activation,
   configuration, and commands.
-- `[not started]` Add configuration, operation, and troubleshooting guides.
-- `[not started]` Add the human `CONTRIBUTING.md` workflow and clarify product
+- `[done]` Add configuration, operation, and troubleshooting guides.
+- `[done]` Add the human `CONTRIBUTING.md` workflow and clarify product
   versus developer dependencies.
-- `[not started]` Update `AGENTS.md` to the implemented layout and test commands,
+- `[done]` Update `AGENTS.md` to the implemented layout and test commands,
   and add concise playbooks for ordinary changes, hardware investigation, and
   release validation.
-- `[not started]` Remove committed real lab identifiers from nominal
+- `[done]` Remove committed real lab identifiers from nominal
   examples/tests.
 
 Dependencies: M1-M5.
@@ -213,14 +214,14 @@ Dependencies: M1-M5.
 Exit: every supported user operation and contributor check has one discoverable
 and currently accurate entry point, with no PG/test names in user documentation.
 
-### M7 — CI and Strict Release Driver `[not started]`
+### M7 — CI and Strict Release Driver `[in progress]`
 
-- `[not started]` Add GitHub Actions for lint/static, self-contained tests, Zephyr
-  integration, clean install, and doc/interface checks.
-- `[not started]` Add the Python strict-release driver with inventory validation,
+- `[done]` Add GitHub Actions for lint/static and self-contained tests; external
+  Zephyr/hardware layers remain explicitly operator-selected.
+- `[done]` Add the Python strict-release driver with inventory validation,
   serial external layers, capability requirements, benchmark execution,
   cleanup/leak checks, and per-layer summary.
-- `[not started]` Unit-test driver ordering, failure propagation, missing
+- `[done]` Unit-test driver ordering, failure propagation, missing
   evidence, deferred WSL reporting, and exit status with injected command
   execution.
 

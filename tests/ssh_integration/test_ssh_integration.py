@@ -11,10 +11,9 @@ import shutil
 import socket
 import tempfile
 import time
-import unittest
 from pathlib import Path
 
-from zephyr_remote_openocd.config import load_config, require_remote_settings
+import pytest
 from zephyr_remote_openocd.remote import (
     RemoteProcess,
     RemoteSession,
@@ -28,6 +27,8 @@ from zephyr_remote_openocd.remote.deploy import deploy_helper
 from zephyr_remote_openocd.remote.ssh import SshCommand
 
 from tests.support import is_wsl2
+
+pytestmark = pytest.mark.ssh
 
 REMOTE_ECHO = b"""\
 import select, socket, sys
@@ -48,17 +49,10 @@ while True:
 """
 
 
-def configured_host() -> str:
-    host = os.environ.get("ZRO_SSH_TEST_HOST")
-    if not host:
-        raise unittest.SkipTest("ZRO_SSH_TEST_HOST is not configured")
-    return host
-
-
-def assert_remote_marker(test: unittest.TestCase, ssh: SshCommand, host: str):
+def assert_remote_marker(ssh: SshCommand, host: str):
     result = ssh.run(host, "printf zro-ssh-marker", timeout=20)
-    test.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
-    test.assertEqual(result.stdout, b"zro-ssh-marker")
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    assert result.stdout == b"zro-ssh-marker"
 
 
 def free_loopback_port() -> int:
@@ -94,52 +88,64 @@ def stop_and_close(process, timeout: float = 20):
             stream.close()
 
 
-class LinuxSshIntegrationTests(unittest.TestCase):
-    def setUp(self):
+class TestLinuxSshIntegration:
+    def setup_method(self):
         if is_wsl2():
-            self.skipTest("native-Linux SSH test; WSL has dedicated coverage")
-        self.host = configured_host()
+            pytest.skip("native-Linux SSH test; WSL has dedicated coverage")
         if shutil.which("ssh") is None:
-            self.skipTest("Linux ssh is not available on PATH")
+            pytest.skip("Linux ssh is not available on PATH")
+
+    @pytest.fixture(autouse=True)
+    def inventory_setup(self, ssh_host, ssh_settings):
+        self.host = ssh_host
+        self.ssh_settings = ssh_settings
+        self.ssh = SshCommand(ssh_settings.ssh_command)
 
     def test_configured_linux_ssh_and_fixed_arguments(self):
         """Regression coverage for prototype gate PG-011."""
-        assert_remote_marker(self, SshCommand(("ssh",)), self.host)
-        assert_remote_marker(self, SshCommand(("ssh", "-o", "ConnectTimeout=10")), self.host)
+        assert_remote_marker(self.ssh, self.host)
+        assert_remote_marker(
+            SshCommand((*self.ssh.argv_prefix, "-o", "ConnectTimeout=10")), self.host
+        )
 
 
-class WslSshIntegrationTests(unittest.TestCase):
-    def setUp(self):
+class TestWslSshIntegration:
+    def setup_method(self):
         if not is_wsl2():
-            self.skipTest("PG-012/PG-013 require WSL 2; current host is not WSL 2")
-        self.host = configured_host()
+            pytest.skip("PG-012/PG-013 require WSL 2; current host is not WSL 2")
+
+    @pytest.fixture(autouse=True)
+    def inventory_setup(self, ssh_host, ssh_settings):
+        self.host = ssh_host
+        self.ssh_settings = ssh_settings
+        self.ssh = SshCommand(ssh_settings.ssh_command)
 
     def test_wsl_linux_ssh(self):
         """Deferred WSL regression coverage for prototype gate PG-012."""
         executable = shutil.which("ssh")
         if executable is None:
-            self.skipTest("WSL distribution ssh is not available on PATH")
-        assert_remote_marker(self, SshCommand((executable,)), self.host)
+            pytest.skip("WSL distribution ssh is not available on PATH")
+        assert_remote_marker(SshCommand((executable,)), self.host)
 
     def test_windows_ssh_exe_from_wsl(self):
         """Deferred WSL regression coverage for prototype gate PG-013."""
         configured = os.environ.get("ZRO_WINDOWS_SSH", "/mnt/c/Windows/System32/OpenSSH/ssh.exe")
         executable = Path(configured)
         if not executable.is_file():
-            self.skipTest("Windows OpenSSH not found; set ZRO_WINDOWS_SSH to ssh.exe")
-        assert_remote_marker(
-            self,
-            SshCommand((str(executable), "-o", "ControlMaster=no")),
-            self.host,
-        )
+            pytest.skip("Windows OpenSSH not found; set ZRO_WINDOWS_SSH to ssh.exe")
+        assert_remote_marker(SshCommand((str(executable), "-o", "ControlMaster=no")), self.host)
 
 
-class SshTransportIntegrationTests(unittest.TestCase):
-    def setUp(self):
-        self.host = configured_host()
+class TestSshTransportIntegration:
+    def setup_method(self):
         if shutil.which("ssh") is None:
-            self.skipTest("ssh is not available on PATH")
-        self.ssh = SshCommand(("ssh", "-o", "ConnectTimeout=10"))
+            pytest.skip("ssh is not available on PATH")
+
+    @pytest.fixture(autouse=True)
+    def inventory_setup(self, ssh_host, ssh_settings):
+        self.host = ssh_host
+        self.ssh_settings = ssh_settings
+        self.ssh = SshCommand(ssh_settings.ssh_command)
 
     def test_forwarding_does_not_require_controlmaster(self):
         """Regression coverage for prototype gate PG-014."""
@@ -152,7 +158,7 @@ class SshTransportIntegrationTests(unittest.TestCase):
             line = controller.stdout.readline()
             if not line:
                 assert controller.stderr is not None
-                self.fail(controller.stderr.read().decode(errors="replace"))
+                pytest.fail(controller.stderr.read().decode(errors="replace"))
             remote_port = int(line)
             local_port = free_loopback_port()
             tunnel = self.ssh.popen(
@@ -171,7 +177,7 @@ class SshTransportIntegrationTests(unittest.TestCase):
             assert controller.stdin is not None
             controller.stdin.close()
             controller.wait(timeout=20)
-            with self.assertRaises(AssertionError):
+            with pytest.raises(AssertionError):
                 wait_for_echo(local_port, b"must-not-echo", 1)
         finally:
             stop_and_close(controller)
@@ -190,11 +196,10 @@ class SshTransportIntegrationTests(unittest.TestCase):
             "print(len(d), hashlib.sha256(d).hexdigest())'"
         )
         for payload in payloads:
-            with self.subTest(size=len(payload)):
-                result = self.ssh.run(self.host, command, input_data=payload, timeout=30)
-                expected = f"{len(payload)} {hashlib.sha256(payload).hexdigest()}\n".encode()
-                self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
-                self.assertEqual(result.stdout, expected)
+            result = self.ssh.run(self.host, command, input_data=payload, timeout=30)
+            expected = f"{len(payload)} {hashlib.sha256(payload).hexdigest()}\n".encode()
+            assert result.returncode == 0, result.stderr.decode(errors="replace")
+            assert result.stdout == expected
 
         failed = self.ssh.run(
             self.host,
@@ -202,14 +207,14 @@ class SshTransportIntegrationTests(unittest.TestCase):
             input_data=b"stream before remote failure",
             timeout=20,
         )
-        self.assertEqual(failed.returncode, 7)
+        assert failed.returncode == 7
 
     def test_protocol_1_fake_helper_vertical_slice(self):
         """Permanent fake-workload coverage for the production transport path."""
         first = deploy_helper(self.ssh, self.host)
         second = deploy_helper(self.ssh, self.host)
-        self.assertEqual(first.path, second.path)
-        self.assertTrue(second.reused)
+        assert first.path == second.path
+        assert second.reused
         local_port = free_loopback_port()
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "payload.bin"
@@ -224,7 +229,7 @@ class SshTransportIntegrationTests(unittest.TestCase):
             descriptor = session.start()
             try:
                 address = ipaddress.ip_address(descriptor.remote_address)
-                self.assertIn(address, ipaddress.ip_network("127.64.0.0/10"))
+                assert address in ipaddress.ip_network("127.64.0.0/10")
                 check = self.ssh.run(
                     self.host,
                     "python3 -c "
@@ -237,14 +242,14 @@ class SshTransportIntegrationTests(unittest.TestCase):
                     + shlex.quote(descriptor.remote_workspace),
                     timeout=20,
                 )
-                self.assertEqual(check.returncode, 0, check.stderr.decode(errors="replace"))
-                self.assertEqual(check.stdout.strip(), b"0o700 263")
+                assert check.returncode == 0, check.stderr.decode(errors="replace")
+                assert check.stdout.strip() == b"0o700 263"
                 wait_for_echo(local_port, b"fake-helper-round-trip", 20)
             finally:
                 workspace = descriptor.remote_workspace
                 session.close()
             gone = self.ssh.run(self.host, f"test ! -e {shlex.quote(workspace)}", timeout=20)
-            self.assertEqual(gone.returncode, 0, gone.stderr.decode(errors="replace"))
+            assert gone.returncode == 0, gone.stderr.decode(errors="replace")
 
     def test_concurrent_fake_sessions_isolate_identical_remote_ports(self):
         """Regression coverage for independent-session service-port isolation."""
@@ -272,11 +277,8 @@ class SshTransportIntegrationTests(unittest.TestCase):
         second_descriptor = None
         try:
             second_descriptor = second.start()
-            self.assertNotEqual(
-                first_descriptor.remote_address,
-                second_descriptor.remote_address,
-            )
-            self.assertNotEqual(first_descriptor.session_id, second_descriptor.session_id)
+            assert first_descriptor.remote_address != second_descriptor.remote_address
+            assert first_descriptor.session_id != second_descriptor.session_id
         finally:
             second.close()
             first.close()
@@ -287,7 +289,7 @@ class SshTransportIntegrationTests(unittest.TestCase):
                 f"test ! -e {shlex.quote(descriptor.remote_workspace)}",
                 timeout=20,
             )
-            self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+            assert result.returncode == 0, result.stderr.decode(errors="replace")
 
     def test_controller_ssh_loss_cleans_fake_session(self):
         """Regression coverage for controller-loss cleanup semantics."""
@@ -303,14 +305,14 @@ class SshTransportIntegrationTests(unittest.TestCase):
         descriptor = session.start()
         try:
             backend_session = session._session
-            self.assertIsInstance(backend_session, SshHelperSession)
+            assert isinstance(backend_session, SshHelperSession)
             assert isinstance(backend_session, SshHelperSession)
             backend_session.controller.terminate()
             backend_session.controller.wait(timeout=20)
             deadline = time.monotonic() + 20
             while time.monotonic() < deadline and session.poll() is None:
                 time.sleep(0.1)
-            self.assertIsNotNone(session.termination_returncode)
+            assert session.termination_returncode is not None
         finally:
             session.close()
         result = self.ssh.run(
@@ -318,28 +320,16 @@ class SshTransportIntegrationTests(unittest.TestCase):
             f"test ! -e {shlex.quote(descriptor.remote_workspace)}",
             timeout=20,
         )
-        self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+        assert result.returncode == 0, result.stderr.decode(errors="replace")
 
     def test_remote_openocd_config_consumes_forwarded_environment(self):
         """Verify allow-listed environment reaches remote OpenOCD Tcl config."""
-        config_path = os.environ.get("ZRO_SSH_TEST_CONFIG")
-        if config_path:
-            configured_host, executable = require_remote_settings(
-                load_config(Path(config_path)), "environment-forwarding test"
-            )
-            if configured_host != self.host:
-                self.fail("ZRO_SSH_TEST_HOST does not match remote.host in ZRO_SSH_TEST_CONFIG")
-        else:
-            executable = os.environ.get("ZRO_SSH_TEST_OPENOCD")
-        if not executable:
-            self.skipTest("ZRO_SSH_TEST_CONFIG or ZRO_SSH_TEST_OPENOCD is not configured")
-        if not executable.startswith("/"):
-            self.fail("ZRO_SSH_TEST_OPENOCD must be an absolute remote path")
+        executable = self.ssh_settings.openocd
         executable_result = self.ssh.run(
             self.host, f"test -x {shlex.quote(executable)}", timeout=20
         )
         if executable_result.returncode:
-            self.skipTest(f"remote OpenOCD is not executable: {executable}")
+            pytest.skip(f"remote OpenOCD is not executable: {executable}")
         with tempfile.TemporaryDirectory() as directory:
             config = Path(directory) / "environment.cfg"
             config.write_text(
@@ -368,13 +358,7 @@ class SshTransportIntegrationTests(unittest.TestCase):
             )
             try:
                 session.start()
-                self.assertEqual(session.wait(timeout=30), 0)
+                assert session.wait(timeout=30) == 0
             finally:
                 session.close()
-            self.assertTrue(
-                any(payload == "ZRO_CONFIG_VALUE=channel-1" for _stream, payload in output)
-            )
-
-
-if __name__ == "__main__":
-    unittest.main()
+            assert any(payload == "ZRO_CONFIG_VALUE=channel-1" for _stream, payload in output)

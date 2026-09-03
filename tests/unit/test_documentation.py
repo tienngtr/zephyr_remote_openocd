@@ -39,3 +39,11 @@ def test_removed_document_paths_are_not_referenced():
             if path in text:
                 stale.append(f"{document.relative_to(ROOT)} contains {path}")
     assert stale == []
+
+
+def test_user_documentation_does_not_expose_test_gate_identifiers():
+    documents = [ROOT / "README.md", *sorted((ROOT / "docs" / "user").glob("*.md"))]
+    leaked = [
+        str(path.relative_to(ROOT)) for path in documents if re.search(r"PG-\d+", path.read_text())
+    ]
+    assert leaked == []
