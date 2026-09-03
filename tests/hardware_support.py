@@ -29,6 +29,9 @@ def _record(
     config_path: Path,
 ) -> dict[str, Any]:
     endpoint = target.endpoint(profile.serial) if profile.serial else None
+    runner_args = list(profile.runner_args)
+    if profile.probe_serial and not any(item.startswith("--serial") for item in runner_args):
+        runner_args.append(f"--serial={profile.probe_serial}")
     record: dict[str, Any] = {
         "id": f"{target.id}:{profile.name}",
         "target_id": target.id,
@@ -49,9 +52,9 @@ def _record(
         "gdb_client_port": 3333,
         "enabled_local_ports": (6333, 4444),
         "gdb": str(target.gdb) if target.gdb else None,
-        "runner_args": list(profile.runner_args),
-        "debug_runner_args": list(profile.runner_args),
-        "rtt_runner_args": list(profile.runner_args),
+        "runner_args": runner_args,
+        "debug_runner_args": runner_args,
+        "rtt_runner_args": runner_args,
         "environment": dict(profile.environment),
         "expected_flash_patterns": list(profile.expectations.patterns),
         "debug_patterns": list(profile.expectations.patterns),
