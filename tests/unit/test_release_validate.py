@@ -88,6 +88,26 @@ def test_inventory_capability_gate_reports_missing_evidence(tmp_path):
         release.validate_inventory_capabilities(tmp_path / "inventory.toml")
 
 
+def test_inventory_capability_report_is_machine_readable():
+    class Profile:
+        capabilities = tuple(release.REQUIRED_CAPABILITIES)
+
+    class Target:
+        profiles = (Profile(),)
+
+    with patch("tests.inventory.load_inventory", return_value=SimpleNamespace(targets=(Target(),))):
+        report = release.inventory_capabilities(Path("inventory.toml"))
+    assert report["pass"] is True
+    assert report["missing"] == []
+
+
+def test_benchmark_result_extracts_json_from_combined_output():
+    assert release.benchmark_result('{"overhead": {"pass": true}}\nsummary') == {
+        "overhead": {"pass": True}
+    }
+    assert release.benchmark_result("no benchmark output") is None
+
+
 def test_run_steps_stops_after_first_failure_and_preserves_order():
     calls = []
 

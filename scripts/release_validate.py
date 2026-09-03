@@ -196,8 +196,8 @@ def validate_inputs(args: argparse.Namespace) -> None:
             raise ValueError(f"strict validation requires {tool!r} on PATH")
 
 
-def validate_inventory_capabilities(path: Path) -> None:
-    """Require the configured release inventory to advertise V1 evidence."""
+def inventory_capabilities(path: Path) -> dict[str, object]:
+    """Return required and advertised capability names for release reporting."""
     from tests.inventory import load_inventory
 
     inventory = load_inventory(path)
@@ -208,10 +208,33 @@ def validate_inventory_capabilities(path: Path) -> None:
         for capability in profile.capabilities
     }
     missing = sorted(REQUIRED_CAPABILITIES - advertised)
+    return {
+        "required": sorted(REQUIRED_CAPABILITIES),
+        "advertised": sorted(advertised),
+        "missing": missing,
+        "pass": not missing,
+    }
+
+
+def validate_inventory_capabilities(path: Path) -> None:
+    """Require the configured release inventory to advertise V1 evidence."""
+    missing = inventory_capabilities(path)["missing"]
     if missing:
         raise ValueError(
             "hardware inventory is missing required capabilities: " + ", ".join(missing)
         )
+
+
+def benchmark_result(output: str) -> dict[str, object] | None:
+    """Decode the benchmark's first JSON object from combined process output."""
+    start = output.find("{")
+    if start < 0:
+        return None
+    try:
+        value, _ = json.JSONDecoder().raw_decode(output[start:])
+    except json.JSONDecodeError:
+        return None
+    return value if isinstance(value, dict) else None
 
 
 def run_steps(steps: list[Step], executor=subprocess.run) -> list[StepResult]:
@@ -307,14 +330,21 @@ def main(argv: list[str] | None = None) -> int:
         args.python_files = source_python_files()
     try:
         validate_inputs(args)
+        capability_report = inventory_capabilities(args.hardware_config)
         validate_inventory_capabilities(args.hardware_config)
         steps = build_steps(args)
     except ValueError as error:
         parser.error(str(error))
     results = run_steps(steps)
+    performance = next(
+        (benchmark_result(result.output) for result in results if result.name == "benchmark"),
+        None,
+    )
     summary = {
         "schema": "zro.release-validation.v1",
         "metadata": _metadata(),
+        "capabilities": capability_report,
+        "performance": performance,
         "steps": [
             {
                 "name": result.name,
