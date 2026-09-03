@@ -47,3 +47,11 @@ The hardware acceptance coverage includes two board-agnostic fixture scenarios:
   variable;
 - normal OpenOCD automatic probe selection without `--serial` when the remote
   host exposes one applicable probe.
+
+Persistent debug acceptance is separately gated by `ZRO_REAL_DEBUG_FIXTURES`.
+Each external fixture provides the same transport/build fields plus its local
+GDB and ELF paths, debug runner arguments, enabled local service ports, serial
+oracle, and a `supports_thread_info` capability. Every fixture runs debug,
+attach, and debugserver. At least one capable fixture must also provide a
+thread-info-enabled build and expected GDB thread pattern. All concrete hardware
+identity and capability values remain outside the repository.

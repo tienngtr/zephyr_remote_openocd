@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import subprocess
+import socket
 import sys
 import tarfile
 import tempfile
@@ -14,6 +15,10 @@ import unittest
 from tests.support import ROOT
 from zephyr_remote_openocd.config import PathMapping
 from zephyr_remote_openocd.remote.backend import SshHelperSession
+from zephyr_remote_openocd.remote.debug import (
+    DebugInputs, DebugPlanError, build_debug_plan, parse_openocd_version,
+    thread_info_enabled,
+)
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
 from zephyr_remote_openocd.remote.flash import FlashInputs, build_flash_plan
 from zephyr_remote_openocd.remote.model import (
@@ -200,7 +205,140 @@ class FlashPlanningTests(unittest.TestCase):
             self.assertIn("0x8000000", joined)
 
 
+class DebugPlanningTests(unittest.TestCase):
+    def inputs(self, root, command="debug", **changes):
+        config = root / "openocd.cfg"
+        config.write_text("# config\n")
+        values = dict(
+            command=command, executable="/remote/openocd", gdb="/local/gdb",
+            elf_file="/local/zephyr.elf", search_paths=(str(root),),
+            config_files=(str(config),), readiness_marker="ZRO_READY_test",
+        )
+        values.update(changes)
+        return DebugInputs(**values)
+
+    def test_command_semantics_and_client_ordering(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            debug = build_debug_plan(self.inputs(
+                root, gdb_init=("monitor reset run", "quit"),
+            ), PathPlanner(()))
+            self.assertEqual([item.name for item in debug.services], ["gdb", "tcl", "telnet"])
+            self.assertEqual(debug.gdb_argv[-6:], (
+                "-ex", "load", "-ex", "monitor reset run", "-ex", "quit",
+            ))
+            self.assertIn("halt", debug.process.argv)
+            attach = build_debug_plan(self.inputs(root, "attach"), PathPlanner(()))
+            self.assertNotIn("load", attach.gdb_argv)
+            server = build_debug_plan(self.inputs(
+                root, "debugserver", serial="probe", reset_halt="reset init",
+            ), PathPlanner(()))
+            self.assertIsNone(server.gdb_argv)
+            self.assertIn("set _ZEPHYR_BOARD_SERIAL probe", server.process.argv)
+            self.assertIn("reset init", server.process.argv)
+
+    def test_disabled_services_and_distinct_gdb_ports(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plan = build_debug_plan(self.inputs(
+                Path(directory), tcl_port="disabled", telnet_port="disabled",
+                gdb_port="3344", gdb_client_port="3355",
+            ), PathPlanner(()))
+            self.assertEqual(plan.services, (Service("gdb", 3355, 3344),))
+            self.assertIn("target extended-remote 127.0.0.1:3355", plan.gdb_argv)
+            self.assertIn("tcl_port disabled", plan.process.argv)
+            with self.assertRaisesRegex(DebugPlanError, "gdb_port must be enabled"):
+                build_debug_plan(self.inputs(Path(directory), gdb_port="disabled"), PathPlanner(()))
+
+    def test_version_parsing_and_thread_info_decision(self):
+        old = parse_openocd_version("Open On-Chip Debugger 0.11.0")
+        development = parse_openocd_version("Open On-Chip Debugger 0.11.0+dev")
+        current = parse_openocd_version("Open On-Chip Debugger 0.12.0-01050")
+        self.assertFalse(thread_info_enabled(True, old))
+        self.assertTrue(thread_info_enabled(True, development))
+        self.assertTrue(thread_info_enabled(True, current))
+        self.assertFalse(thread_info_enabled(False, None))
+        with self.assertRaises(DebugPlanError):
+            parse_openocd_version("unknown")
+        with self.assertRaises(DebugPlanError):
+            thread_info_enabled(True, None)
+
+    def test_rtos_command_is_conditional_and_after_pre_init(self):
+        with tempfile.TemporaryDirectory() as directory:
+            version = parse_openocd_version("Open On-Chip Debugger 0.12.0")
+            plan = build_debug_plan(self.inputs(
+                Path(directory), pre_init=("adapter speed 1000",),
+                thread_info_requested=True, openocd_version=version,
+            ), PathPlanner(()))
+            argv = plan.process.argv
+            self.assertLess(argv.index("adapter speed 1000"), argv.index("$_TARGETNAME configure -rtos Zephyr"))
+            self.assertTrue(plan.rtos_awareness)
+
+
 class RealProcessHelperTests(unittest.TestCase):
+    def test_persistent_process_requires_marker_and_connectable_service(self):
+        try:
+            probe = socket.socket()
+            probe.bind(("127.64.0.1", 0))
+            remote_port = probe.getsockname()[1]
+            probe.close()
+        except PermissionError:
+            self.skipTest("sandbox prohibits loopback listeners")
+        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as directory:
+            environment = os.environ.copy()
+            environment["XDG_RUNTIME_DIR"] = directory
+            process = subprocess.Popen(
+                [sys.executable, str(helper), "control"], env=environment,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            try:
+                assert process.stdout is not None and process.stdin is not None
+                self.assertEqual(json.loads(process.stdout.readline())["type"], "HELLO")
+                json.loads(process.stdout.readline())
+                marker = "ZRO_READY_unit"
+                child_code = (
+                    "import socket,sys,time;"
+                    "s=socket.socket();s.bind((sys.argv[1],int(sys.argv[2])));s.listen();"
+                    "print(sys.argv[3],flush=True);time.sleep(30)"
+                )
+                process.stdin.write(encode_message(
+                    "START_OPENOCD",
+                    argv=[sys.executable, "-c", child_code, ADDRESS_TOKEN, str(remote_port), marker],
+                    environment={}, required_paths=[],
+                    services=[{"name": "gdb", "remote_port": remote_port}],
+                    readiness_marker=marker, readiness_timeout=5,
+                ))
+                process.stdin.flush()
+                events = []
+                while not any(event["type"] == "SERVICE_READY" for event in events):
+                    events.append(json.loads(process.stdout.readline()))
+                self.assertEqual(events[0]["type"], "PROCESS_STARTED")
+                self.assertTrue(any(
+                    event["type"] == "CHILD_OUTPUT" and event["payload"] == marker
+                    for event in events
+                ))
+                process.stdin.write(encode_message("STOP"))
+                process.stdin.flush()
+                self.assertEqual(process.wait(timeout=8), 0)
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=5)
+                for stream in (process.stdin, process.stdout, process.stderr):
+                    if stream is not None and not stream.closed:
+                        stream.close()
+
+    def test_helper_version_operation_is_structured(self):
+        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        result = subprocess.run(
+            [sys.executable, str(helper), "openocd-version", sys.executable],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        message = json.loads(result.stdout)
+        self.assertEqual(message["type"], "OPENOCD_VERSION")
+        self.assertIn("Python", message["output"])
+
     def test_output_exit_status_and_workspace_cleanup(self):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
         with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as directory:

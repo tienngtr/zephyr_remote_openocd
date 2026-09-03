@@ -91,23 +91,17 @@ class RealOpenOcdFlashTests(unittest.TestCase):
             raise unittest.SkipTest("ZRO_REAL_FLASH_FIXTURES is not configured")
         try:
             document = json.loads(Path(fixture_path).read_text())
-            fixtures = {item["id"]: item for item in document["fixtures"]}
+            fixtures = list(document["fixtures"])
         except (OSError, KeyError, TypeError, json.JSONDecodeError) as error:
             raise RuntimeError(f"invalid real-flash fixture file {fixture_path}: {error}") from error
-        supported = {"scc_devboard", "stm32f746g_disco"}
-        if not fixtures.keys() & supported:
-            raise unittest.SkipTest("real-flash fixture file configures no supported fixture")
-        unknown = fixtures.keys() - supported
-        if unknown:
-            raise RuntimeError("unknown real-flash fixtures: " + ", ".join(sorted(unknown)))
+        if not fixtures:
+            raise unittest.SkipTest("real-flash fixture file configures no fixtures")
         cls.fixtures = fixtures
 
     def test_configured_targets_flash_and_emit_fresh_serial_output(self):
-        for fixture_id in ("scc_devboard", "stm32f746g_disco"):
-            if fixture_id not in self.fixtures:
-                continue
-            with self.subTest(fixture=fixture_id):
-                self._run_fixture(self.fixtures[fixture_id])
+        for fixture in self.fixtures:
+            with self.subTest(fixture=fixture.get("id")):
+                self._run_fixture(fixture)
 
     def _run_fixture(self, fixture):
         required = (

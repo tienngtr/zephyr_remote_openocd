@@ -60,7 +60,8 @@ class EventOrder:
             "new": {"HELLO"},
             "hello": {"SESSION_CREATED", "ERROR"},
             "created": {"STAGED", "SERVICE_READY", "PROCESS_STARTED", "CHILD_OUTPUT", "PROCESS_EXIT", "ERROR", "STOPPED"},
-            "ready": {"CHILD_OUTPUT", "PROCESS_EXIT", "ERROR", "STOPPED"},
+            "started": {"SERVICE_READY", "CHILD_OUTPUT", "PROCESS_EXIT", "ERROR", "STOPPED"},
+            "ready": {"SERVICE_READY", "CHILD_OUTPUT", "PROCESS_EXIT", "ERROR", "STOPPED"},
             "stopped": set(),
         }
         if kind not in allowed[self._state]:
@@ -69,7 +70,9 @@ class EventOrder:
             self._state = "hello"
         elif kind == "SESSION_CREATED":
             self._state = "created"
-        elif kind in {"SERVICE_READY", "PROCESS_STARTED"}:
+        elif kind == "PROCESS_STARTED":
+            self._state = "started"
+        elif kind == "SERVICE_READY":
             self._state = "ready"
         elif kind in {"STOPPED", "ERROR"}:
             self._state = "stopped"

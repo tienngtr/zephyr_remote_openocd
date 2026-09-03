@@ -107,6 +107,8 @@ class RemoteProcess:
     argv: tuple[str, ...]
     environment: tuple[tuple[str, str], ...] = field(default_factory=tuple)
     required_paths: tuple[RemotePathCheck, ...] = field(default_factory=tuple)
+    readiness_marker: str | None = None
+    readiness_timeout: float = 30.0
 
     def __post_init__(self) -> None:
         argv = tuple(self.argv)
@@ -124,6 +126,12 @@ class RemoteProcess:
             raise ValueError("remote environment values must be strings without NUL")
         if not all(isinstance(check, RemotePathCheck) for check in required_paths):
             raise ValueError("remote path checks must be RemotePathCheck values")
+        if self.readiness_marker is not None and (
+            not self.readiness_marker or any(character.isspace() for character in self.readiness_marker)
+        ):
+            raise ValueError("readiness marker must be a non-empty token")
+        if self.readiness_timeout <= 0:
+            raise ValueError("readiness timeout must be positive")
         object.__setattr__(self, "argv", argv)
         object.__setattr__(self, "environment", environment)
         object.__setattr__(self, "required_paths", required_paths)

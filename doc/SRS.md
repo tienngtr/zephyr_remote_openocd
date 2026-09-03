@@ -1163,9 +1163,15 @@ including both explicit and automatic probe selection.
 
 `west debug -r remote-openocd` provides local source-level debugging through remote OpenOCD.
 
+Status: validated on native Linux together with attach and debugserver on two
+real-hardware fixture configurations.
+
 ## AC-DEBUG-002
 
 Different GDB server/client ports work correctly when supported by the runner interface.
+
+Status: validated on native Linux as part of the persistent debug, attach, and
+debugserver hardware tests.
 
 ## AC-RTT-001
 
@@ -1234,7 +1240,12 @@ implemented. Native-Linux real-hardware validation on two materially different
 targets demonstrated staged Zephyr-tree configuration, mapped SDK scripts,
 staged firmware, explicit probe/environment selection, automatic probe
 selection, isolated loopback binding, output relay, and cleanup. Consequently,
-`west flash -r remote-openocd` is a validated V1 capability. Debug, attach,
-debugserver, RTT, real-service forwarding, and WSL validation remain subsequent
-work. No unresolved stakeholder/product decision currently blocks V1
-implementation.
+`west flash -r remote-openocd`, debug, attach, debugserver, and forwarding of
+enabled GDB/Tcl/telnet services are validated V1 capabilities. Persistent-debug
+readiness uses a final command marker plus enabled-service socket checks; remote
+OpenOCD version probing and the Zephyr 4.4-equivalent thread-info decision are
+implemented, with real thread enumeration validated on a capable hardware
+fixture. These areas are no longer open implementation questions or V1
+feasibility risks. RTT, semihosting-specific validation, and WSL validation
+remain subsequent work. No unresolved stakeholder/product decision currently
+blocks V1 implementation.

@@ -1,10 +1,11 @@
-"""Zephyr 4.4 adapter for recording and remote OpenOCD flash."""
+"""Zephyr 4.4 adapter for recording and remote OpenOCD operations."""
 
 from __future__ import annotations
 
 import json
 import os
 from pathlib import Path
+import secrets
 import sys
 
 from runners.core import FileType
@@ -13,6 +14,9 @@ from runners.openocd import OpenOcdBinaryRunner
 from zephyr_remote_openocd.config import ConfigError, load_config
 from zephyr_remote_openocd.remote import RemoteSession, RemoteSessionRequest, SshHelperBackend
 from zephyr_remote_openocd.remote.flash import FlashInputs, FlashPlanError, build_flash_plan
+from zephyr_remote_openocd.remote.debug import (
+    DebugInputs, DebugPlanError, build_debug_plan, parse_openocd_version,
+)
 from zephyr_remote_openocd.remote.paths import PathPlanner, PathPlanningError
 from zephyr_remote_openocd.remote.ssh import SshCommand
 
@@ -73,16 +77,31 @@ class RemoteOpenOcdBinaryRunner(OpenOcdBinaryRunner):
         except ConfigError as error:
             raise RuntimeError(str(error)) from error
 
+        if command == "rtt" or (command in {"debug", "debugserver"} and self.prototype_args.rtt_server):
+            raise RuntimeError("remote-openocd RTT support is not implemented")
         if os.environ.get("ZEPHYR_REMOTE_OPENOCD_RECORD") == "1":
             _record_runner(self, command, selected)
             return
-        if command != "flash":
-            raise RuntimeError(f"remote-openocd {command} is not implemented; only flash is currently supported")
         try:
-            request = _flash_request(self, selected)
-        except (ConfigError, FlashPlanError, PathPlanningError) as error:
+            if command == "flash":
+                request = _flash_request(self, selected)
+                plan = None
+                backend = SshHelperBackend(output_handler=_write_output)
+            elif command in {"debug", "attach", "debugserver"}:
+                backend = SshHelperBackend(output_handler=_write_output)
+                version = None
+                if self.thread_info_enabled:
+                    version = parse_openocd_version(backend.openocd_version(
+                        SshCommand(selected.ssh_command), selected.remote_host,
+                        _remote_openocd(selected, command),
+                    ))
+                plan = _debug_plan(self, command, selected, version)
+                request = _debug_request(self, selected, plan)
+            else:
+                raise RuntimeError(f"remote-openocd {command} is not implemented")
+        except (ConfigError, FlashPlanError, DebugPlanError, PathPlanningError) as error:
             raise RuntimeError(str(error)) from error
-        session = RemoteSession(request, SshHelperBackend(output_handler=_write_output))
+        session = RemoteSession(request, backend)
         try:
             descriptor = session.start()
             self.logger.info(
@@ -91,6 +110,24 @@ class RemoteOpenOcdBinaryRunner(OpenOcdBinaryRunner):
                 descriptor.remote_workspace,
                 descriptor.remote_address,
             )
+            if command == "debugserver":
+                assert plan is not None
+                gdb = next(item for item in plan.services if item.name == "gdb")
+                self.logger.info(
+                    "Remote OpenOCD GDB server available at 127.0.0.1:%s",
+                    gdb.local_port,
+                )
+            if command in {"debug", "attach"}:
+                assert plan is not None and plan.gdb_argv is not None
+                self.require(plan.gdb_argv[0])
+                try:
+                    self.run_client(list(plan.gdb_argv))
+                finally:
+                    returncode = session.poll()
+                    session.close()
+                if returncode:
+                    raise RuntimeError(f"remote OpenOCD failed with exit status {returncode}")
+                return
             returncode = session.wait()
         except KeyboardInterrupt:
             session.close()
@@ -111,6 +148,28 @@ def _record_runner(runner, command, selected):
             "file_type", "gdb", "openocd", "openocd_search",
         )
     }
+    request = None
+    local_gdb = None
+    thread_info = None
+    if command == "flash" and selected.remote_host and selected.remote_openocd:
+        request = _flash_request(runner, selected)
+    elif command in {"debug", "attach", "debugserver"} and selected.remote_host and selected.remote_openocd:
+        requested = runner.thread_info_enabled
+        supplied = os.environ.get("ZEPHYR_REMOTE_OPENOCD_RECORD_VERSION")
+        if requested and supplied is None:
+            raise RuntimeError(
+                "ZEPHYR_REMOTE_OPENOCD_RECORD_VERSION is required to record a thread-info-enabled build"
+            )
+        version = parse_openocd_version(supplied) if requested else None
+        plan = _debug_plan(runner, command, selected, version)
+        request = _debug_request(runner, selected, plan)
+        local_gdb = list(plan.gdb_argv) if plan.gdb_argv is not None else None
+        thread_info = {
+            "requested": requested,
+            "version": supplied if requested else None,
+            "version_source": "injected" if requested else None,
+            "rtos_awareness": plan.rtos_awareness,
+        }
     payload = {
         "prototype": True,
         "runner": runner.name(),
@@ -118,31 +177,18 @@ def _record_runner(runner, command, selected):
         "runner_args": runner_args,
         "runner_config": common,
         "selected_config": selected.printable(),
-        "remote_session_request": _request_record(_flash_request(runner, selected))
-        if command == "flash" and selected.remote_host and selected.remote_openocd else None,
+        "remote_session_request": _request_record(request) if request is not None else None,
+        "local_gdb_argv": local_gdb,
+        "thread_info": thread_info,
     }
     print(json.dumps(payload, indent=2, sort_keys=True, default=str))
 
 def _flash_request(runner, selected):
-    if not selected.remote_host:
-        raise ConfigError(f"remote.host is required for remote flash ({selected.path})")
-    if not selected.remote_openocd:
-        raise ConfigError(f"remote.openocd is required for remote flash ({selected.path})")
-    if not Path(selected.remote_openocd).is_absolute():
-        raise ConfigError(f"remote.openocd must be an absolute path ({selected.path})")
-    environment = []
-    for name in selected.forward_env:
-        value = os.environ.get(name)
-        if value is None:
-            runner.logger.warning("allow-listed environment variable %s is absent; omitting it", name)
-        else:
-            environment.append((name, value))
-    search_paths = tuple(
-        runner.openocd_cmd[index + 1]
-        for index, argument in enumerate(runner.openocd_cmd[:-1]) if argument == "-s"
-    )
+    executable = _remote_openocd(selected, "flash")
+    environment = _forwarded_environment(runner, selected)
+    search_paths = _search_paths(runner)
     inputs = FlashInputs(
-            executable=selected.remote_openocd,
+            executable=executable,
             image_type=_file_type(runner.image_type),
             file=runner.prototype_cfg.file,
             elf_file=runner.prototype_cfg.elf_file,
@@ -160,10 +206,74 @@ def _flash_request(runner, selected):
             no_init=runner.prototype_args.no_init, no_targets=runner.prototype_args.no_targets,
     )
     planner = PathPlanner(selected.path_mappings)
-    plan = build_flash_plan(inputs, planner, tuple(environment))
+    plan = build_flash_plan(inputs, planner, environment)
     return RemoteSessionRequest(
         selected.remote_host, SshCommand(selected.ssh_command),
         plan.staged_files, (), plan.process,
+    )
+
+
+def _remote_openocd(selected, command):
+    if not selected.remote_host:
+        raise ConfigError(f"remote.host is required for remote {command} ({selected.path})")
+    if not selected.remote_openocd:
+        raise ConfigError(f"remote.openocd is required for remote {command} ({selected.path})")
+    if not Path(selected.remote_openocd).is_absolute():
+        raise ConfigError(f"remote.openocd must be an absolute path ({selected.path})")
+    return selected.remote_openocd
+
+
+def _forwarded_environment(runner, selected):
+    environment = []
+    for name in selected.forward_env:
+        value = os.environ.get(name)
+        if value is None:
+            runner.logger.warning("allow-listed environment variable %s is absent; omitting it", name)
+        else:
+            environment.append((name, value))
+    return tuple(environment)
+
+
+def _search_paths(runner):
+    return tuple(
+        runner.openocd_cmd[index + 1]
+        for index, argument in enumerate(runner.openocd_cmd[:-1]) if argument == "-s"
+    )
+
+
+def _debug_plan(runner, command, selected, version):
+    planner = PathPlanner(selected.path_mappings)
+    return build_debug_plan(DebugInputs(
+        command=command,
+        executable=_remote_openocd(selected, command),
+        gdb=runner.prototype_cfg.gdb,
+        elf_file=runner.prototype_cfg.elf_file,
+        search_paths=_search_paths(runner),
+        config_files=tuple(runner.openocd_config or ()),
+        pre_init=tuple(runner.pre_init),
+        reset_halt=runner.reset_halt_cmd,
+        serial=runner.prototype_args.serial or None,
+        no_halt=runner.prototype_args.no_halt,
+        no_init=runner.prototype_args.no_init,
+        no_targets=runner.prototype_args.no_targets,
+        tcl_port=runner.tcl_port,
+        telnet_port=runner.telnet_port,
+        gdb_port=runner.gdb_port,
+        gdb_client_port=runner.gdb_client_port,
+        gdb_init=tuple(runner.gdb_init or ()),
+        tui=bool(runner.prototype_args.tui),
+        load=bool(runner.prototype_args.load),
+        target_handle=runner.target_handle,
+        thread_info_requested=runner.thread_info_enabled,
+        openocd_version=version,
+        readiness_marker="ZRO_READY_" + secrets.token_hex(16),
+    ), planner, _forwarded_environment(runner, selected))
+
+
+def _debug_request(runner, selected, plan):
+    return RemoteSessionRequest(
+        selected.remote_host, SshCommand(selected.ssh_command),
+        plan.staged_files, plan.services, plan.process,
     )
 
 
@@ -194,6 +304,8 @@ def _request_record(request):
             "required_paths": [
                 {"path": item.path, "kind": item.kind} for item in request.process.required_paths
             ],
+            "readiness_marker": request.process.readiness_marker,
+            "readiness_timeout": request.process.readiness_timeout,
         }
     return result
 

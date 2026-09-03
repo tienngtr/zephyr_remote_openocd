@@ -18,13 +18,34 @@ from .staging import build_archive
 
 
 class SshHelperBackend(SessionBackend):
-    def __init__(self, *, forward_start_timeout: float = 0.5, output_handler: Callable[[str, str], None] | None = None):
+    def __init__(self, *, forward_start_timeout: float = 10.0, output_handler: Callable[[str, str], None] | None = None):
         self.forward_start_timeout = forward_start_timeout
         self.output_handler = output_handler
 
     def create(self, request: RemoteSessionRequest) -> BackendSession:
         deployment = deploy_helper(request.ssh_command, request.host)
         return SshHelperSession(request, deployment, self.forward_start_timeout, self.output_handler)
+
+    def openocd_version(self, ssh_command, host: str, executable: str) -> str:
+        deployment = deploy_helper(ssh_command, host)
+        command = (
+            f"python3 {shlex.quote(deployment.path)} openocd-version "
+            f"{shlex.quote(executable)}"
+        )
+        result = ssh_command.run(host, command, timeout=30)
+        if result.returncode:
+            detail = (result.stderr or result.stdout).decode("utf-8", "replace").strip()
+            raise SessionError(
+                f"remote OpenOCD version query failed ({result.returncode}): "
+                + detail
+            )
+        try:
+            message = json.loads(result.stdout)
+            if message.get("version") != 1 or message.get("type") != "OPENOCD_VERSION":
+                raise ValueError("unexpected version response")
+            return message["output"]
+        except (KeyError, ValueError, json.JSONDecodeError) as error:
+            raise SessionError(f"invalid remote OpenOCD version response: {result.stdout!r}") from error
 
 
 class SshHelperSession(BackendSession):
@@ -110,8 +131,6 @@ class SshHelperSession(BackendSession):
     def start(self, services: Iterable[Service]) -> SessionDescriptor:
         service_list = tuple(services)
         if self.request.process is not None:
-            if service_list:
-                raise SessionError("one-shot OpenOCD does not accept forwarded services")
             if self.controller.stdin is None:
                 raise SessionError("controller stdin was not captured")
             process = self.request.process
@@ -119,13 +138,34 @@ class SshHelperSession(BackendSession):
                 self.controller.stdin, "START_OPENOCD", argv=list(process.argv),
                 environment=dict(process.environment),
                 required_paths=[{"path": check.path, "kind": check.kind} for check in process.required_paths],
+                services=[{"name": item.name, "remote_port": item.remote_port} for item in service_list],
+                readiness_marker=process.readiness_marker,
+                readiness_timeout=process.readiness_timeout,
             )
+            ready = set()
             while True:
                 event = self._read_event()
                 self._dispatch(event)
                 if event["type"] == "PROCESS_STARTED":
                     address = event["remote_address"]
-                    break
+                    if not service_list:
+                        break
+                elif event["type"] == "SERVICE_READY":
+                    service = event.get("service", {})
+                    ready.add(service.get("name"))
+                    address = event["remote_address"]
+                    if ready == {item.name for item in service_list}:
+                        break
+                elif event["type"] == "PROCESS_EXIT":
+                    raise SessionError(
+                        f"remote OpenOCD exited before services were ready ({event['returncode']})"
+                    )
+            if service_list:
+                try:
+                    self._start_forwards(service_list, address)
+                except BaseException:
+                    self._close_forwards()
+                    raise
             self.reader_thread = threading.Thread(target=self._drain_events, daemon=True)
             self.reader_thread.start()
             return SessionDescriptor(self.allocation, address)
@@ -144,23 +184,7 @@ class SshHelperSession(BackendSession):
                 address = event["remote_address"]
                 break
         try:
-            for service in service_list:
-                spec = f"127.0.0.1:{service.local_port}:{address}:{service.remote_port}"
-                process = self.request.ssh_command.popen(
-                    self.request.host, None,
-                    "-N", "-o", "ControlMaster=no", "-o", "ExitOnForwardFailure=yes", "-L", spec,
-                )
-                self.forwards.append(process)
-                deadline = time.monotonic() + self.forward_start_timeout
-                while process.poll() is None and time.monotonic() < deadline:
-                    time.sleep(0.01)
-                if process.poll() is not None:
-                    detail = b"" if process.stderr is None else process.stderr.read()
-                    prefix = "; ".join(advisories)
-                    raise SessionError(
-                        (prefix + "; " if prefix else "")
-                        + f"SSH forwarding failed ({process.returncode}): {detail.decode('utf-8', 'replace').strip()}"
-                    )
+            self._start_forwards(service_list, address, advisories)
             return SessionDescriptor(self.allocation, address)
         except BaseException:
             self._close_forwards()
@@ -172,17 +196,66 @@ class SshHelperSession(BackendSession):
         controller_status = self.controller.poll()
         if controller_status is not None:
             return controller_status or 1
+        if any(process.poll() is not None for process in self.forwards):
+            return 1
         return None
 
+    def _start_forwards(self, service_list, address, advisories=None):
+        advisories = advisories or [
+            message for item in service_list if (message := self._preflight(item.local_port))
+        ]
+        for service in service_list:
+            spec = f"127.0.0.1:{service.local_port}:{address}:{service.remote_port}"
+            process = self.request.ssh_command.popen(
+                self.request.host, None,
+                "-N", "-o", "ControlMaster=no", "-o", "ExitOnForwardFailure=yes", "-L", spec,
+            )
+            self.forwards.append(process)
+            deadline = time.monotonic() + self.forward_start_timeout
+            connected = False
+            while process.poll() is None and time.monotonic() < deadline:
+                try:
+                    with socket.create_connection(("127.0.0.1", service.local_port), timeout=0.1):
+                        connected = True
+                        break
+                except OSError:
+                    pass
+                time.sleep(0.01)
+            if connected:
+                # Give ExitOnForwardFailure a short authoritative window to
+                # reject a post-preflight bind race or a connection to an
+                # unrelated listener which already owns the requested port.
+                stability_deadline = time.monotonic() + 0.2
+                while process.poll() is None and time.monotonic() < stability_deadline:
+                    time.sleep(0.01)
+            if process.poll() is not None:
+                detail = b"" if process.stderr is None else process.stderr.read()
+                prefix = "; ".join(advisories)
+                raise SessionError(
+                    (prefix + "; " if prefix else "")
+                    + f"SSH forwarding failed ({process.returncode}): {detail.decode('utf-8', 'replace').strip()}"
+                )
+            if not connected:
+                raise SessionError(
+                    f"SSH forwarding timed out for {service.name} on 127.0.0.1:{service.local_port}"
+                )
+
     def wait(self, timeout: float | None = None) -> int:
-        controller_status = self.controller.wait(timeout=timeout)
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            result = self.poll()
+            if result is not None:
+                break
+            if deadline is not None and time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(self.controller.args, timeout)
+            time.sleep(0.05)
         if self.reader_thread is not None:
             self.reader_thread.join(timeout=2)
         if self.reader_error is not None:
             raise SessionError(f"helper event stream failed: {self.reader_error}") from self.reader_error
         if self.process_returncode is not None:
             return self.process_returncode
-        return controller_status or 1
+        return result
 
     def _dispatch(self, event: dict) -> None:
         if event["type"] == "CHILD_OUTPUT" and self.output_handler is not None:

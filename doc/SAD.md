@@ -918,7 +918,11 @@ No assumption is made that the local SSH executable comes from the local Linux d
 
 # 36. Remote Helper Protocol
 
-The protocol is versioned.
+The protocol is versioned. Protocol 1 is still pre-release and its semantics are
+not frozen; the matching client and helper are deployed and tested atomically.
+Its semantics SHALL be frozen before the first compatibility-bearing release.
+After that freeze, an incompatible or client-required protocol change requires
+a new protocol version rather than silently extending protocol 1.
 
 Logical operations may include:
 
@@ -1032,9 +1036,15 @@ Flash omits local-client stages when unnecessary.
 
 A dependent local client is not started until the required remote service is ready.
 
-Preferred readiness mechanisms should probe service availability rather than parse human-readable OpenOCD logs.
+For persistent OpenOCD operations, the adapter appends a unique final `echo`
+marker after the intended startup commands. The helper reports readiness only
+after observing that marker and confirming that every requested service socket
+is connectable. Disabled services impose no readiness check. The startup timeout
+is 30 seconds.
 
-Exact implementation remains a prototype decision.
+This combines command-completion evidence with socket availability instead of
+depending on ordinary human-readable OpenOCD diagnostics. The readiness design
+is implemented and validated; it is no longer an open prototype decision.
 
 ---
 
@@ -1240,7 +1250,9 @@ Selected for V1:
 
 # 46. Validated Prototype Results
 
-The permanent native-Linux suite contains 18 tests: 16 pass and the two WSL-specific tests for PG-012 and PG-013 skip explicitly.
+The permanent native-Linux suite retains regression coverage for every completed
+prototype gate. The two WSL-specific tests for PG-012 and PG-013 skip explicitly
+outside WSL 2.
 
 The following gate identifiers are retained for traceability and SHALL NOT be reused:
 
@@ -1287,6 +1299,10 @@ The remaining implementation-level questions are:
 
 None currently require an additional product decision before the next implementation phase.
 
+Persistent-debug readiness, enabled-service forwarding, remote OpenOCD version
+probing, and Zephyr thread-info command selection are settled implementation
+decisions described in Sections 40 and 52, not remaining questions.
+
 ---
 
 # 49. Phase Transition
@@ -1304,8 +1320,10 @@ Remote-session fake-helper vertical slice
 Real OpenOCD flash
     COMPLETE and validated on native Linux
 
+Debug, attach, and debugserver
+    COMPLETE and validated on native Linux
+
 Then
-    debug, attach, and debugserver
     RTT
     semihosting console
 ```
@@ -1367,10 +1385,9 @@ Output is continuously relayed as protocol events and the OpenOCD exit status
 becomes the west flash result.
 
 `ZEPHYR_REMOTE_OPENOCD_RECORD=1` remains permanent no-I/O integration
-infrastructure and takes precedence over production execution. Debug, attach,
-debugserver, RTT, and real-service forwarding remain later slices. Remote serial
-observation belongs only to explicitly configured hardware acceptance tests and
-is not part of production flash semantics.
+infrastructure and takes precedence over production execution. RTT remains a
+later slice. Remote serial observation belongs only to explicitly configured
+hardware acceptance tests and is not part of production runner semantics.
 
 ## 51.1 Hardware-test evidence
 
@@ -1388,3 +1405,38 @@ Concrete target, probe, serial-device, baud-rate, and expected-output values
 remain in external test-fixture configuration. Production configuration,
 translation, staging, helper supervision, and serial-oracle infrastructure
 contain no target-specific behavior.
+
+---
+
+# 52. Persistent Debug, Attach, and Debugserver Slice
+
+Status: **COMPLETE — validated V1 capability on native Linux.**
+
+One helper-supervised OpenOCD process persists for each operation. A unique
+final OpenOCD `echo` marker proves that command-specific initialization has
+completed; readiness additionally requires every enabled service socket to be
+connectable. Exact loopback-only SSH forwards expose remote GDB, Tcl, and telnet
+services. Disabled services create neither a readiness requirement nor a local
+listener. The remote GDB server port maps to Zephyr's distinct local GDB-client
+port where configured.
+
+Debug and attach preserve Zephyr 4.4 halt/no-halt behavior. Debug launches local
+GDB and loads by default, attach launches it without loading, and GDB init
+commands retain their position after the optional load. Debugserver preserves
+reset/halt startup, exposes the local endpoint, and launches no local GDB.
+Remote debugserver intentionally honors `--serial`, a documented divergence
+from the Zephyr 4.4 built-in runner.
+
+When the build requests thread information, the backend executes the configured
+OpenOCD path remotely with `--version`. The shared parser enables Zephyr RTOS
+awareness only under Zephyr 4.4's version condition. Recording mode performs no
+I/O and supplies a pre-resolved version through its explicit test seam. Hardware
+validation is capability-based: both fixture configurations exercise all three
+operations, while one capable configuration additionally enumerates a real
+Zephyr thread.
+
+Protocol-1 service/readiness fields and remote version probing are permitted
+during the current unfrozen pre-release phase. Digest deployment replaces an
+older helper with the matching client version; it does not assume every helper
+ever installed at the protocol-1 path implements all future protocol-1
+semantics.

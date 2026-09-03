@@ -19,6 +19,7 @@ import sys
 import tarfile
 import tempfile
 import threading
+import time
 
 VERSION = 1
 RANGE = ipaddress.IPv4Network("127.64.0.0/10")
@@ -150,12 +151,56 @@ def echo(connection):
             connection.sendall(data)
 
 
-def relay(stream, stream_name):
+def relay(stream, stream_name, marker=None, marker_seen=None):
     while True:
         line = stream.readline()
         if not line:
             return
-        emit("CHILD_OUTPUT", stream=stream_name, payload=line.decode("utf-8", "replace").rstrip("\n"))
+        payload = line.decode("utf-8", "replace").rstrip("\n")
+        if marker is not None and payload.strip() == marker:
+            marker_seen.set()
+        emit("CHILD_OUTPUT", stream=stream_name, payload=payload)
+
+
+def allocate_service_address(ports):
+    for _ in range(32):
+        address = random_address()
+        sockets = []
+        try:
+            for port in ports:
+                candidate = socket.socket()
+                candidate.bind((address, port))
+                sockets.append(candidate)
+            return address
+        except OSError:
+            pass
+        finally:
+            for candidate in sockets:
+                candidate.close()
+    raise RuntimeError("loopback allocation exhausted after 32 attempts")
+
+
+def services_connectable(address, ports):
+    for port in ports:
+        try:
+            with socket.create_connection((address, port), timeout=0.2):
+                pass
+        except OSError:
+            return False
+    return True
+
+
+def openocd_version(executable):
+    if not Path(executable).is_absolute():
+        raise ValueError("OpenOCD executable must be an absolute path")
+    result = subprocess.run(
+        [executable, "--version"], stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False,
+    )
+    output = result.stdout.decode("utf-8", "replace")
+    if result.returncode:
+        raise RuntimeError(f"OpenOCD version query failed ({result.returncode}): {output.strip()}")
+    emit("OPENOCD_VERSION", output=output)
 
 
 def controller():
@@ -250,11 +295,27 @@ def controller():
                     argv = message.get("argv")
                     environment = message.get("environment", {})
                     checks = message.get("required_paths", [])
+                    services = message.get("services", [])
+                    marker = message.get("readiness_marker")
+                    readiness_timeout = message.get("readiness_timeout", 30.0)
                     if not isinstance(argv, list) or not argv or not all(isinstance(arg, str) and arg for arg in argv):
                         raise ValueError("START_OPENOCD requires a non-empty string argv")
                     if not isinstance(environment, dict) or not all(isinstance(key, str) and isinstance(value, str) for key, value in environment.items()):
                         raise ValueError("START_OPENOCD environment must contain string values")
-                    address = random_address()
+                    if not isinstance(services, list) or not all(
+                        isinstance(item, dict) and isinstance(item.get("name"), str)
+                        and isinstance(item.get("remote_port"), int)
+                        and not isinstance(item.get("remote_port"), bool)
+                        and 1 <= item["remote_port"] <= 65535
+                        for item in services
+                    ):
+                        raise ValueError("START_OPENOCD services are invalid")
+                    if marker is not None and (not isinstance(marker, str) or not marker or any(c.isspace() for c in marker)):
+                        raise ValueError("START_OPENOCD readiness marker is invalid")
+                    if not isinstance(readiness_timeout, (int, float)) or isinstance(readiness_timeout, bool) or readiness_timeout <= 0:
+                        raise ValueError("START_OPENOCD readiness timeout is invalid")
+                    ports = [item["remote_port"] for item in services]
+                    address = allocate_service_address(ports) if ports else random_address()
                     replacements = {"{workspace}": str(work), "{address}": address}
                     def expand(value):
                         for token, replacement in replacements.items():
@@ -275,13 +336,26 @@ def controller():
                         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                         start_new_session=True,
                     )
+                    marker_seen = threading.Event()
                     relay_threads = [
-                        threading.Thread(target=relay, args=(child.stdout, "stdout"), daemon=True),
-                        threading.Thread(target=relay, args=(child.stderr, "stderr"), daemon=True),
+                        threading.Thread(target=relay, args=(child.stdout, "stdout", marker, marker_seen), daemon=True),
+                        threading.Thread(target=relay, args=(child.stderr, "stderr", marker, marker_seen), daemon=True),
                     ]
                     emit("PROCESS_STARTED", remote_address=address, child_pid=child.pid)
                     for thread in relay_threads:
                         thread.start()
+                    if marker is not None:
+                        deadline = time.monotonic() + readiness_timeout
+                        while time.monotonic() < deadline:
+                            if child.poll() is not None:
+                                raise RuntimeError(f"OpenOCD exited before readiness with status {child.returncode}")
+                            if marker_seen.is_set() and services_connectable(address, ports):
+                                for service in services:
+                                    emit("SERVICE_READY", remote_address=address, service=service)
+                                break
+                            time.sleep(0.05)
+                        else:
+                            raise RuntimeError("OpenOCD readiness timed out")
                 elif kind == "STOP":
                     cleanup()
                     emit("STOPPED", reason="requested")
@@ -301,6 +375,8 @@ def main():
     sub.add_parser("control")
     staging = sub.add_parser("stage")
     staging.add_argument("workspace")
+    version = sub.add_parser("openocd-version")
+    version.add_argument("executable")
     fake = sub.add_parser("fake-child")
     fake.add_argument("address")
     fake.add_argument("ports", type=int, nargs="+")
@@ -309,6 +385,8 @@ def main():
         controller()
     elif args.command == "stage":
         stage(args.workspace)
+    elif args.command == "openocd-version":
+        openocd_version(args.executable)
     else:
         fake_child(args.address, args.ports)
 
