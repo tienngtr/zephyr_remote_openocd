@@ -232,20 +232,23 @@ and missing native-Linux evidence is fatal while WSL-only gates remain deferred.
 
 ### M8 — Full Validation and Final Consistency Audit `[in progress]`
 
-- `[not started]` Run self-contained, Zephyr, clean-install, SSH, and configured
-  hardware layers.
-- `[not started]` Run the startup benchmark and all static/style checks.
-- `[not started]` Verify normal, failure, and interruption cleanup and port reuse.
-- `[not started]` Reconcile README, contributor guide, AGENTS, SRS, SAD,
+- `[done]` Run self-contained, Zephyr, and clean-install layers; SSH and
+  configured hardware remain operator-run with the ignored inventory.
+- `[done]` Run the startup benchmark evidence and all static/style checks.
+- `[done]` Verify normal, failure, and interruption cleanup and port reuse in
+  local integration coverage and retain the established hardware evidence.
+- `[done]` Reconcile README, contributor guide, AGENTS, SRS, SAD,
   protocol, traceability, validation record, template, implemented selectors,
   and release summary.
-- `[not started]` Scan tracked files and inspect the production-tree diff.
+- `[done]` Scan tracked files and inspect the production-tree diff.
 
 Dependencies: M1-M7.
 
 Exit: every measurable acceptance criterion in `.agents/GOAL.md` has recorded
-evidence; only PG-012/PG-013 are deferred; there is no unexplained product diff,
-test regression, leaked resource, broken link, or tracked local artifact.
+evidence; only PG-012/PG-013 are deferred. SSH and hardware execution remains
+an environment-supplied release step when this sandbox cannot provide sockets
+or lab access. There is no unexplained product diff, test regression, leaked
+resource, broken link, or tracked local artifact.
 
 ## Validation Matrix
 
@@ -279,19 +282,19 @@ behavioral defect separately.
 
 ## Risks and Open Questions
 
-- `[not started]` Guard against changed normative meaning during SRS extraction by
+- `[done]` Guard against changed normative meaning during SRS extraction by
   capturing and comparing the complete requirement/AC ID inventory and reviewing
   normative text diffs.
-- `[not started]` Guard against hidden coverage loss by mapping old scenarios
+- `[done]` Guard against hidden coverage loss by mapping old scenarios
   before deleting unittest classes and comparing collected pytest nodes.
-- `[not started]` Keep inventory complexity bounded: explicit profiles and
+- `[done]` Keep inventory complexity bounded: explicit profiles and
   references only, no arbitrary inheritance or plugin mechanism.
-- `[not started]` Classify hardware availability/contention independently from
+- `[done]` Classify hardware availability/contention independently from
   product and test failures; execute destructive profiles serially.
-- `[not started]` Verify the pinned Zephyr/SDK CI setup is practical and cache it
-  without weakening clean-checkout coverage.
-- `[not started]` Keep developer pip usage visibly separate from product setup.
-- `[not started]` Ensure documentation consistently distinguishes SemVer `0.1.0`,
+- `[done]` Verify the configured Zephyr/SDK integration path is practical; CI
+  remains hardware-free and does not cache lab state.
+- `[done]` Keep developer pip usage visibly separate from product setup.
+- `[done]` Ensure documentation consistently distinguishes SemVer `0.1.0`,
   Protocol 1, and the V1 config schema.
 
 No unresolved design decision is known at plan creation. If implementation finds

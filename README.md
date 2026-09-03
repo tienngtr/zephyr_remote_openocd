@@ -69,7 +69,7 @@ openocd = "/absolute/path/to/openocd"
 command = ["ssh"]
 
 [openocd]
-forward_env = ["FTDI_CHANNEL"]
+forward_env = ["PROBE_CHANNEL"]
 
 [[paths.map]]
 local = "/home/user/openocd/scripts"
