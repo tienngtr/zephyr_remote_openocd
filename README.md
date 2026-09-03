@@ -1,33 +1,130 @@
 # Zephyr Remote OpenOCD
 
-This self-contained Zephyr module runs OpenOCD on a remote Linux host while
-keeping west and GDB local. It may be stored at any persistent path;
-`~/zephyrproject/zephyr-remote-openocd` is a convenient example.
+Zephyr Remote OpenOCD is a self-contained Zephyr module. It keeps west, GDB,
+and client tools on the development machine while running OpenOCD on a
+configured remote Linux host. No pip installation is required.
 
-Run setup from the module root:
+## Install and activate
+
+Obtain a checkout or filesystem/archive copy and put it at any persistent,
+user-accessible location. This guide uses
+`~/zephyrproject/zephyr-remote-openocd` as an example; the implementation does
+not depend on that path.
 
 ```sh
+cd ~/zephyrproject/zephyr-remote-openocd
 python3 scripts/setup.py
+export EXTRA_ZEPHYR_MODULES="$PWD"
 ```
 
-Setup creates `~/.config/zephyr-remote-openocd/config.toml` from the shipped
-template when absent, preserves existing configuration, reports dependency
-status, and prints the module path to place in `EXTRA_ZEPHYR_MODULES`. It does
-not edit shell files or repositories.
+Setup creates (or reports the existing)
+`~/.config/zephyr-remote-openocd/config.toml`, prints its absolute path and the
+module root, and gives equivalent `EXTRA_ZEPHYR_MODULES` guidance. It never
+overwrites an existing config or edits shell/repository files. The default
+config directory/file created by setup are mode `0700`/`0600`; existing paths
+are not chmodded. The `pyelftools` check is non-fatal: use the Python
+environment configured for Zephyr, which is expected to provide `elftools` for
+ELF inspection.
 
-The canonical commented V1 schema is
-[`resources/config.toml.example`](resources/config.toml.example). Its only keys
-are:
+Configure and build applications normally:
 
-- `zephyr.default`: `"local"` or `"remote"`; defaults to `"local"`.
-- `remote.host`: non-empty SSH host or alias, required for remote operations.
-- `remote.openocd`: normalized absolute remote POSIX executable path, required
-  for remote operations.
-- `ssh.command`: non-empty string argv; defaults to `["ssh"]`.
-- `openocd.forward_env`: unique environment-variable names; defaults to `[]`.
-- `paths.map`: recursive `{local, remote}` mappings. Local paths are absolute
-  after optional `~` expansion; remote paths are normalized absolute POSIX
-  paths. The longest matching local prefix wins.
+```sh
+west build -b <board> <application> -d build
+```
 
-Unknown keys, malformed TOML, invalid types, empty values, and duplicate or
-conflicting mappings are rejected with the configuration path in the error.
+## Runner selection
+
+The shipped template is the frozen V1 schema. The default is local:
+
+```toml
+[zephyr]
+default = "local" # or "remote"
+```
+
+With that default, ordinary `west flash`/`west debug` selects the built-in
+`openocd` runner. Selection can always be explicit:
+
+```sh
+west flash -d build -r openocd
+west flash -d build -r remote-openocd
+```
+
+Change `[zephyr].default` to `"remote"` for normal west invocations to select
+`remote-openocd` (and back to `"local"` for the built-in runner); rerun the
+normal west command so its build configuration can regenerate as needed.
+
+## Remote configuration
+
+Edit the setup-created `~/.config/zephyr-remote-openocd/config.toml`. The
+runner may instead read a different file when
+`ZEPHYR_REMOTE_OPENOCD_CONFIG` is set. The canonical commented template is
+[`resources/config.toml.example`](resources/config.toml.example):
+
+```toml
+[remote]
+host = "openocd-host"
+openocd = "/absolute/path/to/openocd"
+
+[ssh]
+command = ["ssh"]
+
+[openocd]
+forward_env = ["FTDI_CHANNEL"]
+
+[[paths.map]]
+local = "/home/user/openocd/scripts"
+remote = "/opt/openocd/scripts"
+```
+
+V1 fields are limited to the local/remote default, `remote.host`, an absolute
+remote OpenOCD path, an SSH argv command, an environment-variable allow-list,
+and recursive local-to-remote path mappings. Unknown keys, malformed TOML,
+empty/invalid values, and duplicate or conflicting mappings are errors. The
+SSH command is argv (not shell text); only allow-listed variables that exist
+locally are forwarded. Mappings use normalized absolute paths and the longest
+matching local prefix.
+
+Override the SSH executable or add fixed arguments when needed, including in
+WSL2:
+
+```toml
+[ssh]
+command = ["/mnt/c/Windows/System32/OpenSSH/ssh.exe", "-o", "ControlMaster=no"]
+```
+
+WSL-specific validation remains deferred (PG-012/PG-013).
+
+## Operations
+
+Use the same west operations with `-r remote-openocd`:
+
+```sh
+west flash -d build -r remote-openocd
+west debug -d build -r remote-openocd
+west attach -d build -r remote-openocd
+west debugserver -d build -r remote-openocd
+west rtt -d build -r remote-openocd
+west debug -d build -r remote-openocd --rtt-server
+west debugserver -d build -r remote-openocd --rtt-server
+```
+
+`debug` follows Zephyr's load behavior; `attach` does not flash/load solely
+because the target is remote; `debugserver` exposes the GDB endpoint without
+launching local GDB. Standalone `rtt` launches the local channel-0 client;
+`--rtt-server` exposes RTT alongside the session but does not launch a local
+RTT client automatically. All enabled GDB, Tcl, and telnet services are
+forwarded, while disabled services have no listener or readiness requirement.
+
+Direct semihosting console use ordinary fixture-supplied OpenOCD commands
+(typically through `--cmd-pre-init`) and the existing OpenOCD stdout/stderr
+relay. It intentionally adds no semihosting proxy, filesystem virtualization,
+TCP redirect, or GDB File-I/O path. Detailed lifecycle and protocol behavior
+are in [`doc/SRS.md`](doc/SRS.md) and [`doc/SAD.md`](doc/SAD.md).
+
+Protocol 1 is the frozen JSON-lines helper contract. The helper is deployed
+automatically to the remote user account and cleans up sessions on normal or
+abnormal termination. Compatibility rules and the complete wire contract are
+documented in the SAD.
+
+For test-fixture setup and hardware prerequisites, see
+[`tests/README.md`](tests/README.md).
