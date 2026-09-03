@@ -140,21 +140,23 @@ Dependencies: M1.
 Exit: requirement IDs and normative statements match the pre-refactor inventory;
 SRS has no SAD/test dependency; protocol/config canonical sources are explicit.
 
-### M3 — Pytest Foundation and Dependency Layers `[in progress]`
+### M3 — Pytest Foundation and Dependency Layers `[done]`
 
 - `[done]` Add `requirements-dev.txt` and pytest configuration/marker
   registration.
 - `[done]` Establish default collection of unit plus local integration
   only.
-- `[not started]` Create shared test support for environment options and cleanup.
+- `[done]` Create shared test support for environment options and inventory
+  loading.
 - `[done]` Move process/socket/helper cases out of unit tests.
-- `[in progress]` Convert unit and local-integration coverage to pytest-native
+- `[done]` Convert unit and local-integration coverage to pytest-native
   idioms.
 
 Dependencies: M0.
 
-Exit: external configuration cleared plus plain `pytest` passes without external
-skips; maintained converted tests contain no `unittest.TestCase` subclasses.
+Exit: external configuration is not required by default; plain `pytest` passes
+and maintained unit/local tests contain no `unittest.TestCase` subclasses. Local
+socket tests retain only their documented sandbox skips.
 
 ### M4 — Unified TOML Inventory and Build Fixtures `[in progress]`
 

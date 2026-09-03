@@ -12,10 +12,10 @@ import subprocess
 import sys
 import tempfile
 import threading
-import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from zephyr_remote_openocd.remote import rtt as rtt_module
 from zephyr_remote_openocd.remote.backend import SshHelperSession
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
@@ -39,7 +39,7 @@ from zephyr_remote_openocd.remote.session import (
 from tests.support import ROOT
 
 
-class ForwardingLifecycleTests(unittest.TestCase):
+class TestForwardingLifecycle:
     class Process:
         def __init__(self, returncode=None):
             self.returncode = returncode
@@ -85,8 +85,8 @@ class ForwardingLifecycleTests(unittest.TestCase):
     def port():
         try:
             listener = socket.socket()
-        except PermissionError as error:
-            raise unittest.SkipTest("sandbox prohibits loopback listeners") from error
+        except PermissionError:
+            pytest.skip("sandbox prohibits loopback listeners")
         with listener:
             listener.bind(("127.0.0.1", 0))
             return listener.getsockname()[1]
@@ -103,7 +103,7 @@ class ForwardingLifecycleTests(unittest.TestCase):
             session._start_forwards((service,), "127.64.1.1")
         connect.assert_not_called()
         session._close_forwards()
-        self.assertEqual(process.terminate_calls, 1)
+        assert process.terminate_calls == 1
 
     def test_stale_gdb_forward_cannot_mask_current_forward_failure(self):
         class RaceProcess(self.Process):
@@ -123,12 +123,12 @@ class ForwardingLifecycleTests(unittest.TestCase):
         try:
             listener.bind(("127.0.0.1", service.local_port))
             listener.listen()
-        except OSError as error:
+        except OSError:
             listener.close()
-            raise unittest.SkipTest("sandbox cannot create stale listener") from error
+            pytest.skip("sandbox cannot create stale listener")
         with (
             patch("zephyr_remote_openocd.remote.backend.socket.create_connection") as connect,
-            self.assertRaisesRegex(SessionError, "SSH forwarding failed"),
+            pytest.raises(SessionError, match="SSH forwarding failed"),
         ):
             try:
                 session._start_forwards((service,), "127.64.1.1")
@@ -136,7 +136,7 @@ class ForwardingLifecycleTests(unittest.TestCase):
                 listener.close()
         connect.assert_not_called()
         session._close_forwards()
-        self.assertEqual(stale.terminate_calls, 0)
+        assert stale.terminate_calls == 0
 
     def test_forward_cleanup_is_reverse_order_and_idempotent(self):
         first = self.Process()
@@ -145,17 +145,17 @@ class ForwardingLifecycleTests(unittest.TestCase):
         session.forwards = [first, second]
         session._close_forwards()
         session._close_forwards()
-        self.assertEqual(second.terminate_calls, 1)
-        self.assertEqual(first.terminate_calls, 1)
+        assert second.terminate_calls == 1
+        assert first.terminate_calls == 1
 
 
-class RttClientTests(unittest.TestCase):
+class TestRttClient:
     @staticmethod
     def _listener(handler):
         try:
             listener = socket.socket()
-        except PermissionError as error:
-            raise unittest.SkipTest("sandbox prohibits loopback listeners") from error
+        except PermissionError:
+            pytest.skip("sandbox prohibits loopback listeners")
         listener.bind(("127.0.0.1", 0))
         listener.listen()
         thread = threading.Thread(target=handler, args=(listener,), daemon=True)
@@ -179,10 +179,10 @@ class RttClientTests(unittest.TestCase):
             os.fdopen(input_read, "rb", buffering=0) as stdin,
             os.fdopen(output_write, "wb", buffering=0) as stdout,
         ):
-            self.assertIsNone(run_rtt_client(port, lambda: None, stdin=stdin, stdout=stdout))
+            assert run_rtt_client(port, lambda: None, stdin=stdin, stdout=stdout) is None
         thread.join(2)
-        self.assertEqual(received, [b"local-input"])
-        self.assertEqual(os.read(output_read, 64), b"remote-output")
+        assert received == [b"local-input"]
+        assert os.read(output_read, 64) == b"remote-output"
         os.close(output_read)
 
     def test_immediate_forwarded_channel_failure_is_authoritative(self):
@@ -191,7 +191,7 @@ class RttClientTests(unittest.TestCase):
                 pass
 
         port, thread = self._listener(server)
-        with self.assertRaisesRegex(RttClientError, "remote channel"):
+        with pytest.raises(RttClientError, match="remote channel"):
             run_rtt_client(port, lambda: None, startup_timeout=1)
         thread.join(2)
 
@@ -230,15 +230,15 @@ class RttClientTests(unittest.TestCase):
             ),
             patch.object(rtt_module.termios, "tcsetattr") as set_attributes,
         ):
-            self.assertIsNone(run_rtt_client(5555, lambda: None, stdin=stream, stdout=stream))
+            assert run_rtt_client(5555, lambda: None, stdin=stream, stdout=stream) is None
         configured = set_attributes.call_args_list[0].args[2]
-        self.assertFalse(configured[3] & rtt_module.termios.ICANON)
-        self.assertFalse(configured[3] & rtt_module.termios.ECHO)
-        self.assertTrue(configured[3] & rtt_module.termios.ISIG)
-        self.assertEqual(set_attributes.call_args_list[-1].args[2], original)
+        assert not configured[3] & rtt_module.termios.ICANON
+        assert not configured[3] & rtt_module.termios.ECHO
+        assert configured[3] & rtt_module.termios.ISIG
+        assert set_attributes.call_args_list[-1].args[2] == original
 
 
-class RealProcessHelperTests(unittest.TestCase):
+class TestRealProcessHelper:
     def test_helper_applies_requested_environment_before_child_executes(self):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
         with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as directory:
@@ -269,16 +269,13 @@ class RealProcessHelperTests(unittest.TestCase):
                 process.stdin.flush()
                 events = [json.loads(line) for line in process.stdout]
                 output = next(event for event in events if event["type"] == "CHILD_OUTPUT")
-                self.assertEqual(
-                    output,
-                    {
-                        "version": 1,
-                        "type": "CHILD_OUTPUT",
-                        "stream": "stdout",
-                        "payload": "before-config",
-                    },
-                )
-                self.assertEqual(process.wait(timeout=5), 0)
+                assert output == {
+                    "version": 1,
+                    "type": "CHILD_OUTPUT",
+                    "stream": "stdout",
+                    "payload": "before-config",
+                }
+                assert process.wait(timeout=5) == 0
             finally:
                 if process.poll() is None:
                     process.kill()
@@ -290,7 +287,7 @@ class RealProcessHelperTests(unittest.TestCase):
     def test_helper_forwards_environment_to_openocd_configuration(self):
         executable = shutil.which("openocd")
         if executable is None:
-            self.skipTest("openocd is not installed")
+            pytest.skip("openocd is not installed")
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
         with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as directory:
             config = Path(directory) / "environment.cfg"
@@ -327,8 +324,8 @@ class RealProcessHelperTests(unittest.TestCase):
                     if event["type"] == "CHILD_OUTPUT"
                     and event["payload"] == "ZRO_CONFIG_VALUE=channel-1"
                 )
-                self.assertIn(output["stream"], ("stdout", "stderr"))
-                self.assertEqual(process.wait(timeout=15), 0)
+                assert output["stream"] in ("stdout", "stderr")
+                assert process.wait(timeout=15) == 0
             finally:
                 if process.poll() is None:
                     process.kill()
@@ -340,10 +337,7 @@ class RealProcessHelperTests(unittest.TestCase):
     def test_controller_rejects_malformed_and_unsupported_version(self):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
         for frame in (b"not-json\n", b'{"version":2,"type":"STOP"}\n'):
-            with (
-                self.subTest(frame=frame),
-                tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as directory,
-            ):
+            with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as directory:
                 environment = os.environ.copy()
                 environment["XDG_RUNTIME_DIR"] = directory
                 process = subprocess.Popen(
@@ -360,9 +354,9 @@ class RealProcessHelperTests(unittest.TestCase):
                     process.stdin.write(frame)
                     process.stdin.flush()
                     error = json.loads(process.stdout.readline())
-                    self.assertEqual(error["type"], "ERROR")
-                    self.assertEqual(error["code"], "PROTOCOL_ERROR")
-                    self.assertEqual(process.wait(timeout=5), 0)
+                    assert error["type"] == "ERROR"
+                    assert error["code"] == "PROTOCOL_ERROR"
+                    assert process.wait(timeout=5) == 0
                 finally:
                     if process.poll() is None:
                         process.kill()
@@ -378,7 +372,7 @@ class RealProcessHelperTests(unittest.TestCase):
             remote_port = probe.getsockname()[1]
             probe.close()
         except PermissionError:
-            self.skipTest("sandbox prohibits loopback listeners")
+            pytest.skip("sandbox prohibits loopback listeners")
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
         with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as directory:
             environment = os.environ.copy()
@@ -392,7 +386,7 @@ class RealProcessHelperTests(unittest.TestCase):
             )
             try:
                 assert process.stdout is not None and process.stdin is not None
-                self.assertEqual(json.loads(process.stdout.readline())["type"], "HELLO")
+                assert json.loads(process.stdout.readline())["type"] == "HELLO"
                 json.loads(process.stdout.readline())
                 marker = "ZRO_READY_unit"
                 child_code = (
@@ -422,8 +416,8 @@ class RealProcessHelperTests(unittest.TestCase):
                 events = []
                 while not any(event["type"] == "SERVICE_READY" for event in events):
                     events.append(json.loads(process.stdout.readline()))
-                self.assertEqual(events[0]["type"], "PROCESS_STARTED")
-                self.assertTrue(
+                assert events[0]["type"] == "PROCESS_STARTED"
+                assert any(
                     any(
                         event["type"] == "CHILD_OUTPUT" and event["payload"] == marker
                         for event in events
@@ -431,7 +425,7 @@ class RealProcessHelperTests(unittest.TestCase):
                 )
                 process.stdin.write(encode_message("STOP"))
                 process.stdin.flush()
-                self.assertEqual(process.wait(timeout=8), 0)
+                assert process.wait(timeout=8) == 0
             finally:
                 if process.poll() is None:
                     process.terminate()
@@ -447,10 +441,10 @@ class RealProcessHelperTests(unittest.TestCase):
             capture_output=True,
             check=False,
         )
-        self.assertEqual(result.returncode, 0, result.stderr)
+        assert result.returncode == 0, result.stderr
         message = json.loads(result.stdout)
-        self.assertEqual(message["type"], "OPENOCD_VERSION")
-        self.assertIn("Python", message["output"])
+        assert message["type"] == "OPENOCD_VERSION"
+        assert "Python" in message["output"]
 
     def test_output_exit_status_and_workspace_cleanup(self):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
@@ -466,7 +460,7 @@ class RealProcessHelperTests(unittest.TestCase):
             )
             try:
                 assert process.stdout is not None and process.stdin is not None
-                self.assertEqual(json.loads(process.stdout.readline())["type"], "HELLO")
+                assert json.loads(process.stdout.readline())["type"] == "HELLO"
                 created = json.loads(process.stdout.readline())
                 command = [
                     sys.executable,
@@ -478,18 +472,18 @@ class RealProcessHelperTests(unittest.TestCase):
                 )
                 process.stdin.flush()
                 events = [json.loads(line) for line in process.stdout]
-                self.assertEqual(process.wait(timeout=5), 0)
-                self.assertEqual(events[0]["type"], "PROCESS_STARTED")
+                assert process.wait(timeout=5) == 0
+                assert events[0]["type"] == "PROCESS_STARTED"
                 outputs = {
                     (event["stream"], event["payload"])
                     for event in events
                     if event["type"] == "CHILD_OUTPUT"
                 }
-                self.assertEqual(outputs, {("stdout", "out"), ("stderr", "err")})
+                assert outputs == {("stdout", "out"), ("stderr", "err")}
                 exit_event = next(event for event in events if event["type"] == "PROCESS_EXIT")
-                self.assertEqual(exit_event["returncode"], 7)
-                self.assertFalse(Path(created["remote_workspace"]).exists())
-                self.assertEqual(process.stderr.read(), b"")
+                assert exit_event["returncode"] == 7
+                assert not Path(created["remote_workspace"]).exists()
+                assert process.stderr.read() == b""
             finally:
                 if process.poll() is None:
                     process.terminate()
@@ -514,7 +508,7 @@ class RealProcessHelperTests(unittest.TestCase):
             workspace = None
             try:
                 assert process.stdout is not None and process.stdin is not None
-                self.assertEqual(json.loads(process.stdout.readline())["type"], "HELLO")
+                assert json.loads(process.stdout.readline())["type"] == "HELLO"
                 created = json.loads(process.stdout.readline())
                 workspace = Path(created["remote_workspace"])
                 command = [sys.executable, "-c", "import time; time.sleep(30)"]
@@ -523,12 +517,12 @@ class RealProcessHelperTests(unittest.TestCase):
                 )
                 process.stdin.flush()
                 started = json.loads(process.stdout.readline())
-                self.assertEqual(started["type"], "PROCESS_STARTED")
+                assert started["type"] == "PROCESS_STARTED"
                 child_pid = started["child_pid"]
                 process.terminate()
-                self.assertEqual(process.wait(timeout=8), 0)
-                self.assertFalse(workspace.exists())
-                with self.assertRaises(ProcessLookupError):
+                assert process.wait(timeout=8) == 0
+                assert not workspace.exists()
+                with pytest.raises(ProcessLookupError):
                     os.kill(child_pid, 0)
             finally:
                 if process.poll() is None:
@@ -563,12 +557,12 @@ class RealProcessHelperTests(unittest.TestCase):
                 )
                 process.stdin.flush()
                 started = json.loads(process.stdout.readline())
-                self.assertEqual(started["type"], "PROCESS_STARTED")
+                assert started["type"] == "PROCESS_STARTED"
                 child_pid = started["child_pid"]
                 process.stdin.close()
-                self.assertEqual(process.wait(timeout=8), 0)
-                self.assertFalse(workspace.exists())
-                with self.assertRaises(ProcessLookupError):
+                assert process.wait(timeout=8) == 0
+                assert not workspace.exists()
+                with pytest.raises(ProcessLookupError):
                     os.kill(child_pid, 0)
             finally:
                 if process.poll() is None:
@@ -592,13 +586,13 @@ class RealProcessHelperTests(unittest.TestCase):
             )
             try:
                 assert process.stdout is not None and process.stdin is not None
-                self.assertEqual(json.loads(process.stdout.readline())["type"], "HELLO")
+                assert json.loads(process.stdout.readline())["type"] == "HELLO"
                 created = json.loads(process.stdout.readline())
                 workspace = Path(created["remote_workspace"])
                 try:
                     listener = socket.socket()
-                except PermissionError as error:
-                    raise unittest.SkipTest("sandbox prohibits loopback listeners") from error
+                except PermissionError:
+                    pytest.skip("sandbox prohibits loopback listeners")
                 with listener:
                     listener.bind(("127.0.0.1", 0))
                     remote_port = listener.getsockname()[1]
@@ -622,11 +616,11 @@ class RealProcessHelperTests(unittest.TestCase):
                 )
                 process.stdin.flush()
                 events = [json.loads(line) for line in process.stdout]
-                self.assertEqual(events[0]["type"], "PROCESS_STARTED")
-                self.assertTrue(any(event["type"] == "CHILD_OUTPUT" for event in events))
-                self.assertEqual(process.wait(timeout=8), 0)
-                self.assertFalse(workspace.exists())
-                self.assertEqual(events[-1]["type"], "ERROR")
+                assert events[0]["type"] == "PROCESS_STARTED"
+                assert any(event["type"] == "CHILD_OUTPUT" for event in events)
+                assert process.wait(timeout=8) == 0
+                assert not workspace.exists()
+                assert events[-1]["type"] == "ERROR"
             finally:
                 if process.poll() is None:
                     process.kill()
@@ -679,12 +673,8 @@ class RealProcessHelperTests(unittest.TestCase):
             try:
                 backend.stage(())
                 descriptor = backend.start(())
-                self.assertIn(ipaddress.ip_address(descriptor.remote_address), LOOPBACK_RANGE)
-                self.assertEqual(backend.wait(5), 6)
-                self.assertEqual(output, [("stdout", "hello")])
+                assert ipaddress.ip_address(descriptor.remote_address) in LOOPBACK_RANGE
+                assert backend.wait(5) == 6
+                assert output == [("stdout", "hello")]
             finally:
                 backend.close()
-
-
-if __name__ == "__main__":
-    unittest.main()

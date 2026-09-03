@@ -6,9 +6,9 @@ import io
 import ipaddress
 import tarfile
 import tempfile
-import unittest
 from pathlib import Path, PurePosixPath
 
+import pytest
 from zephyr_remote_openocd.config import PathMapping
 from zephyr_remote_openocd.remote.debug import (
     DebugInputs,
@@ -57,9 +57,9 @@ from zephyr_remote_openocd.remote.staging import StagingError, build_archive, ex
 from tests.support import ROOT
 
 
-class ProtocolTests(unittest.TestCase):
+class TestProtocol:
     def test_round_trip_and_rejections(self):
-        self.assertEqual(decode_message(encode_message("HELLO", value=3))["value"], 3)
+        assert decode_message(encode_message("HELLO", value=3))["value"] == 3
         for invalid in (
             b"not-json\n",
             b"[]\n",
@@ -67,14 +67,14 @@ class ProtocolTests(unittest.TestCase):
             b'{"version":1.0,"type":"HELLO"}\n',
             b'{"version":true,"type":"HELLO"}\n',
         ):
-            with self.subTest(invalid=invalid), self.assertRaises(ProtocolError):
+            with pytest.raises(ProtocolError):
                 decode_message(invalid)
-        with self.assertRaises(ProtocolError):
+        with pytest.raises(ProtocolError):
             encode_message("HELLO", version=2)
 
     def test_event_order_is_enforced(self):
         order = EventOrder()
-        with self.assertRaises(ProtocolError):
+        with pytest.raises(ProtocolError):
             order.accept(decode_message(encode_message("SERVICE_READY")))
         order.accept(decode_message(encode_message("HELLO", helper="helper")))
         order.accept(
@@ -124,9 +124,9 @@ class ProtocolTests(unittest.TestCase):
     def test_fixed_protocol_1_start_openocd_frame_has_no_reserved_overrides(self):
         fixture = ROOT / "tests/fixtures/protocol1/controller_start_openocd.json"
         command = decode_message(fixture.read_bytes())
-        self.assertEqual(command["type"], "START_OPENOCD")
-        self.assertEqual(command["version"], 1)
-        self.assertEqual(command["services"][0]["remote_port"], 3333)
+        assert command["type"] == "START_OPENOCD"
+        assert command["version"] == 1
+        assert command["services"][0]["remote_port"] == 3333
 
     def test_process_exit_allows_only_terminal_stop(self):
         order = EventOrder()
@@ -138,7 +138,7 @@ class ProtocolTests(unittest.TestCase):
         )
         for message_type, fields in frames:
             order.accept(decode_message(encode_message(message_type, **fields)))
-        with self.assertRaises(ProtocolError):
+        with pytest.raises(ProtocolError):
             order.accept(
                 decode_message(
                     encode_message("CHILD_OUTPUT", stream="stdout", payload="late output")
@@ -147,7 +147,7 @@ class ProtocolTests(unittest.TestCase):
         order.accept(decode_message(encode_message("STOPPED", reason="process-exit")))
 
 
-class StagingTests(unittest.TestCase):
+class TestStaging:
     def test_binary_and_empty_files_round_trip(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -164,13 +164,13 @@ class StagingTests(unittest.TestCase):
             output.mkdir()
             _, _, files = extract_archive(archive.stream, output)
             archive.stream.close()
-            self.assertEqual(files, ("a/empty", "b/binary"))
-            self.assertEqual((output / "b/binary").read_bytes(), bytes(range(256)) + b"\0")
+            assert files == ("a/empty", "b/binary")
+            assert (output / "b/binary").read_bytes() == bytes(range(256)) + b"\0"
 
     def test_unsafe_archive_members_are_rejected(self):
         cases = (("../escape", None), ("absolute", "symlink"), ("fifo", "fifo"))
         for name, kind in cases:
-            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+            with tempfile.TemporaryDirectory() as directory:
                 stream = io.BytesIO()
                 with tarfile.open(fileobj=stream, mode="w") as archive:
                     info = tarfile.TarInfo("/absolute" if name == "absolute" else name)
@@ -183,7 +183,7 @@ class StagingTests(unittest.TestCase):
                         info.size = 1
                     archive.addfile(info, io.BytesIO(b"x"))
                 stream.seek(0)
-                with self.assertRaises(StagingError):
+                with pytest.raises(StagingError):
                     extract_archive(stream, Path(directory))
 
 
@@ -223,7 +223,7 @@ class _FakeBackend(SessionBackend):
         return self.session
 
 
-class SessionTests(unittest.TestCase):
+class TestSession:
     def request(self):
         return RemoteSessionRequest("host", SshCommand(), services=(Service("gdb", 1234, 3333),))
 
@@ -231,14 +231,14 @@ class SessionTests(unittest.TestCase):
         backend = _FakeBackend()
         session = RemoteSession(self.request(), backend)
         with session:
-            self.assertEqual(session.state, SessionState.READY)
-        self.assertEqual(session.state, SessionState.CLOSED)
+            assert session.state == SessionState.READY
+        assert session.state == SessionState.CLOSED
         session = RemoteSession(self.request(), backend := _FakeBackend())
         session.start()
         backend.session.returncode = 7
-        self.assertEqual(session.poll(), 7)
-        self.assertEqual(session.termination_returncode, 7)
-        self.assertEqual(session.state, SessionState.FAILED)
+        assert session.poll() == 7
+        assert session.termination_returncode == 7
+        assert session.state == SessionState.FAILED
 
     def test_dynamic_forward_and_duplicate_rejection(self):
         backend = _FakeBackend()
@@ -246,8 +246,8 @@ class SessionTests(unittest.TestCase):
         session.start()
         rtt = Service("rtt", 5555, 5555)
         session.forward((rtt,))
-        self.assertIn(("forward", (rtt,)), backend.session.actions)
-        with self.assertRaisesRegex(SessionError, "service names must remain unique"):
+        assert ("forward", (rtt,)) in backend.session.actions
+        with pytest.raises(SessionError, match="service names must remain unique"):
             session.forward((rtt,))
         session.close()
 
@@ -256,27 +256,27 @@ class SessionTests(unittest.TestCase):
         session = RemoteSession(self.request(), backend)
         session.start()
         backend.session.forward_error = RuntimeError("forward failed")
-        with self.assertRaisesRegex(RuntimeError, "forward failed"):
+        with pytest.raises(RuntimeError, match="forward failed"):
             session.forward((Service("rtt", 5555, 5555),))
-        self.assertEqual(session.state, SessionState.FAILED)
-        self.assertEqual(backend.session.actions[-1], ("close",))
+        assert session.state == SessionState.FAILED
+        assert backend.session.actions[-1] == ("close",)
 
 
-class AllocationTests(unittest.TestCase):
+class TestAllocation:
     def test_range_and_exhaustion(self):
-        self.assertIn(ipaddress.IPv4Address(random_loopback_address()), LOOPBACK_RANGE)
+        assert ipaddress.IPv4Address(random_loopback_address()) in LOOPBACK_RANGE
         calls = []
 
         def collision(address):
             calls.append(address)
             raise OSError("occupied")
 
-        with self.assertRaisesRegex(RuntimeError, "32 attempts"):
+        with pytest.raises(RuntimeError, match="32 attempts"):
             allocate_loopback(collision)
-        self.assertEqual(len(calls), 32)
+        assert len(calls) == 32
 
 
-class FlashPlanningTests(unittest.TestCase):
+class TestFlashPlanning:
     def test_hex_plan_preserves_ports_and_rewrites_paths(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -307,12 +307,12 @@ class FlashPlanningTests(unittest.TestCase):
                 (("PROBE", "value"),),
             )
             argv = plan.process.argv
-            self.assertIn(f"bindto {ADDRESS_TOKEN}", argv)
-            self.assertIn("gdb_port 7777", argv)
-            self.assertNotIn("gdb_port disabled", argv)
-            self.assertEqual(plan.process.environment, (("PROBE", "value"),))
-            self.assertIn("{workspace}/staged/trees/search-0/board/openocd.cfg", argv)
-            self.assertEqual(len([item for item in plan.staged_files if item.source == config]), 1)
+            assert f"bindto {ADDRESS_TOKEN}" in argv
+            assert "gdb_port 7777" in argv
+            assert "gdb_port disabled" not in argv
+            assert plan.process.environment == (("PROBE", "value"),)
+            assert "{workspace}/staged/trees/search-0/board/openocd.cfg" in argv
+            assert len([item for item in plan.staged_files if item.source == config]) == 1
 
     def test_longest_mapping_and_remote_check(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -328,8 +328,8 @@ class FlashPlanningTests(unittest.TestCase):
                 )
             )
             planned = planner.plan_file(image, "firmware")
-            self.assertEqual(planned.remote, "/specific/image.hex")
-            self.assertEqual(planner.remote_checks[0].path, "/specific/image.hex")
+            assert planned.remote == "/specific/image.hex"
+            assert planner.remote_checks[0].path == "/specific/image.hex"
 
     def test_escaping_symlink_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside:
@@ -337,7 +337,7 @@ class FlashPlanningTests(unittest.TestCase):
             external = Path(outside) / "external.cfg"
             external.write_text("external")
             (root / "escape.cfg").symlink_to(external)
-            with self.assertRaisesRegex(PathPlanningError, "escapes"):
+            with pytest.raises(PathPlanningError, match="escapes"):
                 PathPlanner(()).plan_directory(root, "search-0")
 
     def test_bin_plan_requires_address_and_preserves_erase_verify(self):
@@ -364,10 +364,10 @@ class FlashPlanningTests(unittest.TestCase):
                 PathPlanner(()),
             )
             joined = "\n".join(plan.process.argv)
-            self.assertIn("mass_erase", joined)
-            self.assertIn("program ", joined)
-            self.assertIn("verify ", joined)
-            self.assertIn("0x8000000", joined)
+            assert "mass_erase" in joined
+            assert "program " in joined
+            assert "verify " in joined
+            assert "0x8000000" in joined
 
     def test_serial_is_set_before_board_configuration(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -392,10 +392,10 @@ class FlashPlanningTests(unittest.TestCase):
                 PathPlanner(()),
             )
             argv = plan.process.argv
-            self.assertLess(argv.index("set _ZEPHYR_BOARD_SERIAL ES-FT4232H-02"), argv.index("-f"))
+            assert argv.index("set _ZEPHYR_BOARD_SERIAL ES-FT4232H-02") < argv.index("-f")
 
 
-class DebugPlanningTests(unittest.TestCase):
+class TestDebugPlanning:
     def inputs(self, root, command="debug", **changes):
         config = root / "openocd.cfg"
         config.write_text("# config\n")
@@ -421,21 +421,18 @@ class DebugPlanningTests(unittest.TestCase):
                 ),
                 PathPlanner(()),
             )
-            self.assertEqual([item.name for item in debug.services], ["gdb", "tcl", "telnet"])
-            self.assertEqual(
-                debug.gdb_argv[-6:],
-                (
-                    "-ex",
-                    "load",
-                    "-ex",
-                    "monitor reset run",
-                    "-ex",
-                    "quit",
-                ),
+            assert [item.name for item in debug.services] == ["gdb", "tcl", "telnet"]
+            assert debug.gdb_argv[-6:] == (
+                "-ex",
+                "load",
+                "-ex",
+                "monitor reset run",
+                "-ex",
+                "quit",
             )
-            self.assertIn("halt", debug.process.argv)
+            assert "halt" in debug.process.argv
             attach = build_debug_plan(self.inputs(root, "attach"), PathPlanner(()))
-            self.assertNotIn("load", attach.gdb_argv)
+            assert "load" not in attach.gdb_argv
             server = build_debug_plan(
                 self.inputs(
                     root,
@@ -445,13 +442,12 @@ class DebugPlanningTests(unittest.TestCase):
                 ),
                 PathPlanner(()),
             )
-            self.assertIsNone(server.gdb_argv)
-            self.assertIn("set _ZEPHYR_BOARD_SERIAL probe", server.process.argv)
-            self.assertLess(
-                server.process.argv.index("set _ZEPHYR_BOARD_SERIAL probe"),
-                server.process.argv.index("-f"),
-            )
-            self.assertIn("reset init", server.process.argv)
+            assert server.gdb_argv is None
+            assert "set _ZEPHYR_BOARD_SERIAL probe" in server.process.argv
+            assert server.process.argv.index(
+                "set _ZEPHYR_BOARD_SERIAL probe"
+            ) < server.process.argv.index("-f")
+            assert "reset init" in server.process.argv
 
     def test_disabled_services_and_distinct_gdb_ports(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -465,23 +461,23 @@ class DebugPlanningTests(unittest.TestCase):
                 ),
                 PathPlanner(()),
             )
-            self.assertEqual(plan.services, (Service("gdb", 3355, 3344),))
-            self.assertIn("target extended-remote 127.0.0.1:3355", plan.gdb_argv)
-            self.assertIn("tcl_port disabled", plan.process.argv)
-            with self.assertRaisesRegex(DebugPlanError, "gdb_port must be enabled"):
+            assert plan.services == (Service("gdb", 3355, 3344),)
+            assert "target extended-remote 127.0.0.1:3355" in plan.gdb_argv
+            assert "tcl_port disabled" in plan.process.argv
+            with pytest.raises(DebugPlanError, match="gdb_port must be enabled"):
                 build_debug_plan(self.inputs(Path(directory), gdb_port="disabled"), PathPlanner(()))
 
     def test_version_parsing_and_thread_info_decision(self):
         old = parse_openocd_version("Open On-Chip Debugger 0.11.0")
         development = parse_openocd_version("Open On-Chip Debugger 0.11.0+dev")
         current = parse_openocd_version("Open On-Chip Debugger 0.12.0-01050")
-        self.assertFalse(thread_info_enabled(True, old))
-        self.assertTrue(thread_info_enabled(True, development))
-        self.assertTrue(thread_info_enabled(True, current))
-        self.assertFalse(thread_info_enabled(False, None))
-        with self.assertRaises(DebugPlanError):
+        assert not thread_info_enabled(True, old)
+        assert thread_info_enabled(True, development)
+        assert thread_info_enabled(True, current)
+        assert not thread_info_enabled(False, None)
+        with pytest.raises(DebugPlanError):
             parse_openocd_version("unknown")
-        with self.assertRaises(DebugPlanError):
+        with pytest.raises(DebugPlanError):
             thread_info_enabled(True, None)
 
     def test_rtos_command_is_conditional_and_after_pre_init(self):
@@ -497,10 +493,10 @@ class DebugPlanningTests(unittest.TestCase):
                 PathPlanner(()),
             )
             argv = plan.process.argv
-            self.assertLess(
-                argv.index("adapter speed 1000"), argv.index("$_TARGETNAME configure -rtos Zephyr")
+            assert argv.index("adapter speed 1000") < argv.index(
+                "$_TARGETNAME configure -rtos Zephyr"
             )
-            self.assertTrue(plan.rtos_awareness)
+            assert plan.rtos_awareness
 
     def test_standalone_rtt_uses_batch_gdb_and_deferred_service(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -514,48 +510,46 @@ class DebugPlanningTests(unittest.TestCase):
                 ),
                 PathPlanner(()),
             )
-            self.assertEqual([item.name for item in plan.services], ["gdb", "tcl", "telnet"])
-            self.assertEqual(plan.rtt_service, Service("rtt", 5566, 5566))
-            self.assertEqual(plan.rtt_setup, "batch-gdb")
-            self.assertTrue(plan.launches_rtt_client)
-            self.assertIn("--batch", plan.gdb_argv)
-            self.assertLess(
-                plan.gdb_argv.index("set pagination off"),
-                plan.gdb_argv.index('monitor rtt setup 0x20001000 0x10 "SEGGER RTT"'),
+            assert [item.name for item in plan.services] == ["gdb", "tcl", "telnet"]
+            assert plan.rtt_service == Service("rtt", 5566, 5566)
+            assert plan.rtt_setup == "batch-gdb"
+            assert plan.launches_rtt_client
+            assert "--batch" in plan.gdb_argv
+            assert plan.gdb_argv.index("set pagination off") < plan.gdb_argv.index(
+                'monitor rtt setup 0x20001000 0x10 "SEGGER RTT"'
             )
-            self.assertIn("monitor rtt server start 5566 0", plan.gdb_argv)
-            self.assertNotIn("rtt server start 5566 0", plan.process.argv)
+            assert "monitor rtt server start 5566 0" in plan.gdb_argv
+            assert "rtt server start 5566 0" not in plan.process.argv
 
     def test_rtt_server_is_ready_with_openocd_and_never_launches_client(self):
         with tempfile.TemporaryDirectory() as directory:
             for command in ("debug", "debugserver"):
-                with self.subTest(command=command):
-                    plan = build_debug_plan(
-                        self.inputs(
-                            Path(directory),
-                            command,
-                            rtt_address=0x20002000,
-                            rtt_port="5577",
-                            rtt_server=True,
-                        ),
-                        PathPlanner(()),
-                    )
-                    self.assertEqual(plan.services[-1], Service("rtt", 5577, 5577))
-                    self.assertIn("rtt server start 5577 0", plan.process.argv)
-                    self.assertEqual(plan.rtt_setup, "openocd-startup")
-                    self.assertFalse(plan.launches_rtt_client)
+                plan = build_debug_plan(
+                    self.inputs(
+                        Path(directory),
+                        command,
+                        rtt_address=0x20002000,
+                        rtt_port="5577",
+                        rtt_server=True,
+                    ),
+                    PathPlanner(()),
+                )
+                assert plan.services[-1] == Service("rtt", 5577, 5577)
+                assert "rtt server start 5577 0" in plan.process.argv
+                assert plan.rtt_setup == "openocd-startup"
+                assert not plan.launches_rtt_client
 
     def test_rtt_requires_control_block_and_enabled_port(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            with self.assertRaisesRegex(DebugPlanError, "RTT control block not found"):
+            with pytest.raises(DebugPlanError, match="RTT control block not found"):
                 build_debug_plan(self.inputs(root, "rtt"), PathPlanner(()))
-            with self.assertRaisesRegex(DebugPlanError, "rtt_port must be enabled"):
+            with pytest.raises(DebugPlanError, match="rtt_port must be enabled"):
                 build_debug_plan(
                     self.inputs(root, "rtt", rtt_address=0x2000, rtt_port="disabled"),
                     PathPlanner(()),
                 )
-            with self.assertRaisesRegex(DebugPlanError, "rtt_port conflicts"):
+            with pytest.raises(DebugPlanError, match="rtt_port conflicts"):
                 build_debug_plan(
                     self.inputs(root, "rtt", rtt_address=0x2000, rtt_port=3333),
                     PathPlanner(()),
