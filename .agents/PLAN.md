@@ -12,8 +12,7 @@
 - `[done]` Repository and documentation audit completed for planning.
 - `[done]` Goal, constraints, material ambiguities, risks, and measurable evidence
   agreed with the user and captured in `.agents/GOAL.md`.
-- `[in progress]` Product/document/test refactor implementation; M1-M5 are
-  complete and M6-M8 remain.
+- `[done]` Product/document/test refactor implementation; M1-M8 are complete.
 
 The production module is already organized into board-independent remote logic,
 a Zephyr 4.4 adapter, and a west runner entry point. Its config schema and helper
