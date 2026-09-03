@@ -1,6 +1,6 @@
 # Zephyr Remote OpenOCD Custom Runner
 ## Software Architecture Document
-### V1 — Draft 0.5
+### V1 — Product 0.1.0 (initial development)
 
 # 1. Purpose
 
@@ -447,8 +447,6 @@ west reads new default
 
 When rebuilding is explicitly suppressed, stale generated state may remain until reconfiguration.
 
-This behavior was validated by PG-009 for the normal incremental west workflow.
-
 ---
 
 # 16. Zephyr Runner Reuse Strategy
@@ -459,7 +457,9 @@ The compatibility policy is:
 
 > `runners.core` is Zephyr's explicitly supported external-runner API. `OpenOcdBinaryRunner` is reusable but is not covered by that compatibility guarantee. Any coupling to its non-private interface is Zephyr-version-specific, remains in the Zephyr compatibility layer, and excludes private attributes and methods.
 
-The validated Zephyr 4.4 adapter reuses `capabilities()`, `do_add_parser()`, and the constructor. It overrides `name()`, `do_create()`, and `do_run()`. Constructor and version coupling is isolated in `zephyr44/runner.py`.
+The Zephyr 4.4 adapter reuses `capabilities()`, `do_add_parser()`, and the
+constructor. It overrides `name()`, `do_create()`, and `do_run()`. Constructor
+and version coupling is isolated in `zephyr44/runner.py`.
 
 Supporting a new Zephyr release requires validation of this boundary or a version-specific adapter update.
 
@@ -846,7 +846,7 @@ No user-visible feature is lost solely because multiplexing is unavailable.
 
 # 33. Cross-Client SSH Topology
 
-PG-014 validated multiple SSH processes as the V1 baseline topology without ControlMaster.
+The V1 topology uses multiple SSH processes without requiring ControlMaster.
 
 ## 33.1 Selected baseline: multiple SSH processes
 
@@ -886,7 +886,9 @@ The alternative remains available if WSL testing or operational experience shows
 
 Staging SHOULD use the configured SSH command rather than require a separate `scp` executable.
 
-PG-015 validated arbitrary byte streaming through the configured native-Linux SSH command, including empty, textual, binary/NUL-containing, and 1 MiB payloads, with remote failure propagation. Production flash now uses this transport for validated session staging.
+The configured SSH command carries arbitrary byte streams, including empty,
+textual, binary/NUL-containing, and large payloads, with remote failure
+propagation. Production flash uses this transport for session staging.
 
 A preferred candidate is:
 
@@ -906,9 +908,10 @@ Advantages include:
 - only one configurable SSH executable;
 - consistent authentication behavior;
 - no separate `scp` configuration;
-- validated native-Linux `ssh` operation and use of the same configurable abstraction intended for WSL Linux `ssh` and Windows `ssh.exe`.
+- use of the same configurable abstraction for Linux `ssh` and Windows `ssh.exe`.
 
-The WSL client variants remain subject to PG-012 and PG-013.
+WSL-specific validation remains tracked separately in the requirements and
+validation documents.
 
 The staging manifest, safe archive encoding and extraction, private remote
 filesystem layout, path rewriting, helper deployment protocol, and real OpenOCD
@@ -932,70 +935,10 @@ No assumption is made that the local SSH executable comes from the local Linux d
 
 # 36. Remote Helper Protocol
 
-Protocol 1 is frozen. It uses UTF-8 JSON lines: one JSON object and one `LF` per
-frame, with integer, non-Boolean `version: 1` and non-empty string `type`.
-Helper stdout contains protocol frames only. Unknown fields are ignored for
-historical tolerance, but senders MUST NOT use them as an extension mechanism.
-
-The controller first emits `HELLO {helper}` and then
-`SESSION_CREATED {session_id, remote_workspace}`; each field is a non-empty
-string. Commands travel on controller stdin and events on controller stdout.
-There is no feature negotiation beyond the mandatory version.
-
-| Controller command | Required fields | Optional fields and behavior |
-| --- | --- | --- |
-| `START` | non-empty `services` list; each item has integer, non-Boolean `remote_port` in 1..65535 | Starts the test-only fake service once. Other service-object fields are returned unchanged. |
-| `START_OPENOCD` | non-empty `argv` list of non-empty strings | `environment` defaults to `{}` and has string keys/values. `required_paths` defaults to `[]` and has `{kind: "file"\|"directory", path: string}`. `services` defaults to `[]` and has `{name: string, remote_port: 1..65535}`. `readiness_marker` is null/absent or a non-empty whitespace-free string. `readiness_timeout` is a positive non-Boolean number, default `30.0`. Starts once. |
-| `STOP` | none | Terminates the child process group, removes the workspace, emits `STOPPED {reason: "requested"}`, then exits. |
-
-`START_OPENOCD` expands every `{workspace}` and `{address}` in `argv` and
-required-path values, checks required paths, and starts the child in
-`<remote_workspace>/staged` with the helper environment overlaid by
-`environment`. `PROCESS_STARTED` reports its allocated `127.64.0.0/10` address
-and positive PID. With a marker, the helper waits for a complete trimmed line on
-either child stream and TCP-connectability of every requested non-GDB service.
-GDB is deliberately not probed because OpenOCD can consume its only debugger
-connection. It then emits one `SERVICE_READY` per service. Without a marker it
-emits no `SERVICE_READY`; a real GDB handshake remains authoritative for GDB.
-
-| Controller event | Required fields | Meaning |
-| --- | --- | --- |
-| `HELLO` | non-empty string `helper` | First controller event. |
-| `SESSION_CREATED` | non-empty strings `session_id`, `remote_workspace` | Second controller event. |
-| `PROCESS_STARTED` | non-empty `remote_address`, positive integer `child_pid` | A real OpenOCD child started. |
-| `SERVICE_READY` | `remote_address`; either `service` or fake-service `services` plus positive `child_pid` | Individual real readiness or aggregate fake readiness. |
-| `CHILD_OUTPUT` | `stream` exactly `stdout`/`stderr`, string `payload` | One child line, UTF-8 decoded with replacement and no trailing `LF`. |
-| `PROCESS_EXIT` | integer, non-Boolean `returncode` | Supervised child exited. |
-| `STOPPED` | non-empty string `reason` | `requested` after `STOP`; `process-exit` after child exit. |
-| `ERROR` | non-empty string `code`, string `message` | Protocol or startup failure; current helper uses `PROTOCOL_ERROR`. |
-
-The valid event sequence is `HELLO`, `SESSION_CREATED`, then fake
-`SERVICE_READY` or real `PROCESS_STARTED`. `CHILD_OUTPUT` can race with startup
-and occur before `PROCESS_STARTED`; output/readiness may repeat while running.
-`PROCESS_EXIT` permits only the following `STOPPED`; `STOPPED` and `ERROR` are
-terminal for clients. Malformed JSON, a non-object, invalid/unsupported version,
-unexpected command, invalid fields, or invalid state emits `ERROR` and cleans
-up. Controller EOF and `SIGINT`/`SIGTERM` also terminate the child process group
-and remove the workspace, but promise no final event if it cannot be delivered.
-
-Staging and version probing are separate one-shot helper invocations, not
-controller commands. `helper stage <workspace>` reads tar stdin and on success
-emits `STAGED {byte_count, sha256, files}`: non-negative byte count, 64-hex
-SHA-256, and ordered staged relative paths; unsafe content fails the invocation.
-`helper openocd-version <absolute-executable>` executes exactly
-`<absolute-executable> --version`; success emits `OPENOCD_VERSION {output}`
-with combined output as a string, while failure exits nonzero with `ERROR`.
-Deployment bootstrap emits `DEPLOYED {status, path, sha256}`, where status is
-`deployed`/`reused`, path is non-empty, and the digest has the same form.
-
-A compatible protocol-1 pair implements this complete frozen contract, not
-just the numeric version. Earlier pre-freeze helper contents at the
-protocol-1 path are not a compatibility promise; digest deployment atomically
-replaces them with matching source. Any incompatible change, or new client
-behavior requiring helper support not guaranteed here, SHALL use protocol 2.
-Bulk binary content remains stream-oriented instead of JSON/base64.
-
----
+The exact frozen Protocol 1 wire contract is maintained in
+[protocol-v1.md](protocol-v1.md). This architecture document retains only the
+ownership boundary: the helper is versioned, stdout is JSON-lines protocol only,
+and incompatible client/helper behavior requires a new protocol version.
 
 # 37. Remote Session Storage
 
@@ -1090,9 +1033,8 @@ after observing that marker and confirming that every requested service socket
 is connectable. Disabled services impose no readiness check. The startup timeout
 is 30 seconds.
 
-This combines command-completion evidence with socket availability instead of
-depending on ordinary human-readable OpenOCD diagnostics. The readiness design
-is implemented and validated; it is no longer an open prototype decision.
+This combines command completion with socket availability instead of depending
+on ordinary human-readable OpenOCD diagnostics.
 
 ---
 
@@ -1177,141 +1119,18 @@ Platform-specific SSH behavior, if any is eventually needed, shall remain inside
 
 # 44. Test Architecture
 
-Successful prototype findings are protected by permanent regression suites organized as:
-
-```text
-tests/unit
-tests/zephyr_integration
-tests/ssh_integration
-```
-
-The exact directory layout is non-normative.
-
-## 44.1 Unit tests
-
-Unit tests cover configuration parsing and SSH command construction without Zephyr, SSH connectivity, OpenOCD, or hardware.
-
-## 44.2 Hardware-free Zephyr integration
-
-Runner registration and argument inheritance tests use generated Zephyr runner state without encoding specific board names in implementation logic.
-
-The recording runner is permanent test infrastructure for the path:
-
-```text
-west
-  -> runners.yaml
-  -> runner argument parsing
-  -> RunnerConfig
-  -> remote-openocd adapter
-  -> structured recording
-```
-
-Recording requires:
-
-```text
-ZEPHYR_REMOTE_OPENOCD_RECORD=1
-```
-
-These tests use recording mode or a harmless OpenOCD stub and do not access
-physical hardware or execute real OpenOCD behavior. Without the explicit
-recording setting, flash uses the validated production backend.
-
-## 44.3 SSH integration
-
-SSH integration tests cover native-Linux command selection, fixed arguments, streaming, remote failure propagation, and separate controller/forwarding processes without ControlMaster.
-
-PG-012 and PG-013 remain present as permanent WSL-specific tests. They skip explicitly outside WSL 2 rather than being treated as passed.
-
-## 44.4 Hardware integration
-
-Hardware test fixtures may use concrete boards, but product code and general documentation remain board-agnostic.
-
-Real OpenOCD flash validation covers two target configurations with materially
-different board/SoC characteristics. Concrete target, probe, serial-device, and
-expected-output values remain external fixture data.
-
-At least one RTT-capable validation target SHALL exercise RTT; incapable
-fixtures skip only RTT-specific assertions.
-
-At least one capability-enabled validation target SHALL exercise semihosting
-console output; unsupported fixtures skip only this capability assertion.
-
-## 44.5 Acceptance audit
-
-SRS section 31.1 maps every `AC-*` criterion to its maintained automated and/or
-real-hardware evidence. Concurrent session isolation and controlling-SSH-loss
-cleanup are covered by native-SSH fake-helper integration tests; they do not
-need target-specific product behavior. PG-012 and PG-013 are the only deferred
-acceptance validations, because they require WSL 2. Startup-overhead evidence
-for REQ-NFUNC-PERF-001 is recorded in section 44.7.
-
-## 44.7 Startup-overhead release evidence
-
-REQ-NFUNC-PERF-001 states:
-
-> Under representative local conditions, each invocation of `remote-openocd`
-> SHOULD introduce less than 0.5 seconds of additional runner-controlled
-> startup processing compared with the equivalent invocation of Zephyr's
-> built-in `openocd` runner.
-
-SSH authentication, external network latency, network-transfer time, and remote
-OpenOCD initialization are excluded. The standalone
-`tests/startup_benchmark.py` procedure measures west dispatch and runner setup
-for built-in `openocd` (`--context`) and recording-mode `remote-openocd`.
-`--context` is explicitly a conservative lower-bound proxy for the
-corresponding built-in command path, not an exact execution comparison; this
-makes the derived remote-minus-baseline overhead conservative. Recording mode
-retains production adapter parsing, command construction, path planning,
-environment selection, and request bookkeeping while eliminating the excluded
-remote operations. Hardware target initialization is not measured.
-
-The benchmark performs five warm-up iterations and 100 measured iterations per
-case using `time.perf_counter_ns()`. Percentiles use the inclusive interpolated
-rank `p * (n - 1)`. It reports first observation, median, p95, and worst value;
-the target statistic is the paired remote-minus-baseline median, compared with
-the 0.5-second SHOULD target. p95 and worst are diagnostic only. RTT is not
-reported for builds without an RTT control block; no baseline is invented for
-an inapplicable operation.
-
-Release validation on 2026-09-04 used Python 3.14.7, native Linux
-7.2.2-arch1-1, revision `1cf39b4`, and a Zephyr 4.4 build. Results (seconds of
-additional startup) were:
-
-| Command | First | Median | p95 | Worst | Target |
-| --- | ---: | ---: | ---: | ---: | --- |
-| flash | 0.02798 | 0.03664 | 0.08523 | 0.11606 | Meets target |
-| debug | 0.02997 | 0.03854 | 0.09094 | 0.10939 | Meets target |
-| attach | 0.05412 | 0.03864 | 0.09385 | 0.13740 | Meets target |
-| debugserver | 0.03061 | 0.03795 | 0.08779 | 0.22082 | Meets target |
-
-The benchmark is a manual release-validation artifact, not an ordinary CI
-test or timing gate. The measured JSON record for this validation is
-`docs/validation/startup-overhead-v1.json`; future release records should preserve
-the same schema and metadata.
-
-## 44.6 Platform matrix
-
-The completed native-Linux regression suite exercises:
-
-- module discovery;
-- recording flash and debug integration;
-- SSH command execution and fixed arguments;
-- forwarding without ControlMaster;
-- binary streaming, failure propagation, and cleanup.
-
-The remaining WSL validation shall exercise the corresponding SSH behavior with:
-
-```text
-WSL 2 + WSL Linux OpenSSH
-
-WSL 2 + Windows OpenSSH ssh.exe
-```
-
-The Windows-client case validates that the SSH command abstraction does not depend on the WSL distribution's credentials or agent. Full real OpenOCD workflows on WSL 2 remain later hardware-integration work; native-Linux flash is validated.
+The maintained test suite separates self-contained unit tests, local process and
+socket integration, Zephyr integration, SSH integration, destructive hardware
+validation, and manual release validation. External layers consume explicitly
+configured environments and ignored fixture data. Recording mode remains free of
+SSH, helper, OpenOCD, GDB, and hardware I/O. Hardware capabilities are selected
+independently so an unsupported optional capability does not suppress other
+operations. The separate validation record maps acceptance criteria to executed
+evidence; this document describes only the architecture of that test boundary.
 
 ---
 
-# 45. Architecture Decisions Considered Final
+# 45. Architecture Decisions
 
 Selected for V1:
 
@@ -1350,254 +1169,3 @@ Selected for V1:
 - fail-fast cleanup after SSH loss.
 
 ---
-
-# 46. Validated Prototype Results
-
-The permanent native-Linux suite retains regression coverage for every completed
-prototype gate. The two WSL-specific tests for PG-012 and PG-013 skip explicitly
-outside WSL 2.
-
-The following gate identifiers are retained for traceability and SHALL NOT be reused:
-
-- **PG-001 — PASS:** discovered the self-contained module through `EXTRA_ZEPHYR_MODULES` alone.
-- **PG-002 — PASS:** used the module with an in-tree Zephyr sample without repository changes.
-- **PG-003 — PASS:** used the same module with an out-of-tree application without repository changes.
-- **PG-004 — PASS:** registered `remote-openocd` only when `openocd` was present.
-- **PG-005 — PASS:** mirrored applicable OpenOCD runner arguments exactly.
-- **PG-006 — PASS:** received common `RunnerConfig` normally.
-- **PG-007 — PASS:** retained and explicitly selected `-r openocd`.
-- **PG-008 — PASS:** instantiated the recording runner with `-r remote-openocd` under the explicit test-only recording setting.
-- **PG-009 — PASS:** a configuration-only default change triggered CMake regeneration before runner selection during normal `west flash` and `west debug` operation.
-- **PG-010 — PASS:** characterized the reuse boundary. The Zephyr 4.4 adapter reuses `capabilities()`, `do_add_parser()`, and the constructor; overrides `name()`, `do_create()`, and `do_run()`; accesses no private `OpenOcdBinaryRunner` implementation; and confines constructor/version coupling to `zephyr44/runner.py`.
-- **PG-011 — PASS:** ran a basic remote command against the configured SSH fixture with native Linux `ssh`, including a configured command with fixed arguments.
-- **PG-014 — PASS:** validated separate controlling and `ssh -L` processes with `ControlMaster=no`, including removal of the remote endpoint when the controlling session closed.
-- **PG-015 — PASS:** validated empty, textual, binary/NUL-containing, and 1 MiB streams through the configured SSH command, verified byte count and SHA-256, and propagated remote failure.
-
----
-
-# 47. Remaining Prototype Gates
-
-## PG-012 — DEFERRED
-
-Run the same helper command from WSL 2 using WSL's Linux `ssh`.
-
-This gate requires a WSL 2 test environment.
-
-## PG-013 — DEFERRED
-
-Run the same helper command from WSL 2 using configured Windows `ssh.exe`.
-
-This gate requires a WSL 2 test environment and remains especially relevant to RISK-007.
-
----
-
-# 48. Remaining Implementation Decisions
-
-The remaining non-blocking implementation considerations are optional SSH
-multiplexing and internal module layout beyond the validated compatibility
-boundary. Neither changes the frozen V1 interfaces or requires a product
-decision for the validated V1 capability.
-
-Persistent-debug readiness, enabled-service forwarding, remote OpenOCD version
-probing, and Zephyr thread-info command selection are settled implementation
-decisions described in Sections 40 and 52, not remaining questions.
-The Python setup entry point and V1 configuration schema are also complete and
-frozen as described in Sections 7 and 8.
-
----
-
-# 49. Phase Transition
-
-```text
-Zephyr integration prototype
-    COMPLETE except deferred WSL-specific PG-012 and PG-013
-
-Permanent regression transformation
-    COMPLETE
-
-User setup UX and V1 configuration schema
-    COMPLETE
-
-Remote-session fake-helper vertical slice
-    COMPLETE (native-Linux integration remains fixture-gated)
-
-Real OpenOCD flash
-    COMPLETE and validated on native Linux
-
-Debug, attach, and debugserver
-    COMPLETE and validated on native Linux
-
-RTT
-    COMPLETE and validated on RTT-capable hardware
-
-Semihosting console
-    COMPLETE on every configured capable fixture
-```
-
----
-
-# 50. Protocol-1 Fake-Helper Vertical Slice
-
-The first production transport slice uses a single-file, Python-standard-library
-helper and protocol version 1. Control messages and events are newline-delimited
-JSON objects carrying mandatory `version` and `type` fields. Helper stdout is
-reserved for those objects. Child stdout and stderr are captured and represented
-as typed `CHILD_OUTPUT` events.
-
-The helper is streamed through the configured SSH command and atomically installed
-at `~/.local/libexec/zephyr-remote-openocd/protocol-1/helper.py`. A SHA-256 match
-reuses the existing mode-0600 file; replacement does not accumulate versioned
-copies. No administrative privilege is required.
-
-Each controller owns an unpredictable, mode-0700 workspace below
-`$XDG_RUNTIME_DIR/zephyr-remote-openocd`, or below
-`~/.cache/zephyr-remote-openocd/sessions` when no runtime directory is available.
-It owns cleanup after normal stop, malformed protocol, signal, child failure, or
-control-channel EOF.
-
-Staging uses a POSIX tar archive held in `SpooledTemporaryFile`, spilling beyond
-its memory bound. It is therefore bounded-buffer staging, not end-to-end
-streaming. Extraction does not use `extractall()` or Python's version-dependent
-default filters: every member must be a unique, normalized relative regular file;
-links, special files, traversal, and escaping destinations are rejected before
-content is written.
-
-For the fake-service workload only, the helper attempts up to 32 random IPv4
-addresses in `127.64.0.0/10` and reports one only after its listeners are bound.
-The client creates separate
-`ssh -L` processes with `ControlMaster=no`, `ExitOnForwardFailure=yes`, exact
-ports, and a `127.0.0.1` local bind. Port preflight is advisory; the forwarding
-process is authoritative. Session health is process-driven through `poll()` and
-`wait()`, and cleanup unwinds forwards in reverse creation order before stopping
-the controller.
-
----
-
-# 51. Real OpenOCD Flash Slice
-
-Status: **COMPLETE — validated V1 capability on native Linux.**
-
-Production `flash` translates the public Zephyr 4.4 runner state into explicit
-remote argv. Search trees, configuration files, and firmware use the longest
-matching component-aware path mapping, with private-session staging as fallback.
-Staged directory symlinks are dereferenced only within their source tree. The
-helper verifies mapped paths before launch.
-
-The helper expands only its workspace and allocated-loopback placeholders and
-executes OpenOCD without a shell in a supervised process group. It injects the
-allocated address through OpenOCD's `bindto` command but does not change GDB,
-Tcl, or telnet port behavior supplied by Zephyr and OpenOCD configuration.
-Output is continuously relayed as protocol events and the OpenOCD exit status
-becomes the west flash result.
-
-`ZEPHYR_REMOTE_OPENOCD_RECORD=1` remains permanent no-I/O integration
-infrastructure and takes precedence over production execution. Remote serial
-observation belongs only to explicitly configured hardware acceptance tests and
-is not part of production runner semantics.
-
-## 51.1 Hardware-test evidence
-
-Two target configurations validated the production path end to end. Both used
-real Zephyr-tree OpenOCD configuration staging, a mapped OpenOCD scripts tree,
-firmware-path rewriting, a helper-allocated loopback address, local output relay,
-remote cleanup, and fresh post-flash serial output as a test-only oracle.
-
-- One fixture validated explicit `--serial` probe selection while exercising an
-  allow-listed environment variable through the runner/helper process request.
-  The hardware fixture did not provide an independent assertion that OpenOCD's
-  configuration consumed that variable; allow-list selection, omission, and
-  helper-before-child ordering are covered by permanent recording/unit tests.
-- A second fixture validated normal OpenOCD automatic probe selection without
-  `--serial` when a single applicable probe was present.
-
-Concrete target, probe, serial-device, baud-rate, and expected-output values
-remain in external test-fixture configuration. Production configuration,
-translation, staging, helper supervision, and serial-oracle infrastructure
-contain no target-specific behavior.
-
----
-
-# 52. Persistent Debug, Attach, and Debugserver Slice
-
-Status: **COMPLETE — validated V1 capability on native Linux.**
-
-One helper-supervised OpenOCD process persists for each operation. A unique
-final OpenOCD `echo` marker proves that command-specific initialization has
-completed; readiness additionally checks enabled service sockets without
-consuming OpenOCD's single-client GDB slot (the real GDB handshake is
-authoritative for GDB). Exact loopback-only SSH forwards expose remote GDB, Tcl, and telnet
-services. Disabled services create neither a readiness requirement nor a local
-listener. The remote GDB server port maps to Zephyr's distinct local GDB-client
-port where configured.
-
-Debug and attach preserve Zephyr 4.4 halt/no-halt behavior. Debug launches local
-GDB and loads by default, attach launches it without loading, and GDB init
-commands retain their position after the optional load. Debugserver preserves
-reset/halt startup, exposes the local endpoint, and launches no local GDB.
-Remote debugserver intentionally honors `--serial`, a documented divergence
-from the Zephyr 4.4 built-in runner.
-
-When the build requests thread information, the backend executes the configured
-OpenOCD path remotely with `--version`. The shared parser enables Zephyr RTOS
-awareness only under Zephyr 4.4's version condition. Recording mode performs no
-I/O and supplies a pre-resolved version through its explicit test seam. Hardware
-validation is capability-based: both fixture configurations exercise all three
-operations, while one capable configuration additionally enumerates a real
-Zephyr thread.
-
-Protocol-1 service/readiness fields and remote version probing are frozen in
-the wire contract in section 36. Digest deployment replaces an older helper
-with matching source; future client-required helper behavior uses a new
-protocol version rather than extending protocol 1.
-
----
-
-# 53. RTT Slice
-
-Status: **COMPLETE — validated on RTT-capable native-Linux hardware.**
-
-Standalone `west rtt` starts persistent remote OpenOCD with the enabled normal
-services, uses local batch GDB for the Zephyr 4.4 RTT command sequence, then adds
-the structured RTT forward and launches the lifecycle-aware local byte client.
-`debug --rtt-server` and `debugserver --rtt-server` instead include RTT setup in
-OpenOCD startup readiness and expose the endpoint without launching that client.
-
-Hardware acceptance used an externally selected capable fixture and validated a
-non-default RTT port, real Zephyr channel-0 output and input, simultaneous GDB
-and RTT forwarding, debugserver endpoint-only behavior, interruption handling,
-and complete remote workspace/process cleanup. Concrete hardware identity and
-RTT capability remain solely in ignored fixture configuration. Semihosting is
-not part of this slice.
-
-# 54. Direct Semihosting Console Validation
-
-Status: **COMPLETE — validated through the existing OpenOCD stdout/stderr
-relay on every configured capable native-Linux hardware fixture.** Both normal
-completion and interruption-triggered termination passed, including workspace,
-controller, OpenOCD, and forwarding cleanup.
-
-Fixture-supplied OpenOCD commands are passed through `--cmd-pre-init`; the
-validated fixtures register the direct-mode commands with OpenOCD's
-`post_init_commands` so the normal runner sequence remains configuration,
-`init`, semihosting setup, and then GDB load. An explicit fixture-only `init`
-is permitted only as a fallback when a particular OpenOCD build cannot use
-`post_init_commands`. The direct-mode sequence enables semihosting and disables
-GDB File-I/O and TCP redirection. Fixture-supplied GDB commands are limited to
-control actions such as resuming and orderly termination; they do not configure
-semihosting.
-
-The test observes fresh target console text in relayed OpenOCD stdout/stderr
-and exercises both orderly and interruption cleanup. Semihosting exit or halt is
-preferred but not required when the fixture can perform separate orderly
-termination after the output oracle matches. Hardware capability is declared
-externally, so unsupported combinations skip only this assertion. No
-semihosting proxy, filesystem virtualization, GDB File-I/O handling, or
-board-specific production logic was added.
-
-The earlier no-output observation came from the test lifecycle ordering
-(`flash` followed by a no-load debug session), which could let a one-shot
-application run before semihosting was enabled. The permanent flow performs a
-normal GDB load after post-init semihosting configuration. The earlier local GDB
-reset was independently traced to stale local SSH forwarding processes; the
-GDB handshake is now authoritative and no readiness probe consumes OpenOCD's
-single-client GDB socket.

@@ -122,18 +122,18 @@ Dependencies: M0.
 Exit: all moved paths resolve, root navigation identifies each audience, and no
 runtime path depends on Git metadata or a fixed checkout location.
 
-### M2 — Separate Normative, Architectural, and Evidence Content `[not started]`
+### M2 — Separate Normative, Architectural, and Evidence Content `[done]`
 
-- `[not started]` Reduce SRS to requirements, assumptions, risks, non-goals, and
+- `[done]` Reduce SRS to requirements, assumptions, risks, non-goals, and
   AC definitions.
-- `[not started]` Rewrite SAD historical/completed-slice material into
+- `[done]` Rewrite SAD historical/completed-slice material into
   present-tense architecture only; correct section ordering while preserving
   meaning.
-- `[not started]` Extract the exact frozen Protocol 1 contract.
-- `[not started]` Create the V1 traceability matrix and validation record.
-- `[not started]` Remove completed PG history and retain only PG-012/PG-013
+- `[done]` Extract the exact frozen Protocol 1 contract.
+- `[done]` Create the V1 traceability matrix and validation record.
+- `[done]` Remove completed PG history and retain only PG-012/PG-013
   deferral.
-- `[not started]` Add ID uniqueness and traceability-completeness checks.
+- `[done]` Add ID uniqueness and traceability-completeness checks.
 
 Dependencies: M1.
 

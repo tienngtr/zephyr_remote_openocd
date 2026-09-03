@@ -1,6 +1,6 @@
 # Zephyr Remote OpenOCD Custom Runner
 ## Software Requirements Specification
-### V1 Baseline — Draft 0.4
+### V1 Baseline — Product 0.1.0 (initial development)
 
 # 1. Purpose
 
@@ -915,7 +915,7 @@ Loss of the controlling helper/SSH session SHALL cause the associated OpenOCD pr
 ## REQ-FUNC-HELP-006
 
 Helper protocol compatibility SHALL be versioned. Protocol 1 SHALL implement
-the frozen contract in SAD section 36. Any incompatible change, or new client
+the frozen Protocol 1 helper contract. Any incompatible change, or new client
 behavior requiring helper support not guaranteed by that contract, SHALL use a
 new protocol version.
 
@@ -1054,7 +1054,6 @@ Independent probe channels supported by the underlying hardware and OpenOCD may 
 
 The remote Linux host can run multiple OpenOCD instances using identical TCP port numbers when bound to different loopback addresses.
 
-This behavior has been validated in the target environment.
 
 ## ASM-007
 
@@ -1102,7 +1101,7 @@ Confine all `OpenOcdBinaryRunner` coupling to the Zephyr 4.4 compatibility layer
 
 ## RISK-007 — SSH client differences, especially WSL with Windows `ssh.exe`
 
-Native Linux validation proves that V1 does not require ControlMaster and that separate controlling and `ssh -L` processes work. WSL Linux OpenSSH and Windows `ssh.exe` invoked from WSL remain unvalidated and may differ in subprocess, path, authentication, or forwarding behavior.
+WSL Linux OpenSSH and Windows `ssh.exe` invoked from WSL may differ in subprocess, path, authentication, or forwarding behavior and require separate validation
 
 Severity: Medium.
 
@@ -1110,17 +1109,6 @@ Mitigation:
 
 Base V1 correctness only on required OpenSSH-compatible behavior, keep multiplexing optional, and complete PG-012 and PG-013 before claiming WSL 2 compatibility.
 
-## Retired feasibility risks
-
-The following identifiers are retired and SHALL NOT be reused:
-
-- **RISK-001 — Runner registration:** retired by PG-001, PG-004, PG-007, and PG-008.
-- **RISK-002 — Board argument inheritance:** retired as a V1 feasibility risk by PG-005 and PG-006. Future-version regression exposure is covered by RISK-003.
-- **RISK-004 — CMake runner-state integration:** retired by PG-004, PG-005, PG-007, and PG-008. Future-version maintenance exposure is covered by RISK-003.
-- **RISK-005 — Default-runner regeneration:** retired for the supported normal incremental-build workflow by PG-009. Suppressed rebuilding retains the behavior specified by REQ-FUNC-SELECT-010.
-- **RISK-006 — Path mapping mismatch:** retired as a V1 feasibility risk by real-hardware flash validation using staged Zephyr-tree configuration, mapped SDK scripts, and staged firmware. A configured mapping can still point at non-equivalent remote content; remote path preflight and operator-controlled mappings treat that as an ordinary configuration error rather than an architectural feasibility concern.
-
----
 
 # 30. Acceptance Criteria
 
@@ -1192,28 +1180,21 @@ A build configured with remote default selects `remote-openocd` when no explicit
 
 Changing the configuration default followed by a normal west runner invocation which performs the standard incremental build updates the generated default without requiring a pristine build.
 
-PG-009 validated this criterion for the supported normal incremental-build workflow.
 
 ## AC-FLASH-001
 
 `west flash -r remote-openocd` programs the intended remote target.
 
-Status: validated on native Linux with two real-hardware target configurations,
-including both explicit and automatic probe selection.
 
 ## AC-DEBUG-001
 
 `west debug -r remote-openocd` provides local source-level debugging through remote OpenOCD.
 
-Status: validated on native Linux together with attach and debugserver on two
-real-hardware fixture configurations.
 
 ## AC-DEBUG-002
 
 Different GDB server/client ports work correctly when supported by the runner interface.
 
-Status: validated on native Linux as part of the persistent debug, attach, and
-debugserver hardware tests.
 
 ## AC-RTT-001
 
@@ -1227,10 +1208,6 @@ A custom RTT port works without inspecting GDB RSP traffic.
 
 Semihosting console output emitted by remote OpenOCD appears in the local west terminal.
 
-Status: validated through direct semihosting on every configured capable
-native-Linux fixture, covering both orderly completion and interruption cleanup,
-using the existing OpenOCD stdout/stderr relay. GDB File-I/O, semihosting TCP
-redirection, proxying, and filesystem virtualization remain out of scope.
 
 ## AC-CONC-001
 
@@ -1263,102 +1240,3 @@ On WSL 2, configuring a Windows OpenSSH client executable as the SSH command all
 ## AC-SSH-003
 
 An SSH command containing fixed user-configured arguments can be used without those arguments needing to be duplicated by every operation.
-
----
-
-# 31. Requirements Status
-
-## 31.1 V1 acceptance traceability
-
-Status is classified by the strongest maintained evidence: **Automated** means
-permanent unit, Zephyr, or SSH integration coverage; **Hardware** means an
-executed fixture-gated real-hardware acceptance test; **Both** has both forms.
-Fixture-gated hardware tests are permanent evidence even when their external
-fixture is unavailable on a developer machine. The only deferred criteria are
-the WSL-specific PG-012 and PG-013 validations.
-
-| Criterion | Status | Permanent evidence |
-| --- | --- | --- |
-| AC-INTEG-001 | Automated | `ZephyrIntegrationTests.test_module_discovery_and_in_tree_application_build`; clean-install acceptance |
-| AC-INTEG-002 | Automated | `ZephyrIntegrationTests.test_out_of_tree_application_build` |
-| AC-INTEG-003 | Automated | `ZephyrIntegrationTests.test_runner_registration_is_conditional_and_non_destructive`; clean-install acceptance |
-| AC-INTEG-004 | Automated | `ZephyrIntegrationTests.test_openocd_arguments_are_mirrored_exactly` |
-| AC-INTEG-005 | Automated | `ZephyrIntegrationTests.test_runner_registration_is_conditional_and_non_destructive` |
-| AC-INSTALL-001 | Automated | `ZephyrIntegrationTests.test_clean_install_acceptance_from_git_free_distribution` |
-| AC-INSTALL-002 | Automated | `SetupTests.test_creates_template_and_reports_activation`; clean-install acceptance |
-| AC-INSTALL-003 | Automated | `SetupTests.test_existing_configuration_is_preserved_and_not_chmodded`; clean-install acceptance |
-| AC-INSTALL-004 | Automated | `SetupTests.test_creates_template_and_reports_activation`; clean-install acceptance |
-| AC-INSTALL-005 | Automated | `SetupTests.test_creates_template_and_reports_activation`; `SetupTests.test_existing_configuration_is_preserved_and_not_chmodded` |
-| AC-INSTALL-006 | Automated | `DependencyDiagnosticTests.test_dependency_status_messages`; clean-install acceptance using West Python |
-| AC-SELECT-001 | Automated | `ZephyrIntegrationTests.test_config_change_regenerates_default_runner`; clean-install acceptance |
-| AC-SELECT-002 | Automated | `ZephyrIntegrationTests.test_config_change_regenerates_default_runner`; clean-install acceptance |
-| AC-SELECT-003 | Automated | `ZephyrIntegrationTests.test_config_change_regenerates_default_runner` |
-| AC-FLASH-001 | Both | `ZephyrIntegrationTests.test_recording_commands_receive_runner_config_without_io`; `RealOpenOcdFlashTests.test_configured_targets_flash_and_emit_fresh_serial_output` |
-| AC-DEBUG-001 | Both | `ZephyrIntegrationTests.test_recording_commands_receive_runner_config_without_io`; `RealOpenOcdDebugTests.test_debug_attach_and_debugserver` |
-| AC-DEBUG-002 | Both | `DebugPlanningTests.test_disabled_services_and_distinct_gdb_ports`; `RealOpenOcdDebugTests.test_debug_attach_and_debugserver` |
-| AC-RTT-001 | Both | `RttClientTests.test_bidirectional_non_tty_channel`; `RealRttTests.test_standalone_rtt` |
-| AC-RTT-002 | Both | `ZephyrIntegrationTests.test_recording_rtt_command_construction_without_io`; `RealRttTests.test_standalone_rtt` |
-| AC-SEMI-001 | Both | `ZephyrIntegrationTests.test_recording_direct_semihosting_commands_without_io`; `RealSemihostingTests` normal and interruption tests |
-| AC-CONC-001 | Automated | `SshTransportIntegrationTests.test_concurrent_fake_sessions_isolate_identical_remote_ports` |
-| AC-LIFE-001 | Both | `RealProcessHelperTests.test_output_exit_status_and_workspace_cleanup`; real flash/debug/RTT/semihosting cleanup assertions |
-| AC-LIFE-002 | Automated | `RealProcessHelperTests.test_controller_eof_cleans_child_and_workspace`; `SshTransportIntegrationTests.test_controller_ssh_loss_cleans_fake_session` |
-| AC-PLAT-001 | Both | native-Linux Zephyr/SSH integration plus real flash and debug fixtures |
-| AC-PLAT-002 | Deferred | PG-012 (WSL Linux SSH) and PG-013 (Windows `ssh.exe` from WSL 2) |
-| AC-SSH-001 | Automated | `SshCommandTests`; `LinuxSshIntegrationTests.test_configured_linux_ssh_and_fixed_arguments` |
-| AC-SSH-002 | Deferred | PG-013 / `WslSshIntegrationTests.test_windows_ssh_exe_from_wsl` |
-| AC-SSH-003 | Automated | `SshCommandTests.test_fixed_arguments_are_preserved_without_a_shell`; `LinuxSshIntegrationTests.test_configured_linux_ssh_and_fixed_arguments` |
-
-This table is the V1 acceptance status. Requirement-level implementation,
-validation, and compatibility status is summarized below; no additional V1
-acceptance criterion is intentionally untested.
-
-## 31.2 Requirement-group audit
-
-| SRS sections | Status | Evidence or finding |
-| --- | --- | --- |
-| 5–6, scope and source independence | Automated | Zephyr integration, recording-mode, and clean-install acceptance tests |
-| 7–8, distribution, setup, configuration | Automated | `SetupTests`, `ConfigTests`, and clean-install acceptance |
-| 9–12, selection, board reuse, runner compatibility | Automated | Zephyr integration PG-001–PG-010 regressions and adapter-boundary test |
-| 13–16, environment, host/files, flash | Both | environment allow-list/omission recording test, helper child-environment test, helper-to-OpenOCD configuration-consumption test, planning/staging tests, SSH fake-helper integration, and real flash fixtures. Hardware flash does not independently assert configuration consumption. |
-| 17–20, debug/services, RTT, semihosting | Both | recording/unit construction coverage and real debug, RTT, and semihosting fixtures |
-| 21–24, SSH, concurrency, helper, session data | Automated | SSH PG-011/PG-014/PG-015 tests, fake-helper lifecycle/concurrency tests, protocol and staging tests |
-| 25, platform requirements | Both / Deferred | native Linux has automated and hardware evidence; WSL-specific validation is deferred only through PG-012 and PG-013 |
-| 26, maintainability, testability, administration | Automated plus release evidence | style/static tests, architectural-boundary test, fake endpoint tests, setup/helper permission tests, and the standalone startup-overhead release benchmark (`docs/validation/startup-overhead-v1.json`) for REQ-NFUNC-PERF-001 |
-
-REQ-NFUNC-PERF-001 has repeatable release-validation evidence; the benchmark is
-manual and is not a CI performance gate. All other V1 requirement groups have
-code, automated, and/or hardware evidence appropriate to their stated behavior.
-
-No unresolved stakeholder/product decision currently blocks V1 implementation.
-
-The integration prototype resolved the V1 feasibility questions concerning:
-
-- CMake registration of `remote-openocd`;
-- inheritance of built-in OpenOCD runner arguments and common `RunnerConfig`;
-- automatic regeneration of runner defaults during normal incremental west operations;
-- native-Linux SSH operation, streaming, and forwarding without ControlMaster.
-
-PG-010 characterized, rather than eliminated, the `OpenOcdBinaryRunner` compatibility risk. `runners.core` is the explicit external-runner contract; reuse of the non-private `OpenOcdBinaryRunner` interface is Zephyr-version-specific and governed by REQ-NFUNC-COMPAT-001 through REQ-NFUNC-COMPAT-004.
-
-WSL validation remains open: PG-012 covers WSL Linux `ssh`, and PG-013 covers Windows `ssh.exe` invoked from WSL.
-
-The remote helper, staging and path translation, remote-session lifecycle,
-loopback allocation, fake-service forwarding, and real OpenOCD flash path are
-implemented. Native-Linux real-hardware validation on two materially different
-targets demonstrated staged Zephyr-tree configuration, mapped SDK scripts,
-staged firmware, explicit probe/environment selection, automatic probe
-selection, isolated loopback binding, output relay, and cleanup. Consequently,
-`west flash -r remote-openocd`, debug, attach, debugserver, and forwarding of
-enabled GDB/Tcl/telnet services are validated V1 capabilities. Persistent-debug
-readiness uses a final command marker plus enabled-service socket checks; remote
-OpenOCD version probing and the Zephyr 4.4-equivalent thread-info decision are
-implemented, with real thread enumeration validated on a capable hardware
-fixture. These areas are no longer open implementation questions or V1
-feasibility risks. RTT is implemented and validated on an externally configured,
-RTT-capable hardware fixture, including non-default-port, bidirectional, and
-simultaneous GDB/RTT operation. Direct semihosting console validation is
-implemented through fixture-supplied OpenOCD commands and the existing
-stdout/stderr relay, with all configured capable hardware fixtures passing both
-normal and interruption paths; no semihosting proxy, filesystem virtualization,
-or GDB File-I/O path is included. WSL validation remains subsequent work. No
-unresolved stakeholder/product decision currently blocks V1 implementation.

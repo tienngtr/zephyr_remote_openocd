@@ -125,7 +125,7 @@ are in [`docs/requirements/SRS.md`](docs/requirements/SRS.md) and
 Protocol 1 is the frozen JSON-lines helper contract. The helper is deployed
 automatically to the remote user account and cleans up sessions on normal or
 abnormal termination. Compatibility rules and the complete wire contract are
-documented in the SAD.
+documented in [`docs/architecture/protocol-v1.md`](docs/architecture/protocol-v1.md).
 
 For test-fixture setup and hardware prerequisites, see
 [`tests/README.md`](tests/README.md).
