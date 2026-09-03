@@ -46,6 +46,10 @@ from zephyr_remote_openocd.remote.protocol import (
     ProtocolError,
     decode_message,
     encode_message,
+    validate_controller_command,
+    validate_deployment_response,
+    validate_openocd_version_response,
+    validate_staged_response,
 )
 from zephyr_remote_openocd.remote.rtt import RttClientError, run_rtt_client
 from zephyr_remote_openocd.remote.services import (
@@ -68,17 +72,91 @@ from tests.support import ROOT
 class ProtocolTests(unittest.TestCase):
     def test_round_trip_and_rejections(self):
         self.assertEqual(decode_message(encode_message("HELLO", value=3))["value"], 3)
-        for invalid in (b"not-json\n", b"[]\n", b'{"version":2,"type":"HELLO"}\n'):
+        for invalid in (
+            b"not-json\n",
+            b"[]\n",
+            b'{"version":2,"type":"HELLO"}\n',
+            b'{"version":1.0,"type":"HELLO"}\n',
+            b'{"version":true,"type":"HELLO"}\n',
+        ):
             with self.subTest(invalid=invalid), self.assertRaises(ProtocolError):
                 decode_message(invalid)
+        with self.assertRaises(ProtocolError):
+            encode_message("HELLO", version=2)
 
     def test_event_order_is_enforced(self):
         order = EventOrder()
         with self.assertRaises(ProtocolError):
             order.accept(decode_message(encode_message("SERVICE_READY")))
-        order.accept(decode_message(encode_message("HELLO")))
-        order.accept(decode_message(encode_message("SESSION_CREATED")))
-        order.accept(decode_message(encode_message("SERVICE_READY")))
+        order.accept(decode_message(encode_message("HELLO", helper="helper")))
+        order.accept(
+            decode_message(
+                encode_message(
+                    "SESSION_CREATED", session_id="session", remote_workspace="/workspace"
+                )
+            )
+        )
+        order.accept(
+            decode_message(
+                encode_message(
+                    "SERVICE_READY",
+                    remote_address="127.64.1.1",
+                    services=[{"remote_port": 3333}],
+                    child_pid=1,
+                )
+            )
+        )
+
+    def test_fixed_protocol_1_controller_fixture_remains_compatible(self):
+        """A recorded protocol-1 sequence protects required fields and ordering."""
+        fixture = ROOT / "tests/fixtures/protocol1/controller_openocd_events.jsonl"
+        order = EventOrder()
+        for line in fixture.read_bytes().splitlines():
+            order.accept(decode_message(line))
+
+        fake_fixture = ROOT / "tests/fixtures/protocol1/controller_fake_events.jsonl"
+        fake_order = EventOrder()
+        for line in fake_fixture.read_bytes().splitlines():
+            fake_order.accept(decode_message(line))
+
+    def test_fixed_protocol_1_controller_commands_remain_compatible(self):
+        fixture = ROOT / "tests/fixtures/protocol1/controller_commands.jsonl"
+        for line in fixture.read_bytes().splitlines():
+            validate_controller_command(decode_message(line))
+
+    def test_fixed_protocol_1_one_shot_responses_remain_compatible(self):
+        fixture = ROOT / "tests/fixtures/protocol1/one_shot_responses.jsonl"
+        staged, version, deployed = [
+            decode_message(line) for line in fixture.read_bytes().splitlines()
+        ]
+        validate_staged_response(staged)
+        validate_openocd_version_response(version)
+        validate_deployment_response(deployed)
+
+    def test_fixed_protocol_1_start_openocd_frame_has_no_reserved_overrides(self):
+        fixture = ROOT / "tests/fixtures/protocol1/controller_start_openocd.json"
+        command = decode_message(fixture.read_bytes())
+        self.assertEqual(command["type"], "START_OPENOCD")
+        self.assertEqual(command["version"], 1)
+        self.assertEqual(command["services"][0]["remote_port"], 3333)
+
+    def test_process_exit_allows_only_terminal_stop(self):
+        order = EventOrder()
+        frames = (
+            ("HELLO", {"helper": "helper"}),
+            ("SESSION_CREATED", {"session_id": "id", "remote_workspace": "/work"}),
+            ("PROCESS_STARTED", {"remote_address": "127.64.1.1", "child_pid": 1}),
+            ("PROCESS_EXIT", {"returncode": 0}),
+        )
+        for message_type, fields in frames:
+            order.accept(decode_message(encode_message(message_type, **fields)))
+        with self.assertRaises(ProtocolError):
+            order.accept(
+                decode_message(
+                    encode_message("CHILD_OUTPUT", stream="stdout", payload="late output")
+                )
+            )
+        order.accept(decode_message(encode_message("STOPPED", reason="process-exit")))
 
 
 class StagingTests(unittest.TestCase):
@@ -696,6 +774,40 @@ class RttClientTests(unittest.TestCase):
 
 
 class RealProcessHelperTests(unittest.TestCase):
+    def test_controller_rejects_malformed_and_unsupported_version(self):
+        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        for frame in (b"not-json\n", b'{"version":2,"type":"STOP"}\n'):
+            with (
+                self.subTest(frame=frame),
+                tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as directory,
+            ):
+                environment = os.environ.copy()
+                environment["XDG_RUNTIME_DIR"] = directory
+                process = subprocess.Popen(
+                    [sys.executable, str(helper), "control"],
+                    env=environment,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                try:
+                    assert process.stdin is not None and process.stdout is not None
+                    process.stdout.readline()
+                    process.stdout.readline()
+                    process.stdin.write(frame)
+                    process.stdin.flush()
+                    error = json.loads(process.stdout.readline())
+                    self.assertEqual(error["type"], "ERROR")
+                    self.assertEqual(error["code"], "PROTOCOL_ERROR")
+                    self.assertEqual(process.wait(timeout=5), 0)
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+                        process.wait(timeout=5)
+                    for stream in (process.stdin, process.stdout, process.stderr):
+                        if stream is not None and not stream.closed:
+                            stream.close()
+
     def test_persistent_process_requires_marker_and_connectable_service(self):
         try:
             probe = socket.socket()

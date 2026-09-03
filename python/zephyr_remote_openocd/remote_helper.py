@@ -289,7 +289,12 @@ def controller():
                 return
             try:
                 message = json.loads(line)
-                if not isinstance(message, dict) or message.get("version") != VERSION:
+                if (
+                    not isinstance(message, dict)
+                    or not isinstance(message.get("version"), int)
+                    or isinstance(message.get("version"), bool)
+                    or message["version"] != VERSION
+                ):
                     raise ValueError("incompatible or missing protocol version")
                 kind = message.get("type")
                 if kind == "START":

@@ -14,7 +14,15 @@ from collections.abc import Callable, Iterable
 
 from .deploy import DeploymentResult, deploy_helper
 from .model import RemoteSessionRequest, Service, SessionAllocation, SessionDescriptor, StagedFile
-from .protocol import EventOrder, ProtocolError, read_message, write_message
+from .protocol import (
+    EventOrder,
+    ProtocolError,
+    is_protocol_version,
+    read_message,
+    validate_openocd_version_response,
+    validate_staged_response,
+    write_message,
+)
 from .session import BackendSession, SessionBackend, SessionError
 from .staging import build_archive
 
@@ -48,10 +56,11 @@ class SshHelperBackend(SessionBackend):
             )
         try:
             message = json.loads(result.stdout)
-            if message.get("version") != 1 or message.get("type") != "OPENOCD_VERSION":
+            if not is_protocol_version(message.get("version")):
                 raise ValueError("unexpected version response")
+            validate_openocd_version_response(message)
             return message["output"]
-        except (KeyError, ValueError, json.JSONDecodeError) as error:
+        except (KeyError, ProtocolError, ValueError, json.JSONDecodeError) as error:
             raise SessionError(
                 f"invalid remote OpenOCD version response: {result.stdout!r}"
             ) from error
@@ -128,12 +137,13 @@ class SshHelperSession(BackendSession):
             )
         try:
             message = json.loads(result.stdout)
-            if message.get("version") != 1 or message.get("type") != "STAGED":
+            if not is_protocol_version(message.get("version")):
                 raise ValueError("unexpected staging response")
+            validate_staged_response(message)
             if tuple(message.get("files", ())) != archive.files:
                 raise ValueError("remote staged-file confirmation differs from manifest")
             return message
-        except (ValueError, json.JSONDecodeError) as error:
+        except (ProtocolError, ValueError, json.JSONDecodeError) as error:
             raise SessionError(f"invalid remote staging response: {result.stdout!r}") from error
 
     @staticmethod

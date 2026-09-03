@@ -1,0 +1,4 @@
+{"helper":"zephyr-remote-openocd","type":"HELLO","version":1}
+{"remote_workspace":"/run/user/1000/zephyr-remote-openocd/fixed-session","session_id":"fixed-session","type":"SESSION_CREATED","version":1}
+{"child_pid":4242,"remote_address":"127.64.12.34","services":[{"name":"gdb","remote_port":3333}],"type":"SERVICE_READY","version":1}
+{"reason":"requested","type":"STOPPED","version":1}

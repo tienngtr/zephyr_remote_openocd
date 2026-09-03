@@ -58,9 +58,10 @@ The enumerated V1 TOML schema is frozen; do not add or relax configuration keys
 without an explicit compatibility and migration decision. Unknown keys remain
 errors, and `resources/config.toml.example` is the canonical template.
 
-Protocol 1 is pre-release and unfrozen; client/helper may evolve atomically, but
-post-release incompatible changes require a new version. Keep helper stdout
-JSON-only and relay child output as events. Serial observation is test-only.
+Protocol 1 is frozen: matching version numbers alone are insufficient unless
+both sides implement the SAD section 36 contract. Any incompatible change or
+new client behavior requiring helper support requires protocol 2. Keep helper
+stdout JSON-only and relay child output as events. Serial observation is test-only.
 RTT uses structured runner state and the configured port; never infer it from
 GDB RSP traffic. Direct semihosting console validation uses fixture-supplied
 OpenOCD `--cmd-pre-init` commands and the normal stdout/stderr relay. It adds

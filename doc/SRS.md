@@ -914,13 +914,15 @@ Loss of the controlling helper/SSH session SHALL cause the associated OpenOCD pr
 
 ## REQ-FUNC-HELP-006
 
-Helper protocol compatibility SHALL be versioned.
+Helper protocol compatibility SHALL be versioned. Protocol 1 SHALL implement
+the frozen contract in SAD section 36. Any incompatible change, or new client
+behavior requiring helper support not guaranteed by that contract, SHALL use a
+new protocol version.
 
 ## REQ-FUNC-HELP-007
 
-Obsolete helper versions SHALL NOT accumulate indefinitely.
-
-The current and one immediately previous helper protocol version MAY be retained.
+Obsolete helper versions SHALL NOT accumulate indefinitely. Deployment SHALL
+replace the helper for its selected protocol path atomically.
 
 ---
 

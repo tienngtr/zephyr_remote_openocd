@@ -1,0 +1,3 @@
+{"services":[{"name":"gdb","remote_port":3333}],"type":"START","version":1}
+{"argv":["/opt/openocd/bin/openocd","-c","gdb_port 3333","-c","echo ZRO_READY_fixed"],"environment":{"FTDI_CHANNEL":"1"},"readiness_marker":"ZRO_READY_fixed","readiness_timeout":30.0,"required_paths":[{"kind":"file","path":"{workspace}/staged/zephyr.elf"},{"kind":"directory","path":"/opt/openocd/scripts"}],"services":[{"name":"gdb","remote_port":3333}],"type":"START_OPENOCD","version":1}
+{"type":"STOP","version":1}
