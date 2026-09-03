@@ -135,8 +135,8 @@ zephyr-remote-openocd/
 ```
 
 The implementation is intentionally self-contained in the module tree. Exact
-filenames are not architectural contracts; user setup and packaging automation
-remain deferred follow-up work.
+filenames are not architectural contracts. User setup is implemented by
+`scripts/setup.py`; pip packaging is not required for V1.
 
 ---
 
@@ -1393,13 +1393,10 @@ This gate requires a WSL 2 test environment and remains especially relevant to R
 
 # 48. Remaining Implementation Decisions
 
-The remaining implementation-level questions are:
-
-1. Exact distribution instructions.
-2. Whether optional multiplexing is worthwhile when available.
-3. Final internal Python module layout beyond the validated compatibility boundary.
-
-None currently require an additional product decision before the next implementation phase.
+The remaining non-blocking implementation considerations are optional SSH
+multiplexing and internal module layout beyond the validated compatibility
+boundary. Neither changes the frozen V1 interfaces or requires a product
+decision for the validated V1 capability.
 
 Persistent-debug readiness, enabled-service forwarding, remote OpenOCD version
 probing, and Zephyr thread-info command selection are settled implementation
@@ -1433,8 +1430,8 @@ Debug, attach, and debugserver
 RTT
     COMPLETE and validated on RTT-capable hardware
 
-Then
-    semihosting console (COMPLETE on every configured capable fixture)
+Semihosting console
+    COMPLETE on every configured capable fixture
 ```
 
 ---
