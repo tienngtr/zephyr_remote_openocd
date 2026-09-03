@@ -44,9 +44,11 @@ they flash targets and require external fixture files. Finish with
 
 Follow standard Python style: four-space indentation, `snake_case` functions and
 modules, `PascalCase` classes, and uppercase constants. Prefer type hints,
-immutable dataclasses for transport models, `pathlib` paths, and standard-library
-solutions. Keep production behavior board/vendor-agnostic. Preserve the public
-Zephyr runner boundary; never access private `OpenOcdBinaryRunner` members.
+immutable dataclasses for transport models, and `pathlib` paths. Production code
+should minimize additional third-party dependencies; tests may use established
+developer-only libraries when they materially improve structure or diagnostics.
+Keep production behavior board/vendor-agnostic. Preserve the public Zephyr
+runner boundary; never access private `OpenOcdBinaryRunner` members.
 
 ## Architecture Invariants
 
@@ -66,21 +68,37 @@ RTT uses structured runner state and the configured port; never infer it from
 GDB RSP traffic. Direct semihosting console validation uses fixture-supplied
 OpenOCD `--cmd-pre-init` commands and the normal stdout/stderr relay. It adds
 no semihosting proxy, filesystem virtualization, or GDB File-I/O path; target
-capabilities and commands stay in ignored hardware fixtures.
+capabilities and commands for real lab equipment stay in ignored hardware
+fixtures.
 
 ## Testing Guidelines
 
 Tests use `unittest`; files and methods start with `test_`. Add focused unit tests
 for protocol ordering, lifecycle failures, cleanup, path safety, and command
 construction. Recording mode (`ZEPHYR_REMOTE_OPENOCD_RECORD=1`) must remain
-strictly free of SSH, OpenOCD, GDB, and hardware I/O. Hardware identities,
-serial devices, capabilities, and expected output stay in uncommitted fixture
-files. Thread-info tests use an injected version in no-I/O modes; production
-must query the configured OpenOCD executable remotely.
+strictly free of SSH, OpenOCD, GDB, and hardware I/O. Concrete lab identities,
+serial devices, capability values, and expected output stay in uncommitted
+fixture files; committed examples must use neutral placeholders. Thread-info
+tests use an injected version in no-I/O modes; production must query the
+configured OpenOCD executable remotely.
 
-## Commit & Pull Request Guidelines
+## Work Tracking
 
-Use concise imperative subjects such as `Add production OpenOCD flash support`.
-PRs should summarize behavior, tests and fixture coverage, and deferred checks.
-Update SRS/SAD for lifecycle, protocol, or compatibility changes. Never commit
-credentials, hosts, device paths, or `.scratch/` artifacts.
+For the repository-comprehension refactor, treat `.agents/GOAL.md` as the stable
+project contract and `.agents/PLAN.md` as the status-tracked implementation
+strategy. Change the goal only when the user changes scope or acceptance; update
+plan statuses and findings as work proceeds. Reconcile both files before each
+semantic commit. Temporary investigations and handoff notes belong under ignored
+`.scratch/agents/`, never as the sole record of a requirement, architecture
+decision, or release result.
+
+## Commit & Push Guidelines
+
+Create commits while pursuing this goal.
+Commit coherent, validated milestones. Review the complete diff.
+Exclude unrelated changes. Run relevant validation first.
+Avoid arbitrary checkpoint commits.
+Do not rewrite history unless explicitly authorized.
+Use concise imperative subjects.
+Never commit credentials, hosts, device paths, or `.scratch/` artifacts.
+Push after each commit.
