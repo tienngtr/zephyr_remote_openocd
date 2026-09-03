@@ -6,6 +6,7 @@ import io
 import ipaddress
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -774,6 +775,104 @@ class RttClientTests(unittest.TestCase):
 
 
 class RealProcessHelperTests(unittest.TestCase):
+    def test_helper_applies_requested_environment_before_child_executes(self):
+        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as directory:
+            environment = os.environ.copy()
+            environment["XDG_RUNTIME_DIR"] = directory
+            process = subprocess.Popen(
+                [sys.executable, str(helper), "control"],
+                env=environment,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            try:
+                assert process.stdin is not None and process.stdout is not None
+                process.stdout.readline()
+                process.stdout.readline()
+                process.stdin.write(
+                    encode_message(
+                        "START_OPENOCD",
+                        argv=[
+                            sys.executable,
+                            "-c",
+                            "import os; print(os.environ['ZRO_TEST_FORWARD'])",
+                        ],
+                        environment={"ZRO_TEST_FORWARD": "before-config"},
+                    )
+                )
+                process.stdin.flush()
+                events = [json.loads(line) for line in process.stdout]
+                output = next(event for event in events if event["type"] == "CHILD_OUTPUT")
+                self.assertEqual(
+                    output,
+                    {
+                        "version": 1,
+                        "type": "CHILD_OUTPUT",
+                        "stream": "stdout",
+                        "payload": "before-config",
+                    },
+                )
+                self.assertEqual(process.wait(timeout=5), 0)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=5)
+                for stream in (process.stdin, process.stdout, process.stderr):
+                    if stream is not None and not stream.closed:
+                        stream.close()
+
+    def test_helper_forwards_environment_to_openocd_configuration(self):
+        executable = shutil.which("openocd")
+        if executable is None:
+            self.skipTest("openocd is not installed")
+        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as directory:
+            config = Path(directory) / "environment.cfg"
+            config.write_text(
+                "set zro_forwarded_value $::env(ZRO_CONFIG_VALUE)\n"
+                "echo ZRO_CONFIG_VALUE=$zro_forwarded_value\n"
+                "shutdown\n"
+            )
+            environment = os.environ.copy()
+            environment["XDG_RUNTIME_DIR"] = directory
+            process = subprocess.Popen(
+                [sys.executable, str(helper), "control"],
+                env=environment,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            try:
+                assert process.stdin is not None and process.stdout is not None
+                process.stdout.readline()
+                process.stdout.readline()
+                process.stdin.write(
+                    encode_message(
+                        "START_OPENOCD",
+                        argv=[executable, "-f", str(config)],
+                        environment={"ZRO_CONFIG_VALUE": "channel-1"},
+                    )
+                )
+                process.stdin.flush()
+                events = [json.loads(line) for line in process.stdout]
+                output = next(
+                    event
+                    for event in events
+                    if event["type"] == "CHILD_OUTPUT"
+                    and event["payload"] == "ZRO_CONFIG_VALUE=channel-1"
+                )
+                self.assertIn(output["stream"], ("stdout", "stderr"))
+                self.assertEqual(process.wait(timeout=15), 0)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=5)
+                for stream in (process.stdin, process.stdout, process.stderr):
+                    if stream is not None and not stream.closed:
+                        stream.close()
+
     def test_controller_rejects_malformed_and_unsupported_version(self):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
         for frame in (b"not-json\n", b'{"version":2,"type":"STOP"}\n'):
@@ -963,6 +1062,46 @@ class RealProcessHelperTests(unittest.TestCase):
                 self.assertEqual(started["type"], "PROCESS_STARTED")
                 child_pid = started["child_pid"]
                 process.terminate()
+                self.assertEqual(process.wait(timeout=8), 0)
+                self.assertFalse(workspace.exists())
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(child_pid, 0)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=5)
+                for stream in (process.stdin, process.stdout, process.stderr):
+                    if stream is not None and not stream.closed:
+                        stream.close()
+
+    def test_controller_eof_cleans_child_and_workspace(self):
+        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as directory:
+            environment = os.environ.copy()
+            environment["XDG_RUNTIME_DIR"] = directory
+            process = subprocess.Popen(
+                [sys.executable, str(helper), "control"],
+                env=environment,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            try:
+                assert process.stdout is not None and process.stdin is not None
+                process.stdout.readline()
+                created = json.loads(process.stdout.readline())
+                workspace = Path(created["remote_workspace"])
+                process.stdin.write(
+                    encode_message(
+                        "START_OPENOCD",
+                        argv=[sys.executable, "-c", "import time; time.sleep(30)"],
+                    )
+                )
+                process.stdin.flush()
+                started = json.loads(process.stdout.readline())
+                self.assertEqual(started["type"], "PROCESS_STARTED")
+                child_pid = started["child_pid"]
+                process.stdin.close()
                 self.assertEqual(process.wait(timeout=8), 0)
                 self.assertFalse(workspace.exists())
                 with self.assertRaises(ProcessLookupError):

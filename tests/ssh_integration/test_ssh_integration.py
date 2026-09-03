@@ -14,13 +14,16 @@ import time
 import unittest
 from pathlib import Path
 
+from zephyr_remote_openocd.config import load_config, require_remote_settings
 from zephyr_remote_openocd.remote import (
+    RemoteProcess,
     RemoteSession,
     RemoteSessionRequest,
     Service,
     SshHelperBackend,
     StagedFile,
 )
+from zephyr_remote_openocd.remote.backend import SshHelperSession
 from zephyr_remote_openocd.remote.deploy import deploy_helper
 from zephyr_remote_openocd.remote.ssh import SshCommand
 
@@ -242,6 +245,135 @@ class SshTransportIntegrationTests(unittest.TestCase):
                 session.close()
             gone = self.ssh.run(self.host, f"test ! -e {shlex.quote(workspace)}", timeout=20)
             self.assertEqual(gone.returncode, 0, gone.stderr.decode(errors="replace"))
+
+    def test_concurrent_fake_sessions_isolate_identical_remote_ports(self):
+        """Regression coverage for independent-session service-port isolation."""
+        first_port = free_loopback_port()
+        second_port = free_loopback_port()
+        while second_port == first_port:
+            second_port = free_loopback_port()
+        first = RemoteSession(
+            RemoteSessionRequest(
+                self.host,
+                self.ssh,
+                services=(Service("gdb", first_port, 3333),),
+            ),
+            SshHelperBackend(),
+        )
+        second = RemoteSession(
+            RemoteSessionRequest(
+                self.host,
+                self.ssh,
+                services=(Service("gdb", second_port, 3333),),
+            ),
+            SshHelperBackend(),
+        )
+        first_descriptor = first.start()
+        second_descriptor = None
+        try:
+            second_descriptor = second.start()
+            self.assertNotEqual(
+                first_descriptor.remote_address,
+                second_descriptor.remote_address,
+            )
+            self.assertNotEqual(first_descriptor.session_id, second_descriptor.session_id)
+        finally:
+            second.close()
+            first.close()
+        assert second_descriptor is not None
+        for descriptor in (first_descriptor, second_descriptor):
+            result = self.ssh.run(
+                self.host,
+                f"test ! -e {shlex.quote(descriptor.remote_workspace)}",
+                timeout=20,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+
+    def test_controller_ssh_loss_cleans_fake_session(self):
+        """Regression coverage for controller-loss cleanup semantics."""
+        local_port = free_loopback_port()
+        session = RemoteSession(
+            RemoteSessionRequest(
+                self.host,
+                self.ssh,
+                services=(Service("gdb", local_port, 3333),),
+            ),
+            SshHelperBackend(),
+        )
+        descriptor = session.start()
+        try:
+            backend_session = session._session
+            self.assertIsInstance(backend_session, SshHelperSession)
+            assert isinstance(backend_session, SshHelperSession)
+            backend_session.controller.terminate()
+            backend_session.controller.wait(timeout=20)
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline and session.poll() is None:
+                time.sleep(0.1)
+            self.assertIsNotNone(session.termination_returncode)
+        finally:
+            session.close()
+        result = self.ssh.run(
+            self.host,
+            f"test ! -e {shlex.quote(descriptor.remote_workspace)}",
+            timeout=20,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+
+    def test_remote_openocd_config_consumes_forwarded_environment(self):
+        """Verify allow-listed environment reaches remote OpenOCD Tcl config."""
+        config_path = os.environ.get("ZRO_SSH_TEST_CONFIG")
+        if config_path:
+            configured_host, executable = require_remote_settings(
+                load_config(Path(config_path)), "environment-forwarding test"
+            )
+            if configured_host != self.host:
+                self.fail("ZRO_SSH_TEST_HOST does not match remote.host in ZRO_SSH_TEST_CONFIG")
+        else:
+            executable = os.environ.get("ZRO_SSH_TEST_OPENOCD")
+        if not executable:
+            self.skipTest("ZRO_SSH_TEST_CONFIG or ZRO_SSH_TEST_OPENOCD is not configured")
+        if not executable.startswith("/"):
+            self.fail("ZRO_SSH_TEST_OPENOCD must be an absolute remote path")
+        executable_result = self.ssh.run(
+            self.host, f"test -x {shlex.quote(executable)}", timeout=20
+        )
+        if executable_result.returncode:
+            self.skipTest(f"remote OpenOCD is not executable: {executable}")
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "environment.cfg"
+            config.write_text(
+                "set zro_forwarded_value $::env(ZRO_CONFIG_VALUE)\n"
+                "echo ZRO_CONFIG_VALUE=$zro_forwarded_value\n"
+                "shutdown\n"
+            )
+            output = []
+            process = RemoteProcess(
+                "openocd",
+                (executable, "-f", "{workspace}/staged/environment.cfg"),
+                (("ZRO_CONFIG_VALUE", "channel-1"),),
+            )
+            request = RemoteSessionRequest(
+                self.host,
+                self.ssh,
+                (StagedFile(config, "environment.cfg"),),
+                (),
+                process,
+            )
+            session = RemoteSession(
+                request,
+                SshHelperBackend(
+                    output_handler=lambda stream, payload: output.append((stream, payload))
+                ),
+            )
+            try:
+                session.start()
+                self.assertEqual(session.wait(timeout=30), 0)
+            finally:
+                session.close()
+            self.assertTrue(
+                any(payload == "ZRO_CONFIG_VALUE=channel-1" for _stream, payload in output)
+            )
 
 
 if __name__ == "__main__":

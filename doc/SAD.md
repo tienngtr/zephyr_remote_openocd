@@ -1236,7 +1236,17 @@ fixtures skip only RTT-specific assertions.
 At least one capability-enabled validation target SHALL exercise semihosting
 console output; unsupported fixtures skip only this capability assertion.
 
-## 44.5 Platform matrix
+## 44.5 Acceptance audit
+
+SRS section 31.1 maps every `AC-*` criterion to its maintained automated and/or
+real-hardware evidence. Concurrent session isolation and controlling-SSH-loss
+cleanup are covered by native-SSH fake-helper integration tests; they do not
+need target-specific product behavior. PG-012 and PG-013 are the only deferred
+acceptance validations, because they require WSL 2. The SRS audit separately
+identifies the unmeasured runner-startup-overhead requirement as a genuine
+non-deferred performance-evidence gap rather than marking it complete.
+
+## 44.6 Platform matrix
 
 The completed native-Linux regression suite exercises:
 
@@ -1452,8 +1462,11 @@ real Zephyr-tree OpenOCD configuration staging, a mapped OpenOCD scripts tree,
 firmware-path rewriting, a helper-allocated loopback address, local output relay,
 remote cleanup, and fresh post-flash serial output as a test-only oracle.
 
-- One fixture validated explicit `--serial` probe selection and forwarding of an
-  allow-listed environment variable into OpenOCD.
+- One fixture validated explicit `--serial` probe selection while exercising an
+  allow-listed environment variable through the runner/helper process request.
+  The hardware fixture did not provide an independent assertion that OpenOCD's
+  configuration consumed that variable; allow-list selection, omission, and
+  helper-before-child ordering are covered by permanent recording/unit tests.
 - A second fixture validated normal OpenOCD automatic probe selection without
   `--serial` when a single applicable probe was present.
 

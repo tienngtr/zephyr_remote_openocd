@@ -1273,6 +1273,67 @@ An SSH command containing fixed user-configured arguments can be used without th
 
 # 31. Requirements Status
 
+## 31.1 V1 acceptance traceability
+
+Status is classified by the strongest maintained evidence: **Automated** means
+permanent unit, Zephyr, or SSH integration coverage; **Hardware** means an
+executed fixture-gated real-hardware acceptance test; **Both** has both forms.
+Fixture-gated hardware tests are permanent evidence even when their external
+fixture is unavailable on a developer machine. The only deferred criteria are
+the WSL-specific PG-012 and PG-013 validations.
+
+| Criterion | Status | Permanent evidence |
+| --- | --- | --- |
+| AC-INTEG-001 | Automated | `ZephyrIntegrationTests.test_module_discovery_and_in_tree_application_build`; clean-install acceptance |
+| AC-INTEG-002 | Automated | `ZephyrIntegrationTests.test_out_of_tree_application_build` |
+| AC-INTEG-003 | Automated | `ZephyrIntegrationTests.test_runner_registration_is_conditional_and_non_destructive`; clean-install acceptance |
+| AC-INTEG-004 | Automated | `ZephyrIntegrationTests.test_openocd_arguments_are_mirrored_exactly` |
+| AC-INTEG-005 | Automated | `ZephyrIntegrationTests.test_runner_registration_is_conditional_and_non_destructive` |
+| AC-INSTALL-001 | Automated | `ZephyrIntegrationTests.test_clean_install_acceptance_from_git_free_distribution` |
+| AC-INSTALL-002 | Automated | `SetupTests.test_creates_template_and_reports_activation`; clean-install acceptance |
+| AC-INSTALL-003 | Automated | `SetupTests.test_existing_configuration_is_preserved_and_not_chmodded`; clean-install acceptance |
+| AC-INSTALL-004 | Automated | `SetupTests.test_creates_template_and_reports_activation`; clean-install acceptance |
+| AC-INSTALL-005 | Automated | `SetupTests.test_creates_template_and_reports_activation`; `SetupTests.test_existing_configuration_is_preserved_and_not_chmodded` |
+| AC-INSTALL-006 | Automated | `DependencyDiagnosticTests.test_dependency_status_messages`; clean-install acceptance using West Python |
+| AC-SELECT-001 | Automated | `ZephyrIntegrationTests.test_config_change_regenerates_default_runner`; clean-install acceptance |
+| AC-SELECT-002 | Automated | `ZephyrIntegrationTests.test_config_change_regenerates_default_runner`; clean-install acceptance |
+| AC-SELECT-003 | Automated | `ZephyrIntegrationTests.test_config_change_regenerates_default_runner` |
+| AC-FLASH-001 | Both | `ZephyrIntegrationTests.test_recording_commands_receive_runner_config_without_io`; `RealOpenOcdFlashTests.test_configured_targets_flash_and_emit_fresh_serial_output` |
+| AC-DEBUG-001 | Both | `ZephyrIntegrationTests.test_recording_commands_receive_runner_config_without_io`; `RealOpenOcdDebugTests.test_debug_attach_and_debugserver` |
+| AC-DEBUG-002 | Both | `DebugPlanningTests.test_disabled_services_and_distinct_gdb_ports`; `RealOpenOcdDebugTests.test_debug_attach_and_debugserver` |
+| AC-RTT-001 | Both | `RttClientTests.test_bidirectional_non_tty_channel`; `RealRttTests.test_standalone_rtt` |
+| AC-RTT-002 | Both | `ZephyrIntegrationTests.test_recording_rtt_command_construction_without_io`; `RealRttTests.test_standalone_rtt` |
+| AC-SEMI-001 | Both | `ZephyrIntegrationTests.test_recording_direct_semihosting_commands_without_io`; `RealSemihostingTests` normal and interruption tests |
+| AC-CONC-001 | Automated | `SshTransportIntegrationTests.test_concurrent_fake_sessions_isolate_identical_remote_ports` |
+| AC-LIFE-001 | Both | `RealProcessHelperTests.test_output_exit_status_and_workspace_cleanup`; real flash/debug/RTT/semihosting cleanup assertions |
+| AC-LIFE-002 | Automated | `RealProcessHelperTests.test_controller_eof_cleans_child_and_workspace`; `SshTransportIntegrationTests.test_controller_ssh_loss_cleans_fake_session` |
+| AC-PLAT-001 | Both | native-Linux Zephyr/SSH integration plus real flash and debug fixtures |
+| AC-PLAT-002 | Deferred | PG-012 (WSL Linux SSH) and PG-013 (Windows `ssh.exe` from WSL 2) |
+| AC-SSH-001 | Automated | `SshCommandTests`; `LinuxSshIntegrationTests.test_configured_linux_ssh_and_fixed_arguments` |
+| AC-SSH-002 | Deferred | PG-013 / `WslSshIntegrationTests.test_windows_ssh_exe_from_wsl` |
+| AC-SSH-003 | Automated | `SshCommandTests.test_fixed_arguments_are_preserved_without_a_shell`; `LinuxSshIntegrationTests.test_configured_linux_ssh_and_fixed_arguments` |
+
+This table is the V1 acceptance status. Requirement-level implementation,
+validation, and compatibility status is summarized below; no additional V1
+acceptance criterion is intentionally untested.
+
+## 31.2 Requirement-group audit
+
+| SRS sections | Status | Evidence or finding |
+| --- | --- | --- |
+| 5–6, scope and source independence | Automated | Zephyr integration, recording-mode, and clean-install acceptance tests |
+| 7–8, distribution, setup, configuration | Automated | `SetupTests`, `ConfigTests`, and clean-install acceptance |
+| 9–12, selection, board reuse, runner compatibility | Automated | Zephyr integration PG-001–PG-010 regressions and adapter-boundary test |
+| 13–16, environment, host/files, flash | Both | environment allow-list/omission recording test, helper child-environment test, helper-to-OpenOCD configuration-consumption test, planning/staging tests, SSH fake-helper integration, and real flash fixtures. Hardware flash does not independently assert configuration consumption. |
+| 17–20, debug/services, RTT, semihosting | Both | recording/unit construction coverage and real debug, RTT, and semihosting fixtures |
+| 21–24, SSH, concurrency, helper, session data | Automated | SSH PG-011/PG-014/PG-015 tests, fake-helper lifecycle/concurrency tests, protocol and staging tests |
+| 25, platform requirements | Both / Deferred | native Linux has automated and hardware evidence; WSL-specific validation is deferred only through PG-012 and PG-013 |
+| 26, maintainability, testability, administration | Automated except one gap | style/static tests, architectural-boundary test, fake endpoint tests, and setup/helper permission tests. **REQ-NFUNC-PERF-001 lacks a repeatable measured startup-overhead test or recorded benchmark.** |
+
+The performance requirement is a genuine non-deferred evidence gap; it is not
+silently classified complete. All other V1 requirement groups have code,
+automated, and/or hardware evidence appropriate to their stated behavior.
+
 No unresolved stakeholder/product decision currently blocks V1 implementation.
 
 The integration prototype resolved the V1 feasibility questions concerning:

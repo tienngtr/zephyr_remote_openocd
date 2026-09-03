@@ -121,13 +121,17 @@ class ZephyrIntegrationTests(unittest.TestCase):
         super().tearDownClass()
 
     @classmethod
-    def _write_config(cls, selected: str):
-        cls.config.write_text(
+    def _write_config(cls, selected: str, forward_env: tuple[str, ...] = ()):
+        content = (
             f'[zephyr]\ndefault = "{selected}"\n\n'
             '[remote]\nhost = "record-only"\nopenocd = "/remote/openocd"\n\n'
             '[ssh]\ncommand = ["ssh"]\n\n'
             '[[paths.map]]\nlocal = "/"\nremote = "/recorded"\n'
         )
+        if forward_env:
+            names = ", ".join(f'"{name}"' for name in forward_env)
+            content += f"\n[openocd]\nforward_env = [{names}]\n"
+        cls.config.write_text(content)
 
     @classmethod
     def _west(cls, *args: str, check: bool = True, extra_env=None):
@@ -249,6 +253,36 @@ class ZephyrIntegrationTests(unittest.TestCase):
                         client = recording["local_gdb_argv"]
                         self.assertIn("target extended-remote 127.0.0.1:3333", client)
                         self.assertEqual("load" in client, command == "debug")
+
+    def test_recording_forwards_only_present_allow_list_environment(self):
+        selected = "ZRO_TEST_PROBE_CHANNEL"
+        missing = "ZRO_TEST_ABSENT_ENVIRONMENT"
+        prior_missing = os.environ.pop(missing, None)
+        try:
+            self._write_config("remote", (selected, missing))
+            try:
+                result = self._west(
+                    "flash",
+                    "-d",
+                    str(self.build_in_tree),
+                    "-r",
+                    "remote-openocd",
+                    "--no-rebuild",
+                    extra_env={selected: "channel-1", "ZRO_TEST_UNLISTED": "not-forwarded"},
+                )
+                recording = self._recording(result.stdout)
+                self.assertEqual(
+                    recording["remote_session_request"]["process"]["environment"], [selected]
+                )
+                self.assertIn(
+                    f"allow-listed environment variable {missing} is absent; omitting it",
+                    result.stdout,
+                )
+            finally:
+                self._write_config("local")
+        finally:
+            if prior_missing is not None:
+                os.environ[missing] = prior_missing
 
     def test_recording_thread_info_uses_injected_remote_version(self):
         result = self._west(

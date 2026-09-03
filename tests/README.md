@@ -28,7 +28,13 @@ PYTHONPATH=python ZRO_SSH_TEST_HOST=<ssh-host-or-alias> \
 python3 -m unittest tests.ssh_integration.test_ssh_integration -v
 ```
 
-The SSH tests skip when `ZRO_SSH_TEST_HOST` is absent. PG-012 and PG-013 additionally require WSL 2; PG-013 accepts `ZRO_WINDOWS_SSH` as the path to Windows `ssh.exe`.
+The SSH tests skip when `ZRO_SSH_TEST_HOST` is absent. The OpenOCD
+configuration-consumption test additionally accepts `ZRO_SSH_TEST_OPENOCD` as
+the absolute remote OpenOCD executable path, matching the production
+`remote.openocd` setting. Alternatively, `ZRO_SSH_TEST_CONFIG` points to an
+external TOML fixture and the test reads its configured `remote.host` and
+`remote.openocd` values directly. PG-012 and PG-013 additionally require WSL 2; PG-013
+accepts `ZRO_WINDOWS_SSH` as the path to Windows `ssh.exe`.
 
 Real flash is an explicit, destructive hardware acceptance test. Set
 `ZRO_REAL_FLASH_FIXTURES` to an external JSON fixture file. Each configured
@@ -47,7 +53,7 @@ committed to the repository.
 The hardware acceptance coverage includes two board-agnostic fixture scenarios:
 
 - explicit OpenOCD `--serial` selection together with one forwarded environment
-  variable;
+  variable in the runner/helper process request;
 - normal OpenOCD automatic probe selection without `--serial` when the remote
   host exposes one applicable probe.
 
