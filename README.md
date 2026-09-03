@@ -119,7 +119,8 @@ Direct semihosting console use ordinary fixture-supplied OpenOCD commands
 (typically through `--cmd-pre-init`) and the existing OpenOCD stdout/stderr
 relay. It intentionally adds no semihosting proxy, filesystem virtualization,
 TCP redirect, or GDB File-I/O path. Detailed lifecycle and protocol behavior
-are in [`doc/SRS.md`](doc/SRS.md) and [`doc/SAD.md`](doc/SAD.md).
+are in [`docs/requirements/SRS.md`](docs/requirements/SRS.md) and
+[`docs/architecture/SAD.md`](docs/architecture/SAD.md).
 
 Protocol 1 is the frozen JSON-lines helper contract. The helper is deployed
 automatically to the remote user account and cleans up sessions on normal or

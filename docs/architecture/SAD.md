@@ -1286,7 +1286,7 @@ additional startup) were:
 
 The benchmark is a manual release-validation artifact, not an ordinary CI
 test or timing gate. The measured JSON record for this validation is
-`doc/startup-overhead-2026-09-04.json`; future release records should preserve
+`docs/validation/startup-overhead-v1.json`; future release records should preserve
 the same schema and metadata.
 
 ## 44.6 Platform matrix

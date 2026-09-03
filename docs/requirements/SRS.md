@@ -1323,7 +1323,7 @@ acceptance criterion is intentionally untested.
 | 17–20, debug/services, RTT, semihosting | Both | recording/unit construction coverage and real debug, RTT, and semihosting fixtures |
 | 21–24, SSH, concurrency, helper, session data | Automated | SSH PG-011/PG-014/PG-015 tests, fake-helper lifecycle/concurrency tests, protocol and staging tests |
 | 25, platform requirements | Both / Deferred | native Linux has automated and hardware evidence; WSL-specific validation is deferred only through PG-012 and PG-013 |
-| 26, maintainability, testability, administration | Automated plus release evidence | style/static tests, architectural-boundary test, fake endpoint tests, setup/helper permission tests, and the standalone startup-overhead release benchmark (`doc/startup-overhead-2026-09-04.json`) for REQ-NFUNC-PERF-001 |
+| 26, maintainability, testability, administration | Automated plus release evidence | style/static tests, architectural-boundary test, fake endpoint tests, setup/helper permission tests, and the standalone startup-overhead release benchmark (`docs/validation/startup-overhead-v1.json`) for REQ-NFUNC-PERF-001 |
 
 REQ-NFUNC-PERF-001 has repeatable release-validation evidence; the benchmark is
 manual and is not a CI performance gate. All other V1 requirement groups have

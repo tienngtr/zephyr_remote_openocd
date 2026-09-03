@@ -12,7 +12,7 @@
 - `[done]` Repository and documentation audit completed for planning.
 - `[done]` Goal, constraints, material ambiguities, risks, and measurable evidence
   agreed with the user and captured in `.agents/GOAL.md`.
-- `[not started]` Product/document/test refactor implementation.
+- `[in progress]` Product/document/test refactor implementation; M1 is complete.
 
 The production module is already organized into board-independent remote logic,
 a Zephyr 4.4 adapter, and a west runner entry point. Its config schema and helper
@@ -109,13 +109,13 @@ checks, and treats only PG-012/PG-013 as deferred without WSL2.
 Exit: the three files agree on behavior preservation, pytest target state,
 documentation separation, fixture privacy, and verification obligations.
 
-### M1 — Version and Documentation Skeleton `[not started]`
+### M1 — Version and Documentation Skeleton `[done]`
 
-- `[not started]` Add `VERSION` containing `0.1.0`.
-- `[not started]` Create the `docs/` audience directories and index.
-- `[not started]` Move current SRS/SAD and performance evidence with
+- `[done]` Add `VERSION` containing `0.1.0`.
+- `[done]` Create the `docs/` audience directories and index.
+- `[done]` Move current SRS/SAD and performance evidence with
   link-preserving edits.
-- `[not started]` Add automated repository-relative Markdown-link validation.
+- `[done]` Add automated repository-relative Markdown-link validation.
 
 Dependencies: M0.
 

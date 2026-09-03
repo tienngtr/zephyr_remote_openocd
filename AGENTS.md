@@ -5,7 +5,7 @@
 Production Python is under `python/zephyr_remote_openocd/`: board-independent
 logic in `remote/`, Zephyr coupling in `zephyr44/runner.py`, and the west entry
 point in `runners/remote_openocd.py`. Requirements and architecture live in
-`doc/SRS.md` and `doc/SAD.md`. Tests are split across `tests/unit/`,
+`docs/requirements/SRS.md` and `docs/architecture/SAD.md`. Tests are split across `tests/unit/`,
 `tests/zephyr_integration/`, `tests/ssh_integration/`, and fixture-gated
 `tests/hardware/`. Generated builds and fixture configuration belong in ignored
 `.scratch/`.
