@@ -18,6 +18,12 @@ Use Python 3.12 or newer. Run the hardware-free suite with:
 PYTHONPATH=python python3 -m unittest discover -s tests/unit -v
 ```
 
+Initialize per-user setup (without editing repositories or shell files) with:
+
+```sh
+python3 scripts/setup.py
+```
+
 Run all locally available tests with:
 
 ```sh

@@ -131,6 +131,7 @@ zephyr-remote-openocd/
 
     scripts/
         config_default.py
+        setup.py
 ```
 
 The implementation is intentionally self-contained in the module tree. Exact
@@ -172,21 +173,27 @@ require pip packaging or a separate bespoke installation path.
 
 # 7. Distribution and User Setup
 
-Distribution places the complete module at an arbitrary persistent path.
-
-User setup is a separate operation. The user-facing setup UX and installation
-documentation are intentionally deferred; the eventual flow will be:
+Distribution places the complete module at an arbitrary persistent path. A
+convenient documented example is:
 
 ```text
-1. Obtain the module.
-2. Place it at a persistent path.
-3. Run `scripts/setup.py` (when the setup tool is introduced).
-4. Edit ~/.config/zephyr-remote-openocd/config.toml.
-5. Add the module path to EXTRA_ZEPHYR_MODULES using the user's preferred mechanism.
+~/zephyrproject/zephyr-remote-openocd
 ```
 
-`scripts/setup.py` will be Python rather than a shell script to reduce
-platform-specific setup logic.
+This path is only an example; the module may live anywhere persistent.
+
+User setup is a separate, non-invasive operation:
+
+```text
+python3 scripts/setup.py
+```
+
+The setup script copies `resources/config.toml.example` only when the canonical
+per-user configuration is absent, reports the created/reused status and both
+absolute paths, and prints guidance for `EXTRA_ZEPHYR_MODULES`. It creates the
+`zephyr-remote-openocd` configuration directory with mode `0700` and the file
+with mode `0600`; existing parents, directories, and files are never chmodded.
+It does not edit shell startup files, repositories, or `.zephyrrc`.
 
 ---
 

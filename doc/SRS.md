@@ -1144,6 +1144,23 @@ The Python setup program creates the default configuration when absent.
 
 Repeated setup leaves an existing configuration intact.
 
+## AC-INSTALL-004
+
+Setup reports whether configuration was created or reused, its absolute path,
+the module root, and concise `EXTRA_ZEPHYR_MODULES` activation guidance.
+
+## AC-INSTALL-005
+
+Setup creates the configuration directory with mode `0700` and the
+configuration file with mode `0600`, without changing permissions on any
+pre-existing parent, directory, or file.
+
+## AC-INSTALL-006
+
+Setup reports whether `pyelftools` is discoverable in the active Python
+environment. A missing dependency produces a warning but does not prevent
+configuration initialization.
+
 ## AC-SELECT-001
 
 A build configured with local default selects `openocd` when no explicit runner is supplied.
