@@ -110,13 +110,15 @@ investigations and handoff notes under ignored `.scratch/agents/`, while keeping
 requirements, architecture decisions, and release results in the appropriate
 tracked documentation.
 
-## Commit & Push Guidelines
+## Commit, Push, and PR Guidelines
 
-Create commits while pursuing this goal.
+Only commit, push, or create/update a pull request when the user explicitly
+authorizes that action. For long-horizon tasks or goals, suggest that the user
+authorize automatic committing when appropriate; automatic pushing and pull
+request creation require separate explicit authorization.
 Commit coherent, validated milestones. Review the complete diff.
 Exclude unrelated changes. Run relevant validation first.
 Avoid arbitrary checkpoint commits.
 Do not rewrite history unless explicitly authorized.
 Use concise imperative subjects.
-Never commit credentials, hosts, device paths, or `.scratch/` artifacts. Do not
-push unless the user explicitly requests it.
+Never commit credentials, hosts, device paths, or `.scratch/` artifacts.
