@@ -12,8 +12,7 @@
 - `[done]` Repository and documentation audit completed for planning.
 - `[done]` Goal, constraints, material ambiguities, risks, and measurable evidence
   agreed with the user and captured in `.agents/GOAL.md`.
-- `[in progress]` Product/document/test refactor implementation; M1-M6 are
-  complete, while final local/remote test evidence remains open.
+- `[done]` Product/document/test refactor implementation; M1-M8 are complete.
 
 The production module is already organized into board-independent remote logic,
 a Zephyr 4.4 adapter, and a west runner entry point. Its config schema and helper
@@ -27,8 +26,8 @@ not consistently independent.
 
 The latest local-integration fix removes an assumption that the ignored `.scratch/`
 directory exists in a checkout. A Git-free archive now passes the full local suite
-when loopback permissions are available. The corresponding GitHub Actions success
-still requires a completed run for the fixed commit.
+when loopback permissions are available. GitHub Actions run 4 for the corrected
+commit completed successfully.
 
 ## Target Architecture
 
@@ -219,7 +218,7 @@ Dependencies: M1-M5.
 Exit: every supported user operation and contributor check has one discoverable
 and currently accurate entry point, with no PG/test names in user documentation.
 
-### M7 — CI and Strict Release Driver `[in progress]`
+### M7 — CI and Strict Release Driver `[done]`
 
 - `[done]` Add GitHub Actions for lint/static and self-contained tests; external
   Zephyr/hardware layers remain explicitly operator-selected.
@@ -238,7 +237,7 @@ Exit: the corrected GitHub Actions workflow completes successfully from a clean
 checkout, and simulated driver outcomes are deterministic. Missing native-Linux
 evidence remains fatal while WSL-only gates remain deferred.
 
-### M8 — Full Validation and Final Consistency Audit `[in progress]`
+### M8 — Full Validation and Final Consistency Audit `[done]`
 
 - `[done]` Run the self-contained local suite from both the working tree and a
   Git-free archive without relying on ignored `.scratch/` state.
@@ -251,8 +250,8 @@ evidence remains fatal while WSL-only gates remain deferred.
   protocol, traceability, validation record, template, implemented selectors,
   and release summary.
 - `[done]` Scan tracked files and inspect the production-tree diff.
-- `[in progress]` Verify a successful completed GitHub Actions run for the
-  corrected implementation commit.
+- `[done]` Verify a successful completed GitHub Actions run for the corrected
+  implementation commit.
 
 Dependencies: M1-M7.
 
