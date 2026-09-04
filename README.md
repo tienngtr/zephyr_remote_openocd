@@ -58,31 +58,10 @@ normal west command so its build configuration can regenerate as needed.
 Edit the setup-created `~/.config/zephyr-remote-openocd/config.toml`. The
 runner may instead read a different file when
 `ZEPHYR_REMOTE_OPENOCD_CONFIG` is set. The canonical commented template is
-[`resources/config.toml.example`](resources/config.toml.example):
-
-```toml
-[remote]
-host = "openocd-host"
-openocd = "/absolute/path/to/openocd"
-
-[ssh]
-command = ["ssh"]
-
-[openocd]
-forward_env = ["PROBE_CHANNEL"]
-
-[[paths.map]]
-local = "/home/user/openocd/scripts"
-remote = "/opt/openocd/scripts"
-```
-
-V1 fields are limited to the local/remote default, `remote.host`, an absolute
-remote OpenOCD path, an SSH argv command, an environment-variable allow-list,
-and recursive local-to-remote path mappings. Unknown keys, malformed TOML,
-empty/invalid values, and duplicate or conflicting mappings are errors. The
-SSH command is argv (not shell text); only allow-listed variables that exist
-locally are forwarded. Mappings use normalized absolute paths and the longest
-matching local prefix.
+[`resources/config.toml.example`](resources/config.toml.example). The frozen
+schema, validation rules, environment allow-list, and path-mapping/staging
+semantics are described in the
+[`configuration guide`](docs/user/configuration.md).
 
 Override the SSH executable or add fixed arguments when needed, including in
 WSL2:

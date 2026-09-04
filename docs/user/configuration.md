@@ -16,6 +16,11 @@ canonical commented template. V1 has a deliberately small, strict schema:
 - `[[paths.map]]` recursively maps normalized absolute local prefixes to
   normalized absolute remote POSIX prefixes. The longest matching prefix wins.
 
+Mappings refer to resources already installed on the remote host; they do not
+synchronize local contents. A file or directory under a mapped local prefix is
+therefore not staged, and local edits are not copied remotely. Omit the mapping
+when the resource should be staged into each session.
+
 Unknown keys, malformed TOML, empty values, invalid paths, and duplicate or
 conflicting mappings are rejected with an actionable diagnostic. Only
 allow-listed variables that exist locally are forwarded. Product setup does
