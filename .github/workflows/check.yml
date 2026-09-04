@@ -26,6 +26,6 @@ jobs:
         run: |
           files=$(git ls-files '*.py')
           pylint --rcfile=pylintrc $files
-          vermin -p=1 -f parsable --violations -t=3.12 --no-make-paths-absolute $files
+          vermin -p=1 -f parsable --violations -t=3.12- --no-make-paths-absolute $files
       - name: Check patch whitespace
         run: git diff --check

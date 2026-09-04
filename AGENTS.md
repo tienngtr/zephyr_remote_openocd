@@ -39,7 +39,7 @@ ordinary pytest discovery.
 
 Zephyr-style Python checks are configured in `.ruff.toml` and `pylintrc`:
 `ruff check .`, `ruff format --check .`, `pylint --rcfile=pylintrc $(git ls-files
-'*.py')`, and `vermin -p=1 -f parsable --violations -t=3.12
+'*.py')`, and `vermin -p=1 -f parsable --violations -t=3.12-
 --no-make-paths-absolute $(git ls-files '*.py')` (single-process mode is useful
 in restricted sandboxes).
 

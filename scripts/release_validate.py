@@ -78,7 +78,7 @@ def build_steps(args: argparse.Namespace) -> list[Step]:
                 "-f",
                 "parsable",
                 "--violations",
-                "-t=3.12",
+                "-t=3.12-",
                 "--no-make-paths-absolute",
                 *args.python_files,
             ),
