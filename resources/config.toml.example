@@ -21,7 +21,7 @@ default = "local"
 # Non-empty OpenSSH-compatible command argv. Fixed arguments are allowed.
 command = ["ssh"]
 # command = ["ssh", "-F", "/home/user/.ssh/lab_config"]
-# WSL 2 may select Windows OpenSSH explicitly:
+# WSL 2 normally uses Linux 'ssh'; it may optionally select Windows OpenSSH:
 # command = ["/mnt/c/Windows/System32/OpenSSH/ssh.exe"]
 
 [openocd]

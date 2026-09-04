@@ -63,8 +63,16 @@ schema, validation rules, environment allow-list, and path-mapping/staging
 semantics are described in the
 [`configuration guide`](docs/user/configuration.md).
 
-Override the SSH executable or add fixed arguments when needed, including in
-WSL2:
+The default `command = ["ssh"]` works on native Linux and WSL2 when Linux
+OpenSSH is available. Add fixed arguments when needed:
+
+```toml
+[ssh]
+command = ["ssh", "-F", "/home/user/.ssh/lab_config", "-o", "ControlMaster=no"]
+```
+
+WSL2 users may optionally select Windows OpenSSH instead, for example when
+they want to reuse Windows-side SSH configuration or credentials:
 
 ```toml
 [ssh]
