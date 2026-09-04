@@ -26,8 +26,9 @@ not consistently independent.
 
 The latest local-integration fix removes an assumption that the ignored `.scratch/`
 directory exists in a checkout. A Git-free archive now passes the full local suite
-when loopback permissions are available. GitHub Actions run 4 for the corrected
-commit completed successfully.
+when loopback permissions are available. The latest GitHub Actions run completed
+successfully but emitted an action-runtime deprecation warning; warning-free CI
+is the remaining release-hygiene gap.
 
 ## Target Architecture
 
@@ -218,12 +219,14 @@ Dependencies: M1-M5.
 Exit: every supported user operation and contributor check has one discoverable
 and currently accurate entry point, with no PG/test names in user documentation.
 
-### M7 — CI and Strict Release Driver `[done]`
+### M7 — CI and Strict Release Driver `[in progress]`
 
 - `[done]` Add GitHub Actions for lint/static and self-contained tests; external
   Zephyr/hardware layers remain explicitly operator-selected.
 - `[done]` Reproduce and fix clean-checkout test failures caused by relying on
   the ignored `.scratch/` directory.
+- `[in progress]` Remove action-runtime deprecation warnings from the workflow
+  and verify its completed run has no warning annotations.
 - `[done]` Add the Python strict-release driver with inventory validation,
   serial external layers, capability requirements, benchmark execution,
   cleanup/leak checks, and per-layer summary.
@@ -233,11 +236,12 @@ and currently accurate entry point, with no PG/test names in user documentation.
 
 Dependencies: M2-M6.
 
-Exit: the corrected GitHub Actions workflow completes successfully from a clean
-checkout, and simulated driver outcomes are deterministic. Missing native-Linux
-evidence remains fatal while WSL-only gates remain deferred.
+Exit: the corrected GitHub Actions workflow completes successfully without
+warning annotations from a clean checkout, and simulated driver outcomes are
+deterministic. Missing native-Linux evidence remains fatal while WSL-only gates
+remain deferred.
 
-### M8 — Full Validation and Final Consistency Audit `[done]`
+### M8 — Full Validation and Final Consistency Audit `[in progress]`
 
 - `[done]` Run the self-contained local suite from both the working tree and a
   Git-free archive without relying on ignored `.scratch/` state.
@@ -250,14 +254,14 @@ evidence remains fatal while WSL-only gates remain deferred.
   protocol, traceability, validation record, template, implemented selectors,
   and release summary.
 - `[done]` Scan tracked files and inspect the production-tree diff.
-- `[done]` Verify a successful completed GitHub Actions run for the corrected
-  implementation commit.
+- `[in progress]` Verify a successful completed GitHub Actions run for the
+  corrected implementation commit with no warning annotations.
 
 Dependencies: M1-M7.
 
 Exit: every measurable acceptance criterion in `.agents/GOAL.md` has recorded
-evidence; both the local clean-checkout suite and GitHub Actions are successful;
-only PG-012/PG-013 are deferred. SSH and hardware execution remains an
+evidence; both the local clean-checkout suite and warning-free GitHub Actions
+are successful; only PG-012/PG-013 are deferred. SSH and hardware execution remains an
 environment-supplied release step when this sandbox cannot provide sockets or lab
 access. There is no unexplained product diff, test regression, leaked resource,
 broken link, or tracked local artifact.
@@ -272,7 +276,8 @@ broken link, or tracked local artifact.
 - Zephyr/distribution: Zephyr 4.4 integration and isolated Git-free clean install.
 - Local/CI parity: default `pytest` passes from a clean Git-free archive with
   loopback-enabled local integration, and the GitHub Actions checks workflow
-  passes from its clean checkout using declared developer dependencies.
+  passes without warning annotations from its clean checkout using declared
+  developer dependencies.
 - SSH/hardware: inventory-selected capability nodes, environment forwarding,
   serial framing, normal/interruption cleanup, and final leak scan.
 - Performance: manual release benchmark; median target statistic, diagnostic

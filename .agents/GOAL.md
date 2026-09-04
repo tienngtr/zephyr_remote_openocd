@@ -37,6 +37,8 @@ automated and release-validation entry points.
   workflow provide repeatable outcomes.
 - The GitHub Actions checks workflow completes successfully from a clean checkout
   using only its declared developer dependencies.
+- The GitHub Actions checks workflow completes without workflow warning
+  annotations, including action-runtime deprecation warnings.
 - Product version `0.1.0` is available without Git metadata and is described as
   initial-development SemVer, distinct from Protocol 1 and the V1 config schema.
 
@@ -118,6 +120,8 @@ automated and release-validation entry points.
 - The corresponding GitHub Actions workflow has a successful completed run for
   the current implementation, including tests, formatting, lint, static
   compatibility, and whitespace checks.
+- The corresponding GitHub Actions run has no warning or failure annotations
+  attributable to the workflow configuration.
 - Strict release validation reports each required capability, performance result,
   cleanup result, and PG-012/PG-013 deferral, and returns nonzero for missing
   mandatory evidence or leaks.
@@ -139,6 +143,8 @@ automated and release-validation entry points.
   interpretation.
 - Ruff check and format check, Pylint, Vermin, and `git diff --check`.
 - Final local and remote process, forward, and workspace leak checks.
+- Inspection of the completed GitHub Actions annotations confirms a warning-free
+  workflow run.
 - Review of the production-tree diff to confirm no behavior change.
 
 ## Unresolved Decisions
