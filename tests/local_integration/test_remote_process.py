@@ -418,10 +418,8 @@ class TestRealProcessHelper:
                     events.append(json.loads(process.stdout.readline()))
                 assert events[0]["type"] == "PROCESS_STARTED"
                 assert any(
-                    any(
-                        event["type"] == "CHILD_OUTPUT" and event["payload"] == marker
-                        for event in events
-                    )
+                    event["type"] == "CHILD_OUTPUT" and event["payload"] == marker
+                    for event in events
                 )
                 process.stdin.write(encode_message("STOP"))
                 process.stdin.flush()
