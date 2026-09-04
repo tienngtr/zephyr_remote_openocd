@@ -103,11 +103,10 @@ inspect cleanup output before reusing a target.
 
 ## Work Tracking
 
-For the repository-comprehension refactor, treat `.agents/GOAL.md` as the stable
-project contract and `.agents/PLAN.md` as the status-tracked implementation
-strategy. Change the goal only when the user changes scope or acceptance; update
-plan statuses and findings as work proceeds. Reconcile both files before each
-semantic commit. Temporary investigations and handoff notes belong under ignored
+The repository may not contain `.agents/GOAL.md` or `.agents/PLAN.md`; they were
+temporary work-tracking documents and are not required for normal development.
+If a future task supplies either file, follow its current instructions for that
+task only. Temporary investigations and handoff notes belong under ignored
 `.scratch/agents/`, never as the sole record of a requirement, architecture
 decision, or release result.
 
