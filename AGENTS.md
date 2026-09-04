@@ -103,12 +103,12 @@ inspect cleanup output before reusing a target.
 
 ## Work Tracking
 
-The repository may not contain `.agents/GOAL.md` or `.agents/PLAN.md`; they were
-temporary work-tracking documents and are not required for normal development.
-If a future task supplies either file, follow its current instructions for that
-task only. Temporary investigations and handoff notes belong under ignored
-`.scratch/agents/`, never as the sole record of a requirement, architecture
-decision, or release result.
+Keep durable repository working rules in this `AGENTS.md`. Task-specific
+`.agents/GOAL.md` and `.agents/PLAN.md` files are optional; when supplied for a
+task, follow their current scope and instructions for that task. Put temporary
+investigations and handoff notes under ignored `.scratch/agents/`, while keeping
+requirements, architecture decisions, and release results in the appropriate
+tracked documentation.
 
 ## Commit & Push Guidelines
 
