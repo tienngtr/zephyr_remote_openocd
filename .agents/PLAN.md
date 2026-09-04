@@ -26,9 +26,8 @@ not consistently independent.
 
 The latest local-integration fix removes an assumption that the ignored `.scratch/`
 directory exists in a checkout. A Git-free archive now passes the full local suite
-when loopback permissions are available. The latest GitHub Actions run completed
-successfully but emitted an action-runtime deprecation warning; warning-free CI
-is the remaining release-hygiene gap.
+when loopback permissions are available. GitHub Actions run 6 completed
+successfully with no warning annotations.
 
 ## Target Architecture
 
@@ -219,14 +218,14 @@ Dependencies: M1-M5.
 Exit: every supported user operation and contributor check has one discoverable
 and currently accurate entry point, with no PG/test names in user documentation.
 
-### M7 — CI and Strict Release Driver `[in progress]`
+### M7 — CI and Strict Release Driver `[done]`
 
 - `[done]` Add GitHub Actions for lint/static and self-contained tests; external
   Zephyr/hardware layers remain explicitly operator-selected.
 - `[done]` Reproduce and fix clean-checkout test failures caused by relying on
   the ignored `.scratch/` directory.
-- `[in progress]` Remove action-runtime deprecation warnings from the workflow
-  and verify its completed run has no warning annotations.
+- `[done]` Remove action-runtime deprecation warnings from the workflow and verify
+  its completed run has no warning annotations.
 - `[done]` Add the Python strict-release driver with inventory validation,
   serial external layers, capability requirements, benchmark execution,
   cleanup/leak checks, and per-layer summary.
@@ -241,7 +240,7 @@ warning annotations from a clean checkout, and simulated driver outcomes are
 deterministic. Missing native-Linux evidence remains fatal while WSL-only gates
 remain deferred.
 
-### M8 — Full Validation and Final Consistency Audit `[in progress]`
+### M8 — Full Validation and Final Consistency Audit `[done]`
 
 - `[done]` Run the self-contained local suite from both the working tree and a
   Git-free archive without relying on ignored `.scratch/` state.
@@ -254,8 +253,8 @@ remain deferred.
   protocol, traceability, validation record, template, implemented selectors,
   and release summary.
 - `[done]` Scan tracked files and inspect the production-tree diff.
-- `[in progress]` Verify a successful completed GitHub Actions run for the
-  corrected implementation commit with no warning annotations.
+- `[done]` Verify a successful completed GitHub Actions run for the corrected
+  implementation commit with no warning annotations.
 
 Dependencies: M1-M7.
 
