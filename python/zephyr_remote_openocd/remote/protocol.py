@@ -235,10 +235,8 @@ class EventOrder:
             "new": {"HELLO"},
             "hello": {"SESSION_CREATED", "ERROR"},
             "created": {
-                "SERVICE_READY",
                 "PROCESS_STARTED",
                 "CHILD_OUTPUT",
-                "PROCESS_EXIT",
                 "ERROR",
                 "STOPPED",
             },
@@ -247,6 +245,15 @@ class EventOrder:
             "exited": {"STOPPED"},
             "stopped": set(),
         }
+        # The aggregate SERVICE_READY form belongs only to the test fake
+        # service. A real service-ready event is valid only after the child
+        # process has been announced with PROCESS_STARTED.
+        if (
+            self._state == "created"
+            and kind == "SERVICE_READY"
+            and isinstance(message.get("services"), list)
+        ):
+            allowed["created"].add(kind)
         if kind not in allowed[self._state]:
             raise ProtocolError(f"unexpected {kind} event in {self._state} state")
         if kind == "HELLO":

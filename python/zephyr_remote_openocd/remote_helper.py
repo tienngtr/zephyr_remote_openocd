@@ -164,15 +164,23 @@ def echo(connection):
             connection.sendall(data)
 
 
-def relay(stream, stream_name, marker=None, marker_seen=None):
+def relay(stream, stream_name, marker=None, marker_seen=None, captured=None):
     while True:
         line = stream.readline()
         if not line:
             return
         payload = line.decode("utf-8", "replace").rstrip("\n")
+        if captured is not None:
+            captured.append(payload)
+            del captured[:-128]
         if marker is not None and payload.strip() == marker:
             marker_seen.set()
         emit("CHILD_OUTPUT", stream=stream_name, payload=payload)
+
+
+def is_bind_collision(output):
+    """Recognize the POSIX EADDRINUSE diagnostic from OpenOCD startup."""
+    return "address already in use" in "\n".join(output).casefold()
 
 
 def allocate_service_address(ports):
@@ -389,72 +397,95 @@ def controller():
                     ):
                         raise ValueError("START_OPENOCD readiness timeout is invalid")
                     ports = [item["remote_port"] for item in services]
-                    address = allocate_service_address(ports) if ports else random_address()
-                    replacements = {"{workspace}": str(work), "{address}": address}
+                    if len(ports) != len(set(ports)):
+                        raise ValueError("START_OPENOCD services must use unique remote ports")
 
-                    def expand(value, replacements=replacements):
+                    def expand(value, replacements):
                         for token, replacement in replacements.items():
                             value = value.replace(token, replacement)
                         return value
 
-                    expanded_argv = [expand(arg) for arg in argv]
-                    for check in checks:
-                        if (
-                            not isinstance(check, dict)
-                            or check.get("kind") not in ("file", "directory")
-                            or not isinstance(check.get("path"), str)
-                        ):
-                            raise ValueError("invalid required-path assertion")
-                        candidate = Path(expand(check["path"]))
-                        valid = (
-                            candidate.is_file() if check["kind"] == "file" else candidate.is_dir()
-                        )
-                        if not valid:
-                            raise ValueError(
-                                f"required remote {check['kind']} is missing: {candidate}"
+                    for attempt in range(32 if marker is not None else 1):
+                        address = allocate_service_address(ports) if ports else random_address()
+                        replacements = {"{workspace}": str(work), "{address}": address}
+                        expanded_argv = [expand(arg, replacements) for arg in argv]
+                        for check in checks:
+                            if (
+                                not isinstance(check, dict)
+                                or check.get("kind") not in ("file", "directory")
+                                or not isinstance(check.get("path"), str)
+                            ):
+                                raise ValueError("invalid required-path assertion")
+                            candidate = Path(expand(check["path"], replacements))
+                            valid = (
+                                candidate.is_file()
+                                if check["kind"] == "file"
+                                else candidate.is_dir()
                             )
-                    child_environment = os.environ.copy()
-                    child_environment.update(environment)
-                    child = subprocess.Popen(
-                        expanded_argv,
-                        cwd=work / "staged",
-                        env=child_environment,
-                        stdin=subprocess.DEVNULL,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        start_new_session=True,
-                    )
-                    marker_seen = threading.Event()
-                    relay_threads = [
-                        threading.Thread(
-                            target=relay,
-                            args=(child.stdout, "stdout", marker, marker_seen),
-                            daemon=True,
-                        ),
-                        threading.Thread(
-                            target=relay,
-                            args=(child.stderr, "stderr", marker, marker_seen),
-                            daemon=True,
-                        ),
-                    ]
-                    for thread in relay_threads:
-                        thread.start()
-                    emit("PROCESS_STARTED", remote_address=address, child_pid=child.pid)
-                    if marker is not None:
+                            if not valid:
+                                raise ValueError(
+                                    f"required remote {check['kind']} is missing: {candidate}"
+                                )
+                        child_environment = os.environ.copy()
+                        child_environment.update(environment)
+                        child = subprocess.Popen(
+                            expanded_argv,
+                            cwd=work / "staged",
+                            env=child_environment,
+                            stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            start_new_session=True,
+                        )
+                        marker_seen = threading.Event()
+                        startup_output = []
+                        relay_threads = [
+                            threading.Thread(
+                                target=relay,
+                                args=(child.stdout, "stdout", marker, marker_seen, startup_output),
+                                daemon=True,
+                            ),
+                            threading.Thread(
+                                target=relay,
+                                args=(child.stderr, "stderr", marker, marker_seen, startup_output),
+                                daemon=True,
+                            ),
+                        ]
+                        for thread in relay_threads:
+                            thread.start()
+                        if marker is None:
+                            emit("PROCESS_STARTED", remote_address=address, child_pid=child.pid)
+                            break
+
                         deadline = time.monotonic() + readiness_timeout
                         while time.monotonic() < deadline:
                             if child.poll() is not None:
+                                for thread in relay_threads:
+                                    thread.join(timeout=2)
+                                close_child_streams()
+                                if is_bind_collision(startup_output) and attempt < 31:
+                                    child = None
+                                    relay_threads = []
+                                    break
                                 raise RuntimeError(
                                     "OpenOCD exited before readiness with status "
                                     f"{child.returncode}"
                                 )
                             if marker_seen.is_set() and services_connectable(address, services):
+                                emit("PROCESS_STARTED", remote_address=address, child_pid=child.pid)
                                 for service in services:
                                     emit("SERVICE_READY", remote_address=address, service=service)
                                 break
                             time.sleep(0.05)
                         else:
                             raise RuntimeError("OpenOCD readiness timed out")
+
+                        if child is not None and child.poll() is None:
+                            break
+                    else:
+                        raise RuntimeError(
+                            "OpenOCD address collision retry exhausted after 32 attempts"
+                        )
                 elif kind == "STOP":
                     cleanup()
                     emit("STOPPED", reason="requested")

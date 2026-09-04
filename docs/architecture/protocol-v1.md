@@ -52,7 +52,10 @@ and remove the workspace, but promise no final event if it cannot be delivered.
 Staging and version probing are separate one-shot helper invocations, not
 controller commands. `helper stage <workspace>` reads tar stdin and on success
 emits `STAGED {byte_count, sha256, files}`: non-negative byte count, 64-hex
-SHA-256, and ordered staged relative paths; unsafe content fails the invocation.
+SHA-256, and ordered staged relative paths. `byte_count` is the total number
+of extracted regular-file bytes, and `sha256` hashes those bytes concatenated
+in the order listed by `files`. The client compares all three confirmations
+with its manifest; unsafe content fails the invocation.
 `helper openocd-version <absolute-executable>` executes exactly
 `<absolute-executable> --version`; success emits `OPENOCD_VERSION {output}`
 with combined output as a string, while failure exits nonzero with `ERROR`.

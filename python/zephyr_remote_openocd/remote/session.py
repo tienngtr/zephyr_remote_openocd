@@ -61,10 +61,15 @@ class RemoteSession:
             self.descriptor = self._session.start(self.request.services)
             self.state = SessionState.READY
             return self.descriptor
-        except BaseException:
+        except BaseException as error:
             self.state = SessionState.FAILED
             if self._session is not None:
-                self._session.close()
+                try:
+                    self._session.close()
+                except BaseException as cleanup_error:
+                    # Preserve the startup failure while retaining cleanup
+                    # diagnostics for callers and release logs.
+                    error.add_note(f"startup failure cleanup also failed: {cleanup_error}")
             raise
 
     def forward(self, services: Iterable[Service]) -> None:
@@ -91,20 +96,45 @@ class RemoteSession:
     def poll(self) -> int | None:
         if self._session is None:
             return self.termination_returncode
-        result = self._session.poll()
+        try:
+            result = self._session.poll()
+        except BaseException as error:
+            self.state = SessionState.FAILED
+            try:
+                self._session.close()
+            except BaseException as cleanup_error:
+                error.add_note(f"session cleanup failed: {cleanup_error}")
+            raise
         if result is not None:
             self.termination_returncode = result
-            self._session.close()
-            if self.state not in {SessionState.STOPPING, SessionState.CLOSED}:
-                self.state = SessionState.CLOSED if result == 0 else SessionState.FAILED
+            try:
+                self._session.close()
+            except BaseException:
+                self.state = SessionState.FAILED
+                raise
+            else:
+                if self.state not in {SessionState.STOPPING, SessionState.CLOSED}:
+                    self.state = SessionState.CLOSED if result == 0 else SessionState.FAILED
         return result
 
     def wait(self, timeout: float | None = None) -> int:
         if self._session is None:
             raise SessionError("session has not been started")
-        result = self._session.wait(timeout)
+        try:
+            result = self._session.wait(timeout)
+        except BaseException as error:
+            self.state = SessionState.FAILED
+            try:
+                self._session.close()
+            except BaseException as cleanup_error:
+                error.add_note(f"session cleanup failed: {cleanup_error}")
+            raise
         self.termination_returncode = result
-        self._session.close()
+        try:
+            self._session.close()
+        except BaseException:
+            self.state = SessionState.FAILED
+            raise
         self.state = SessionState.CLOSED if result == 0 else SessionState.FAILED
         return result
 
@@ -112,9 +142,11 @@ class RemoteSession:
         if self.state is SessionState.CLOSED:
             return
         self.state = SessionState.STOPPING
-        if self._session is not None:
-            self._session.close()
-        self.state = SessionState.CLOSED
+        try:
+            if self._session is not None:
+                self._session.close()
+        finally:
+            self.state = SessionState.CLOSED
 
     def __enter__(self):
         self.start()

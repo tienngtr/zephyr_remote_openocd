@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import ipaddress
 import tarfile
@@ -146,6 +147,25 @@ class TestProtocol:
             )
         order.accept(decode_message(encode_message("STOPPED", reason="process-exit")))
 
+    def test_real_service_ready_requires_process_started(self):
+        order = EventOrder()
+        order.accept(decode_message(encode_message("HELLO", helper="helper")))
+        order.accept(
+            decode_message(
+                encode_message("SESSION_CREATED", session_id="id", remote_workspace="/work")
+            )
+        )
+        with pytest.raises(ProtocolError):
+            order.accept(
+                decode_message(
+                    encode_message(
+                        "SERVICE_READY",
+                        remote_address="127.64.1.1",
+                        service={"name": "gdb", "remote_port": 3333},
+                    )
+                )
+            )
+
 
 class TestStaging:
     def test_binary_and_empty_files_round_trip(self):
@@ -160,6 +180,8 @@ class TestStaging:
                 ),
                 spool_limit=1,
             )
+            assert archive.byte_count == 257
+            assert archive.sha256 == hashlib.sha256(bytes(range(256)) + b"\0").hexdigest()
             output = root / "output"
             output.mkdir()
             _, _, files = extract_archive(archive.stream, output)
@@ -192,6 +214,8 @@ class _FakeSession(BackendSession):
         self.actions = []
         self.returncode = None
         self.forward_error = None
+        self.poll_error = None
+        self.wait_error = None
 
     def stage(self, files):
         self.actions.append(("stage", tuple(files)))
@@ -206,9 +230,13 @@ class _FakeSession(BackendSession):
             raise self.forward_error
 
     def poll(self):
+        if self.poll_error is not None:
+            raise self.poll_error
         return self.returncode
 
     def wait(self, timeout=None):
+        if self.wait_error is not None:
+            raise self.wait_error
         return 9
 
     def close(self):
@@ -258,6 +286,26 @@ class TestSession:
         backend.session.forward_error = RuntimeError("forward failed")
         with pytest.raises(RuntimeError, match="forward failed"):
             session.forward((Service("rtt", 5555, 5555),))
+        assert session.state == SessionState.FAILED
+        assert backend.session.actions[-1] == ("close",)
+
+    def test_poll_failure_closes_session_and_marks_failed(self):
+        backend = _FakeBackend()
+        session = RemoteSession(self.request(), backend)
+        session.start()
+        backend.session.poll_error = RuntimeError("reader failed")
+        with pytest.raises(RuntimeError, match="reader failed"):
+            session.poll()
+        assert session.state == SessionState.FAILED
+        assert backend.session.actions[-1] == ("close",)
+
+    def test_wait_failure_closes_session_and_marks_failed(self):
+        backend = _FakeBackend()
+        session = RemoteSession(self.request(), backend)
+        session.start()
+        backend.session.wait_error = RuntimeError("reader failed")
+        with pytest.raises(RuntimeError, match="reader failed"):
+            session.wait()
         assert session.state == SessionState.FAILED
         assert backend.session.actions[-1] == ("close",)
 
@@ -472,7 +520,7 @@ class TestDebugPlanning:
         development = parse_openocd_version("Open On-Chip Debugger 0.11.0+dev")
         current = parse_openocd_version("Open On-Chip Debugger 0.12.0-01050")
         assert not thread_info_enabled(True, old)
-        assert thread_info_enabled(True, development)
+        assert not thread_info_enabled(True, development)
         assert thread_info_enabled(True, current)
         assert not thread_info_enabled(False, None)
         with pytest.raises(DebugPlanError):

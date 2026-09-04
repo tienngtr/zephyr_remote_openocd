@@ -85,10 +85,14 @@ class TestRealOpenOcdDebug:
         )
         return ssh.popen(fixture["host"], remote_command, "-o", "ControlMaster=no")
 
-    def test_debug_attach_and_debugserver(self, debug_fixture):
+    def test_debug(self, debug_fixture):
         self._debug(debug_fixture)
-        self._attach(debug_fixture)
-        self._debugserver(debug_fixture)
+
+    def test_attach(self, attach_fixture):
+        self._attach(attach_fixture)
+
+    def test_debugserver(self, debugserver_fixture):
+        self._debugserver(debugserver_fixture)
 
     def _debug(self, fixture):
         reader = self._serial_reader(fixture)

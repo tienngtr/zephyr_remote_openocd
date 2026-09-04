@@ -29,12 +29,12 @@ class OpenOcdVersion:
 
 
 def parse_openocd_version(output: str) -> OpenOcdVersion:
-    match = re.search(r"Open On-Chip Debugger.*?v?(\d+)\.(\d+)\.(\d+)(\+dev)?", output)
+    match = re.search(r"Open On-Chip Debugger.*?v?(\d+)\.(\d+)\.(\d+)(?:\+dev)?", output)
     if match is None:
         raise DebugPlanError("cannot parse remote OpenOCD version")
     major, minor, revision = map(int, match.group(1, 2, 3))
-    if match.group(4):
-        revision += 1
+    # Zephyr 4.4 compares the numeric version only; ``+dev`` is not a
+    # version increment for the thread-info capability decision.
     return OpenOcdVersion(major, minor, revision, match.group(0))
 
 

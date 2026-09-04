@@ -67,6 +67,8 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
     capability_fixtures = {
         "flash_fixture": "flash",
         "debug_fixture": "debug",
+        "attach_fixture": "attach",
+        "debugserver_fixture": "debugserver",
         "thread_info_fixture": "thread_info",
         "rtt_fixture": "rtt",
         "semihosting_fixture": "semihosting",
@@ -108,6 +110,16 @@ def flash_fixture(request: pytest.FixtureRequest) -> dict:
 
 @pytest.fixture
 def debug_fixture(request: pytest.FixtureRequest) -> dict:
+    return _profile_record(request, request.getfixturevalue("prepared_hardware"))
+
+
+@pytest.fixture
+def attach_fixture(request: pytest.FixtureRequest) -> dict:
+    return _profile_record(request, request.getfixturevalue("prepared_hardware"))
+
+
+@pytest.fixture
+def debugserver_fixture(request: pytest.FixtureRequest) -> dict:
     return _profile_record(request, request.getfixturevalue("prepared_hardware"))
 
 

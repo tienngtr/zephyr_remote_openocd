@@ -23,6 +23,8 @@ from zephyr_remote_openocd.remote.model import (
     RemoteProcess,
     RemoteSessionRequest,
     Service,
+    SessionAllocation,
+    StagedFile,
 )
 from zephyr_remote_openocd.remote.paths import ADDRESS_TOKEN
 from zephyr_remote_openocd.remote.protocol import (
@@ -97,25 +99,20 @@ class TestForwardingLifecycle:
         session = self.session(command)
         service = Service("gdb", self.port(), 3333)
         with (
-            patch.object(SshHelperSession, "_listener_ready", return_value=True),
+            patch.object(SshHelperSession, "_await_forward_ready", return_value=True),
             patch("zephyr_remote_openocd.remote.backend.socket.create_connection") as connect,
         ):
             session._start_forwards((service,), "127.64.1.1")
         connect.assert_not_called()
+        assert command.calls[0][1].startswith("python3 -c ")
+        assert "-N" not in command.calls[0][2]
         session._close_forwards()
         assert process.terminate_calls == 1
 
     def test_stale_gdb_forward_cannot_mask_current_forward_failure(self):
-        class RaceProcess(self.Process):
-            def __init__(self):
-                super().__init__()
-                self.poll_count = 0
-
-            def poll(self):
-                self.poll_count += 1
-                return None if self.poll_count == 1 else 255
-
-        stale = RaceProcess()
+        stale = self.Process()
+        read_fd, write_fd = os.pipe()
+        stale.stdout = os.fdopen(read_fd, "rb")
         command = self.Command(stale)
         session = self.session(command)
         service = Service("gdb", self.port(), 3333)
@@ -125,18 +122,21 @@ class TestForwardingLifecycle:
             listener.listen()
         except OSError:
             listener.close()
+            stale.stdout.close()
+            os.close(write_fd)
             pytest.skip("sandbox cannot create stale listener")
         with (
             patch("zephyr_remote_openocd.remote.backend.socket.create_connection") as connect,
-            pytest.raises(SessionError, match="SSH forwarding failed"),
+            pytest.raises(SessionError, match="did not become ready"),
         ):
             try:
                 session._start_forwards((service,), "127.64.1.1")
             finally:
                 listener.close()
+                os.close(write_fd)
         connect.assert_not_called()
         session._close_forwards()
-        assert stale.terminate_calls == 0
+        assert stale.terminate_calls == 1
 
     def test_forward_cleanup_is_reverse_order_and_idempotent(self):
         first = self.Process()
@@ -239,6 +239,32 @@ class TestRttClient:
 
 
 class TestRealProcessHelper:
+    def test_backend_rejects_mismatched_staging_confirmation(self):
+        class LocalCommand:
+            def run_stream(self, host, command, stream, timeout=60):
+                stream.read()
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    encode_message(
+                        "STAGED",
+                        byte_count=999,
+                        sha256="0" * 64,
+                        files=["firmware.bin"],
+                    ),
+                    b"",
+                )
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "firmware.bin"
+            source.write_bytes(b"firmware")
+            session = object.__new__(SshHelperSession)
+            session.request = RemoteSessionRequest("local", LocalCommand())
+            session.deployment = DeploymentResult("/helper.py", "0" * 64, False)
+            session.allocation = SessionAllocation("session", "/workspace")
+            with pytest.raises(SessionError, match="invalid remote staging response"):
+                session.stage((StagedFile(source, "firmware.bin"),))
+
     def test_helper_applies_requested_environment_before_child_executes(self):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
         with tempfile.TemporaryDirectory() as directory:
@@ -416,7 +442,7 @@ class TestRealProcessHelper:
                 events = []
                 while not any(event["type"] == "SERVICE_READY" for event in events):
                     events.append(json.loads(process.stdout.readline()))
-                assert events[0]["type"] == "PROCESS_STARTED"
+                assert any(event["type"] == "PROCESS_STARTED" for event in events)
                 assert any(
                     event["type"] == "CHILD_OUTPUT" and event["payload"] == marker
                     for event in events
@@ -443,6 +469,85 @@ class TestRealProcessHelper:
         message = json.loads(result.stdout)
         assert message["type"] == "OPENOCD_VERSION"
         assert "Python" in message["output"]
+
+    def test_helper_retries_an_openocd_address_collision(self):
+        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        with tempfile.TemporaryDirectory() as directory:
+            environment = os.environ.copy()
+            environment["XDG_RUNTIME_DIR"] = directory
+            state = Path(directory) / "attempt"
+            process = subprocess.Popen(
+                [sys.executable, str(helper), "control"],
+                env=environment,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            try:
+                assert process.stdout is not None and process.stdin is not None
+                assert json.loads(process.stdout.readline())["type"] == "HELLO"
+                json.loads(process.stdout.readline())
+                try:
+                    port_socket = socket.socket()
+                except PermissionError:
+                    pytest.skip("sandbox prohibits loopback listeners")
+                port_socket.bind(("127.0.0.1", 0))
+                remote_port = port_socket.getsockname()[1]
+                port_socket.close()
+                marker = "ZRO_READY_collision"
+                child = Path(directory) / "collision_child.py"
+                child.write_text(
+                    "import os, pathlib, socket, sys, time\n"
+                    "state = pathlib.Path(os.environ['ZRO_COLLISION_STATE'])\n"
+                    "if not state.exists():\n"
+                    "    state.write_text('seen')\n"
+                    "    print(\n"
+                    "        'Error: could not bind: Address already in use',\n"
+                    "        file=sys.stderr, flush=True\n"
+                    "    )\n"
+                    "    raise SystemExit(1)\n"
+                    "listener = socket.socket()\n"
+                    "listener.bind((sys.argv[1], int(sys.argv[2])))\n"
+                    "listener.listen()\n"
+                    "print(sys.argv[3], flush=True)\n"
+                    "time.sleep(30)\n"
+                )
+                process.stdin.write(
+                    encode_message(
+                        "START_OPENOCD",
+                        argv=[
+                            sys.executable,
+                            str(child),
+                            ADDRESS_TOKEN,
+                            str(remote_port),
+                            marker,
+                        ],
+                        environment={"ZRO_COLLISION_STATE": str(state)},
+                        services=[{"name": "tcl", "remote_port": remote_port}],
+                        readiness_marker=marker,
+                        readiness_timeout=5,
+                    )
+                )
+                process.stdin.flush()
+                events = []
+                while not any(event["type"] == "SERVICE_READY" for event in events):
+                    events.append(json.loads(process.stdout.readline()))
+                assert any(
+                    event["type"] == "CHILD_OUTPUT"
+                    and "address already in use" in event["payload"].casefold()
+                    for event in events
+                )
+                assert any(event["type"] == "PROCESS_STARTED" for event in events)
+                process.stdin.write(encode_message("STOP"))
+                process.stdin.flush()
+                assert process.wait(timeout=8) == 0
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=5)
+                for stream in (process.stdin, process.stdout, process.stderr):
+                    if stream is not None and not stream.closed:
+                        stream.close()
 
     def test_output_exit_status_and_workspace_cleanup(self):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
@@ -614,11 +719,10 @@ class TestRealProcessHelper:
                 )
                 process.stdin.flush()
                 events = [json.loads(line) for line in process.stdout]
-                assert events[0]["type"] == "PROCESS_STARTED"
                 assert any(event["type"] == "CHILD_OUTPUT" for event in events)
+                assert events[-1]["type"] == "ERROR"
                 assert process.wait(timeout=8) == 0
                 assert not workspace.exists()
-                assert events[-1]["type"] == "ERROR"
             finally:
                 if process.poll() is None:
                     process.kill()
@@ -674,5 +778,62 @@ class TestRealProcessHelper:
                 assert ipaddress.ip_address(descriptor.remote_address) in LOOPBACK_RANGE
                 assert backend.wait(5) == 6
                 assert output == [("stdout", "hello")]
+            finally:
+                backend.close()
+
+    def test_backend_reader_failure_terminates_session(self):
+        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        with tempfile.TemporaryDirectory() as directory:
+            environment = os.environ.copy()
+            environment["XDG_RUNTIME_DIR"] = directory
+
+            class LocalCommand:
+                def popen(inner, host, remote_command, *extra_args):  # pylint: disable=no-self-argument
+                    return subprocess.Popen(
+                        [sys.executable, str(helper), "control"],
+                        env=environment,
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+
+                def run_stream(inner, host, remote_command, stream, timeout=60):  # pylint: disable=no-self-argument
+                    workspace = remote_command.rsplit(" ", 1)[1]
+                    return subprocess.run(
+                        [sys.executable, str(helper), "stage", workspace],
+                        env=environment,
+                        input=stream.read(),
+                        capture_output=True,
+                        timeout=timeout,
+                        check=False,
+                    )
+
+            remote_process = RemoteProcess(
+                "openocd",
+                (
+                    sys.executable,
+                    "-c",
+                    'import sys,time;print("hello",flush=True);time.sleep(30)',
+                ),
+            )
+            request = RemoteSessionRequest("local", LocalCommand(), process=remote_process)
+
+            def fail_on_output(stream, payload):
+                raise RuntimeError("output sink failed")
+
+            backend = SshHelperSession(
+                request,
+                DeploymentResult(str(helper), "digest", False),
+                0.1,
+                fail_on_output,
+            )
+            workspace = backend.allocation.remote_workspace
+            try:
+                backend.stage(())
+                backend.start(())
+                with pytest.raises(SessionError, match="helper event stream failed"):
+                    backend.wait(5)
+                assert backend.closed
+                assert not Path(workspace).exists()
             finally:
                 backend.close()

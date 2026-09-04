@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import json
+import secrets
+import selectors
 import shlex
 import socket
 import subprocess
@@ -142,6 +144,10 @@ class SshHelperSession(BackendSession):
             validate_staged_response(message)
             if tuple(message.get("files", ())) != archive.files:
                 raise ValueError("remote staged-file confirmation differs from manifest")
+            if message["byte_count"] != archive.byte_count:
+                raise ValueError("remote staged-file byte count differs from manifest")
+            if message["sha256"] != archive.sha256:
+                raise ValueError("remote staged-file digest differs from manifest")
             return message
         except (ProtocolError, ValueError, json.JSONDecodeError) as error:
             raise SessionError(f"invalid remote staging response: {result.stdout!r}") from error
@@ -156,19 +162,39 @@ class SshHelperSession(BackendSession):
             return f"local port 127.0.0.1:{port} appears unavailable: {error}"
 
     @staticmethod
-    def _listener_ready(port: int) -> bool:
-        """Check for a local TCP listener without opening a client session."""
-        wanted = f":{port:04X}"
-        for proc_file in ("/proc/net/tcp", "/proc/net/tcp6"):
-            try:
-                with open(proc_file, encoding="ascii") as lines:
-                    for line in lines:
-                        fields = line.split()
-                        if len(fields) >= 4 and fields[1].endswith(wanted) and fields[3] == "0A":
-                            return True
-            except OSError:
-                continue
-        return False
+    def _forward_ready_command(token: str) -> str:
+        code = f"import sys; print({token!r}, flush=True); sys.stdin.buffer.read()"
+        return "python3 -c " + shlex.quote(code)
+
+    @staticmethod
+    def _await_forward_ready(process: subprocess.Popen[bytes], token: str, deadline: float) -> bool:
+        """Wait for the readiness sentinel from this exact SSH process."""
+        if process.stdout is None:
+            return False
+        selector = selectors.DefaultSelector()
+        try:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            while process.poll() is None and time.monotonic() < deadline:
+                remaining = max(0.0, deadline - time.monotonic())
+                if not selector.select(min(0.05, remaining)):
+                    continue
+                line = process.stdout.readline()
+                if not line:
+                    return False
+                if line.decode("utf-8", "replace").rstrip("\r\n") == token:
+                    return True
+            return False
+        finally:
+            selector.close()
+
+    @staticmethod
+    def _forward_diagnostic(process: subprocess.Popen[bytes]) -> str:
+        if process.stderr is None:
+            return ""
+        try:
+            return process.stderr.read().decode("utf-8", "replace").strip()
+        except (OSError, ValueError):
+            return ""
 
     def start(self, services: Iterable[Service]) -> SessionDescriptor:
         service_list = tuple(services)
@@ -260,6 +286,10 @@ class SshHelperSession(BackendSession):
             raise
 
     def poll(self) -> int | None:
+        if self.reader_error is not None:
+            raise SessionError(
+                f"helper event stream failed: {self.reader_error}"
+            ) from self.reader_error
         if self.process_returncode is not None:
             return self.process_returncode
         controller_status = self.controller.poll()
@@ -275,10 +305,10 @@ class SshHelperSession(BackendSession):
         ]
         for service in service_list:
             spec = f"127.0.0.1:{service.local_port}:{address}:{service.remote_port}"
+            token = "ZRO_FORWARD_" + secrets.token_hex(16)
             process = self.request.ssh_command.popen(
                 self.request.host,
-                None,
-                "-N",
+                self._forward_ready_command(token),
                 "-o",
                 "ControlMaster=no",
                 "-o",
@@ -288,71 +318,47 @@ class SshHelperSession(BackendSession):
             )
             self.forwards.append(process)
             deadline = time.monotonic() + self.forward_start_timeout
-            connected = False
-            # A bare connect consumes/rejects an OpenOCD GDB slot and can make
-            # the subsequent real GDB handshake fail.  For GDB, the client
-            # launcher is the authoritative end-to-end readiness check.
-            while process.poll() is None and time.monotonic() < deadline:
-                if service.name == "gdb":
-                    connected = self._listener_ready(service.local_port)
-                if not connected:
-                    if service.name == "gdb":
-                        time.sleep(0.01)
-                        continue
-                    try:
-                        with socket.create_connection(
-                            ("127.0.0.1", service.local_port), timeout=0.1
-                        ):
-                            connected = True
-                            break
-                    except OSError:
-                        pass
-                else:
-                    break
-                time.sleep(0.01)
-            if connected:
-                # Give ExitOnForwardFailure a short authoritative window to
-                # reject a post-preflight bind race or a connection to an
-                # unrelated listener which already owns the requested port.
-                stability_deadline = time.monotonic() + 0.2
-                while process.poll() is None and time.monotonic() < stability_deadline:
-                    time.sleep(0.01)
+            connected = self._await_forward_ready(process, token, deadline)
             if process.poll() is not None:
-                detail = b"" if process.stderr is None else process.stderr.read()
+                detail = self._forward_diagnostic(process)
                 prefix = "; ".join(advisories)
                 raise SessionError(
                     (prefix + "; " if prefix else "")
                     + f"SSH forwarding failed ({process.returncode}): "
-                    f"{detail.decode('utf-8', 'replace').strip()}"
+                    f"{detail}"
                 )
             if not connected:
+                self._stop_process(process, close_streams=False)
+                detail = self._forward_diagnostic(process)
+                self._stop_process(process)
+                suffix = f": {detail}" if detail else ""
                 raise SessionError(
-                    f"SSH forwarding timed out for {service.name} on 127.0.0.1:{service.local_port}"
+                    f"SSH forwarding did not become ready for {service.name} on "
+                    f"127.0.0.1:{service.local_port}{suffix}"
                 )
-        # OpenOCD protocol listeners may need one event-loop turn to retire the
-        # short readiness connections before accepting their real clients.
-        # In particular, an immediate GDB connection can otherwise be rejected
-        # while OpenOCD is still closing the probe connection.
-        time.sleep(0.5)
 
     def wait(self, timeout: float | None = None) -> int:
-        deadline = None if timeout is None else time.monotonic() + timeout
-        while True:
-            result = self.poll()
-            if result is not None:
-                break
-            if deadline is not None and time.monotonic() >= deadline:
-                raise subprocess.TimeoutExpired(self.controller.args, timeout)
-            time.sleep(0.05)
-        if self.reader_thread is not None:
-            self.reader_thread.join(timeout=2)
-        if self.reader_error is not None:
-            raise SessionError(
-                f"helper event stream failed: {self.reader_error}"
-            ) from self.reader_error
-        if self.process_returncode is not None:
-            return self.process_returncode
-        return result
+        try:
+            deadline = None if timeout is None else time.monotonic() + timeout
+            while True:
+                result = self.poll()
+                if result is not None:
+                    break
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise subprocess.TimeoutExpired(self.controller.args, timeout)
+                time.sleep(0.05)
+            if self.reader_thread is not None:
+                self.reader_thread.join(timeout=2)
+            if self.reader_error is not None:
+                raise SessionError(
+                    f"helper event stream failed: {self.reader_error}"
+                ) from self.reader_error
+            if self.process_returncode is not None:
+                return self.process_returncode
+            return result
+        except BaseException:
+            self.close()
+            raise
 
     def _dispatch(self, event: dict) -> None:
         if event["type"] == "CHILD_OUTPUT" and self.output_handler is not None:
@@ -373,7 +379,7 @@ class SshHelperSession(BackendSession):
             self.reader_error = error
 
     @staticmethod
-    def _stop_process(process: subprocess.Popen[bytes]) -> None:
+    def _stop_process(process: subprocess.Popen[bytes], *, close_streams: bool = True) -> None:
         if process.poll() is None:
             process.terminate()
             try:
@@ -381,9 +387,10 @@ class SshHelperSession(BackendSession):
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
-        for stream in (process.stdin, process.stdout, process.stderr):
-            if stream is not None and not stream.closed:
-                stream.close()
+        if close_streams:
+            for stream in (process.stdin, process.stdout, process.stderr):
+                if stream is not None and not stream.closed:
+                    stream.close()
 
     def _close_forwards(self) -> None:
         while self.forwards:
