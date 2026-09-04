@@ -241,7 +241,7 @@ class TestRttClient:
 class TestRealProcessHelper:
     def test_helper_applies_requested_environment_before_child_executes(self):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
-        with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as directory:
+        with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
             environment["XDG_RUNTIME_DIR"] = directory
             process = subprocess.Popen(
@@ -289,7 +289,7 @@ class TestRealProcessHelper:
         if executable is None:
             pytest.skip("openocd is not installed")
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
-        with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as directory:
+        with tempfile.TemporaryDirectory() as directory:
             config = Path(directory) / "environment.cfg"
             config.write_text(
                 "set zro_forwarded_value $::env(ZRO_CONFIG_VALUE)\n"
@@ -337,7 +337,7 @@ class TestRealProcessHelper:
     def test_controller_rejects_malformed_and_unsupported_version(self):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
         for frame in (b"not-json\n", b'{"version":2,"type":"STOP"}\n'):
-            with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as directory:
+            with tempfile.TemporaryDirectory() as directory:
                 environment = os.environ.copy()
                 environment["XDG_RUNTIME_DIR"] = directory
                 process = subprocess.Popen(
@@ -374,7 +374,7 @@ class TestRealProcessHelper:
         except PermissionError:
             pytest.skip("sandbox prohibits loopback listeners")
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
-        with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as directory:
+        with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
             environment["XDG_RUNTIME_DIR"] = directory
             process = subprocess.Popen(
@@ -446,7 +446,7 @@ class TestRealProcessHelper:
 
     def test_output_exit_status_and_workspace_cleanup(self):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
-        with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as directory:
+        with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
             environment["XDG_RUNTIME_DIR"] = directory
             process = subprocess.Popen(
@@ -492,7 +492,7 @@ class TestRealProcessHelper:
 
     def test_controller_signal_cleans_child_and_workspace(self):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
-        with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as directory:
+        with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
             environment["XDG_RUNTIME_DIR"] = directory
             process = subprocess.Popen(
@@ -532,7 +532,7 @@ class TestRealProcessHelper:
 
     def test_controller_eof_cleans_child_and_workspace(self):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
-        with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as directory:
+        with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
             environment["XDG_RUNTIME_DIR"] = directory
             process = subprocess.Popen(
@@ -572,7 +572,7 @@ class TestRealProcessHelper:
 
     def test_partial_openocd_start_cleans_child_and_workspace(self):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
-        with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as directory:
+        with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
             environment["XDG_RUNTIME_DIR"] = directory
             process = subprocess.Popen(
@@ -629,7 +629,7 @@ class TestRealProcessHelper:
 
     def test_backend_returns_child_status_and_relays_output(self):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
-        with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as directory:
+        with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
             environment["XDG_RUNTIME_DIR"] = directory
 
