@@ -12,7 +12,8 @@
 - `[done]` Repository and documentation audit completed for planning.
 - `[done]` Goal, constraints, material ambiguities, risks, and measurable evidence
   agreed with the user and captured in `.agents/GOAL.md`.
-- `[done]` Product/document/test refactor implementation; M1-M8 are complete.
+- `[in progress]` Product/document/test refactor implementation; M1-M6 are
+  complete, while final local/remote test evidence remains open.
 
 The production module is already organized into board-independent remote logic,
 a Zephyr 4.4 adapter, and a west runner entry point. Its config schema and helper
@@ -23,6 +24,11 @@ and test prerequisites are dispersed; external test layers are based on broad
 `unittest` discovery and four ignored JSON fixture interfaces; some nominal unit
 tests exercise local processes and sockets; optional hardware capabilities are
 not consistently independent.
+
+The latest local-integration fix removes an assumption that the ignored `.scratch/`
+directory exists in a checkout. A Git-free archive now passes the full local suite
+when loopback permissions are available. The corresponding GitHub Actions success
+still requires a completed run for the fixed commit.
 
 ## Target Architecture
 
@@ -213,10 +219,12 @@ Dependencies: M1-M5.
 Exit: every supported user operation and contributor check has one discoverable
 and currently accurate entry point, with no PG/test names in user documentation.
 
-### M7 — CI and Strict Release Driver `[done]`
+### M7 — CI and Strict Release Driver `[in progress]`
 
 - `[done]` Add GitHub Actions for lint/static and self-contained tests; external
   Zephyr/hardware layers remain explicitly operator-selected.
+- `[done]` Reproduce and fix clean-checkout test failures caused by relying on
+  the ignored `.scratch/` directory.
 - `[done]` Add the Python strict-release driver with inventory validation,
   serial external layers, capability requirements, benchmark execution,
   cleanup/leak checks, and per-layer summary.
@@ -226,12 +234,15 @@ and currently accurate entry point, with no PG/test names in user documentation.
 
 Dependencies: M2-M6.
 
-Exit: CI passes from a clean checkout; simulated driver outcomes are deterministic
-and missing native-Linux evidence is fatal while WSL-only gates remain deferred.
+Exit: the corrected GitHub Actions workflow completes successfully from a clean
+checkout, and simulated driver outcomes are deterministic. Missing native-Linux
+evidence remains fatal while WSL-only gates remain deferred.
 
-### M8 — Full Validation and Final Consistency Audit `[done]`
+### M8 — Full Validation and Final Consistency Audit `[in progress]`
 
-- `[done]` Run self-contained, Zephyr, and clean-install layers; SSH and
+- `[done]` Run the self-contained local suite from both the working tree and a
+  Git-free archive without relying on ignored `.scratch/` state.
+- `[done]` Run Zephyr and clean-install layers; SSH and
   configured hardware remain operator-run with the ignored inventory.
 - `[done]` Run the startup benchmark evidence and all static/style checks.
 - `[done]` Verify normal, failure, and interruption cleanup and port reuse in
@@ -240,14 +251,17 @@ and missing native-Linux evidence is fatal while WSL-only gates remain deferred.
   protocol, traceability, validation record, template, implemented selectors,
   and release summary.
 - `[done]` Scan tracked files and inspect the production-tree diff.
+- `[in progress]` Verify a successful completed GitHub Actions run for the
+  corrected implementation commit.
 
 Dependencies: M1-M7.
 
 Exit: every measurable acceptance criterion in `.agents/GOAL.md` has recorded
-evidence; only PG-012/PG-013 are deferred. SSH and hardware execution remains
-an environment-supplied release step when this sandbox cannot provide sockets
-or lab access. There is no unexplained product diff, test regression, leaked
-resource, broken link, or tracked local artifact.
+evidence; both the local clean-checkout suite and GitHub Actions are successful;
+only PG-012/PG-013 are deferred. SSH and hardware execution remains an
+environment-supplied release step when this sandbox cannot provide sockets or lab
+access. There is no unexplained product diff, test regression, leaked resource,
+broken link, or tracked local artifact.
 
 ## Validation Matrix
 
@@ -257,6 +271,9 @@ resource, broken link, or tracked local artifact.
 - Self-contained: plain pytest with external variables removed.
 - External selection: collect-only and missing-prerequisite tests for every layer.
 - Zephyr/distribution: Zephyr 4.4 integration and isolated Git-free clean install.
+- Local/CI parity: default `pytest` passes from a clean Git-free archive with
+  loopback-enabled local integration, and the GitHub Actions checks workflow
+  passes from its clean checkout using declared developer dependencies.
 - SSH/hardware: inventory-selected capability nodes, environment forwarding,
   serial framing, normal/interruption cleanup, and final leak scan.
 - Performance: manual release benchmark; median target statistic, diagnostic

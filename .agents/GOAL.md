@@ -22,6 +22,9 @@ automated and release-validation entry points.
 - Maintained tests have explicit dependency layers. The default test command is
   self-contained; Zephyr, SSH, hardware, benchmark, and strict-release runs are
   selected explicitly.
+- The default local test command completes successfully from a clean checkout,
+  including all unit and local-integration coverage that does not need external
+  infrastructure.
 - The maintained test suite is pytest-native and uses its fixture,
   parametrization, selection, teardown, and diagnostic facilities rather than a
   mechanical compatibility wrapper.
@@ -32,6 +35,8 @@ automated and release-validation entry points.
   does not suppress otherwise supported operations.
 - Hardware-free GitHub CI and an explicit strict native-Linux release-validation
   workflow provide repeatable outcomes.
+- The GitHub Actions checks workflow completes successfully from a clean checkout
+  using only its declared developer dependencies.
 - Product version `0.1.0` is available without Git metadata and is described as
   initial-development SemVer, distinct from Protocol 1 and the V1 config schema.
 
@@ -95,6 +100,9 @@ automated and release-validation entry points.
   their existing semantics.
 - With all external configuration cleared, the default test command collects and
   passes only self-contained unit and local-integration tests.
+- A clean-checkout run of the default local test command passes; any socket
+  permissions needed by local-integration tests are provided by the test
+  environment rather than accepted as silent coverage loss.
 - Every external test belongs to one documented dependency layer and reports
   missing prerequisites according to the normal or strict policy.
 - The tracked inventory example validates without local edits and contains no
@@ -107,6 +115,9 @@ automated and release-validation entry points.
   data and covered by non-hardware tests plus the applicable external validation.
 - CI passes from a clean checkout using declared developer dependencies and no
   SSH or hardware.
+- The corresponding GitHub Actions workflow has a successful completed run for
+  the current implementation, including tests, formatting, lint, static
+  compatibility, and whitespace checks.
 - Strict release validation reports each required capability, performance result,
   cleanup result, and PG-012/PG-013 deferral, and returns nonzero for missing
   mandatory evidence or leaks.
