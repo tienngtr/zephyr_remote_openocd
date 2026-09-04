@@ -118,8 +118,8 @@ automated and release-validation entry points.
 - CI passes from a clean checkout using declared developer dependencies and no
   SSH or hardware.
 - The corresponding GitHub Actions workflow has a successful completed run for
-  the current implementation, including tests, formatting, lint, static
-  compatibility, and whitespace checks.
+  the current implementation, including tests, formatting, lint, and static
+  compatibility checks.
 - The corresponding GitHub Actions run has no warning or failure annotations
   attributable to the workflow configuration.
 - Strict release validation reports each required capability, performance result,

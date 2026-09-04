@@ -237,8 +237,8 @@ Dependencies: M2-M6.
 
 Exit: the corrected GitHub Actions workflow completes successfully without
 warning annotations from a clean checkout, and simulated driver outcomes are
-deterministic. Missing native-Linux evidence remains fatal while WSL-only gates
-remain deferred.
+deterministic. Local/release validation owns patch-whitespace checking. Missing
+native-Linux evidence remains fatal while WSL-only gates remain deferred.
 
 ### M8 — Full Validation and Final Consistency Audit `[done]`
 
