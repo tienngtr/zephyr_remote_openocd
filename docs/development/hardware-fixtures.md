@@ -30,6 +30,11 @@ application path is allowed for an external tree. Profiles do not inherit from
 one another. Unsupported RTT or thread-info capability therefore skips only
 that capability while retaining other operations for the target.
 
+Only profiles selected for execution are prepared. Shared build recipes are
+built once per test session; deselected targets and recipes are not built or
+checked for local tool availability. The complete inventory is still validated
+for structural and reference errors during collection.
+
 Use the fixture's declared serial framing (baud, data bits, parity, stop bits,
 and flow control) rather than embedding device knowledge in test code. Never
 commit a populated inventory, generated build, serial capture, credential, or

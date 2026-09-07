@@ -93,65 +93,80 @@ def _record(
     return record
 
 
-@pytest.fixture(scope="session")
-def prepared_hardware(hardware_inventory: Inventory, tmp_path_factory: pytest.TempPathFactory):
-    """Build each referenced recipe once and expose profile test records."""
-    build_root = tmp_path_factory.mktemp("hardware-builds")
-    config_root = tmp_path_factory.mktemp("hardware-config")
-    config_paths: dict[str, Path] = {}
-    for host in hardware_inventory.hosts:
-        config_path = config_root / f"{host.id}.yaml"
-        config_path.write_text(render_product_config(host))
-        config_paths[host.id] = config_path
+class HardwarePreparation:
+    """Lazily prepare selected profiles, caching shared recipes per pytest session."""
 
-    records: list[dict[str, Any]] = []
-    built: set[tuple[str, str]] = set()
-    environment = os.environ.copy()
-    environment.pop("ZEPHYR_REMOTE_OPENOCD_RECORD", None)
-    environment["EXTRA_ZEPHYR_MODULES"] = str(ROOT)
-    for target in hardware_inventory.targets:
+    def __init__(self, inventory: Inventory, build_root: Path, config_root: Path):
+        self.inventory = inventory
+        self.build_root = build_root
+        self.config_root = config_root
+        self.built: set[tuple[str, str]] = set()
+
+    def prepare(self, identifier: str) -> dict[str, Any]:
+        target_id, profile_name = identifier.split(":", 1)
+        target = self.inventory.target(target_id)
+        profile = next(item for item in target.profiles if item.name == profile_name)
         if not target.zephyr_base.is_dir():
             pytest.fail(f"target {target.id} Zephyr tree is missing: {target.zephyr_base}")
         if not target.west.is_file() or not os.access(target.west, os.X_OK):
             pytest.fail(f"target {target.id} west executable is unavailable: {target.west}")
-        host = hardware_inventory.host(target.host)
-        target_root = build_root / target.id
-        target_root.mkdir()
-        for profile in target.profiles:
-            build_key = (target.id, profile.build)
-            build_dir = target_root / profile.build
+        host = self.inventory.host(target.host)
+        config_path = self.config_root / f"{host.id}.yaml"
+        config_path.write_text(render_product_config(host))
+        build_dir = self.build_root / target.id / profile.build
+        build_dir.parent.mkdir(exist_ok=True)
+        build_key = (target.id, profile.build)
+        if build_key not in self.built:
             recipe = target.build(profile.build)
-            if build_key not in built:
-                application = Path(recipe.application)
-                if not application.is_absolute():
-                    application = target.zephyr_base / application
-                command = [
-                    str(target.west),
-                    "build",
-                    "-b",
-                    recipe.board,
-                    str(application),
-                    "-d",
-                    str(build_dir),
-                    *recipe.west_args,
-                ]
-                if recipe.cmake_args:
-                    command.extend(("--", *recipe.cmake_args))
-                result = subprocess.run(
-                    command,
-                    cwd=target.zephyr_base.parent,
-                    env=environment,
-                    text=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    check=False,
-                    timeout=600,
-                )
-                if result.returncode:
-                    pytest.fail(f"build recipe {target.id}:{recipe.name} failed:\n{result.stdout}")
-                built.add(build_key)
-            records.append(_record(target, host, profile, build_dir, config_paths[target.host]))
-    return records
+            application = Path(recipe.application)
+            if not application.is_absolute():
+                application = target.zephyr_base / application
+            command = [
+                str(target.west),
+                "build",
+                "-b",
+                recipe.board,
+                str(application),
+                "-d",
+                str(build_dir),
+                *recipe.west_args,
+            ]
+            if recipe.cmake_args:
+                command.extend(("--", *recipe.cmake_args))
+            environment = os.environ.copy()
+            for name in (
+                "ZEPHYR_REMOTE_OPENOCD_REMOTE",
+                "ZEPHYR_REMOTE_OPENOCD_RECORD",
+                "ZEPHYR_REMOTE_OPENOCD_RECORD_VERSION",
+            ):
+                environment.pop(name, None)
+            environment.update(
+                EXTRA_ZEPHYR_MODULES=str(ROOT),
+                ZEPHYR_REMOTE_OPENOCD_CONFIG=str(config_path),
+            )
+            result = subprocess.run(
+                command,
+                cwd=target.zephyr_base.parent,
+                env=environment,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+                timeout=600,
+            )
+            if result.returncode:
+                pytest.fail(f"build recipe {target.id}:{recipe.name} failed:\n{result.stdout}")
+            self.built.add(build_key)
+        return _record(target, host, profile, build_dir, config_path)
+
+
+@pytest.fixture(scope="session")
+def prepared_hardware(hardware_inventory: Inventory, tmp_path_factory: pytest.TempPathFactory):
+    return HardwarePreparation(
+        hardware_inventory,
+        tmp_path_factory.mktemp("hardware-builds"),
+        tmp_path_factory.mktemp("hardware-config"),
+    )
 
 
 def records_for(records: list[dict[str, Any]], capability: str) -> list[dict[str, Any]]:

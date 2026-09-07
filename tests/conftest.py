@@ -106,13 +106,10 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
-def _profile_record(request: pytest.FixtureRequest, records: list[dict]) -> dict:
+def _profile_record(request: pytest.FixtureRequest, preparation) -> dict:
     if request.param.startswith("__"):
         pytest.skip("hardware inventory has no matching capability profile")
-    for record in records:
-        if record["id"] == request.param:
-            return record
-    pytest.fail(f"inventory profile {request.param!r} was not prepared")
+    return preparation.prepare(request.param)
 
 
 @pytest.fixture
