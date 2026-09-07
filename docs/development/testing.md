@@ -13,6 +13,12 @@ pytest tests/hardware -m hardware --hardware-config /path/to/hardware.toml
 
 ## Common external-test setup
 
+Test-owned pipe reads have deadlines, including partial-line and EOF waits.
+The developer dependency `pytest-timeout` supplies a generous 30-minute
+per-test backstop; operation-specific timeouts remain the primary diagnostics.
+Tests clear product configuration/recording environment variables and set
+their own values, independently of the developer's shell configuration.
+
 Create a test-only Python environment and install developer tools. This does
 not install or package the production module:
 

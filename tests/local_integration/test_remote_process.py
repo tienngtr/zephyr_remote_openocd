@@ -38,6 +38,7 @@ from zephyr_remote_openocd.remote.session import (
     SessionError,
 )
 
+from tests.process_support import read_line, read_lines
 from tests.support import ROOT
 
 
@@ -279,8 +280,8 @@ class TestRealProcessHelper:
             )
             try:
                 assert process.stdin is not None and process.stdout is not None
-                process.stdout.readline()
-                process.stdout.readline()
+                read_line(process.stdout)
+                read_line(process.stdout)
                 process.stdin.write(
                     encode_message(
                         "START_OPENOCD",
@@ -293,7 +294,7 @@ class TestRealProcessHelper:
                     )
                 )
                 process.stdin.flush()
-                events = [json.loads(line) for line in process.stdout]
+                events = [json.loads(line) for line in read_lines(process.stdout)]
                 output = next(event for event in events if event["type"] == "CHILD_OUTPUT")
                 assert output == {
                     "version": 1,
@@ -333,8 +334,8 @@ class TestRealProcessHelper:
             )
             try:
                 assert process.stdin is not None and process.stdout is not None
-                process.stdout.readline()
-                process.stdout.readline()
+                read_line(process.stdout)
+                read_line(process.stdout)
                 process.stdin.write(
                     encode_message(
                         "START_OPENOCD",
@@ -343,7 +344,7 @@ class TestRealProcessHelper:
                     )
                 )
                 process.stdin.flush()
-                events = [json.loads(line) for line in process.stdout]
+                events = [json.loads(line) for line in read_lines(process.stdout)]
                 output = next(
                     event
                     for event in events
@@ -375,11 +376,11 @@ class TestRealProcessHelper:
                 )
                 try:
                     assert process.stdin is not None and process.stdout is not None
-                    process.stdout.readline()
-                    process.stdout.readline()
+                    read_line(process.stdout)
+                    read_line(process.stdout)
                     process.stdin.write(frame)
                     process.stdin.flush()
-                    error = json.loads(process.stdout.readline())
+                    error = json.loads(read_line(process.stdout))
                     assert error["type"] == "ERROR"
                     assert error["code"] == "PROTOCOL_ERROR"
                     assert process.wait(timeout=5) == 0
@@ -412,8 +413,8 @@ class TestRealProcessHelper:
             )
             try:
                 assert process.stdout is not None and process.stdin is not None
-                assert json.loads(process.stdout.readline())["type"] == "HELLO"
-                json.loads(process.stdout.readline())
+                assert json.loads(read_line(process.stdout))["type"] == "HELLO"
+                json.loads(read_line(process.stdout))
                 marker = "ZRO_READY_unit"
                 child_code = (
                     "import socket,sys,time;"
@@ -441,7 +442,7 @@ class TestRealProcessHelper:
                 process.stdin.flush()
                 events = []
                 while not any(event["type"] == "SERVICE_READY" for event in events):
-                    events.append(json.loads(process.stdout.readline()))
+                    events.append(json.loads(read_line(process.stdout)))
                 assert any(event["type"] == "PROCESS_STARTED" for event in events)
                 assert any(
                     event["type"] == "CHILD_OUTPUT" and event["payload"] == marker
@@ -485,8 +486,8 @@ class TestRealProcessHelper:
             )
             try:
                 assert process.stdout is not None and process.stdin is not None
-                assert json.loads(process.stdout.readline())["type"] == "HELLO"
-                json.loads(process.stdout.readline())
+                assert json.loads(read_line(process.stdout))["type"] == "HELLO"
+                json.loads(read_line(process.stdout))
                 try:
                     port_socket = socket.socket()
                 except PermissionError:
@@ -531,7 +532,7 @@ class TestRealProcessHelper:
                 process.stdin.flush()
                 events = []
                 while not any(event["type"] == "SERVICE_READY" for event in events):
-                    events.append(json.loads(process.stdout.readline()))
+                    events.append(json.loads(read_line(process.stdout)))
                 assert any(
                     event["type"] == "CHILD_OUTPUT"
                     and "address already in use" in event["payload"].casefold()
@@ -563,8 +564,8 @@ class TestRealProcessHelper:
             )
             try:
                 assert process.stdout is not None and process.stdin is not None
-                assert json.loads(process.stdout.readline())["type"] == "HELLO"
-                created = json.loads(process.stdout.readline())
+                assert json.loads(read_line(process.stdout))["type"] == "HELLO"
+                created = json.loads(read_line(process.stdout))
                 command = [
                     sys.executable,
                     "-c",
@@ -574,7 +575,7 @@ class TestRealProcessHelper:
                     encode_message("START_OPENOCD", argv=command, environment={}, required_paths=[])
                 )
                 process.stdin.flush()
-                events = [json.loads(line) for line in process.stdout]
+                events = [json.loads(line) for line in read_lines(process.stdout)]
                 assert process.wait(timeout=5) == 0
                 assert events[0]["type"] == "PROCESS_STARTED"
                 outputs = {
@@ -611,15 +612,15 @@ class TestRealProcessHelper:
             workspace = None
             try:
                 assert process.stdout is not None and process.stdin is not None
-                assert json.loads(process.stdout.readline())["type"] == "HELLO"
-                created = json.loads(process.stdout.readline())
+                assert json.loads(read_line(process.stdout))["type"] == "HELLO"
+                created = json.loads(read_line(process.stdout))
                 workspace = Path(created["remote_workspace"])
                 command = [sys.executable, "-c", "import time; time.sleep(30)"]
                 process.stdin.write(
                     encode_message("START_OPENOCD", argv=command, environment={}, required_paths=[])
                 )
                 process.stdin.flush()
-                started = json.loads(process.stdout.readline())
+                started = json.loads(read_line(process.stdout))
                 assert started["type"] == "PROCESS_STARTED"
                 child_pid = started["child_pid"]
                 process.terminate()
@@ -649,8 +650,8 @@ class TestRealProcessHelper:
             )
             try:
                 assert process.stdout is not None and process.stdin is not None
-                process.stdout.readline()
-                created = json.loads(process.stdout.readline())
+                read_line(process.stdout)
+                created = json.loads(read_line(process.stdout))
                 workspace = Path(created["remote_workspace"])
                 process.stdin.write(
                     encode_message(
@@ -659,7 +660,7 @@ class TestRealProcessHelper:
                     )
                 )
                 process.stdin.flush()
-                started = json.loads(process.stdout.readline())
+                started = json.loads(read_line(process.stdout))
                 assert started["type"] == "PROCESS_STARTED"
                 child_pid = started["child_pid"]
                 process.stdin.close()
@@ -689,8 +690,8 @@ class TestRealProcessHelper:
             )
             try:
                 assert process.stdout is not None and process.stdin is not None
-                assert json.loads(process.stdout.readline())["type"] == "HELLO"
-                created = json.loads(process.stdout.readline())
+                assert json.loads(read_line(process.stdout))["type"] == "HELLO"
+                created = json.loads(read_line(process.stdout))
                 workspace = Path(created["remote_workspace"])
                 try:
                     listener = socket.socket()
@@ -718,7 +719,7 @@ class TestRealProcessHelper:
                     )
                 )
                 process.stdin.flush()
-                events = [json.loads(line) for line in process.stdout]
+                events = [json.loads(line) for line in read_lines(process.stdout)]
                 assert any(event["type"] == "CHILD_OUTPUT" for event in events)
                 assert events[-1]["type"] == "ERROR"
                 assert process.wait(timeout=8) == 0

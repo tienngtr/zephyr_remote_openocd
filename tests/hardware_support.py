@@ -89,8 +89,6 @@ def _record(
             semihosting_gdb_init=list(profile.semihosting.gdb_commands),
             expected_output=profile.semihosting.output,
             timeout=profile.semihosting.timeout,
-            normal_gdb_init=list(profile.semihosting.gdb_commands),
-            interrupt_gdb_init=list(profile.semihosting.gdb_commands),
         )
     return record
 

@@ -34,3 +34,15 @@ Use the fixture's declared serial framing (baud, data bits, parity, stop bits,
 and flow control) rather than embedding device knowledge in test code. Never
 commit a populated inventory, generated build, serial capture, credential, or
 remote workspace.
+
+The serial observer acknowledges arming after discarding queued input. Its
+deadline includes the 180-second west operation budget plus the inventory's
+serial observation timeout, so deployment does not consume the observation
+allowance. Choose a pattern specific to the fixture application; a generic
+banner alone cannot distinguish an older copy of that application still running.
+
+Semihosting GDB commands must finish naturally (including detach/quit as
+appropriate) within the configured timeout. The acceptance test requires a
+successful west exit and matching console output. Generic interruption and
+SSH-loss cleanup are exercised separately by the lifecycle tests; no separate
+semihosting interruption sequence is assumed.

@@ -50,7 +50,7 @@ class TestRealOpenOcdFlash:
             str(fixture["serial_device"]),
             int(fixture["serial_baud"]),
             str(fixture["expected_pattern"]),
-            float(fixture["serial_timeout"]),
+            float(fixture["serial_timeout"]) + 180,
             data_bits=int(fixture.get("serial_data_bits", 8)),
             parity=str(fixture.get("serial_parity", "none")),
             stop_bits=int(fixture.get("serial_stop_bits", 1)),
@@ -63,6 +63,7 @@ class TestRealOpenOcdFlash:
             assert reader.stdin is not None
             reader.stdin.write(b"ARM\n")
             reader.stdin.flush()
+            assert _read_event(reader, 15)["type"] == "ARMED"
 
             west = fixture.get("west") or shutil.which("west")
             if not west:
@@ -98,7 +99,7 @@ class TestRealOpenOcdFlash:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 check=False,
-                timeout=float(fixture["serial_timeout"]) + 180,
+                timeout=180,
             )
             event = _read_event(reader, float(fixture["serial_timeout"]) + 2)
             captured = base64.b64decode(event.get("data", "")).decode("utf-8", "replace")

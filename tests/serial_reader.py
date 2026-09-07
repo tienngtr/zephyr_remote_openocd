@@ -6,9 +6,10 @@ from __future__ import annotations
 
 import base64
 import json
-import selectors
 import shlex
 import subprocess
+
+from tests.process_support import read_line
 
 SERIAL_READER_SOURCE = r'''import base64,json,os,re,select,sys,termios,time
 device,baud_text,data_bits_text,parity,stop_bits_text,flow,pattern_text,timeout_text=sys.argv[1:]
@@ -23,7 +24,7 @@ try:
  speed=getattr(termios,'B'+str(baud),None)
  if speed is None: raise ValueError('unsupported baud rate '+str(baud))
  attrs[0]=0; attrs[1]=0; attrs[3]=0
- attrs[2]=(attrs[2]&~(termios.PARENB|termios.PARODD|termios.CSTOPB|termios.CSIZE)|termios.CLOCAL|termios.CREAD)
+ attrs[2]=(attrs[2]&~(termios.PARENB|termios.PARODD|termios.CSTOPB|termios.CSIZE|getattr(termios,'CRTSCTS',0))|termios.CLOCAL|termios.CREAD)
  attrs[2]|={5:termios.CS5,6:termios.CS6,7:termios.CS7,8:termios.CS8}[data_bits]
  if parity=='even': attrs[2]|=termios.PARENB
  elif parity=='odd': attrs[2]|=termios.PARENB|termios.PARODD
@@ -41,8 +42,10 @@ try:
    except BlockingIOError: pass
   if sys.stdin.buffer in ready:
    if sys.stdin.buffer.readline().strip()!=b'ARM': raise RuntimeError('reader was not armed')
+   termios.tcflush(fd,termios.TCIFLUSH)
    break
  deadline=time.monotonic()+timeout; data=bytearray(); pattern=re.compile(pattern_text)
+ emit('ARMED')
  while time.monotonic()<deadline:
   ready,_,_=select.select([fd],[],[],min(0.2,max(0,deadline-time.monotonic())))
   if fd in ready:
@@ -62,13 +65,10 @@ def read_event(process: subprocess.Popen[str], timeout: float) -> dict[str, obje
     """Read one JSON event from the remote reader."""
     if process.stdout is None:
         raise AssertionError("remote serial reader has no stdout")
-    selector = selectors.DefaultSelector()
-    selector.register(process.stdout, selectors.EVENT_READ)
-    if not selector.select(timeout):
-        raise AssertionError("remote serial reader did not respond before timeout")
-    line = process.stdout.readline()
+    line = read_line(process.stdout, timeout)
     if not line:
-        diagnostic = b"" if process.stderr is None else process.stderr.read()
+        _, diagnostic = process.communicate(timeout=5)
+        diagnostic = diagnostic or b""
         raise AssertionError("remote serial reader exited: " + diagnostic.decode(errors="replace"))
     return json.loads(line)
 

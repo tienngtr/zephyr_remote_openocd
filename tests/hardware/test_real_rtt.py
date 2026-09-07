@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import os
 import re
-import selectors
 import shlex
 import shutil
 import signal
@@ -18,6 +17,7 @@ import pytest
 from zephyr_remote_openocd.remote.ssh import SshCommand
 
 from tests.hardware.test_real_debug import SESSION_PATTERN
+from tests.process_support import read_until
 from tests.support import ROOT
 
 pytestmark = [pytest.mark.hardware, pytest.mark.destructive]
@@ -67,28 +67,6 @@ class TestRealRtt:
             *map(str, fixture.get("rtt_runner_args", ())),
             *map(str, runner_args),
         ]
-
-    @staticmethod
-    def _read_until(process, pattern, timeout, output):
-        assert process.stdout is not None
-        selector = selectors.DefaultSelector()
-        selector.register(process.stdout, selectors.EVENT_READ)
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if not selector.select(min(0.5, max(0, deadline - time.monotonic()))):
-                if process.poll() is not None:
-                    break
-                continue
-            chunk = os.read(process.stdout.fileno(), 4096)
-            if not chunk:
-                break
-            output.extend(chunk)
-            if re.search(pattern.encode(), bytes(output)):
-                return
-        raise AssertionError(
-            f"pattern {pattern!r} not observed; status={process.poll()}:\n"
-            + bytes(output).decode("utf-8", "replace")
-        )
 
     def _start(self, fixture, command, *runner_args):
         return subprocess.Popen(
@@ -166,14 +144,14 @@ class TestRealRtt:
         process = self._start(fixture, "rtt", f"--rtt-port={port}")
         output = bytearray()
         try:
-            self._read_until(process, RTT_ENDPOINT_PATTERN.pattern, 90, output)
+            read_until(process, RTT_ENDPOINT_PATTERN.pattern, 90, output)
             assert process.poll() is None
             assert f"127.0.0.1:{port}".encode() in output
             time.sleep(1)
             assert process.stdin is not None
             process.stdin.write(str(fixture.get("rtt_input", "help\n")).encode())
             process.stdin.flush()
-            self._read_until(
+            read_until(
                 process,
                 str(fixture["expected_rtt_response"]),
                 float(fixture.get("rtt_timeout", 30)),
@@ -200,8 +178,8 @@ class TestRealRtt:
         )
         output = bytearray()
         try:
-            self._read_until(process, RTT_ENDPOINT_PATTERN.pattern, 90, output)
-            self._read_until(process, "ZRO_GDB_RTT_READY", 90, output)
+            read_until(process, RTT_ENDPOINT_PATTERN.pattern, 90, output)
+            read_until(process, "ZRO_GDB_RTT_READY", 90, output)
             assert process.poll() is None
             try:
                 self._rtt_round_trip(fixture, port)
@@ -220,7 +198,7 @@ class TestRealRtt:
         process = self._start(fixture, "debugserver", "--rtt-server", f"--rtt-port={port}")
         output = bytearray()
         try:
-            self._read_until(process, RTT_ENDPOINT_PATTERN.pattern, 90, output)
+            read_until(process, RTT_ENDPOINT_PATTERN.pattern, 90, output)
             assert b"GNU gdb" not in output
             gdb_port = int(fixture.get("gdb_client_port", 3333))
             client = subprocess.run(

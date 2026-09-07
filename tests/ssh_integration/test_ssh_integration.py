@@ -26,6 +26,7 @@ from zephyr_remote_openocd.remote.backend import SshHelperSession
 from zephyr_remote_openocd.remote.deploy import deploy_helper
 from zephyr_remote_openocd.remote.ssh import SshCommand
 
+from tests.process_support import read_line
 from tests.support import is_wsl2
 
 pytestmark = pytest.mark.ssh
@@ -155,10 +156,11 @@ class TestSshTransportIntegration:
         tunnel = None
         try:
             assert controller.stdout is not None
-            line = controller.stdout.readline()
+            line = read_line(controller.stdout)
             if not line:
                 assert controller.stderr is not None
-                pytest.fail(controller.stderr.read().decode(errors="replace"))
+                _, diagnostic = controller.communicate(timeout=10)
+                pytest.fail(diagnostic.decode(errors="replace"))
             remote_port = int(line)
             local_port = free_loopback_port()
             tunnel = self.ssh.popen(

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import re
-import selectors
 import shlex
 import shutil
 import signal
@@ -15,6 +14,7 @@ import time
 import pytest
 from zephyr_remote_openocd.remote.ssh import SshCommand
 
+from tests.process_support import read_line
 from tests.serial_reader import (
     read_event as _read_event,
 )
@@ -77,7 +77,7 @@ class TestRealOpenOcdDebug:
             str(fixture["serial_device"]),
             int(fixture["serial_baud"]),
             str(fixture["expected_pattern"]),
-            float(fixture["serial_timeout"]),
+            float(fixture["serial_timeout"]) + 180,
             data_bits=int(fixture.get("serial_data_bits", 8)),
             parity=str(fixture.get("serial_parity", "none")),
             stop_bits=int(fixture.get("serial_stop_bits", 1)),
@@ -101,6 +101,7 @@ class TestRealOpenOcdDebug:
             assert reader.stdin is not None
             reader.stdin.write(b"ARM\n")
             reader.stdin.flush()
+            assert _read_event(reader, 15)["type"] == "ARMED"
             commands = fixture.get("debug_gdb_init", ("monitor reset run", "detach", "quit"))
             command = self._west_command(
                 fixture, "debug", extra_args=tuple(f"--gdb-init={item}" for item in commands)
@@ -162,14 +163,10 @@ class TestRealOpenOcdDebug:
         output = []
         try:
             assert process.stdout is not None
-            selector = selectors.DefaultSelector()
-            selector.register(process.stdout, selectors.EVENT_READ)
             end = time.monotonic() + float(fixture.get("startup_timeout", 90))
             session = None
             while time.monotonic() < end and session is None:
-                if not selector.select(min(1, max(0, end - time.monotonic()))):
-                    continue
-                line = process.stdout.readline()
+                line = read_line(process.stdout, end - time.monotonic()).decode("utf-8", "replace")
                 if not line:
                     break
                 output.append(line)
