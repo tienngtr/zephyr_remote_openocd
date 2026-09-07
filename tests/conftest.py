@@ -13,6 +13,18 @@ from tests.hardware_support import prepared_hardware as _prepared_hardware
 from tests.inventory import Inventory, InventoryError, load_inventory
 
 
+@pytest.fixture(autouse=True)
+def isolated_product_environment(monkeypatch):
+    """Tests opt into product settings, never inherit the developer's selection."""
+    for name in (
+        "ZEPHYR_REMOTE_OPENOCD_CONFIG",
+        "ZEPHYR_REMOTE_OPENOCD_REMOTE",
+        "ZEPHYR_REMOTE_OPENOCD_RECORD",
+        "ZEPHYR_REMOTE_OPENOCD_RECORD_VERSION",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
 def pytest_addoption(parser: pytest.Parser) -> None:
     group = parser.getgroup("external validation")
     group.addoption(

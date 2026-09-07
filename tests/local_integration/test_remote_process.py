@@ -138,7 +138,7 @@ class TestForwardingLifecycle:
         session._close_forwards()
         assert stale.terminate_calls == 1
 
-    def test_forward_cleanup_is_reverse_order_and_idempotent(self):
+    def test_forward_cleanup_closes_all_forwards_idempotently(self):
         first = self.Process()
         second = self.Process()
         session = self.session(self.Command(first))

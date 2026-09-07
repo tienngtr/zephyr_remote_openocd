@@ -53,15 +53,46 @@ def test_threshold_uses_median_and_strictly_less_than():
         benchmark.passes_threshold([0.1], 0)
 
 
-def test_json_result_has_machine_readable_schema_and_pass_logic():
-    result = {
-        "benchmark_version": benchmark.BENCHMARK_VERSION,
-        "schema": "zro.startup-overhead.v1",
-        "overhead": {"pass": True, "threshold_seconds": 0.5},
-    }
-    decoded = json.loads(json.dumps(result))
+@pytest.mark.parametrize(
+    ("remote", "median", "status"),
+    (([1.25, 2.125, 3.375], 0.25, 0), ([1.5, 2.5, 3.5], 0.5, 1)),
+)
+def test_benchmark_cli_reports_measured_overhead(monkeypatch, capsys, remote, median, status):
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "benchmark",
+            "--build-dir",
+            "build",
+            "--config",
+            "config.yaml",
+            "--cwd",
+            ".",
+            "--warmup",
+            "1",
+            "--iterations",
+            "3",
+        ],
+    )
+    with (
+        patch.object(benchmark, "_measure", side_effect=([1.0, 2.0, 3.0], remote)) as measure,
+        patch.object(benchmark, "_metadata", return_value={}),
+    ):
+        assert benchmark.main() == status
+    captured = capsys.readouterr()
+    decoded = json.loads(captured.out)
     assert decoded["schema"] == "zro.startup-overhead.v1"
-    assert decoded["overhead"]["pass"]
+    assert decoded["baseline"]["statistics"]["median"] == 2.0
+    assert decoded["remote"]["statistics"]["iterations"] == 3
+    assert decoded["overhead"]["statistics"]["median"] == median
+    assert decoded["overhead"]["threshold_seconds"] == 0.5
+    assert decoded["overhead"]["pass"] is (status == 0)
+    assert "median additional startup" in captured.err
+    baseline_call, remote_call = measure.call_args_list
+    assert baseline_call.args[0][-3:] == ["-r", "openocd", "--context"]
+    assert remote_call.args[0][-2:] == ["-r", "remote_openocd"]
+    assert remote_call.args[1]["ZEPHYR_REMOTE_OPENOCD_RECORD"] == "1"
+    assert remote_call.args[3:] == (1, 3)
 
 
 def test_optional_environment_metadata_is_unknown_when_unavailable():
@@ -72,7 +103,10 @@ def test_optional_environment_metadata_is_unknown_when_unavailable():
         build_dir=Path("build"),
         config=Path("config.yaml"),
     )
-    with patch.object(benchmark.subprocess, "run", side_effect=OSError):
+    with (
+        patch.object(benchmark.subprocess, "run", side_effect=OSError),
+        patch.object(benchmark.platform, "processor", side_effect=OSError),
+    ):
         metadata = benchmark._metadata(ROOT, args)
     assert metadata["revision"] == "unknown"
     assert metadata["cpu"] == "unknown"

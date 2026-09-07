@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from zephyr_remote_openocd.config import load_config, resolve_remote
 
 from tests.inventory import InventoryError, load_inventory, render_product_config
 from tests.support import ROOT
@@ -50,6 +51,24 @@ def test_inventory_rejects_bad_top_level_and_host(
 ) -> None:
     with pytest.raises(InventoryError, match=diagnostic):
         load_inventory(write_inventory(tmp_path, fragment))
+
+
+@pytest.mark.parametrize("name", ("lab", "on", "off", "true", "null"))
+def test_rendered_inventory_round_trips_through_product_schema(tmp_path, name):
+    text = EXAMPLE.read_text().replace('"lab"', f'"{name}"')
+    inventory = load_inventory(write_inventory(tmp_path, text))
+    host = inventory.host(name)
+    path = tmp_path / "config.yaml"
+    path.write_text(render_product_config(host))
+    selected = resolve_remote(load_config(path))
+    assert selected.name == name
+    assert selected.ssh_host == host.address
+    assert selected.openocd_command == (host.openocd,)
+    assert selected.ssh_command == host.ssh_command
+    assert selected.forward_env == host.forward_env
+    assert [(item.local, item.remote) for item in selected.path_mappings] == [
+        (item.local, item.remote) for item in host.path_mappings
+    ]
 
 
 def valid_prefix() -> str:

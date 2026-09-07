@@ -553,7 +553,7 @@ def render_product_config(host: InventoryHost, *, default_runner: str = "openocd
         f"default_remote: {quote(remote_name)}",
         "",
         "remotes:",
-        f"  {remote_name}:",
+        f"  {quote(remote_name)}:",
     ]
     lines.extend((f"    ssh_host: {quote(host.address)}", "    openocd_command:"))
     lines.extend(f"      - {quote(item)}" for item in (host.openocd,))
