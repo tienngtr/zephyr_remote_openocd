@@ -620,7 +620,31 @@ class TestZephyrIntegration:
         methods = {node.name for node in adapter.body if isinstance(node, ast.FunctionDef)}
         assert {"name", "do_create", "do_run"}.issubset(methods)
         assert "capabilities" not in methods
-        assert "do_add_parser" not in methods
+        parser_hook = next(
+            node
+            for node in adapter.body
+            if isinstance(node, ast.FunctionDef) and node.name == "do_add_parser"
+        )
+        assert any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "do_add_parser"
+            and isinstance(node.func.value, ast.Call)
+            and isinstance(node.func.value.func, ast.Name)
+            and node.func.value.func.id == "super"
+            for node in ast.walk(parser_hook)
+        )
+        assert any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "add_argument"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "parser"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == "--remote"
+            for node in ast.walk(parser_hook)
+        )
         assert any(
             isinstance(base, ast.Name) and base.id == "OpenOcdBinaryRunner"
             for base in adapter.bases
