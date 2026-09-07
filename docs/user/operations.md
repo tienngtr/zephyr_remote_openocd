@@ -9,13 +9,14 @@ export EXTRA_ZEPHYR_MODULES="${EXTRA_ZEPHYR_MODULES:+$EXTRA_ZEPHYR_MODULES;}/pat
 
 For persistent activation, put the same export in `~/.zephyrrc`. Then build a
 Zephyr application normally. The built-in `openocd` runner remains the default
-unless `runner.default = "remote_openocd"` is selected.
+unless `default_runner: remote_openocd` is selected.
 
 Explicit runner selection is always available:
 
 ```sh
 west flash -r openocd
 west flash -r remote_openocd
+west flash -r remote_openocd --remote lab
 west debug -r remote_openocd
 west attach -r remote_openocd
 west debugserver -r remote_openocd

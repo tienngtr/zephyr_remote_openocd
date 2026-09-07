@@ -64,9 +64,11 @@ Use configured `SshCommand` for every remote action; never embed fixture hosts o
 assume system `ssh`. Preserve Zephyr 4.4 command semantics and all enabled GDB,
 Tcl, and telnet services. Bind remotely to the allocated loopback and locally to
 `127.0.0.1`. Preserve cleanup on success, failure, interruption, and SSH loss.
-The enumerated V1 TOML schema is frozen; do not add or relax configuration keys
-without an explicit compatibility and migration decision. Unknown keys remain
-errors, and `resources/config.toml.example` is the canonical template.
+The enumerated V1 YAML schema is defined by
+`docs/requirements/configuration.schema.json`; do not add or relax
+configuration keys without an explicit compatibility and migration decision.
+Unknown keys remain errors, and `resources/config.yaml.example` is the
+canonical template. Hardware fixture inventories may remain TOML.
 
 Protocol 1 is frozen: matching version numbers alone are insufficient unless
 both sides implement the canonical Protocol 1 contract. Any incompatible change or

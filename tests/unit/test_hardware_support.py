@@ -14,7 +14,7 @@ def test_inventory_profiles_become_independent_capability_records(tmp_path):
     host = inventory.host("lab")
     target = inventory.target("board")
     profile = next(item for item in target.profiles if item.name == "debug")
-    record = _record(target, host, profile, tmp_path / "build", tmp_path / "config.toml")
+    record = _record(target, host, profile, tmp_path / "build", tmp_path / "config.yaml")
     assert {"debug", "attach", "debugserver"}.issubset(record["capabilities"])
     assert records_for([record], "rtt") == []
     assert records_for([record], "debug") == [record]
@@ -30,5 +30,5 @@ def test_probe_serial_is_translated_to_runner_argument(tmp_path):
         next(item for item in target.profiles if item.name == "flash"),
         probe_serial="example-probe",
     )
-    record = _record(target, host, profile, tmp_path / "build", tmp_path / "config.toml")
+    record = _record(target, host, profile, tmp_path / "build", tmp_path / "config.yaml")
     assert "--serial=example-probe" in record["runner_args"]

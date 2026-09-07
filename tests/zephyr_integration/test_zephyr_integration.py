@@ -52,7 +52,7 @@ class TestZephyrIntegration:
             prefix="zephyr-integration-", dir=ROOT / ".scratch"
         )
         cls.scratch = Path(cls._scratch.name)
-        cls.config = cls.scratch / "config.toml"
+        cls.config = cls.scratch / "config.yaml"
         cls.fake_openocd = cls.scratch / "fake-openocd"
         cls.fake_openocd.write_text("#!/bin/sh\nprintf 'Open On-Chip Debugger 0.12.0\\n'\n")
         cls.fake_openocd.chmod(cls.fake_openocd.stat().st_mode | stat.S_IXUSR)
@@ -123,14 +123,19 @@ class TestZephyrIntegration:
     @classmethod
     def _write_config(cls, default_runner: str, forward_env: tuple[str, ...] = ()):
         content = (
-            f'[runner]\ndefault = "{default_runner}"\n\n'
-            '[remote]\nhost = "record-only"\nopenocd = "/remote/openocd"\n\n'
-            '[ssh]\ncommand = ["ssh"]\n\n'
-            '[[paths.map]]\nlocal = "/"\nremote = "/recorded"\n'
+            f"default_runner: {default_runner}\n"
+            "default_remote: record-only\n"
+            "remotes:\n"
+            "  record-only:\n"
+            "    ssh_host: record-only\n"
+            "    openocd_command: [/remote/openocd]\n"
+            "    ssh_command: [ssh]\n"
+            "    path_mappings:\n"
+            "      /: /recorded\n"
         )
         if forward_env:
-            names = ", ".join(f'"{name}"' for name in forward_env)
-            content += f"\n[openocd]\nforward_env = [{names}]\n"
+            names = ", ".join(forward_env)
+            content += f"    forward_env: [{names}]\n"
         cls.config.write_text(content)
 
     @classmethod
@@ -515,10 +520,10 @@ class TestZephyrIntegration:
                 check=False,
             )
             assert first_setup.returncode == 0, first_setup.stderr
-            config = home / ".config" / "zephyr_remote_openocd" / "config.toml"
+            config = home / ".config" / "zephyr_remote_openocd" / "config.yaml"
             assert (
                 config.read_bytes()
-                == (distribution / "resources" / "config.toml.example").read_bytes()
+                == (distribution / "resources" / "config.yaml.example").read_bytes()
             )
             assert stat.S_IMODE(config.parent.stat().st_mode) == 0o700
             assert stat.S_IMODE(config.stat().st_mode) == 0o600
@@ -528,10 +533,13 @@ class TestZephyrIntegration:
             assert str(ROOT) not in first_setup.stdout
 
             config.write_text(
-                '[runner]\ndefault = "openocd"\n\n'
-                '[remote]\nhost = "record-only"\nopenocd = "/remote/openocd"\n\n'
-                '[ssh]\ncommand = ["ssh"]\n\n'
-                '[[paths.map]]\nlocal = "/"\nremote = "/recorded"\n'
+                'default_runner: openocd\n'
+                'default_remote: record-only\n'
+                'remotes:\n  record-only:\n'
+                '    ssh_host: record-only\n'
+                '    openocd_command: [/remote/openocd]\n'
+                '    ssh_command: [ssh]\n'
+                '    path_mappings: {"/": /recorded}\n'
             )
             configured_contents = config.read_bytes()
             second_setup = subprocess.run(
@@ -587,7 +595,9 @@ class TestZephyrIntegration:
             assert "openocd capabilities:" in local_context.stdout
 
             config.write_text(
-                config.read_text().replace('default = "openocd"', 'default = "remote_openocd"')
+                config.read_text().replace(
+                    "default_runner: openocd", "default_runner: remote_openocd"
+                )
             )
             clean_env["ZEPHYR_REMOTE_OPENOCD_RECORD"] = "1"
             recorded = west("flash", "-d", str(build))

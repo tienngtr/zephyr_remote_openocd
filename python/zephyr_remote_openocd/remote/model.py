@@ -111,13 +111,19 @@ class RemoteProcess:
     required_paths: tuple[RemotePathCheck, ...] = field(default_factory=tuple)
     readiness_marker: str | None = None
     readiness_timeout: float = 30.0
+    literal_prefix: int = 0
 
     def __post_init__(self) -> None:
         argv = tuple(self.argv)
         environment = tuple(self.environment)
         required_paths = tuple(self.required_paths)
-        if not argv or not all(isinstance(arg, str) and arg for arg in argv):
-            raise ValueError("remote process argv must not be empty")
+        if (
+            not argv
+            or not isinstance(argv[0], str)
+            or not argv[0]
+            or not all(isinstance(arg, str) for arg in argv[1:])
+        ):
+            raise ValueError("remote process argv must start with a non-empty string")
         names = [name for name, _ in environment]
         if len(names) != len(set(names)) or not all(
             isinstance(name, str) and name and "=" not in name and "\0" not in name
@@ -135,6 +141,12 @@ class RemoteProcess:
             raise ValueError("readiness marker must be a non-empty token")
         if self.readiness_timeout <= 0:
             raise ValueError("readiness timeout must be positive")
+        if (
+            isinstance(self.literal_prefix, bool)
+            or not isinstance(self.literal_prefix, int)
+            or not 0 <= self.literal_prefix <= len(argv)
+        ):
+            raise ValueError("literal argv prefix is invalid")
         object.__setattr__(self, "argv", argv)
         object.__setattr__(self, "environment", environment)
         object.__setattr__(self, "required_paths", required_paths)

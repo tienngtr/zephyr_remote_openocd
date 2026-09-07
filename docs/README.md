@@ -11,8 +11,9 @@ Documentation is grouped by audience:
 - [`development/`](development/): contributor test and fixture guidance.
 - [`traceability/v1.md`](traceability/v1.md): acceptance-criteria evidence
   mapping.
-- [`validation/v1.md`](validation/v1.md): release-validation records and
-  benchmark data.
+- Validation commands and acceptance criteria are documented in
+  [`requirements/SRS.md`](requirements/SRS.md) and
+  [`development/testing.md`](development/testing.md).
 
 The root [`README.md`](../README.md) is the quickest user entry point. Human
 contribution guidance is in [`CONTRIBUTING.md`](../CONTRIBUTING.md), while

@@ -220,11 +220,16 @@ def services_connectable(address, services):
     return True
 
 
-def openocd_version(executable):
-    if not Path(executable).is_absolute():
-        raise ValueError("OpenOCD executable must be an absolute path")
+def openocd_version(argv):
+    if (
+        not argv
+        or not isinstance(argv[0], str)
+        or not argv[0]
+        or not all(isinstance(item, str) for item in argv[1:])
+    ):
+        raise ValueError("OpenOCD command must be a non-empty argv")
     result = subprocess.run(
-        [executable, "--version"],
+        [*argv, "--version"],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -364,10 +369,13 @@ def controller():
                     services = message.get("services", [])
                     marker = message.get("readiness_marker")
                     readiness_timeout = message.get("readiness_timeout", 30.0)
+                    literal_prefix = message.get("literal_prefix", 0)
                     if (
                         not isinstance(argv, list)
                         or not argv
-                        or not all(isinstance(arg, str) and arg for arg in argv)
+                        or not isinstance(argv[0], str)
+                        or not argv[0]
+                        or not all(isinstance(arg, str) for arg in argv[1:])
                     ):
                         raise ValueError("START_OPENOCD requires a non-empty string argv")
                     if not isinstance(environment, dict) or not all(
@@ -394,6 +402,10 @@ def controller():
                         not isinstance(readiness_timeout, (int, float))
                         or isinstance(readiness_timeout, bool)
                         or readiness_timeout <= 0
+                        or isinstance(literal_prefix, bool)
+                        or not isinstance(literal_prefix, int)
+                        or literal_prefix < 0
+                        or literal_prefix > len(argv)
                     ):
                         raise ValueError("START_OPENOCD readiness timeout is invalid")
                     ports = [item["remote_port"] for item in services]
@@ -408,7 +420,10 @@ def controller():
                     for attempt in range(32 if marker is not None else 1):
                         address = allocate_service_address(ports) if ports else random_address()
                         replacements = {"{workspace}": str(work), "{address}": address}
-                        expanded_argv = [expand(arg, replacements) for arg in argv]
+                        expanded_argv = [
+                            arg if index < literal_prefix else expand(arg, replacements)
+                            for index, arg in enumerate(argv)
+                        ]
                         for check in checks:
                             if (
                                 not isinstance(check, dict)
@@ -506,7 +521,7 @@ def main():
     staging = sub.add_parser("stage")
     staging.add_argument("workspace")
     version = sub.add_parser("openocd-version")
-    version.add_argument("executable")
+    version.add_argument("executable", nargs="+")
     fake = sub.add_parser("fake-child")
     fake.add_argument("address")
     fake.add_argument("ports", type=int, nargs="+")

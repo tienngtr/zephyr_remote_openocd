@@ -1,4 +1,5 @@
 # Validation Evidence
 
-Release-validation records and benchmark results are maintained here. The
-current startup-overhead evidence is [`startup-overhead-v1.json`](startup-overhead-v1.json).
+No release-validation record exists yet. Use the commands in
+[`docs/development/testing.md`](../development/testing.md) to generate local
+evidence when the required Zephyr tree, inventory, and hardware are available.

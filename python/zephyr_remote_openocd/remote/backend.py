@@ -45,11 +45,11 @@ class SshHelperBackend(SessionBackend):
             request, deployment, self.forward_start_timeout, self.output_handler
         )
 
-    def openocd_version(self, ssh_command, host: str, executable: str) -> str:
+    def openocd_version(self, ssh_command, host: str, executable) -> str:
         deployment = deploy_helper(ssh_command, host)
-        command = (
-            f"python3 {shlex.quote(deployment.path)} openocd-version {shlex.quote(executable)}"
-        )
+        argv = executable if isinstance(executable, (tuple, list)) else (executable,)
+        encoded = " ".join(shlex.quote(item) for item in argv)
+        command = f"python3 {shlex.quote(deployment.path)} openocd-version -- {encoded}"
         result = ssh_command.run(host, command, timeout=30)
         if result.returncode:
             detail = (result.stderr or result.stdout).decode("utf-8", "replace").strip()
@@ -215,6 +215,7 @@ class SshHelperSession(BackendSession):
                 ],
                 readiness_marker=process.readiness_marker,
                 readiness_timeout=process.readiness_timeout,
+                literal_prefix=process.literal_prefix,
             )
             ready = set()
             while True:

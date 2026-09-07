@@ -27,7 +27,7 @@ def module_root(script_path: str | os.PathLike[str] | None = None) -> Path:
 def config_path(home: str | os.PathLike[str] | None = None) -> Path:
     """Return the canonical per-user configuration path."""
     home_path = Path(home).expanduser() if home is not None else Path.home()
-    return home_path / ".config" / "zephyr_remote_openocd" / "config.toml"
+    return home_path / ".config" / "zephyr_remote_openocd" / "config.yaml"
 
 
 def pyelftools_available(
@@ -36,6 +36,16 @@ def pyelftools_available(
     """Return whether the Zephyr environment can discover ``elftools``."""
     try:
         return finder("elftools") is not None
+    except (ImportError, ModuleNotFoundError, ValueError):
+        return False
+
+
+def configuration_dependencies_available(
+    finder: Callable[[str], object | None] = importlib.util.find_spec,
+) -> bool:
+    """Return whether YAML configuration runtime dependencies are discoverable."""
+    try:
+        return finder("yaml") is not None and finder("jsonschema") is not None
     except (ImportError, ModuleNotFoundError, ValueError):
         return False
 
@@ -64,7 +74,7 @@ def _ensure_config_directory(path: Path) -> None:
 
 def initialize_config(root: Path, destination: Path) -> bool:
     """Create ``destination`` from the shipped template when absent."""
-    template = root / "resources" / "config.toml.example"
+    template = root / "resources" / "config.yaml.example"
     try:
         contents = template.read_bytes()
     except OSError as error:
@@ -114,6 +124,11 @@ def _print_dependency_status(
         print("Warning: pyelftools is not available in this Python environment.")
         print("Some remote_openocd operations require pyelftools to inspect ELF files.")
         print("Use the Python environment configured for Zephyr.")
+    if configuration_dependencies_available(finder):
+        print("  YAML configuration dependencies: found")
+    else:
+        print("Warning: PyYAML and jsonschema are not available in this Python environment.")
+        print("Install requirements.txt before using the YAML configuration.")
 
 
 def main() -> int:

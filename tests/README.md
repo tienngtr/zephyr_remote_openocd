@@ -33,4 +33,4 @@ validation.
 
 The startup-overhead benchmark is a manual release-validation command, not
 pytest discovery. Its procedure and conservative baseline interpretation are
-documented in [`docs/validation/v1.md`](../docs/validation/v1.md).
+documented in [`docs/development/testing.md`](../docs/development/testing.md).

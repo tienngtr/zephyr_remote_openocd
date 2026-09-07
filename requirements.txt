@@ -1,0 +1,3 @@
+# Runtime dependencies for YAML configuration loading.
+PyYAML>=6
+jsonschema>=4

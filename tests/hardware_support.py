@@ -102,7 +102,7 @@ def prepared_hardware(hardware_inventory: Inventory, tmp_path_factory: pytest.Te
     config_root = tmp_path_factory.mktemp("hardware-config")
     config_paths: dict[str, Path] = {}
     for host in hardware_inventory.hosts:
-        config_path = config_root / f"{host.id}.toml"
+        config_path = config_root / f"{host.id}.yaml"
         config_path.write_text(render_product_config(host))
         config_paths[host.id] = config_path
 

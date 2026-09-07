@@ -27,7 +27,7 @@ def arguments(**overrides):
         "board": "native_sim/native/64",
         "hardware_config": Path("/fixtures/hardware.toml"),
         "benchmark_build_dir": Path("/build"),
-        "benchmark_config": Path("/config.toml"),
+        "benchmark_config": Path("/config.yaml"),
         "benchmark_cwd": Path("/workspace"),
         "benchmark_command": "flash",
         "benchmark_warmup": 5,

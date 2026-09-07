@@ -540,35 +540,36 @@ def load_inventory(path: Path | str) -> Inventory:
 
 
 def render_product_config(host: InventoryHost, *, default_runner: str = "openocd") -> str:
-    """Render a frozen product config from one inventory host."""
+    """Render a YAML product config from one inventory host."""
     if default_runner not in {"openocd", "remote_openocd"}:
         raise ValueError("default_runner must be openocd or remote_openocd")
 
-    def toml_string(value: str) -> str:
+    def quote(value: str) -> str:
         return json.dumps(value)
 
+    remote_name = host.id
     lines = [
-        "[runner]",
-        f"default = {toml_string(default_runner)}",
+        f"default_runner: {quote(default_runner)}",
+        f"default_remote: {quote(remote_name)}",
         "",
-        "[remote]",
-        f"host = {toml_string(host.address)}",
-        f"openocd = {toml_string(host.openocd)}",
-        "",
-        "[ssh]",
-        "command = [" + ", ".join(toml_string(item) for item in host.ssh_command) + "]",
-        "",
-        "[openocd]",
-        "forward_env = [" + ", ".join(toml_string(item) for item in host.forward_env) + "]",
+        "remotes:",
+        f"  {remote_name}:",
     ]
-    for mapping in host.path_mappings:
+    lines.extend((f"    ssh_host: {quote(host.address)}", "    openocd_command:"))
+    lines.extend(f"      - {quote(item)}" for item in (host.openocd,))
+    lines.append("    ssh_command:")
+    lines.extend(f"      - {quote(item)}" for item in host.ssh_command)
+    lines.append("    forward_env:")
+    if host.forward_env:
+        lines.extend(f"      - {quote(item)}" for item in host.forward_env)
+    else:
+        lines[-1] = "    forward_env: []"
+    lines.append("    path_mappings: {}")
+    if host.path_mappings:
+        lines[-1] = "    path_mappings:"
         lines.extend(
-            (
-                "",
-                "[[paths.map]]",
-                f"local = {toml_string(str(mapping.local))}",
-                f"remote = {toml_string(str(mapping.remote))}",
-            )
+            f"      {quote(str(mapping.local))}: {quote(str(mapping.remote))}"
+            for mapping in host.path_mappings
         )
     return "\n".join(lines) + "\n"
 

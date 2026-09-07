@@ -5,7 +5,7 @@ if(NOT "openocd" IN_LIST _zro_runners)
   return()
 endif()
 
-set(_zro_config "$ENV{HOME}/.config/zephyr_remote_openocd/config.toml")
+set(_zro_config "$ENV{HOME}/.config/zephyr_remote_openocd/config.yaml")
 if(DEFINED ENV{ZEPHYR_REMOTE_OPENOCD_CONFIG})
   set(_zro_config "$ENV{ZEPHYR_REMOTE_OPENOCD_CONFIG}")
 endif()

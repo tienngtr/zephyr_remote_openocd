@@ -4,7 +4,7 @@
 
 This module is intentionally not named ``test_*.py``: it is never part of
 ordinary test discovery.  Run it from a Zephyr workspace with ``--build-dir``
-and an external remote_openocd TOML configuration.
+and an external remote_openocd YAML configuration.
 """
 
 from __future__ import annotations

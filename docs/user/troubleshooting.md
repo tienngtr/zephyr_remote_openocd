@@ -6,8 +6,8 @@ is writable, and the command is running with Python 3.12 or newer. Missing
 for Zephyr before running a command that inspects an ELF.
 
 For remote operations, verify the configured SSH argv can connect directly and
-that `[remote].openocd` is an executable absolute path on the remote host. Use
-`ssh` command options in `[ssh].command` for fixed arguments (for example,
+that the selected remote has an executable `openocd_command`. Use
+`ssh_command` for fixed SSH arguments (for example,
 `ControlMaster=no`); do not put shell pipelines in the value. Path mappings
 must point to existing local inputs and normalized remote POSIX destinations.
 

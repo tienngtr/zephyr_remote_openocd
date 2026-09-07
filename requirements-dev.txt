@@ -1,4 +1,5 @@
-# Developer and test tooling only. Product use does not install these packages.
+# Developer and test tooling only. Product use installs requirements.txt.
+-r requirements.txt
 pytest>=8
 pytest-timeout>=2
 ruff>=0.6

@@ -14,7 +14,7 @@ from pathlib import Path
 from tests.support import ROOT
 
 SETUP = ROOT / "scripts" / "setup.py"
-TEMPLATE = ROOT / "resources" / "config.toml.example"
+TEMPLATE = ROOT / "resources" / "config.yaml.example"
 
 
 def run_setup(home: Path, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -32,7 +32,7 @@ def run_setup(home: Path, cwd: Path | None = None) -> subprocess.CompletedProces
 
 def test_creates_template_and_reports_activation(tmp_path: Path):
     result = run_setup(tmp_path, tmp_path.parent)
-    config = tmp_path / ".config" / "zephyr_remote_openocd" / "config.toml"
+    config = tmp_path / ".config" / "zephyr_remote_openocd" / "config.yaml"
     assert result.returncode == 0, result.stderr
     assert config.read_bytes() == TEMPLATE.read_bytes()
     assert f"Configuration (created): {config}" in result.stdout
@@ -48,22 +48,22 @@ def test_existing_configuration_is_preserved_and_not_chmodded(tmp_path: Path):
     config_dir = tmp_path / ".config" / "zephyr_remote_openocd"
     config_dir.mkdir(parents=True)
     config_parent = tmp_path / ".config"
-    config = config_dir / "config.toml"
-    config.write_text('[runner]\ndefault = "remote_openocd"\n')
+    config = config_dir / "config.yaml"
+    config.write_text('default_runner: remote_openocd\n')
     config_parent.chmod(0o755)
     config_dir.chmod(0o755)
     config.chmod(0o644)
     result = run_setup(tmp_path)
     assert result.returncode == 0, result.stderr
     assert f"Configuration (already exists): {config}" in result.stdout
-    assert config.read_text() == '[runner]\ndefault = "remote_openocd"\n'
+    assert config.read_text() == 'default_runner: remote_openocd\n'
     assert stat.S_IMODE(config_parent.stat().st_mode) == 0o755
     assert stat.S_IMODE(config_dir.stat().st_mode) == 0o755
     assert stat.S_IMODE(config.stat().st_mode) == 0o644
 
 
 def test_existing_non_file_configuration_fails_actionably(tmp_path: Path):
-    config = tmp_path / ".config" / "zephyr_remote_openocd" / "config.toml"
+    config = tmp_path / ".config" / "zephyr_remote_openocd" / "config.yaml"
     config.mkdir(parents=True)
     result = run_setup(tmp_path)
     assert result.returncode != 0
@@ -82,6 +82,10 @@ def test_dependency_detection_found_and_missing():
     setup = load_setup_module()
     assert setup.pyelftools_available(lambda _: object())
     assert not setup.pyelftools_available(lambda _: None)
+    assert setup.configuration_dependencies_available(lambda _: object())
+    assert not setup.configuration_dependencies_available(
+        lambda name: object() if name == "yaml" else None
+    )
 
 
 def test_dependency_status_messages():

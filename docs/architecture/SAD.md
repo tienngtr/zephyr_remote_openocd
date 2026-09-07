@@ -127,7 +127,7 @@ zephyr_remote_openocd/
             remote_helper.py
 
     resources/
-        config.toml.example
+        config.yaml.example
 
     scripts/
         config_default.py
@@ -188,7 +188,7 @@ User setup is a separate, non-invasive operation:
 python3 scripts/setup.py
 ```
 
-The setup script copies `resources/config.toml.example` only when the canonical
+The setup script copies `resources/config.yaml.example` only when the canonical
 per-user configuration is absent, reports the created/reused status and both
 absolute paths, and prints guidance for `EXTRA_ZEPHYR_MODULES`. It creates the
 `zephyr_remote_openocd` configuration directory with mode `0700` and the file
@@ -199,55 +199,32 @@ It does not edit shell startup files, repositories, or `.zephyrrc`.
 
 # 8. Configuration Template
 
-The canonical V1 template is `resources/config.toml.example`:
+The canonical V1 template is `resources/config.yaml.example`:
 
-```toml
-# Zephyr west runner for remote OpenOCD V1 configuration
-#
-# This file lists every supported V1 key. Unknown keys are rejected so that
-# spelling mistakes and unsupported settings fail with an actionable error.
-
-[runner]
-# Default runner for OpenOCD-capable builds: "openocd" or "remote_openocd".
-default = "openocd"
-
-[remote]
-# OpenSSH host or alias. Required when remote_openocd is used.
-# host = "openocd-host"
-
-# Normalized absolute POSIX path to OpenOCD on the remote Linux host.
-# Required when remote_openocd is used.
-# openocd = "/absolute/path/to/openocd"
-
-[ssh]
-# Non-empty OpenSSH-compatible command argv. Fixed arguments are allowed.
-command = ["ssh"]
-# command = ["ssh", "-F", "/home/user/.ssh/lab_config"]
-# WSL 2 may select Windows OpenSSH explicitly:
-# command = ["/mnt/c/Windows/System32/OpenSSH/ssh.exe"]
-
-[openocd]
-# Unique local environment-variable names forwarded when present.
-forward_env = []
-
-# Zero or more recursive local-to-remote path mappings. Local paths must be
-# absolute after optional '~' expansion. Remote paths must be normalized,
-# absolute POSIX paths. The longest matching local prefix wins.
-# [[paths.map]]
-# local = "/home/user/openocd/share/openocd/scripts"
-# remote = "/opt/openocd/share/openocd/scripts"
+```yaml
+default_runner: openocd
+default_remote: lab
+presets:
+  default:
+    openocd_command: [~/openocd/bin/openocd]
+    ssh_command: [ssh]
+    forward_env: []
+    path_mappings: {}
+remotes:
+  lab:
+    preset: default
 ```
 
-The parser rejects all unknown keys. Optional remote settings may be absent
-while the local runner is selected, but both are required by every production
-`remote_openocd` operation. Local mapping paths are expanded and resolved once
-when loading configuration; remote paths are validated lexically because they
-belong to the remote Linux filesystem. Exact duplicate mappings and conflicting
-mappings for the same normalized local path are both errors.
+The authoritative structural schema is
+`docs/requirements/configuration.schema.json`. The loader safely parses YAML,
+rejects duplicate keys and explicit nulls, then validates the document against
+that schema. It separately normalizes local mapping keys and detects duplicate
+intent. Remote references and required `openocd_command` are checked only when
+the selected remote is used, allowing incomplete unused definitions.
 
-This enumerated schema is frozen for V1. Field additions, removals, renames, type
-changes, or validation changes require an explicit compatibility and migration
-decision rather than silent extension of the V1 schema.
+Remote fields replace preset settings wholesale. Remote `~` paths are expanded
+using the SSH user's actual home only during a real operation; recording keeps
+them unresolved.
 
 The SSH command is represented as an argv list rather than a shell command string.
 
@@ -384,16 +361,14 @@ The mechanism is independent of which board generated those arguments.
 
 User configuration specifies:
 
-```toml
-[runner]
-default = "openocd"
+```yaml
+default_runner: openocd
 ```
 
 or:
 
-```toml
-[runner]
-default = "remote_openocd"
+```yaml
+default_runner: remote_openocd
 ```
 
 During CMake configuration:
@@ -419,7 +394,7 @@ remote_openocd
 The module adds:
 
 ```text
-~/.config/zephyr_remote_openocd/config.toml
+~/.config/zephyr_remote_openocd/config.yaml
 ```
 
 to the CMake configure dependencies.
@@ -427,7 +402,7 @@ to the CMake configure dependencies.
 Expected flow:
 
 ```text
-edit config.toml
+edit config.yaml
       |
       v
 west flash/debug
@@ -494,10 +469,9 @@ The generic subsystem receives structured data, conceptually:
 
 ```python
 RemoteSessionRequest(
-    remote_host=...,
-    remote_openocd=...,
+    host=...,
     ssh_command=...,
-    openocd_args=...,
+    openocd_argv=...,
     environment=...,
     staged_files=...,
     services=...,

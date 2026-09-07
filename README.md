@@ -36,7 +36,7 @@ To avoid entering the command manually, put the `export` command above in
 [Using `zephyrrc` files](https://docs.zephyrproject.org/4.4.0/develop/env_vars.html#option-3-using-zephyrrc-files)
 in the Zephyr documentation for more details.
 
-The setup script creates `~/.config/zephyr_remote_openocd/config.toml` if it
+The setup script creates `~/.config/zephyr_remote_openocd/config.yaml` if it
 does not exist (or reports its existing path), prints the absolute paths of the
 configuration file and module root, and gives equivalent
 `EXTRA_ZEPHYR_MODULES` guidance. It never overwrites an existing config or
@@ -44,6 +44,11 @@ edits shell/repository files. Setup also checks whether `pyelftools` is
 available because some commands may need to inspect ELF files. If setup reports
 a warning, use the Python environment configured for Zephyr before running
 commands that inspect ELF files.
+
+The YAML configuration loader requires PyYAML and jsonschema. Install
+`requirements.txt` into the Python environment used by Zephyr when those
+packages are not already available; setup reports their status but does not
+install packages.
 
 After activating the module, configure an application for an OpenOCD-capable
 board so Zephyr can discover the module and add `remote_openocd` alongside the
@@ -61,9 +66,8 @@ OpenOCD-capable build lists both `openocd` and `remote_openocd`.
 
 The default configuration uses the built-in local `openocd` runner:
 
-```toml
-[runner]
-default = "openocd"
+```yaml
+default_runner: openocd
 ```
 
 `west` commands without an explicit runner selection use the built-in `openocd`
@@ -73,27 +77,30 @@ runner. To select the remote runner, specify it explicitly, for example:
 west flash -r remote_openocd
 ```
 
-To make the remote runner the default, change `runner.default` to
-`"remote_openocd"` in the setup-created configuration file. Then run
+To make the remote runner the default, change `default_runner` to
+`remote_openocd` in the setup-created configuration file. Then run
 `west build` again; an incremental build is enough for CMake to regenerate the
 runner configuration.
 
 ## Remote configuration
 
 The default local `openocd` runner does not need remote settings. To use
-`remote_openocd`, edit that configuration file and set these fields in its
-existing `[remote]` section:
+`remote_openocd`, define a named remote in the YAML configuration:
 
-```toml
-[remote]
-host = "openocd-host"
-openocd = "/absolute/path/to/openocd"
+```yaml
+default_remote: lab
+remotes:
+  lab:
+    ssh_host: openocd-host
+    openocd_command:
+      - /absolute/path/to/openocd
 ```
 
-Add SSH, environment variable forwarding, or path mapping settings only when
-needed.
+Use `west ... -r remote_openocd --remote lab` to select a remote. SSH command,
+environment forwarding, and path mappings are configured under the remote or a
+reusable `presets` entry.
 
-The shipped [`config.toml.example`](resources/config.toml.example) shows the
+The shipped [`config.yaml.example`](resources/config.yaml.example) shows the
 available fields. The [`configuration guide`](docs/user/configuration.md)
 explains the full schema and `ZEPHYR_REMOTE_OPENOCD_CONFIG` if you need a
 different config path.

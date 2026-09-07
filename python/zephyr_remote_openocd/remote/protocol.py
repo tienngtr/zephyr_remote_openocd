@@ -113,10 +113,12 @@ def validate_controller_command(message: dict[str, Any]) -> None:
     services = message.get("services", [])
     marker = message.get("readiness_marker")
     timeout = message.get("readiness_timeout", 30.0)
+    literal_prefix = message.get("literal_prefix", 0)
     if (
         not isinstance(argv, list)
         or not argv
-        or not all(_non_empty_string(item) for item in argv)
+        or not _non_empty_string(argv[0])
+        or not all(isinstance(item, str) for item in argv[1:])
         or not isinstance(environment, dict)
         or not all(
             isinstance(key, str) and isinstance(value, str) for key, value in environment.items()
@@ -137,6 +139,10 @@ def validate_controller_command(message: dict[str, Any]) -> None:
         or not isinstance(timeout, (int, float))
         or isinstance(timeout, bool)
         or timeout <= 0
+        or isinstance(literal_prefix, bool)
+        or not isinstance(literal_prefix, int)
+        or literal_prefix < 0
+        or literal_prefix > len(argv)
     ):
         raise ProtocolError("invalid START_OPENOCD command")
 

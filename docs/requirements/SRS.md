@@ -344,14 +344,16 @@ Documentation SHOULD present a convenient user-local location.
 V1 SHALL use:
 
 ```text
-~/.config/zephyr_remote_openocd/config.toml
+~/.config/zephyr_remote_openocd/config.yaml
 ```
 
 as its default per-user configuration path on Linux and WSL 2.
 
 ## REQ-FUNC-CONFIG-002
 
-The configuration format SHALL be TOML.
+The configuration format SHALL be YAML. The enforceable data contract is
+[`configuration.schema.json`](configuration.schema.json); YAML is parsed
+safely with duplicate-key rejection before schema validation.
 
 ## REQ-FUNC-CONFIG-003
 
@@ -390,25 +392,36 @@ Module upgrades SHALL NOT automatically rewrite an existing user configuration m
 
 ## REQ-FUNC-CONFIG-010
 
-The V1 configuration schema SHALL contain only:
+The top level SHALL contain only `default_runner`, `default_remote`, `presets`,
+and `remotes`. Presets and remotes SHALL use the fields and strict types in the
+canonical JSON Schema. Commands SHALL be argv arrays; environment forwarding
+and path mappings SHALL use the YAML forms specified by the schema.
 
-- `runner.default`: `"openocd"` or `"remote_openocd"`, default `"openocd"`;
-- `remote.host`: optional non-empty SSH host or alias;
-- `remote.openocd`: optional normalized absolute POSIX path;
-- `ssh.command`: non-empty string array, default `["ssh"]`;
-- `openocd.forward_env`: unique non-empty string array, default `[]`;
-- `paths.map`: zero or more tables containing exactly `local` and `remote`.
+Remote selection SHALL use `--remote`, then a non-empty
+`ZEPHYR_REMOTE_OPENOCD_REMOTE`, then `default_remote`. A selected remote may
+reference one preset; explicit remote settings replace preset settings
+wholesale. Built-in defaults SHALL be `ssh_command: [ssh]`, empty
+`forward_env`, and empty `path_mappings`; `ssh_host` defaults to the remote
+name. A production operation SHALL require `openocd_command`.
 
-`remote.host` and `remote.openocd` SHALL be mandatory when a production remote
-operation is requested. Local mapping paths SHALL be absolute after optional
-home expansion and SHALL be normalized locally. Remote mapping paths SHALL be
-normalized absolute POSIX paths.
+Structural validation SHALL apply to every definition at load time. Missing
+selected remotes/presets and operational requirements SHALL be reported only
+when that remote is used. Local mapping paths SHALL be normalized before
+duplicate detection. Remote `~` paths SHALL be resolved through SSH only for a
+real operation; recording SHALL retain them literally.
 
 ## REQ-FUNC-CONFIG-011
 
-Unknown keys, disallowed empty strings or command arrays, duplicate environment
-names, duplicate mappings, and conflicting mappings SHALL produce actionable
+Unknown keys, explicit nulls, duplicate YAML keys, invalid types, disallowed
+empty command executables, duplicate environment names, invalid paths,
+duplicate mappings, and conflicting mappings SHALL produce actionable
 configuration errors.
+
+## REQ-FUNC-CONFIG-012
+
+The implementation SHALL validate parsed YAML against the canonical machine-
+readable schema at runtime rather than maintaining a separate copy of the
+structural rules in handwritten validators.
 
 ---
 

@@ -7,12 +7,20 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import shlex
 import sys
+from dataclasses import replace
+from pathlib import PurePosixPath
 
 from runners.core import FileType  # pylint: disable=no-name-in-module
 from runners.openocd import OpenOcdBinaryRunner  # pylint: disable=no-name-in-module
 
-from zephyr_remote_openocd.config import ConfigError, load_config, require_remote_settings
+from zephyr_remote_openocd.config import (
+    ConfigError,
+    load_config,
+    require_remote_settings,
+    resolve_remote,
+)
 from zephyr_remote_openocd.remote import RemoteSession, RemoteSessionRequest, SshHelperBackend
 from zephyr_remote_openocd.remote.debug import (
     DebugInputs,
@@ -78,16 +86,29 @@ class RemoteOpenOcdBinaryRunner(OpenOcdBinaryRunner):
     def do_create(cls, cfg, args):
         return cls(cfg, args)
 
+    @classmethod
+    def do_add_parser(cls, parser):
+        super().do_add_parser(parser)
+        parser.add_argument("--remote", help="select a configured remote by name")
+
     def do_run(self, command, **kwargs):
         try:
-            selected = load_config()
+            document = load_config()
+            recording = os.environ.get("ZEPHYR_REMOTE_OPENOCD_RECORD") == "1"
+            selected = resolve_remote(
+                document,
+                getattr(self.parsed_args, "remote", None),
+                require_openocd=not recording,
+            )
         except ConfigError as error:
             raise RuntimeError(str(error)) from error
 
-        if os.environ.get("ZEPHYR_REMOTE_OPENOCD_RECORD") == "1":
+        if recording:
             _record_runner(self, command, selected)
             return
         try:
+            if os.environ.get("ZEPHYR_REMOTE_OPENOCD_RECORD") != "1":
+                selected = _prepare_remote_paths(selected)
             if command == "flash":
                 request = _flash_request(self, selected)
                 plan = None
@@ -288,8 +309,8 @@ def _flash_request(runner, selected):
 
 
 def _remote_openocd(selected, command):
-    _, executable = require_remote_settings(selected, command)
-    return executable
+    require_remote_settings(selected, command)
+    return selected.openocd_command
 
 
 def _forwarded_environment(runner, selected):
@@ -303,6 +324,42 @@ def _forwarded_environment(runner, selected):
         else:
             environment.append((name, value))
     return tuple(environment)
+
+
+def _prepare_remote_paths(selected):
+    """Resolve remote ``~`` paths once before any OpenOCD planning."""
+    if not _needs_remote_home(selected.openocd_command[0]) and not any(
+        _needs_remote_home(str(mapping.remote)) for mapping in selected.path_mappings
+    ):
+        return selected
+    ssh = SshCommand(selected.ssh_command)
+    code = "import pathlib; print(pathlib.Path.home(), flush=True)"
+    result = ssh.run(selected.ssh_host, "python3 -c " + shlex.quote(code), timeout=30)
+    if result.returncode:
+        detail = (result.stderr or result.stdout).decode("utf-8", "replace").strip()
+        raise ConfigError(f"cannot resolve remote home for {selected.name}: {detail}")
+    home = result.stdout.decode("utf-8", "replace").strip()
+    if not home.startswith("/") or any(character.isspace() for character in home):
+        raise ConfigError(f"remote home query returned an invalid path for {selected.name}")
+
+    def expand(value: str) -> str:
+        if value == "~":
+            return home
+        return home + value[1:] if value.startswith("~/") else value
+
+    mappings = tuple(
+        replace(item, remote=PurePosixPath(expand(str(item.remote))))
+        for item in selected.path_mappings
+    )
+    return replace(
+        selected,
+        openocd_command=(expand(selected.openocd_command[0]), *selected.openocd_command[1:]),
+        path_mappings=mappings,
+    )
+
+
+def _needs_remote_home(value: str) -> bool:
+    return value == "~" or value.startswith("~/")
 
 
 def _search_paths(runner):
@@ -393,6 +450,7 @@ def _request_record(request):
             ],
             "readiness_marker": request.process.readiness_marker,
             "readiness_timeout": request.process.readiness_timeout,
+            "literal_prefix": request.process.literal_prefix,
         }
     return result
 

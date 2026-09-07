@@ -46,8 +46,8 @@ override.
 Native SSH tests require an `ssh` executable on `PATH` and a reachable host
 from the inventory. Zephyr integration additionally requires a Zephyr checkout,
 the `west` executable used by that checkout, a supported Zephyr SDK/toolchain,
-and PyYAML importable by the pytest Python environment (the Zephyr Python
-environment normally provides it). Clean-install checks also require
+and PyYAML plus jsonschema importable by the pytest Python environment (the
+Zephyr Python environment normally provides them). Clean-install checks also require
 `pyelftools` importable by the Python environment used by `west`. Hardware
 tests also require the declared board, probe, serial endpoint, and remote
 OpenOCD setup.
@@ -108,7 +108,7 @@ python3 scripts/release_validate.py \
   --west /path/to/west \
   --board <board> \
   --benchmark-build-dir /path/to/build \
-  --benchmark-config /path/to/remote_openocd.toml \
+  --benchmark-config /path/to/remote_openocd.yaml \
   --benchmark-cwd /path/to/zephyr-workspace
 ```
 

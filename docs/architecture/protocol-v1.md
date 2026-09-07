@@ -1,6 +1,7 @@
 # Protocol 1 Helper Contract
 
-This document is the frozen wire contract for the pre-release V1 helper. A compatible pair implements the complete contract, not merely the numeric version. Incompatible changes require Protocol 2.
+This document defines the Protocol 1 helper wire contract. A compatible pair
+implements the complete contract, not merely the numeric version.
 
 
 Protocol 1 is frozen. It uses UTF-8 JSON lines: one JSON object and one `LF` per
@@ -16,7 +17,7 @@ There is no feature negotiation beyond the mandatory version.
 | Controller command | Required fields | Optional fields and behavior |
 | --- | --- | --- |
 | `START` | non-empty `services` list; each item has integer, non-Boolean `remote_port` in 1..65535 | Starts the test-only fake service once. Other service-object fields are returned unchanged. |
-| `START_OPENOCD` | non-empty `argv` list of non-empty strings | `environment` defaults to `{}` and has string keys/values. `required_paths` defaults to `[]` and has `{kind: "file"\|"directory", path: string}`. `services` defaults to `[]` and has `{name: string, remote_port: 1..65535}`. `readiness_marker` is null/absent or a non-empty whitespace-free string. `readiness_timeout` is a positive non-Boolean number, default `30.0`. Starts once. |
+| `START_OPENOCD` | non-empty `argv`; argv[0] is non-empty and later arguments are strings (empty strings permitted) | `environment` defaults to `{}` and has string keys/values. `required_paths` defaults to `[]` and has `{kind: "file"\|"directory", path: string}`. `services` defaults to `[]` and has `{name: string, remote_port: 1..65535}`. `readiness_marker` is null/absent or a non-empty whitespace-free string. `readiness_timeout` is a positive non-Boolean number, default `30.0`. `literal_prefix` is a non-negative integer no greater than argv length, default `0`; tokens in this prefix are not placeholder-expanded. Starts once. |
 | `STOP` | none | Terminates the child process group, removes the workspace, emits `STOPPED {reason: "requested"}`, then exits. |
 
 `START_OPENOCD` expands every `{workspace}` and `{address}` in `argv` and
@@ -56,17 +57,16 @@ SHA-256, and ordered staged relative paths. `byte_count` is the total number
 of extracted regular-file bytes, and `sha256` hashes those bytes concatenated
 in the order listed by `files`. The client compares all three confirmations
 with its manifest; unsafe content fails the invocation.
-`helper openocd-version <absolute-executable>` executes exactly
-`<absolute-executable> --version`; success emits `OPENOCD_VERSION {output}`
+`helper openocd-version <command...>` executes exactly
+`<command...> --version`; success emits `OPENOCD_VERSION {output}`
 with combined output as a string, while failure exits nonzero with `ERROR`.
 Deployment bootstrap emits `DEPLOYED {status, path, sha256}`, where status is
 `deployed`/`reused`, path is non-empty, and the digest has the same form.
 
-A compatible protocol-1 pair implements this complete frozen contract, not
-just the numeric version. Earlier pre-freeze helper contents at the
-protocol-1 path are not a compatibility promise; digest deployment atomically
-replaces them with matching source. Any incompatible change, or new client
-behavior requiring helper support not guaranteed here, SHALL use protocol 2.
+A compatible protocol-1 pair implements this complete contract, not just the
+numeric version. Digest deployment atomically replaces the helper at the
+protocol-1 path with matching source. The configured command prefix is passed
+as argv and runner-generated arguments remain separate from it.
 Bulk binary content remains stream-oriented instead of JSON/base64.
 
 ---

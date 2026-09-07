@@ -129,6 +129,17 @@ class TestProtocol:
         assert command["version"] == 1
         assert command["services"][0]["remote_port"] == 3333
 
+    def test_start_openocd_allows_literal_empty_arguments(self):
+        validate_controller_command(
+            decode_message(
+                encode_message(
+                    "START_OPENOCD",
+                    argv=["openocd", "--fixed", ""],
+                    literal_prefix=2,
+                )
+            )
+        )
+
     def test_process_exit_allows_only_terminal_stop(self):
         order = EventOrder()
         frames = (

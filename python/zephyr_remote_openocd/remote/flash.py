@@ -17,7 +17,7 @@ class FlashPlanError(RuntimeError):
 
 @dataclass(frozen=True)
 class FlashInputs:
-    executable: str
+    executable: str | tuple[str, ...]
     image_type: str | None
     file: str | None
     elf_file: str | None
@@ -109,7 +109,8 @@ def build_flash_plan(
     ]
     remote_image = planner.plan_file(source_path, "firmware").remote
 
-    argv = [inputs.executable]
+    executable = (inputs.executable,) if isinstance(inputs.executable, str) else inputs.executable
+    argv = list(executable)
     # Zephyr's OpenOCD runner sets the board serial before loading the board
     # configuration.  The configuration may consume _ZEPHYR_BOARD_SERIAL
     # while it is being evaluated (for example via ``adapter serial``).
@@ -164,5 +165,11 @@ def build_flash_plan(
         argv.extend(_commands(inputs.post_verify))
         argv.extend(("-c", "reset run", "-c", "shutdown"))
 
-    process = RemoteProcess("openocd", tuple(argv), environment, tuple(planner.remote_checks))
+    process = RemoteProcess(
+        "openocd",
+        tuple(argv),
+        environment,
+        tuple(planner.remote_checks),
+        literal_prefix=len(executable),
+    )
     return FlashPlan(process, tuple(planner.staged_files), remote_image)

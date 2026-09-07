@@ -27,8 +27,10 @@ def test_neutral_example_is_complete_and_renderable() -> None:
     assert target.endpoint("console").baud == 115200
     assert target.profiles[0].environment == (("FTDI_CHANNEL", "0"),)
     rendered = render_product_config(inventory.host("lab"), default_runner="remote_openocd")
-    assert '[runner]\ndefault = "remote_openocd"' in rendered
-    assert 'openocd = "/absolute/path/to/openocd"' in rendered
+    assert 'default_runner: "remote_openocd"' in rendered
+    assert 'default_remote: "lab"' in rendered
+    assert 'openocd_command:' in rendered
+    assert '"/absolute/path/to/openocd"' in rendered
 
 
 @pytest.mark.parametrize(

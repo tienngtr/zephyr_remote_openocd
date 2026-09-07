@@ -49,7 +49,7 @@ def thread_info_enabled(requested: bool, version: OpenOcdVersion | None) -> bool
 @dataclass(frozen=True)
 class DebugInputs:
     command: str
-    executable: str
+    executable: str | tuple[str, ...]
     gdb: str | None
     elf_file: str | None
     search_paths: tuple[str, ...]
@@ -153,7 +153,8 @@ def build_debug_plan(
     ]
 
     rtos = thread_info_enabled(inputs.thread_info_requested, inputs.openocd_version)
-    argv = [inputs.executable]
+    executable = (inputs.executable,) if isinstance(inputs.executable, str) else inputs.executable
+    argv = list(executable)
     # Board configurations can inspect _ZEPHYR_BOARD_SERIAL as they are
     # loaded, so preserve Zephyr's serial-before-config ordering.
     if inputs.serial:
@@ -237,6 +238,7 @@ def build_debug_plan(
         tuple(planner.remote_checks),
         inputs.readiness_marker,
         30.0,
+        len(executable),
     )
     return DebugPlan(
         process,

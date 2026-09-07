@@ -70,7 +70,7 @@ def test_optional_environment_metadata_is_unknown_when_unavailable():
         iterations=100,
         command="flash",
         build_dir=Path("build"),
-        config=Path("config.toml"),
+        config=Path("config.yaml"),
     )
     with patch.object(benchmark.subprocess, "run", side_effect=OSError):
         metadata = benchmark._metadata(ROOT, args)

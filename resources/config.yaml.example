@@ -1,0 +1,17 @@
+# Built-in default is "openocd".
+default_runner: openocd
+
+# Used by remote_openocd when no --remote or environment override is given.
+# default_remote: remote_host_name
+
+presets:
+  default:
+    # Add an OpenOCD command when this preset is used:
+    # openocd_command:
+    #   - /opt/zephyr-sdk/hosttools/bin/openocd
+    ssh_command:
+      - ssh
+    forward_env: []
+    path_mappings: {}
+
+remotes: {}
