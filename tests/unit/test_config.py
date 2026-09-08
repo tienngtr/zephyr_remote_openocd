@@ -33,9 +33,19 @@ def test_default_path_uses_yaml_and_override(monkeypatch, tmp_path: Path):
     assert default_config_path() == Path.home() / "custom.conf"
 
 
-def test_empty_document_is_empty_mapping(tmp_path: Path):
-    config = load_text(tmp_path, "\n# no settings\n")
+@pytest.mark.parametrize("text", ("", "\n# no settings\n", "---\n", "---\n...\n", "--- # empty\n"))
+def test_empty_document_is_empty_mapping(tmp_path: Path, text: str):
+    config = load_text(tmp_path, text)
     assert config.default_runner == "openocd"
+    assert config.default_remote is None
+    assert config.presets == {}
+    assert config.remotes == {}
+
+
+@pytest.mark.parametrize("text", ("null\n", "~\n", "--- null\n", '!!null ""\n'))
+def test_explicit_root_null_is_rejected(tmp_path: Path, text: str):
+    with pytest.raises(ConfigError, match="root null is not allowed"):
+        load_text(tmp_path, text)
 
 
 def test_canonical_template_loads():

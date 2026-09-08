@@ -169,6 +169,7 @@ def _load_yaml(config_path: Path) -> dict[str, object]:
     if not text.strip():
         return {}
     try:
+        nodes = list(yaml.compose_all(text, Loader=_StrictLoader))
         documents = list(yaml.load_all(text, Loader=_StrictLoader))
     except yaml.YAMLError as error:
         raise ConfigError(f"invalid YAML configuration {config_path}: {error}") from error
@@ -178,6 +179,13 @@ def _load_yaml(config_path: Path) -> dict[str, object]:
         raise ConfigError(f"invalid YAML configuration {config_path}: expected one document")
     document = documents[0]
     if document is None:
+        node = nodes[0]
+        if (
+            isinstance(node, yaml.ScalarNode)
+            and node.tag == "tag:yaml.org,2002:null"
+            and node.start_mark.index == node.end_mark.index
+        ):
+            return {}
         raise ConfigError(f"invalid YAML configuration {config_path}: root null is not allowed")
     if not isinstance(document, dict):
         raise ConfigError(f"invalid YAML configuration {config_path}: root must be a mapping")
