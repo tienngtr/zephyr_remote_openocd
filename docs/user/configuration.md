@@ -63,6 +63,7 @@ absolute or use `~` (only the current user form is supported). Local paths are
 expanded and normalized before duplicate detection; duplicate normalized local
 keys are errors even when their remote destinations match. Mappings refer to
 resources already present on the remote host and do not stage local contents.
+Local and remote paths may contain spaces; quote them as required by YAML syntax.
 
 `forward_env` contains names whose current local values may be sent to remote
 OpenOCD. Values are never stored in configuration. Missing local variables are

@@ -333,13 +333,18 @@ def _prepare_remote_paths(selected):
     ):
         return selected
     ssh = SshCommand(selected.ssh_command)
-    code = "import pathlib; print(pathlib.Path.home(), flush=True)"
+    code = "import json,pathlib; print(json.dumps(str(pathlib.Path.home())), flush=True)"
     result = ssh.run(selected.ssh_host, "python3 -c " + shlex.quote(code), timeout=30)
     if result.returncode:
         detail = (result.stderr or result.stdout).decode("utf-8", "replace").strip()
         raise ConfigError(f"cannot resolve remote home for {selected.name}: {detail}")
-    home = result.stdout.decode("utf-8", "replace").strip()
-    if not home.startswith("/") or any(character.isspace() for character in home):
+    try:
+        home = json.loads(result.stdout)
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise ConfigError(
+            f"remote home query returned an invalid path for {selected.name}"
+        ) from error
+    if not isinstance(home, str) or not home.startswith("/") or "\0" in home:
         raise ConfigError(f"remote home query returned an invalid path for {selected.name}")
 
     def expand(value: str) -> str:

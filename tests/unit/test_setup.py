@@ -103,3 +103,28 @@ def test_dependency_status_messages():
     assert "Warning: PyYAML and jsonschema are not available" in missing.getvalue()
     assert "Use the Python environment configured for Zephyr 4.4" in missing.getvalue()
     assert "requirements.txt" not in missing.getvalue()
+
+
+def test_activation_command_preserves_module_path_with_spaces(tmp_path, monkeypatch):
+    setup = load_setup_module()
+    root = tmp_path / "module root"
+    destination = tmp_path / "user home" / ".config/zro/config.yaml"
+    monkeypatch.setattr(setup, "module_root", lambda: root)
+    monkeypatch.setattr(setup, "config_path", lambda: destination)
+    monkeypatch.setattr(setup, "initialize_config", lambda *_: True)
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        assert setup.main() == 0
+    activation = next(
+        line.strip()
+        for line in output.getvalue().splitlines()
+        if line.strip().startswith("export ")
+    )
+    result = subprocess.run(
+        ["bash", "-c", activation + '\nprintf "%s" "$EXTRA_ZEPHYR_MODULES"'],
+        env={**os.environ, "EXTRA_ZEPHYR_MODULES": "/existing module"},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout == f"/existing module;{root}"

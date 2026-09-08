@@ -10,9 +10,11 @@ import json
 import os
 import socket
 import subprocess
+from pathlib import PurePosixPath
 from unittest.mock import Mock
 
 import pytest
+from zephyr_remote_openocd.config import ConfigError, PathMapping, ResolvedRemote
 from zephyr_remote_openocd.remote.ssh import SshCommand
 
 from tests.support import env_path
@@ -33,6 +35,55 @@ def runner_api(monkeypatch):
         "zephyr_remote_openocd.zephyr44.runner"
     ).RemoteOpenOcdBinaryRunner
     return core, upstream, remote
+
+
+@pytest.fixture
+def runner_module(runner_api):
+    return importlib.import_module("zephyr_remote_openocd.zephyr44.runner")
+
+
+def test_remote_home_json_preserves_spaces(runner_module, monkeypatch, tmp_path):
+    selected = ResolvedRemote(
+        "lab",
+        tmp_path / "config.yaml",
+        "host",
+        ("~/tools/open ocd",),
+        ("ssh",),
+        (),
+        (PathMapping(tmp_path, PurePosixPath("~/remote tree")),),
+    )
+    run = Mock(
+        return_value=subprocess.CompletedProcess(
+            [], 0, json.dumps("/home/ Remote User ").encode() + b"\n", b""
+        )
+    )
+    monkeypatch.setattr(SshCommand, "run", run)
+    resolved = runner_module._prepare_remote_paths(selected)
+    assert resolved.openocd_command == ("/home/ Remote User /tools/open ocd",)
+    assert str(resolved.path_mappings[0].remote) == "/home/ Remote User /remote tree"
+    assert "json.dumps" in run.call_args.args[1]
+
+
+@pytest.mark.parametrize(
+    "output", (b'"relative"\n', b"null\n", b"not-json\n", b'"/bad\\u0000path"')
+)
+def test_remote_home_json_rejects_invalid_paths(runner_module, monkeypatch, tmp_path, output):
+    selected = ResolvedRemote(
+        "lab",
+        tmp_path / "config.yaml",
+        "host",
+        ("~/openocd",),
+        ("ssh",),
+        (),
+        (),
+    )
+    monkeypatch.setattr(
+        SshCommand,
+        "run",
+        Mock(return_value=subprocess.CompletedProcess([], 0, output, b"")),
+    )
+    with pytest.raises(ConfigError, match="remote home query returned an invalid path"):
+        runner_module._prepare_remote_paths(selected)
 
 
 def parser_for(runner):

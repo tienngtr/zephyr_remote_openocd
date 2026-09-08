@@ -123,6 +123,21 @@ remotes:
     assert str(selected.path_mappings[0].remote) == "~/remote"
 
 
+def test_local_and_remote_mapping_paths_preserve_spaces(tmp_path: Path):
+    local = tmp_path / "local tree"
+    config = load_text(
+        tmp_path,
+        f"""remotes:
+  lab:
+    path_mappings:
+      {str(local)!r}: '/remote tree'
+""",
+    )
+    mapping = resolve_remote(config, "lab", require_openocd=False).path_mappings[0]
+    assert mapping.local == local.resolve()
+    assert str(mapping.remote) == "/remote tree"
+
+
 def test_remote_overrides_replace_whole_settings(tmp_path: Path):
     config = load_text(
         tmp_path,

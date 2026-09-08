@@ -201,6 +201,17 @@ class TestStaging:
             assert files == ("a/empty", "b/binary")
             assert (output / "b/binary").read_bytes() == bytes(range(256)) + b"\0"
 
+    def test_path_components_with_spaces_round_trip(self, tmp_path: Path):
+        source = tmp_path / "source file.bin"
+        source.write_bytes(b"payload")
+        archive = build_archive((StagedFile(source, "directory with spaces/file name.bin"),))
+        output = tmp_path / "output directory"
+        output.mkdir()
+        _, _, files = extract_archive(archive.stream, output)
+        archive.stream.close()
+        assert files == ("directory with spaces/file name.bin",)
+        assert (output / files[0]).read_bytes() == b"payload"
+
     def test_unsafe_archive_members_are_rejected(self):
         cases = (("../escape", None), ("absolute", "symlink"), ("fifo", "fifo"))
         for name, kind in cases:
@@ -416,6 +427,35 @@ class TestFlashPlanning:
             assert planned.remote == "/specific/image.hex"
             assert planner.remote_checks[0].path == "/specific/image.hex"
 
+    def test_paths_with_spaces_remain_single_argv_and_quoted_tcl_words(self, tmp_path: Path):
+        local = tmp_path / "local images"
+        local.mkdir()
+        image = local / "firmware image.hex"
+        image.write_text(":00000001FF\n")
+        config = local / "board config.cfg"
+        config.write_text("# config\n")
+        plan = build_flash_plan(
+            FlashInputs(
+                executable="/remote tools/openocd",
+                image_type="hex",
+                file=str(image),
+                elf_file=None,
+                hex_file=str(image),
+                bin_file=None,
+                search_paths=(str(local),),
+                config_files=(str(config),),
+                load_command="program",
+                verify_command="verify_image",
+            ),
+            PathPlanner((PathMapping(local, PurePosixPath("/remote tree")),)),
+        )
+        argv = plan.process.argv
+        assert argv[0] == "/remote tools/openocd"
+        assert argv[argv.index("-s") + 1] == "/remote tree"
+        assert argv[argv.index("-f") + 1] == "/remote tree/board config.cfg"
+        assert 'program "/remote tree/firmware image.hex"' in argv
+        assert plan.process.required_paths[-1].path == "/remote tree/firmware image.hex"
+
     def test_escaping_symlink_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside:
             root = Path(directory)
@@ -533,6 +573,32 @@ class TestDebugPlanning:
                 "set _ZEPHYR_BOARD_SERIAL probe"
             ) < server.process.argv.index("-f")
             assert "reset init" in server.process.argv
+
+    def test_local_and_remote_paths_with_spaces_remain_argv_elements(self, tmp_path: Path):
+        local = tmp_path / "debug support"
+        local.mkdir()
+        config = local / "board config.cfg"
+        config.write_text("# config\n")
+        elf = tmp_path / "build output" / "zephyr image.elf"
+        elf.parent.mkdir()
+        elf.write_bytes(b"elf")
+        plan = build_debug_plan(
+            self.inputs(
+                local,
+                executable="/remote tools/openocd",
+                gdb="/local tools/gdb",
+                elf_file=str(elf),
+                config_files=(str(config),),
+            ),
+            PathPlanner((PathMapping(local, PurePosixPath("/remote support")),)),
+        )
+        assert plan.process.argv[0] == "/remote tools/openocd"
+        assert plan.process.argv[plan.process.argv.index("-s") + 1] == "/remote support"
+        assert plan.process.argv[plan.process.argv.index("-f") + 1] == (
+            "/remote support/board config.cfg"
+        )
+        assert plan.gdb_argv[0] == "/local tools/gdb"
+        assert str(elf) in plan.gdb_argv
 
     def test_disabled_services_and_distinct_gdb_ports(self):
         with tempfile.TemporaryDirectory() as directory:
