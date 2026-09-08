@@ -91,6 +91,11 @@ class SemihostingExpectation:
 
 
 @dataclass(frozen=True)
+class DebugExpectation:
+    breakpoint: str
+
+
+@dataclass(frozen=True)
 class OperationProfile:
     name: str
     capabilities: tuple[str, ...]
@@ -100,6 +105,7 @@ class OperationProfile:
     runner_args: tuple[str, ...]
     environment: tuple[tuple[str, str], ...]
     expectations: Expectations
+    debug: DebugExpectation | None
     rtt: RttExpectation | None
     semihosting: SemihostingExpectation | None
 
@@ -361,6 +367,17 @@ def _semihosting(raw: Any, path: Path, location: str) -> SemihostingExpectation:
     return SemihostingExpectation(commands, gdb_commands, output, timeout)
 
 
+def _debug(raw: Any, path: Path, location: str) -> DebugExpectation:
+    item = _table(raw, path, location)
+    _keys(item, {"breakpoint"}, path, location)
+    breakpoint = _identifier(
+        _required_string(item, "breakpoint", path, location),
+        path,
+        f"{location}.breakpoint",
+    )
+    return DebugExpectation(breakpoint)
+
+
 def _profile(
     raw: Any,
     path: Path,
@@ -381,6 +398,7 @@ def _profile(
             "runner_args",
             "environment",
             "expect",
+            "debug",
             "rtt",
             "semihosting",
         },
@@ -415,6 +433,8 @@ def _profile(
         if not isinstance(value, str) or "\0" in value:
             raise _error(path, f"{location}.environment.{key}", "expected a string value")
     expectations = _expectations(item.get("expect"), path, f"{location}.expect")
+    raw_debug = item.get("debug")
+    debug = _debug(raw_debug, path, f"{location}.debug") if raw_debug is not None else None
     raw_rtt = item.get("rtt")
     rtt = _rtt(raw_rtt, path, f"{location}.rtt") if raw_rtt is not None else None
     raw_semihosting = item.get("semihosting")
@@ -423,6 +443,8 @@ def _profile(
         if raw_semihosting is not None
         else None
     )
+    if "debug" in capabilities and debug is None:
+        raise _error(path, location, "debug capability requires a debug table")
     if "rtt" in capabilities and rtt is None:
         raise _error(path, location, "rtt capability requires an rtt table")
     if "semihosting" in capabilities and semihosting is None:
@@ -436,6 +458,7 @@ def _profile(
         runner_args,
         tuple(sorted(environment.items())),
         expectations,
+        debug,
         rtt,
         semihosting,
     )

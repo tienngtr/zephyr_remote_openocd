@@ -76,6 +76,8 @@ def _record(
         )
     if profile.expectations.thread_info_pattern:
         record["thread_info_pattern"] = profile.expectations.thread_info_pattern
+    if profile.debug is not None:
+        record["debug_breakpoint"] = profile.debug.breakpoint
     if profile.rtt is not None:
         record.update(
             rtt_port=profile.rtt.port,

@@ -25,8 +25,8 @@ def test_inventory_profiles_become_independent_capability_records(tmp_path):
     assert {"debug", "attach", "debugserver"}.issubset(record["capabilities"])
     assert records_for([record], "rtt") == []
     assert records_for([record], "debug") == [record]
-    assert record["serial_data_bits"] == 8
-    assert record["serial_parity"] == "none"
+    assert record["debug_breakpoint"] == "main"
+    assert "serial_device" not in record
 
 
 def test_probe_serial_is_translated_to_runner_argument(tmp_path):

@@ -15,15 +15,6 @@ import pytest
 from zephyr_remote_openocd.remote.ssh import SshCommand
 
 from tests.process_support import read_line
-from tests.serial_reader import (
-    read_event as _read_event,
-)
-from tests.serial_reader import (
-    remote_serial_reader_command,
-)
-from tests.serial_reader import (
-    stop_reader as _stop,
-)
 from tests.support import ROOT
 
 pytestmark = [pytest.mark.hardware, pytest.mark.destructive]
@@ -71,20 +62,6 @@ class TestRealOpenOcdDebug:
         cleanup = ssh.run(fixture["host"], f"test ! -e {shlex.quote(session.group(2))}", timeout=20)
         assert cleanup.returncode == 0, cleanup.stderr.decode("utf-8", "replace")
 
-    def _serial_reader(self, fixture):
-        ssh = SshCommand(tuple(fixture["ssh_command"]))
-        remote_command = remote_serial_reader_command(
-            str(fixture["serial_device"]),
-            int(fixture["serial_baud"]),
-            str(fixture["expected_pattern"]),
-            float(fixture["serial_timeout"]) + 180,
-            data_bits=int(fixture.get("serial_data_bits", 8)),
-            parity=str(fixture.get("serial_parity", "none")),
-            stop_bits=int(fixture.get("serial_stop_bits", 1)),
-            flow_control=str(fixture.get("serial_flow_control", "none")),
-        )
-        return ssh.popen(fixture["host"], remote_command, "-o", "ControlMaster=no")
-
     def test_debug(self, debug_fixture):
         self._debug(debug_fixture)
 
@@ -95,37 +72,43 @@ class TestRealOpenOcdDebug:
         self._debugserver(debugserver_fixture)
 
     def _debug(self, fixture):
-        reader = self._serial_reader(fixture)
-        try:
-            assert _read_event(reader, 15)["type"] == "READY"
-            assert reader.stdin is not None
-            reader.stdin.write(b"ARM\n")
-            reader.stdin.flush()
-            assert _read_event(reader, 15)["type"] == "ARMED"
-            commands = fixture.get("debug_gdb_init", ("monitor reset run", "detach", "quit"))
-            command = self._west_command(
-                fixture, "debug", extra_args=tuple(f"--gdb-init={item}" for item in commands)
-            )
-            result = subprocess.run(
-                command,
-                cwd=fixture.get("workspace"),
-                env=self._environment(fixture),
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                check=False,
-                timeout=180,
-            )
-            event = _read_event(reader, float(fixture["serial_timeout"]) + 2)
-            assert result.returncode == 0, result.stdout
-            assert event["type"] == "MATCH", event
-            assert "Loading section" in result.stdout
-            assert "Remote debugging using 127.0.0.1:" in result.stdout
-            for pattern in fixture.get("debug_patterns", ()):
-                assert re.search(pattern, result.stdout)
-            self._assert_cleanup(fixture, result.stdout)
-        finally:
-            _stop(reader)
+        breakpoint = fixture["debug_breakpoint"]
+        commands = (
+            f"break {breakpoint}",
+            "continue",
+            'printf "ZRO_PC_BEGIN\\n"',
+            "p/x $pc",
+            'printf "ZRO_PC_END\\n"',
+            'printf "ZRO_INSN_BEGIN\\n"',
+            "x/1i $pc",
+            'printf "ZRO_INSN_END\\n"',
+            "detach",
+            "quit",
+        )
+        command = self._west_command(
+            fixture, "debug", extra_args=tuple(f"--gdb-init={item}" for item in commands)
+        )
+        result = subprocess.run(
+            command,
+            cwd=fixture.get("workspace"),
+            env=self._environment(fixture),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=180,
+        )
+        assert result.returncode == 0, result.stdout
+        assert "Loading section" in result.stdout
+        assert "Remote debugging using 127.0.0.1:" in result.stdout
+        assert re.search(rf"Breakpoint \d+,\s+{re.escape(breakpoint)}\b", result.stdout)
+        assert re.search(r"ZRO_PC_BEGIN\s*\$\d+\s*=\s*0x[0-9a-fA-F]+", result.stdout)
+        assert re.search(r"ZRO_INSN_BEGIN\s*=>\s*0x[0-9a-fA-F]+", result.stdout)
+        assert "ZRO_PC_END" in result.stdout
+        assert "ZRO_INSN_END" in result.stdout
+        for pattern in fixture.get("debug_patterns", ()):
+            assert re.search(pattern, result.stdout)
+        self._assert_cleanup(fixture, result.stdout)
 
     def _attach(self, fixture):
         command = self._west_command(

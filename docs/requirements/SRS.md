@@ -1202,7 +1202,7 @@ Changing the configuration default followed by a normal west runner invocation w
 
 ## AC-DEBUG-001
 
-`west debug -r remote_openocd` provides local source-level debugging through remote OpenOCD.
+`west debug -r remote_openocd` provides local source-level debugging through remote OpenOCD. On a real target, the current ELF can be loaded, execution can continue without a post-load reset, a configured source symbol can be reached by breakpoint, the program counter and current instruction can be inspected, and GDB can detach cleanly. Fresh application console output is not required.
 
 
 ## AC-DEBUG-002

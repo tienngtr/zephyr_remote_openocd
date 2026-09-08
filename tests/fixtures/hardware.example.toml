@@ -55,12 +55,14 @@ assert_bindto = false
 [targets.profiles.debug]
 capabilities = ["debug", "attach", "debugserver"]
 build = "hello"
-serial = "console"
 runner_args = []
 environment = {}
 
 [targets.profiles.debug.expect]
 patterns = ["hello"]
+
+[targets.profiles.debug.debug]
+breakpoint = "main"
 
 [targets.profiles.rtt]
 capabilities = ["rtt"]

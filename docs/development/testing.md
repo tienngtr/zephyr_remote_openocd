@@ -69,6 +69,13 @@ Zephyr Python environment normally provides them). Clean-install checks also req
 tests also require the declared board, probe, serial endpoint, and remote
 OpenOCD setup.
 
+Real `west debug` acceptance is source-level and architecture-independent. The
+selected debug profile supplies an ELF and breakpoint symbol. GDB loads that
+ELF, continues without a post-load reset, stops at the symbol, reads `$pc` and
+the current instruction, then detaches. This deliberately does not use serial
+output: RAM-loaded targets can lose the new image on reset, and Zephyr does not
+promise fresh application output from `west debug`.
+
 Run the desired layers explicitly:
 
 ```sh
@@ -84,6 +91,15 @@ ZRO_STRICT_EXTERNAL=1 .venv/bin/python -m pytest \
 
 ZRO_STRICT_EXTERNAL=1 .venv/bin/python -m pytest \
   tests/hardware -m hardware \
+  --hardware-config /path/to/hardware.toml
+```
+
+Select one real debug profile without running other destructive nodes by using
+its complete parametrized node ID:
+
+```sh
+ZRO_STRICT_EXTERNAL=1 .venv/bin/python -m pytest \
+  'tests/hardware/test_real_debug.py::TestRealOpenOcdDebug::test_debug[board:debug]' \
   --hardware-config /path/to/hardware.toml
 ```
 

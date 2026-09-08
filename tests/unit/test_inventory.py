@@ -27,6 +27,9 @@ def test_neutral_example_is_complete_and_renderable() -> None:
     assert target.build("hello").application == "samples/hello_world"
     assert target.endpoint("console").baud == 115200
     assert target.profiles[0].environment == (("FTDI_CHANNEL", "0"),)
+    debug = next(profile for profile in target.profiles if profile.name == "debug")
+    assert debug.debug is not None
+    assert debug.debug.breakpoint == "main"
     rendered = render_product_config(inventory.host("lab"), default_runner="remote_openocd")
     assert 'default_runner: "remote_openocd"' in rendered
     assert 'default_remote: "lab"' in rendered
@@ -91,6 +94,20 @@ def valid_prefix() -> str:
             "rtt capability",
         ),
         (
+            "[targets.profiles.default]\ncapabilities = [\"debug\"]\nbuild = \"hello\"\n",
+            "debug capability",
+        ),
+        (
+            "[targets.profiles.default]\ncapabilities = [\"debug\"]\nbuild = \"hello\"\n"
+            "[targets.profiles.default.debug]\nbreakpoint = \"main + 4\"\n",
+            "breakpoint",
+        ),
+        (
+            "[targets.profiles.default]\ncapabilities = [\"debug\"]\nbuild = \"hello\"\n"
+            "[targets.profiles.default.debug]\nbreakpoint = \"main\"\nfuture = true\n",
+            "unknown key",
+        ),
+        (
             "[targets.profiles.default]\ncapabilities = [\"flash\"]\nbuild = \"missing\"\n",
             "unknown build",
         ),
@@ -120,6 +137,7 @@ def test_serial_framing_and_capabilities_are_independent(tmp_path: Path) -> None
         'pattern = "ready"\ntimeout = 2\n[targets.profiles.default]\n'
         'capabilities = ["flash", "debug", "attach", "debugserver"]\n'
         'build = "hello"\nserial = "console"\nenvironment = {}\n'
+        '[targets.profiles.default.debug]\nbreakpoint = "main"\n'
         '[targets.profiles.rtt]\ncapabilities = ["rtt"]\nbuild = "hello"\n'
         'environment = {}\n[targets.profiles.rtt.rtt]\nport = 20000\n'
         'response = "ok"\ntimeout = 1\n'
@@ -129,6 +147,8 @@ def test_serial_framing_and_capabilities_are_independent(tmp_path: Path) -> None
     assert target.endpoint("console").data_bits == 8
     assert {profile.name for profile in target.profiles} == {"default", "rtt"}
     assert target.profiles[0].capabilities == ("flash", "debug", "attach", "debugserver")
+    assert target.profiles[0].debug is not None
+    assert target.profiles[0].debug.breakpoint == "main"
 
 
 def test_duplicate_host_and_mapping_are_rejected(tmp_path: Path) -> None:

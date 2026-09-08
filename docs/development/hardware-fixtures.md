@@ -40,11 +40,29 @@ and flow control) rather than embedding device knowledge in test code. Never
 commit a populated inventory, generated build, serial capture, credential, or
 remote workspace.
 
+A profile advertising `debug` must declare a source-level breakpoint symbol:
+
+```toml
+[targets.profiles.debug.debug]
+breakpoint = "main"
+```
+
+The profile may select any build recipe; it is not restricted to
+`samples/hello_world` or `samples/basic/minimal`. Its ELF must contain debug
+information and the configured C symbol. Real debug acceptance uses GDB to load
+the ELF, continue without resetting, stop at that symbol, and inspect the
+program counter and current instruction. GDB and OpenOCD may implement the
+ordinary breakpoint as a software breakpoint in writable RAM or a hardware
+breakpoint in read-only memory. A debug-only profile does not need a serial
+endpoint because `west debug` does not guarantee fresh application output.
+
 The serial observer acknowledges arming after discarding queued input. Its
 deadline includes the 180-second west operation budget plus the inventory's
 serial observation timeout, so deployment does not consume the observation
 allowance. Choose a pattern specific to the fixture application; a generic
 banner alone cannot distinguish an older copy of that application still running.
+This output oracle applies to `west flash`, which must start the new image; it is
+not an acceptance condition for `debug`, `attach`, or `debugserver`.
 
 Semihosting GDB commands must finish naturally (including detach/quit as
 appropriate) within the configured timeout. The acceptance test requires a
