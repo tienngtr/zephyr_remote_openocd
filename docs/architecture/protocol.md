@@ -1,10 +1,10 @@
-# Protocol 1 Helper Contract
+# Protocol v1 Helper Contract
 
-This document defines the Protocol 1 helper wire contract. A compatible pair
+This document defines the Protocol v1 helper wire contract. A compatible pair
 implements the complete contract, not merely the numeric version.
 
 
-Protocol 1 is the current change-controlled contract. It uses UTF-8 JSON lines: one JSON object and one `LF` per
+Protocol v1 is the current change-controlled contract. It uses UTF-8 JSON lines: one JSON object and one `LF` per
 frame, with integer, non-Boolean `version: 1` and non-empty string `type`.
 Helper stdout contains protocol frames only. Unknown fields are ignored for
 compatibility tolerance, but senders MUST NOT use them as an extension mechanism.
@@ -68,9 +68,9 @@ with combined output as a string, while failure exits nonzero with `ERROR`.
 Deployment bootstrap emits `DEPLOYED {status, path, sha256}`, where status is
 `deployed`/`reused`, path is non-empty, and the digest has the same form.
 
-A compatible protocol-1 pair implements this complete contract, not just the
+A compatible protocol-v1 pair implements this complete contract, not just the
 numeric version. Digest deployment atomically replaces the helper at the
-protocol-1 path with matching source. The configured command prefix is passed
+protocol-v1 path with matching source. The configured command prefix is passed
 as argv and runner-generated arguments remain separate from it.
 Bulk binary content remains stream-oriented instead of JSON/base64.
 

@@ -889,7 +889,7 @@ validation documents.
 
 The staging manifest, safe archive encoding and extraction, private remote
 filesystem layout, path rewriting, helper deployment protocol, and real OpenOCD
-artifact staging are implemented by the protocol-1 helper and flash slice.
+artifact staging are implemented by the protocol-v1 helper and flash slice.
 
 ---
 
@@ -909,7 +909,7 @@ No assumption is made that the local SSH executable comes from the local Linux d
 
 # 36. Remote Helper Protocol
 
-The exact change-controlled Protocol 1 wire contract is maintained in
+The exact change-controlled Protocol v1 wire contract is maintained in
 [protocol.md](protocol.md). This architecture document retains only the
 ownership boundary: the helper is versioned, stdout is JSON-lines protocol only,
 and every authorized client/helper contract change includes an explicit

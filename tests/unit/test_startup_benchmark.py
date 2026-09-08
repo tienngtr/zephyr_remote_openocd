@@ -81,7 +81,7 @@ def test_benchmark_cli_reports_measured_overhead(monkeypatch, capsys, remote, me
         assert benchmark.main() == status
     captured = capsys.readouterr()
     decoded = json.loads(captured.out)
-    assert decoded["schema"] == "zro.startup-overhead.v1"
+    assert decoded["schema"] == "zro.startup-overhead"
     assert decoded["baseline"]["statistics"]["median"] == 2.0
     assert decoded["remote"]["statistics"]["iterations"] == 3
     assert decoded["overhead"]["statistics"]["median"] == median

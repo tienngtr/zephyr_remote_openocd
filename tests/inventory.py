@@ -146,7 +146,6 @@ class InventoryTarget:
 @dataclass(frozen=True)
 class Inventory:
     path: Path
-    schema_version: int
     hosts: tuple[InventoryHost, ...]
     targets: tuple[InventoryTarget, ...]
 
@@ -605,9 +604,7 @@ def load_inventory(path: Path | str) -> Inventory:
         raise InventoryError(f"cannot read inventory {inventory_path}: {error}") from error
     if not isinstance(document, dict):
         raise InventoryError(f"invalid inventory {inventory_path}: expected a TOML table")
-    _keys(document, {"schema_version", "hosts", "targets"}, inventory_path, "inventory")
-    if document.get("schema_version") != 1:
-        raise _error(inventory_path, "schema_version", "expected integer 1")
+    _keys(document, {"hosts", "targets"}, inventory_path, "inventory")
     raw_hosts = document.get("hosts")
     if not isinstance(raw_hosts, list) or not raw_hosts:
         raise _error(inventory_path, "hosts", "expected a non-empty array of tables")
@@ -621,7 +618,7 @@ def load_inventory(path: Path | str) -> Inventory:
         _target(raw, inventory_path, index, hosts) for index, raw in enumerate(raw_targets)
     ]
     _unique_names([target.id for target in targets_list], inventory_path, "targets")
-    return Inventory(inventory_path, 1, tuple(hosts_list), tuple(targets_list))
+    return Inventory(inventory_path, tuple(hosts_list), tuple(targets_list))
 
 
 def render_product_config(host: InventoryHost, *, default_runner: str = "openocd") -> str:

@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
-# Test-only hardware inventory schema version 1.
 # Copy this file outside the repository and replace placeholders with local
 # values. Do not commit host names, probe serials, device paths, or credentials.
-schema_version = 1
 
 [[hosts]]
 id = "lab"

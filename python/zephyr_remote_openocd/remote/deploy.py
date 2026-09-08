@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Digest-based installation of the protocol-1 helper."""
+"""Digest-based installation of the protocol-v1 helper."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ HELPER_SOURCE = Path(__file__).resolve().parents[1] / "remote_helper.py"
 BOOTSTRAP = r'''import hashlib,json,os,pathlib,sys,tempfile
 data=sys.stdin.buffer.read()
 digest=hashlib.sha256(data).hexdigest()
-base=pathlib.Path.home()/'.local/libexec/zephyr_remote_openocd/protocol-1'
+base=pathlib.Path.home()/'.local/libexec/zephyr_remote_openocd/protocol-v1'
 base.mkdir(mode=0o700,parents=True,exist_ok=True)
 os.chmod(base,0o700)
 target=base/'helper.py'

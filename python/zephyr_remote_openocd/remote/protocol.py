@@ -91,7 +91,7 @@ def _sha256(value: Any) -> bool:
 
 
 def validate_controller_command(message: dict[str, Any]) -> None:
-    """Validate the change-controlled protocol-1 controller command fields."""
+    """Validate the change-controlled protocol-v1 controller command fields."""
 
     kind = message["type"]
     if kind == "STOP":
@@ -148,10 +148,10 @@ def validate_controller_command(message: dict[str, Any]) -> None:
 
 
 def validate_controller_event(message: dict[str, Any]) -> None:
-    """Validate the fixed required fields of a protocol-1 controller event.
+    """Validate the fixed required fields of a protocol-v1 controller event.
 
     Unknown fields are deliberately ignored: they were accepted by the original
-    helper/client implementation and are not a protocol-1 extension point.
+    helper/client implementation and are not a protocol-v1 extension point.
     """
 
     kind = message["type"]

@@ -155,7 +155,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, object]:
     ]
     result = {
         "benchmark_version": BENCHMARK_VERSION,
-        "schema": "zro.startup-overhead.v1",
+        "schema": "zro.startup-overhead",
         "case": args.command,
         "baseline_treatment": (
             "built-in openocd --context is a conservative lower-bound proxy for "

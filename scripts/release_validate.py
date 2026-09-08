@@ -341,7 +341,7 @@ def main(argv: list[str] | None = None) -> int:
         None,
     )
     summary = {
-        "schema": "zro.release-validation.v1",
+        "schema": "zro.release-validation",
         "metadata": _metadata(),
         "capabilities": capability_report,
         "performance": performance,

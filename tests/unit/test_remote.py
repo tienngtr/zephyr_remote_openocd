@@ -97,25 +97,25 @@ class TestProtocol:
             )
         )
 
-    def test_fixed_protocol_1_controller_fixture_remains_compatible(self):
-        """A recorded protocol-1 sequence protects required fields and ordering."""
-        fixture = ROOT / "tests/fixtures/protocol1/controller_openocd_events.jsonl"
+    def test_fixed_protocol_v1_controller_fixture_remains_compatible(self):
+        """A recorded protocol-v1 sequence protects required fields and ordering."""
+        fixture = ROOT / "tests/fixtures/protocol_v1/controller_openocd_events.jsonl"
         order = EventOrder()
         for line in fixture.read_bytes().splitlines():
             order.accept(decode_message(line))
 
-        fake_fixture = ROOT / "tests/fixtures/protocol1/controller_fake_events.jsonl"
+        fake_fixture = ROOT / "tests/fixtures/protocol_v1/controller_fake_events.jsonl"
         fake_order = EventOrder()
         for line in fake_fixture.read_bytes().splitlines():
             fake_order.accept(decode_message(line))
 
-    def test_fixed_protocol_1_controller_commands_remain_compatible(self):
-        fixture = ROOT / "tests/fixtures/protocol1/controller_commands.jsonl"
+    def test_fixed_protocol_v1_controller_commands_remain_compatible(self):
+        fixture = ROOT / "tests/fixtures/protocol_v1/controller_commands.jsonl"
         for line in fixture.read_bytes().splitlines():
             validate_controller_command(decode_message(line))
 
-    def test_fixed_protocol_1_one_shot_responses_remain_compatible(self):
-        fixture = ROOT / "tests/fixtures/protocol1/one_shot_responses.jsonl"
+    def test_fixed_protocol_v1_one_shot_responses_remain_compatible(self):
+        fixture = ROOT / "tests/fixtures/protocol_v1/one_shot_responses.jsonl"
         staged, version, deployed = [
             decode_message(line) for line in fixture.read_bytes().splitlines()
         ]
@@ -123,8 +123,8 @@ class TestProtocol:
         validate_openocd_version_response(version)
         validate_deployment_response(deployed)
 
-    def test_fixed_protocol_1_start_openocd_frame_has_no_reserved_overrides(self):
-        fixture = ROOT / "tests/fixtures/protocol1/controller_start_openocd.json"
+    def test_fixed_protocol_v1_start_openocd_frame_has_no_reserved_overrides(self):
+        fixture = ROOT / "tests/fixtures/protocol_v1/controller_start_openocd.json"
         command = decode_message(fixture.read_bytes())
         assert command["type"] == "START_OPENOCD"
         assert command["version"] == 1

@@ -74,13 +74,13 @@ preserve development history.
 Unknown keys remain errors, and `resources/config.yaml.example` is the
 canonical template. Hardware fixture inventories may remain TOML.
 
-Protocol 1 is the current wire contract: matching version numbers alone are
+Protocol v1 is the current wire contract: matching version numbers alone are
 insufficient unless both sides implement the complete documented contract. Do
 not change the protocol unless the task explicitly authorizes a protocol-contract
 change. When authorized, update the protocol document, client, helper, fixtures,
-requirements, and compatibility tests together, and explicitly decide whether
-the numeric protocol version must change. Do not invent a new protocol version
-merely to preserve development history. Keep helper stdout JSON-only and relay
+requirements, and compatibility tests together. The Protocol v1 wire value and
+contract are the fixed target for this development phase; do not introduce
+another protocol version merely to preserve development history. Keep helper stdout JSON-only and relay
 child output as events. Serial observation is test-only.
 RTT uses structured runner state and the configured port; never infer it from
 GDB RSP traffic. Direct semihosting console validation uses fixture-supplied

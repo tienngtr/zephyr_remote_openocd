@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 
-"""Protocol-1 remote helper.  This file is deliberately self-contained."""
+"""Protocol-v1 remote helper.  This file is deliberately self-contained."""
 
 from __future__ import annotations
 

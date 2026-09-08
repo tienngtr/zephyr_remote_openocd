@@ -929,7 +929,7 @@ Loss of the controlling helper/SSH session SHALL cause the associated OpenOCD pr
 ## REQ-FUNC-HELP-006
 
 Helper protocol compatibility SHALL use the version field defined by the current
-Protocol 1 contract. A protocol change requires explicit authorization and
+Protocol v1 contract. A protocol change requires explicit authorization and
 coordinated updates to the protocol specification, controller, helper, fixtures,
 and compatibility tests. The compatibility analysis for an authorized change
 SHALL explicitly decide whether its numeric protocol version must change;

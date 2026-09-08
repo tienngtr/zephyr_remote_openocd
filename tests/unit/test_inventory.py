@@ -21,7 +21,6 @@ def write_inventory(tmp_path: Path, text: str) -> Path:
 
 def test_neutral_example_is_complete_and_renderable() -> None:
     inventory = load_inventory(EXAMPLE)
-    assert inventory.schema_version == 1
     assert inventory.hosts[0].forward_env == ("FTDI_CHANNEL",)
     target = inventory.target("board")
     assert target.build("hello").application == "samples/hello_world"
@@ -44,11 +43,10 @@ def test_neutral_example_is_complete_and_renderable() -> None:
 @pytest.mark.parametrize(
     ("fragment", "diagnostic"),
     (
-        ("schema_version = 2\n", "schema_version"),
         ("future = true\n", "unknown key"),
-        ("schema_version = 1\n[[hosts]]\nid = \"lab\"\n", r"hosts\[0\]\.address"),
+        ("[[hosts]]\nid = \"lab\"\n", r"hosts\[0\]\.address"),
         (
-            "schema_version = 1\n[[hosts]]\nid=\"lab\"\naddress=\"x\"\nopenocd=\"openocd\"\n",
+            "[[hosts]]\nid=\"lab\"\naddress=\"x\"\nopenocd=\"openocd\"\n",
             r"hosts\[0\]\.openocd",
         ),
     ),
@@ -80,7 +78,7 @@ def test_rendered_inventory_round_trips_through_product_schema(tmp_path, name):
 
 def valid_prefix() -> str:
     return (
-        'schema_version = 1\n[[hosts]]\nid = "lab"\naddress = "host"\n'
+        '[[hosts]]\nid = "lab"\naddress = "host"\n'
         'openocd = "/opt/openocd"\nforward_env = ["CHANNEL"]\n'
         '[[targets]]\nid = "board"\nhost = "lab"\nzephyr_base = "/zephyr"\n'
         'west = "/west"\nboard = "vendor/board"\n[targets.builds.hello]\n'
@@ -206,7 +204,7 @@ def test_rtt_requires_reset_persistence(tmp_path: Path, survival: str, diagnosti
 
 def test_duplicate_host_and_mapping_are_rejected(tmp_path: Path) -> None:
     duplicate_hosts = (
-        'schema_version = 1\n[[hosts]]\nid = "lab"\naddress = "one"\n'
+        '[[hosts]]\nid = "lab"\naddress = "one"\n'
         'openocd = "/opt/openocd"\n[[hosts]]\nid = "lab"\naddress = "two"\n'
         'openocd = "/opt/openocd"\n'
     )

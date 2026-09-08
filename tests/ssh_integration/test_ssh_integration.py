@@ -211,7 +211,7 @@ class TestSshTransportIntegration:
         )
         assert failed.returncode == 7
 
-    def test_protocol_1_fake_helper_vertical_slice(self):
+    def test_protocol_v1_fake_helper_vertical_slice(self):
         """Permanent fake-workload coverage for the production transport path."""
         first = deploy_helper(self.ssh, self.host)
         second = deploy_helper(self.ssh, self.host)
