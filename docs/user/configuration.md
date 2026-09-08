@@ -10,6 +10,9 @@ The complete machine-readable contract is
 the commented template is [`config.yaml.example`](../../resources/config.yaml.example).
 An empty YAML document is equivalent to `{}`. Unknown keys, duplicate YAML
 mapping keys, null values, and type mismatches are errors.
+A genuinely absent configuration file uses the defaults. A dangling symbolic
+link or another existing path that cannot be read as a file is an error; valid
+symbolic links to configuration files are supported.
 
 ## Top-level settings
 

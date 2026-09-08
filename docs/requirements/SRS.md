@@ -384,7 +384,10 @@ If remote operation is requested while mandatory remote settings are missing, th
 
 ## REQ-FUNC-CONFIG-008
 
-Malformed configuration SHALL result in an actionable configuration error rather than an unhandled parser traceback.
+Malformed configuration, or a configured path that exists but cannot be read as
+a file, SHALL result in an actionable configuration error rather than silently
+using defaults or exposing an unhandled parser traceback. Only an absent path
+SHALL be treated as empty configuration.
 
 ## REQ-FUNC-CONFIG-009
 

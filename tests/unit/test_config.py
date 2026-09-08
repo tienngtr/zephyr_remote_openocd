@@ -26,6 +26,24 @@ def test_defaults_when_file_is_absent(tmp_path: Path):
     assert config.remotes == {}
 
 
+def test_dangling_configuration_symlink_is_actionable(tmp_path: Path):
+    config_path = tmp_path / "config.yaml"
+    config_path.symlink_to(tmp_path / "missing.yaml")
+    with pytest.raises(
+        ConfigError,
+        match=r"configuration .*config\.yaml does not resolve to an existing file",
+    ):
+        load_config(config_path)
+
+
+def test_configuration_symlink_to_file_is_supported(tmp_path: Path):
+    target = tmp_path / "actual.yaml"
+    target.write_text("default_runner: remote_openocd\n")
+    config_path = tmp_path / "config.yaml"
+    config_path.symlink_to(target)
+    assert load_config(config_path).default_runner == "remote_openocd"
+
+
 def test_default_path_uses_yaml_and_override(monkeypatch, tmp_path: Path):
     monkeypatch.delenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", raising=False)
     assert default_config_path().name == "config.yaml"

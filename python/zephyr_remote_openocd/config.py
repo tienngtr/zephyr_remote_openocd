@@ -163,7 +163,19 @@ def default_config_path() -> Path:
 def _load_yaml(config_path: Path) -> dict[str, object]:
     _require_dependencies(config_path)
     try:
-        text = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+        text = config_path.read_text(encoding="utf-8")
+    except FileNotFoundError as error:
+        try:
+            config_path.lstat()
+        except FileNotFoundError:
+            return {}
+        except OSError as inspection_error:
+            raise ConfigError(
+                f"cannot inspect configuration {config_path}: {inspection_error}"
+            ) from inspection_error
+        raise ConfigError(
+            f"configuration {config_path} does not resolve to an existing file"
+        ) from error
     except OSError as error:
         raise ConfigError(f"cannot read configuration {config_path}: {error}") from error
     if not text.strip():
