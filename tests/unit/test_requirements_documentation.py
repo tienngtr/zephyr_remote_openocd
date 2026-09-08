@@ -7,7 +7,7 @@ import re
 from tests.unit.test_documentation import ROOT
 
 SRS = ROOT / "docs" / "requirements" / "SRS.md"
-TRACEABILITY = ROOT / "docs" / "traceability" / "v1.md"
+TRACEABILITY = ROOT / "docs" / "traceability" / "acceptance.md"
 IDENTIFIER = re.compile(r"^## ((?:REQ|AC)-[A-Z0-9-]+)$", re.MULTILINE)
 TRACEABILITY_ROW = re.compile(r"^\| ((?:AC)-[A-Z0-9-]+) \|", re.MULTILINE)
 

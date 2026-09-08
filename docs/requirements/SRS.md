@@ -1,6 +1,6 @@
 # Zephyr west runner for remote OpenOCD
 ## Software Requirements Specification
-### V1 Baseline — Product 0.1.0 (initial development)
+### Current Development Baseline
 
 # 1. Purpose
 
@@ -38,7 +38,7 @@ A supported developer machine running either:
 - native Linux; or
 - Linux under WSL 2.
 
-Both are first-class V1 platforms.
+Both are first-class supported platforms.
 
 ## 2.2 Remote host
 
@@ -48,7 +48,7 @@ A Linux machine reachable through SSH and physically connected to target boards 
 
 The out-of-tree Zephyr `ZephyrBinaryRunner` specified by this document.
 
-Its V1 runner name is:
+Its runner name is:
 
 ```text
 remote_openocd
@@ -131,7 +131,7 @@ A physical probe MAY provide multiple independently usable channels.
 
 **SHALL / SHALL NOT**
 
-Mandatory or prohibited behavior for V1 compliance.
+Mandatory or prohibited behavior for conformance to this specification.
 
 **SHOULD / SHOULD NOT**
 
@@ -183,7 +183,7 @@ Adding or removing requirements SHALL NOT renumber unrelated requirements.
 
 # 4. Product Goals
 
-V1 has the following primary goals:
+The project has the following primary goals:
 
 1. Require no source-repository modifications solely for remote-debug integration.
 2. Preserve normal Zephyr west workflows.
@@ -203,11 +203,11 @@ V1 has the following primary goals:
 
 ## REQ-FUNC-SCOPE-001
 
-V1 SHALL target Zephyr 4.4.
+The runner SHALL target Zephyr 4.4.
 
 ## REQ-FUNC-SCOPE-002
 
-V1 SHALL support:
+The runner SHALL support:
 
 ```text
 west flash
@@ -219,7 +219,7 @@ west rtt
 
 ## REQ-FUNC-SCOPE-003
 
-V1 SHALL target normal upstream-compatible OpenOCD behavior expected by Zephyr 4.4.
+The runner SHALL target normal upstream-compatible OpenOCD behavior expected by Zephyr 4.4.
 
 The requirements SHALL NOT depend on project-specific OpenOCD extensions.
 
@@ -233,7 +233,7 @@ The custom runner SHALL NOT automatically advertise remote OpenOCD support for b
 
 ## REQ-FUNC-SCOPE-006
 
-Sysbuild and multi-domain flashing are outside V1 scope.
+Sysbuild and multi-domain flashing are outside the current scope.
 
 ## REQ-FUNC-SCOPE-007
 
@@ -286,15 +286,15 @@ The user documentation SHALL describe at least one convenient mechanism which do
 
 ## REQ-FUNC-INSTALL-001
 
-V1 SHALL be distributable as a self-contained Zephyr module.
+The project SHALL be distributable as a self-contained Zephyr module.
 
 ## REQ-FUNC-INSTALL-002
 
-V1 SHALL NOT require installation as a Python package.
+The project SHALL NOT require installation as a Python package.
 
 ## REQ-FUNC-INSTALL-003
 
-V1 SHALL NOT require:
+The project SHALL NOT require:
 
 - PyPI;
 - a private Python package index;
@@ -310,7 +310,7 @@ environment, such as `pyelftools` used by the built-in OpenOCD runner.
 
 ## REQ-FUNC-INSTALL-004
 
-V1 SHALL be usable when distributed as an ordinary filesystem directory.
+The project SHALL be usable when distributed as an ordinary filesystem directory.
 
 Examples MAY include:
 
@@ -341,7 +341,7 @@ Documentation SHOULD present a convenient user-local location.
 
 ## REQ-FUNC-CONFIG-001
 
-V1 SHALL use:
+The implementation SHALL use:
 
 ```text
 ~/.config/zephyr_remote_openocd/config.yaml
@@ -526,7 +526,7 @@ The custom runner SHALL support applicable Zephyr 4.4 OpenOCD runner options req
 
 ## REQ-FUNC-OPT-002
 
-V1 SHALL support probe selection through Zephyr 4.4's `--serial` option.
+The runner SHALL support probe selection through Zephyr 4.4's `--serial` option.
 
 Rationale:
 
@@ -555,7 +555,7 @@ Applicable user-supplied OpenOCD commands SHALL be passed to remote OpenOCD.
 
 ## REQ-FUNC-OPT-007
 
-V1 SHALL NOT be required to translate arbitrary local paths embedded in arbitrary user-written Tcl.
+The runner SHALL NOT be required to translate arbitrary local paths embedded in arbitrary user-written Tcl.
 
 ---
 
@@ -665,7 +665,7 @@ An OpenOCD search path supplied by the Zephyr build SHALL NOT be silently discar
 
 ## REQ-FUNC-FILE-008
 
-V1 SHALL NOT maintain a persistent cross-session firmware or configuration cache.
+The runner SHALL NOT maintain a persistent cross-session firmware or configuration cache.
 
 ---
 
@@ -779,7 +779,7 @@ A local-port conflict SHALL identify the affected service and port.
 
 ## REQ-FUNC-RTT-001
 
-V1 SHALL support RTT channel 0.
+The runner SHALL support RTT channel 0.
 
 ## REQ-FUNC-RTT-002
 
@@ -803,7 +803,7 @@ Custom `--rtt-port` values SHALL be supported.
 
 ## REQ-FUNC-RTT-007
 
-V1 SHALL NOT require GDB Remote Serial Protocol inspection solely to determine RTT configuration.
+The runner SHALL NOT require GDB Remote Serial Protocol inspection solely to determine RTT configuration.
 
 ---
 
@@ -819,7 +819,7 @@ Semihosting console output emitted by remote OpenOCD on stdout/stderr SHALL appe
 
 ## REQ-FUNC-SEMI-003
 
-V1 SHALL NOT require a dedicated semihosting network protocol or proxy.
+The runner SHALL NOT require a dedicated semihosting network protocol or proxy.
 
 ---
 
@@ -868,7 +868,7 @@ The runner SHALL NOT require users to duplicate normal SSH credentials, keys, or
 
 ## REQ-FUNC-SSH-008
 
-The correctness of V1 SHALL NOT depend on SSH ControlMaster or client connection multiplexing.
+Correctness SHALL NOT depend on SSH ControlMaster or client connection multiplexing.
 
 ## REQ-FUNC-SSH-009
 
@@ -880,7 +880,7 @@ Loss of the controlling SSH session SHALL cause the corresponding remote OpenOCD
 
 ## REQ-FUNC-SSH-011
 
-V1 SHALL NOT attempt transparent reconstruction of an interrupted debugging session after SSH loss.
+The runner SHALL NOT attempt transparent reconstruction of an interrupted debugging session after SSH loss.
 
 ---
 
@@ -896,7 +896,7 @@ Independently usable channels on the same physical probe MAY be used concurrentl
 
 ## REQ-FUNC-CONC-003
 
-V1 SHALL NOT implement an additional board reservation service.
+The project SHALL NOT implement an additional board reservation service.
 
 ## REQ-FUNC-CONC-004
 
@@ -916,7 +916,7 @@ A compatible helper SHALL be automatically deployable to the remote user's accou
 
 ## REQ-FUNC-HELP-003
 
-V1 SHALL NOT require a persistent privileged or system-wide daemon.
+The project SHALL NOT require a persistent privileged or system-wide daemon.
 
 ## REQ-FUNC-HELP-004
 
@@ -928,10 +928,12 @@ Loss of the controlling helper/SSH session SHALL cause the associated OpenOCD pr
 
 ## REQ-FUNC-HELP-006
 
-Helper protocol compatibility SHALL be versioned. Protocol 1 SHALL implement
-the frozen Protocol 1 helper contract. Any incompatible change, or new client
-behavior requiring helper support not guaranteed by that contract, SHALL use a
-new protocol version.
+Helper protocol compatibility SHALL use the version field defined by the current
+Protocol 1 contract. A protocol change requires explicit authorization and
+coordinated updates to the protocol specification, controller, helper, fixtures,
+and compatibility tests. The compatibility analysis for an authorized change
+SHALL explicitly decide whether its numeric protocol version must change;
+development history alone SHALL NOT cause a new version.
 
 ## REQ-FUNC-HELP-007
 
@@ -968,7 +970,7 @@ Repeated use SHALL NOT cause unbounded accumulation of abandoned session data.
 
 ## REQ-NFUNC-PLAT-001
 
-V1 SHALL support native Linux and WSL 2 as first-class local development platforms.
+The runner SHALL support native Linux and WSL 2 as first-class local development platforms.
 
 Neither platform SHALL be treated as a secondary or future port.
 
@@ -988,7 +990,7 @@ The local host SHALL provide Python 3.12 or newer.
 
 The Python setup program and generic runner implementation SHOULD avoid unnecessary Linux-kernel-specific assumptions which would hinder a future native Windows port.
 
-Native Windows execution itself remains outside V1 scope.
+Native Windows execution itself remains outside the current scope.
 
 ---
 
@@ -1071,13 +1073,13 @@ The remote Linux host can run multiple OpenOCD instances using identical TCP por
 
 ## ASM-007
 
-Firmware and configuration artifacts are sufficiently small that a persistent artifact cache is unnecessary for V1.
+Firmware and configuration artifacts are sufficiently small that a persistent artifact cache is unnecessary.
 
 ---
 
 # 28. Explicit Non-Goals
 
-V1 does not include:
+The current scope does not include:
 
 - board-specific remote-runner implementations;
 - source changes solely for remote-runner integration;
@@ -1121,7 +1123,7 @@ Severity: Medium.
 
 Mitigation:
 
-Base V1 correctness only on required OpenSSH-compatible behavior, keep multiplexing optional, and complete PG-012 and PG-013 before claiming WSL 2 compatibility.
+Base correctness only on required OpenSSH-compatible behavior, keep multiplexing optional, and complete PG-012 and PG-013 before claiming WSL 2 compatibility.
 
 
 # 30. Acceptance Criteria

@@ -91,7 +91,7 @@ def _sha256(value: Any) -> bool:
 
 
 def validate_controller_command(message: dict[str, Any]) -> None:
-    """Validate the frozen protocol-1 controller command fields."""
+    """Validate the change-controlled protocol-1 controller command fields."""
 
     kind = message["type"]
     if kind == "STOP":

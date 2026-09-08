@@ -6,10 +6,10 @@ Documentation is grouped by audience:
 - [`requirements/SRS.md`](requirements/SRS.md): normative product requirements
   and acceptance criteria.
 - [`architecture/SAD.md`](architecture/SAD.md): current design and rationale.
-- [`architecture/protocol-v1.md`](architecture/protocol-v1.md): frozen helper
-  wire contract.
+- [`architecture/protocol.md`](architecture/protocol.md): current
+  change-controlled helper wire contract.
 - [`development/`](development/): contributor test and fixture guidance.
-- [`traceability/v1.md`](traceability/v1.md): acceptance-criteria evidence
+- [`traceability/acceptance.md`](traceability/acceptance.md): acceptance-criteria evidence
   mapping.
 - Validation commands and acceptance criteria are documented in
   [`requirements/SRS.md`](requirements/SRS.md) and

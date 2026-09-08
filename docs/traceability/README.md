@@ -1,4 +1,4 @@
-# V1 Traceability
+# Traceability
 
-The acceptance-criteria evidence matrix is [`v1.md`](v1.md). Normative
+The acceptance-criteria evidence matrix is [`acceptance.md`](acceptance.md). Normative
 requirements remain in [`../requirements/SRS.md`](../requirements/SRS.md).

@@ -64,16 +64,24 @@ Use configured `SshCommand` for every remote action; never embed fixture hosts o
 assume system `ssh`. Preserve Zephyr 4.4 command semantics and all enabled GDB,
 Tcl, and telnet services. Bind remotely to the allocated loopback and locally to
 `127.0.0.1`. Preserve cleanup on success, failure, interruption, and SSH loss.
-The enumerated V1 YAML schema is defined by
-`docs/requirements/configuration.schema.json`; do not add or relax
-configuration keys without an explicit compatibility and migration decision.
+The current YAML configuration contract is defined by
+`docs/requirements/configuration.schema.json`. Do not add, remove, or relax
+configuration keys unless the task explicitly authorizes a configuration-contract
+change. When authorized, update the schema, canonical example, loader, tests,
+requirements, and user documentation together, and make compatibility and
+migration an explicit decision. Do not invent a new schema version merely to
+preserve development history.
 Unknown keys remain errors, and `resources/config.yaml.example` is the
 canonical template. Hardware fixture inventories may remain TOML.
 
-Protocol 1 is frozen: matching version numbers alone are insufficient unless
-both sides implement the canonical Protocol 1 contract. Any incompatible change or
-new client behavior requiring helper support requires protocol 2. Keep helper
-stdout JSON-only and relay child output as events. Serial observation is test-only.
+Protocol 1 is the current wire contract: matching version numbers alone are
+insufficient unless both sides implement the complete documented contract. Do
+not change the protocol unless the task explicitly authorizes a protocol-contract
+change. When authorized, update the protocol document, client, helper, fixtures,
+requirements, and compatibility tests together, and explicitly decide whether
+the numeric protocol version must change. Do not invent a new protocol version
+merely to preserve development history. Keep helper stdout JSON-only and relay
+child output as events. Serial observation is test-only.
 RTT uses structured runner state and the configured port; never infer it from
 GDB RSP traffic. Direct semihosting console validation uses fixture-supplied
 OpenOCD `--cmd-pre-init` commands and the normal stdout/stderr relay. It adds

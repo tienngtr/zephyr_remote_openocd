@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://zephyr-remote-openocd.invalid/schema/configuration-v1.json",
+  "$id": "https://zephyr-remote-openocd.invalid/schema/configuration.json",
   "title": "zephyr_remote_openocd user configuration",
   "type": "object",
   "additionalProperties": false,

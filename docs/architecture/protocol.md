@@ -4,10 +4,15 @@ This document defines the Protocol 1 helper wire contract. A compatible pair
 implements the complete contract, not merely the numeric version.
 
 
-Protocol 1 is frozen. It uses UTF-8 JSON lines: one JSON object and one `LF` per
+Protocol 1 is the current change-controlled contract. It uses UTF-8 JSON lines: one JSON object and one `LF` per
 frame, with integer, non-Boolean `version: 1` and non-empty string `type`.
 Helper stdout contains protocol frames only. Unknown fields are ignored for
-historical tolerance, but senders MUST NOT use them as an extension mechanism.
+compatibility tolerance, but senders MUST NOT use them as an extension mechanism.
+
+Changes require explicit authorization and coordinated updates to this document,
+the controller, helper, fixtures, requirements, and compatibility tests. Whether
+an authorized change needs a different numeric protocol version is an explicit
+compatibility decision; development history alone is not a reason to create one.
 
 The controller first emits `HELLO {helper}` and then
 `SESSION_CREATED {session_id, remote_workspace}`; each field is a non-empty

@@ -1,4 +1,4 @@
-# V1 Acceptance Traceability
+# Acceptance Traceability
 
 This matrix maps each stable acceptance criterion to maintained automated and/or real-hardware evidence. PG-012 and PG-013 are the only deferred validations.
 
@@ -41,6 +41,6 @@ the WSL-specific PG-012 and PG-013 validations.
 | AC-SSH-002 | Deferred | PG-013 / `TestWslSshIntegration.test_windows_ssh_exe_from_wsl` |
 | AC-SSH-003 | Automated | `tests/unit/test_ssh.py::test_fixed_arguments_are_preserved_without_a_shell`; `TestLinuxSshIntegration.test_configured_linux_ssh_and_fixed_arguments` |
 
-This table is the V1 acceptance status. Requirement-level implementation,
-validation, and compatibility status is summarized below; no additional V1
+This table is the current development-baseline acceptance status. Requirement-level implementation,
+validation, and compatibility status is summarized below; no additional
 acceptance criterion is intentionally untested.

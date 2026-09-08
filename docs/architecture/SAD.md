@@ -1,10 +1,10 @@
 # Zephyr west runner for remote OpenOCD
 ## Software Architecture Document
-### V1 — Product 0.1.0 (initial development)
+### Current Development Architecture
 
 # 1. Purpose
 
-This document describes the V1 architecture for the Zephyr west runner for remote OpenOCD.
+This document describes the current architecture for the Zephyr west runner for remote OpenOCD.
 
 The SRS defines externally required behavior.
 
@@ -18,7 +18,7 @@ The primary drivers are:
 
 - no development-repository changes;
 - board-agnostic design;
-- native Linux and WSL 2 as equal V1 platforms;
+- native Linux and WSL 2 as equal supported platforms;
 - Zephyr 4.4 compatibility;
 - local GDB and remote OpenOCD;
 - reuse of existing board OpenOCD configuration;
@@ -82,7 +82,7 @@ No component above the normal OpenOCD configuration layer is board-specific.
 
 # 4. Supported Local Platforms
 
-Native Linux and WSL 2 are both V1 development platforms.
+Native Linux and WSL 2 are both supported development platforms.
 
 The generic Python implementation shall not branch into separate Linux and WSL product architectures.
 
@@ -98,7 +98,7 @@ WSL 2 is not treated as a compatibility port of a Linux-only design.
 
 # 5. Self-Contained Zephyr Module
 
-V1 is distributed as a self-contained Zephyr module rather than an installed Python distribution.
+The project is distributed as a self-contained Zephyr module rather than an installed Python distribution.
 
 Current implementation structure:
 
@@ -136,7 +136,7 @@ zephyr_remote_openocd/
 
 The implementation is intentionally self-contained in the module tree. Exact
 filenames are not architectural contracts. User setup is implemented by
-`scripts/setup.py`; pip packaging is not required for V1.
+`scripts/setup.py`; pip packaging is not required.
 
 ---
 
@@ -163,7 +163,7 @@ from zephyr_remote_openocd.zephyr44.runner import (
 The substantive implementation remains split into normal Python modules.
 
 The local runner may use `pyelftools` for ELF inspection, consistent with
-Zephyr 4.4's built-in OpenOCD runner. It is an accepted V1 runtime dependency,
+Zephyr 4.4's built-in OpenOCD runner. It is an accepted runtime dependency,
 not functionality to reimplement. Setup and diagnostics should verify that
 `elftools` is importable and report that the supported Zephyr Python environment
 is expected to provide it when it is missing. The module itself still does not
@@ -199,7 +199,7 @@ It does not edit shell startup files, repositories, or `.zephyrrc`.
 
 # 8. Configuration Template
 
-The canonical V1 template is `resources/config.yaml.example`:
+The canonical template is `resources/config.yaml.example`:
 
 ```yaml
 default_runner: openocd
@@ -426,7 +426,7 @@ When rebuilding is explicitly suppressed, stale generated state may remain until
 
 # 16. Zephyr Runner Reuse Strategy
 
-V1 may subclass and reuse the non-private interface of Zephyr 4.4's `OpenOcdBinaryRunner` where this materially reduces duplication.
+The runner may subclass and reuse the non-private interface of Zephyr 4.4's `OpenOcdBinaryRunner` where this materially reduces duplication.
 
 The compatibility policy is:
 
@@ -767,7 +767,7 @@ This permits, for example, a WSL 2 user to invoke Windows `ssh.exe` and rely on 
 
 # 31. SSH Transport Capability Model
 
-V1 correctness shall depend only on the subset of functionality required from the configured OpenSSH-compatible client.
+Correctness shall depend only on the subset of functionality required from the configured OpenSSH-compatible client.
 
 Optional capabilities are treated separately.
 
@@ -820,7 +820,7 @@ No user-visible feature is lost solely because multiplexing is unavailable.
 
 # 33. Cross-Client SSH Topology
 
-The V1 topology uses multiple SSH processes without requiring ControlMaster.
+The topology uses multiple SSH processes without requiring ControlMaster.
 
 ## 33.1 Selected baseline: multiple SSH processes
 
@@ -909,10 +909,11 @@ No assumption is made that the local SSH executable comes from the local Linux d
 
 # 36. Remote Helper Protocol
 
-The exact frozen Protocol 1 wire contract is maintained in
-[protocol-v1.md](protocol-v1.md). This architecture document retains only the
+The exact change-controlled Protocol 1 wire contract is maintained in
+[protocol.md](protocol.md). This architecture document retains only the
 ownership boundary: the helper is versioned, stdout is JSON-lines protocol only,
-and incompatible client/helper behavior requires a new protocol version.
+and every authorized client/helper contract change includes an explicit
+compatibility and numeric-version decision.
 
 # 37. Remote Session Storage
 
@@ -1106,7 +1107,7 @@ evidence; this document describes only the architecture of that test boundary.
 
 # 45. Architecture Decisions
 
-Selected for V1:
+Selected for the current architecture:
 
 - board-agnostic custom runner;
 - no board/vendor-specific product behavior;
@@ -1129,7 +1130,7 @@ Selected for V1:
 - WSL 2 may use Windows `ssh.exe`;
 - SSH command may contain fixed arguments;
 - all SSH operations use the configured client abstraction;
-- V1 does not depend on ControlMaster;
+- correctness does not depend on ControlMaster;
 - connection multiplexing is optional;
 - system/client SSH configuration remains authoritative;
 - unprivileged remote helper;

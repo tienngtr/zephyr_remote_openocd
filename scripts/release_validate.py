@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Run the serial native-Linux V1 release-validation layers.
+"""Run the serial native-Linux release-validation layers.
 
 This driver is intentionally separate from pytest discovery.  It provides a
 repeatable, fail-fast command sequence and makes missing external evidence
@@ -217,7 +217,7 @@ def inventory_capabilities(path: Path) -> dict[str, object]:
 
 
 def validate_inventory_capabilities(path: Path) -> None:
-    """Require the configured release inventory to advertise V1 evidence."""
+    """Require the configured inventory to advertise the required evidence."""
     missing = inventory_capabilities(path)["missing"]
     if missing:
         raise ValueError(
