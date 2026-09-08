@@ -118,6 +118,11 @@ def test_null_and_wrong_types_are_rejected(tmp_path: Path, text: str):
         load_text(tmp_path, text)
 
 
+def test_ssh_host_with_nul_is_rejected_at_schema_boundary(tmp_path: Path):
+    with pytest.raises(ConfigError, match=r"at remotes\.lab\.ssh_host"):
+        load_text(tmp_path, 'remotes:\n  lab:\n    ssh_host: "host\\0suffix"\n')
+
+
 def test_command_arguments_and_preset_resolution(tmp_path: Path):
     config = load_text(
         tmp_path,

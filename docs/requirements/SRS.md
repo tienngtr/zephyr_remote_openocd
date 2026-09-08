@@ -416,9 +416,9 @@ real operation; recording SHALL retain them literally.
 ## REQ-FUNC-CONFIG-011
 
 Unknown keys, explicit nulls, duplicate YAML keys, invalid types, disallowed
-empty command executables, duplicate environment names, invalid paths,
-duplicate mappings, and conflicting mappings SHALL produce actionable
-configuration errors.
+empty command executables, SSH hosts containing NUL, duplicate environment
+names, invalid paths, duplicate mappings, and conflicting mappings SHALL
+produce actionable configuration errors.
 
 ## REQ-FUNC-CONFIG-012
 

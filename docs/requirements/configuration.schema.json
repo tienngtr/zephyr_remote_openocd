@@ -43,7 +43,10 @@
       "type": "object", "additionalProperties": false,
       "properties": {
         "preset": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"},
-        "ssh_host": {"type": "string", "minLength": 1, "pattern": ".*\\S.*"},
+        "ssh_host": {
+          "type": "string", "minLength": 1, "pattern": ".*\\S.*",
+          "not": {"pattern": "\\u0000"}
+        },
         "openocd_command": {"$ref": "#/$defs/command"},
         "ssh_command": {"$ref": "#/$defs/command"},
         "forward_env": {"$ref": "#/$defs/environment"},
