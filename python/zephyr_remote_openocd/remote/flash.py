@@ -52,11 +52,6 @@ def _commands(commands: tuple[str, ...]) -> list[str]:
     return [item for command in commands for item in ("-c", command)]
 
 
-def _resume_then_shutdown(command: str) -> tuple[str, ...]:
-    """Give a reset/resume command time to take effect before OpenOCD exits."""
-    return ("-c", f"{command}; sleep 1000", "-c", "shutdown")
-
-
 def _tcl_quote(value: str) -> str:
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     escaped = escaped.replace("$", "\\$").replace("[", "\\[").replace("]", "\\]")
@@ -141,7 +136,7 @@ def build_flash_plan(
         if inputs.verify or inputs.verify_only:
             argv.extend(("-c", f"verify_image {quoted_image}"))
             argv.extend(_commands(inputs.post_verify))
-        argv.extend(_resume_then_shutdown(f"resume {entry}"))
+        argv.extend(("-c", f"resume {entry}", "-c", "shutdown"))
     else:
         argv.extend(_commands(inputs.pre_load))
         load_command = inputs.load_command
@@ -168,10 +163,7 @@ def build_flash_plan(
                     ("-c", inputs.reset_halt, "-c", f"{inputs.verify_command} {quoted_image}")
                 )
         argv.extend(_commands(inputs.post_verify))
-        # A remote helper closes OpenOCD immediately after this command. Keep
-        # it alive briefly so an asynchronous target reset can release and
-        # start the newly flashed image before adapter teardown.
-        argv.extend(_resume_then_shutdown("reset run"))
+        argv.extend(("-c", "reset run", "-c", "shutdown"))
 
     process = RemoteProcess(
         "openocd",

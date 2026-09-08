@@ -384,7 +384,7 @@ class TestFlashPlanning:
             assert plan.process.environment == (("PROBE", "value"),)
             assert "{workspace}/staged/trees/search-0/board/openocd.cfg" in argv
             assert len([item for item in plan.staged_files if item.source == config]) == 1
-            assert plan.process.argv[-4:] == ("-c", "reset run; sleep 1000", "-c", "shutdown")
+            assert plan.process.argv[-4:] == ("-c", "reset run", "-c", "shutdown")
 
     def test_elf_plan_resumes_before_shutdown(self, monkeypatch, tmp_path):
         image = tmp_path / "image.elf"
@@ -405,7 +405,7 @@ class TestFlashPlanning:
         )
         assert plan.process.argv[-4:] == (
             "-c",
-            "resume 0x0000000008000000; sleep 1000",
+            "resume 0x0000000008000000",
             "-c",
             "shutdown",
         )
