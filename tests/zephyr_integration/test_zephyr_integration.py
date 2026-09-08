@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import json
 import os
 import re
@@ -141,6 +140,8 @@ class TestZephyrIntegration:
     @classmethod
     def _west(cls, *args: str, check: bool = True, extra_env=None):
         env = os.environ.copy()
+        env.pop("ZEPHYR_REMOTE_OPENOCD_REMOTE", None)
+        env.pop("ZEPHYR_REMOTE_OPENOCD_RECORD_VERSION", None)
         env.update(
             {
                 "EXTRA_ZEPHYR_MODULES": str(ROOT),
@@ -486,6 +487,7 @@ class TestZephyrIntegration:
             for name in (
                 "PYTHONPATH",
                 "ZEPHYR_REMOTE_OPENOCD_CONFIG",
+                "ZEPHYR_REMOTE_OPENOCD_REMOTE",
                 "ZEPHYR_REMOTE_OPENOCD_RECORD",
                 "ZEPHYR_REMOTE_OPENOCD_RECORD_VERSION",
                 "EXTRA_ZEPHYR_MODULES",
@@ -607,64 +609,3 @@ class TestZephyrIntegration:
             recording = self._recording(recorded.stdout)
             assert recording["command"] == "flash"
             assert recording["remote_session_request"]["host"] == "record-only"
-
-    def test_zephyr44_adapter_respects_api_boundary(self):
-        """Regression coverage for prototype gate PG-010."""
-        adapter_path = ROOT / "python/zephyr_remote_openocd/zephyr44/runner.py"
-        tree = ast.parse(adapter_path.read_text())
-        adapter = next(
-            node
-            for node in tree.body
-            if isinstance(node, ast.ClassDef) and node.name == "RemoteOpenOcdBinaryRunner"
-        )
-        methods = {node.name for node in adapter.body if isinstance(node, ast.FunctionDef)}
-        assert {"name", "do_create", "do_run"}.issubset(methods)
-        assert "capabilities" not in methods
-        parser_hook = next(
-            node
-            for node in adapter.body
-            if isinstance(node, ast.FunctionDef) and node.name == "do_add_parser"
-        )
-        assert any(
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "do_add_parser"
-            and isinstance(node.func.value, ast.Call)
-            and isinstance(node.func.value.func, ast.Name)
-            and node.func.value.func.id == "super"
-            for node in ast.walk(parser_hook)
-        )
-        assert any(
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "add_argument"
-            and isinstance(node.func.value, ast.Name)
-            and node.func.value.id == "parser"
-            and node.args
-            and isinstance(node.args[0], ast.Constant)
-            and node.args[0].value == "--remote"
-            for node in ast.walk(parser_hook)
-        )
-        assert any(
-            isinstance(base, ast.Name) and base.id == "OpenOcdBinaryRunner"
-            for base in adapter.bases
-        )
-        for node in ast.walk(adapter):
-            if (
-                isinstance(node, ast.Attribute)
-                and node.attr.startswith("_")
-                and not node.attr.startswith("__")
-            ):
-                pytest.fail(f"private adapter dependency found: {node.attr}")
-
-        imports = []
-        for path in (ROOT / "python/zephyr_remote_openocd").rglob("*.py"):
-            if "zephyr44" not in path.parts and "runners.openocd" in path.read_text():
-                imports.append(path)
-        assert imports == [], "OpenOcdBinaryRunner coupling escaped zephyr44"
-        adapter_source = adapter_path.read_text()
-        core_source = (self.zephyr_base / "scripts/west_commands/runners/core.py").read_text()
-        openocd_source = (self.zephyr_base / "scripts/west_commands/runners/openocd.py").read_text()
-        assert "self.run_client(" in adapter_source
-        assert "def run_client(" in core_source
-        assert "def run_client(" not in openocd_source

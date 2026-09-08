@@ -49,6 +49,17 @@ override.
 
 ## Native Linux
 
+The focused adapter contract tests need only the Zephyr source and its Python
+runner dependencies, not a board, SDK, or firmware build:
+
+```sh
+ZEPHYR_BASE=/path/to/zephyr pytest tests/zephyr_integration/test_adapter.py
+```
+
+These compare applicable parser behavior with upstream and execute recording
+through the real adapter while rejecting external process, socket, and SSH
+operations. Static import-layer checks run in the ordinary unit suite.
+
 Native SSH tests require an `ssh` executable on `PATH` and a reachable host
 from the inventory. Zephyr integration additionally requires a Zephyr checkout,
 the `west` executable used by that checkout, a supported Zephyr SDK/toolchain,
