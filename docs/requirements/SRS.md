@@ -673,7 +673,8 @@ V1 SHALL NOT maintain a persistent cross-session firmware or configuration cache
 
 ## REQ-FUNC-FLASH-001
 
-`west flash -r remote_openocd` SHALL program the intended remote target.
+`west flash -r remote_openocd` SHALL program the intended remote target and
+leave the newly flashed image running before the OpenOCD session terminates.
 
 ## REQ-FUNC-FLASH-002
 

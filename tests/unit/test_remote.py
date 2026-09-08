@@ -11,6 +11,7 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 from zephyr_remote_openocd.config import PathMapping
+from zephyr_remote_openocd.remote import flash as flash_module
 from zephyr_remote_openocd.remote.debug import (
     DebugInputs,
     DebugPlanError,
@@ -372,6 +373,31 @@ class TestFlashPlanning:
             assert plan.process.environment == (("PROBE", "value"),)
             assert "{workspace}/staged/trees/search-0/board/openocd.cfg" in argv
             assert len([item for item in plan.staged_files if item.source == config]) == 1
+            assert plan.process.argv[-4:] == ("-c", "reset run; sleep 1000", "-c", "shutdown")
+
+    def test_elf_plan_resumes_before_shutdown(self, monkeypatch, tmp_path):
+        image = tmp_path / "image.elf"
+        image.write_bytes(b"not inspected")
+        monkeypatch.setattr(flash_module, "_elf_entry", lambda _: "0x0000000008000000")
+        plan = build_flash_plan(
+            FlashInputs(
+                executable="openocd",
+                image_type="elf",
+                file=None,
+                elf_file=str(image),
+                hex_file=None,
+                bin_file=None,
+                search_paths=(),
+                config_files=(),
+            ),
+            PathPlanner(()),
+        )
+        assert plan.process.argv[-4:] == (
+            "-c",
+            "resume 0x0000000008000000; sleep 1000",
+            "-c",
+            "shutdown",
+        )
 
     def test_longest_mapping_and_remote_check(self):
         with tempfile.TemporaryDirectory() as directory:
