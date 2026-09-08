@@ -115,6 +115,12 @@ class TestRealOpenOcdDebug:
             fixture,
             "attach",
             extra_args=(
+                '--gdb-init=printf "ZRO_PC_BEGIN\\n"',
+                "--gdb-init=p/x $pc",
+                '--gdb-init=printf "ZRO_PC_END\\n"',
+                '--gdb-init=printf "ZRO_INSN_BEGIN\\n"',
+                "--gdb-init=x/1i $pc",
+                '--gdb-init=printf "ZRO_INSN_END\\n"',
                 "--gdb-init=detach",
                 "--gdb-init=quit",
             ),
@@ -132,6 +138,10 @@ class TestRealOpenOcdDebug:
         assert result.returncode == 0, result.stdout
         assert "Remote debugging using 127.0.0.1:" in result.stdout
         assert "Loading section" not in result.stdout
+        assert re.search(r"ZRO_PC_BEGIN\s*\$\d+\s*=\s*0x[0-9a-fA-F]+", result.stdout)
+        assert re.search(r"ZRO_INSN_BEGIN\s*=>?\s*0x[0-9a-fA-F]+", result.stdout)
+        assert "ZRO_PC_END" in result.stdout
+        assert "ZRO_INSN_END" in result.stdout
         self._assert_cleanup(fixture, result.stdout)
 
     def _debugserver(self, fixture):
@@ -203,9 +213,8 @@ class TestRealOpenOcdDebug:
         fixture = thread_info_fixture
         prepare = self._west_command(
             fixture,
-            "debug",
+            "flash",
             fixture["thread_build_dir"],
-            ("--gdb-init=monitor reset run", "--gdb-init=detach", "--gdb-init=quit"),
         )
         prepared = subprocess.run(
             prepare,

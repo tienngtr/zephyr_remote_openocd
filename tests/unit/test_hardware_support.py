@@ -39,6 +39,8 @@ def test_probe_serial_is_translated_to_runner_argument(tmp_path):
     )
     record = _record(target, host, profile, tmp_path / "build", tmp_path / "config.yaml")
     assert "--serial=example-probe" in record["runner_args"]
+    assert record["precondition_build_dir"] == str(tmp_path / "minimal")
+    assert record["quiescence_timeout"] == 2
 
 
 def test_preparation_builds_only_requested_recipes_and_caches_success(tmp_path, monkeypatch):
@@ -67,7 +69,9 @@ def test_preparation_builds_only_requested_recipes_and_caches_success(tmp_path, 
         run.return_value = SimpleNamespace(returncode=0, stdout="")
         flash = preparation.prepare("board:flash")
         debug = preparation.prepare("board:debug")
-    assert run.call_count == 2  # Failed attempts are retried; successful recipes are shared.
+    # Failed attempts are retried; the successful flash preparation builds both
+    # the intended and precondition recipes, and debug reuses the intended one.
+    assert run.call_count == 3
     assert flash["build_dir"] == debug["build_dir"]
     assert flash["id"] != debug["id"]
     environment = run.call_args.kwargs["env"]

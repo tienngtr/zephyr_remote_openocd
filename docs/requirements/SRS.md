@@ -728,7 +728,7 @@ The custom runner SHALL establish required local-to-remote GDB transport before 
 
 ## REQ-FUNC-DEBUG-005
 
-`west attach -r remote_openocd` SHALL attach local GDB without flashing solely because the target is remote.
+`west attach -r remote_openocd` SHALL attach local GDB without flashing solely because the target is remote. The attached session SHALL permit ordinary target-state inspection, including reading the program counter and the instruction at that address.
 
 ## REQ-FUNC-DEBUG-006
 
@@ -795,11 +795,11 @@ Custom `--rtt-port` values SHALL be supported.
 
 ## REQ-FUNC-RTT-005
 
-`west debug -r remote_openocd --rtt-server` SHALL be supported.
+`west debug -r remote_openocd --rtt-server` SHALL be supported. The GDB session and bidirectional RTT service SHALL be usable during the same runner invocation.
 
 ## REQ-FUNC-RTT-006
 
-`west debugserver -r remote_openocd --rtt-server` SHALL be supported where the corresponding runner operation supports RTT.
+`west debugserver -r remote_openocd --rtt-server` SHALL be supported where the corresponding runner operation supports RTT. An independently launched GDB client and bidirectional RTT service SHALL both be usable through the endpoints exposed by that invocation.
 
 ## REQ-FUNC-RTT-007
 
@@ -1197,12 +1197,14 @@ Changing the configuration default followed by a normal west runner invocation w
 
 ## AC-FLASH-001
 
-`west flash -r remote_openocd` programs the intended remote target.
+`west flash -r remote_openocd` programs the intended remote target and starts the selected image. Real-target acceptance first establishes a distinct image which does not emit the selected image's marker, then requires that marker only after flashing the selected image.
 
 
 ## AC-DEBUG-001
 
 `west debug -r remote_openocd` provides local source-level debugging through remote OpenOCD. On a real target, the current ELF can be loaded, execution can continue without a post-load reset, a configured source symbol can be reached by breakpoint, the program counter and current instruction can be inspected, and GDB can detach cleanly. Fresh application console output is not required.
+
+`west attach -r remote_openocd` connects without loading an image and permits the program counter and current instruction to be inspected before detaching. `west debugserver -r remote_openocd` remains active without launching GDB and permits an independent GDB client to halt and resume the target.
 
 
 ## AC-DEBUG-002
@@ -1217,6 +1219,8 @@ Different GDB server/client ports work correctly when supported by the runner in
 ## AC-RTT-002
 
 A custom RTT port works without inspecting GDB RSP traffic.
+
+`west debug --rtt-server` and `west debugserver --rtt-server` permit source-level breakpoint and target-state inspection as well as bidirectional RTT in the same invocation. No acceptance-test sequence resets a newly loaded RAM image.
 
 ## AC-SEMI-001
 

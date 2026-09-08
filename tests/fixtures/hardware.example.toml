@@ -31,6 +31,11 @@ application = "samples/hello_world"
 west_args = []
 cmake_args = []
 
+[targets.builds.minimal]
+application = "samples/basic/minimal"
+west_args = []
+cmake_args = []
+
 [targets.serial.console]
 device = "/dev/serial/by-id/example"
 baud = 115200
@@ -51,6 +56,10 @@ environment = { FTDI_CHANNEL = "0" }
 [targets.profiles.flash.expect]
 patterns = ["hello"]
 assert_bindto = false
+
+[targets.profiles.flash.flash]
+precondition_build = "minimal"
+quiescence_timeout = 2
 
 [targets.profiles.debug]
 capabilities = ["debug", "attach", "debugserver"]
@@ -76,6 +85,10 @@ port = 19021
 input = "help\n"
 response = "help"
 timeout = 30
+program_survives_reset = true
+
+[targets.profiles.rtt.debug]
+breakpoint = "main"
 
 [targets.profiles.semihosting]
 capabilities = ["semihosting"]

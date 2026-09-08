@@ -76,6 +76,11 @@ def _record(
         )
     if profile.expectations.thread_info_pattern:
         record["thread_info_pattern"] = profile.expectations.thread_info_pattern
+    if profile.flash is not None:
+        record.update(
+            precondition_build_dir=str(build_dir.parent / profile.flash.precondition_build),
+            quiescence_timeout=profile.flash.quiescence_timeout,
+        )
     if profile.debug is not None:
         record["debug_breakpoint"] = profile.debug.breakpoint
     if profile.rtt is not None:
@@ -84,6 +89,7 @@ def _record(
             expected_rtt_response=profile.rtt.response,
             rtt_input=profile.rtt.input,
             rtt_timeout=profile.rtt.timeout,
+            rtt_program_survives_reset=profile.rtt.program_survives_reset,
         )
     if profile.semihosting is not None:
         record.update(
@@ -115,11 +121,17 @@ class HardwarePreparation:
         host = self.inventory.host(target.host)
         config_path = self.config_root / f"{host.id}.yaml"
         config_path.write_text(render_product_config(host))
-        build_dir = self.build_root / target.id / profile.build
+        build_dir = self._prepare_build(target, profile.build, config_path)
+        if profile.flash is not None:
+            self._prepare_build(target, profile.flash.precondition_build, config_path)
+        return _record(target, host, profile, build_dir, config_path)
+
+    def _prepare_build(self, target: InventoryTarget, build_name: str, config_path: Path) -> Path:
+        build_dir = self.build_root / target.id / build_name
         build_dir.parent.mkdir(exist_ok=True)
-        build_key = (target.id, profile.build)
+        build_key = (target.id, build_name)
         if build_key not in self.built:
-            recipe = target.build(profile.build)
+            recipe = target.build(build_name)
             application = Path(recipe.application)
             if not application.is_absolute():
                 application = target.zephyr_base / application
@@ -159,7 +171,7 @@ class HardwarePreparation:
             if result.returncode:
                 pytest.fail(f"build recipe {target.id}:{recipe.name} failed:\n{result.stdout}")
             self.built.add(build_key)
-        return _record(target, host, profile, build_dir, config_path)
+        return build_dir
 
 
 @pytest.fixture(scope="session")

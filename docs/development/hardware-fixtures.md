@@ -25,6 +25,20 @@ and independent operation profiles. Profiles refer to a recipe and may declare
 probe selection, environment values (only names in the host allow-list),
 structured serial expectations, RTT/semihosting observations, and capabilities.
 
+A profile advertising `flash` names a distinct precondition build:
+
+```toml
+[targets.profiles.flash.flash]
+precondition_build = "minimal"
+quiescence_timeout = 2
+```
+
+The normal precondition recipe is Zephyr `samples/basic/minimal`; the selected
+recipe is `samples/hello_world`. The test flashes the quiet precondition image,
+requires the selected image's marker to remain absent for the quiescence
+interval, and only then flashes the selected image and requires its output. A
+board which cannot build `minimal` may use another compatible quiet recipe.
+
 A relative recipe application resolves beneath `zephyr_base`; an absolute
 application path is allowed for an external tree. Profiles do not inherit from
 one another. Unsupported RTT or thread-info capability therefore skips only
@@ -55,6 +69,8 @@ program counter and current instruction. GDB and OpenOCD may implement the
 ordinary breakpoint as a software breakpoint in writable RAM or a hardware
 breakpoint in read-only memory. A debug-only profile does not need a serial
 endpoint because `west debug` does not guarantee fresh application output.
+Attach acceptance does not load an image; it reads the program counter and
+current instruction from the existing target state before detaching.
 
 The serial observer acknowledges arming after discarding queued input. Its
 deadline includes the 180-second west operation budget plus the inventory's
@@ -63,6 +79,13 @@ allowance. Choose a pattern specific to the fixture application; a generic
 banner alone cannot distinguish an older copy of that application still running.
 This output oracle applies to `west flash`, which must start the new image; it is
 not an acceptance condition for `debug`, `attach`, or `debugserver`.
+
+An RTT profile also supplies a `debug.breakpoint` symbol for the two RTT-server
+variants. Those tests load the ELF, reach and inspect the symbol without a
+post-load reset, resume the target, and exercise bidirectional RTT. Standalone
+Zephyr `west rtt` resets the target, so the profile must explicitly declare
+`program_survives_reset = true`; do not advertise RTT for a RAM-only fixture
+whose program is destroyed by reset. SCC does not advertise RTT or thread-info.
 
 Semihosting GDB commands must finish naturally (including detach/quit as
 appropriate) within the configured timeout. The acceptance test requires a

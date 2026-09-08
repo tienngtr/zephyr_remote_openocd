@@ -502,7 +502,7 @@ class TestDebugPlanning:
             debug = build_debug_plan(
                 self.inputs(
                     root,
-                    gdb_init=("monitor reset run", "quit"),
+                    gdb_init=("info registers", "quit"),
                 ),
                 PathPlanner(()),
             )
@@ -511,7 +511,7 @@ class TestDebugPlanning:
                 "-ex",
                 "load",
                 "-ex",
-                "monitor reset run",
+                "info registers",
                 "-ex",
                 "quit",
             )

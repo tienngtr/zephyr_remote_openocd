@@ -163,14 +163,23 @@ class TestRealRtt:
 
     def test_debug_rtt_server_keeps_gdb_foreground(self, rtt_fixture):
         fixture = rtt_fixture
-        self._program(fixture)
+        breakpoint = fixture["debug_breakpoint"]
         port = int(fixture["rtt_port"])
         process = self._start(
             fixture,
             "debug",
             "--rtt-server",
             f"--rtt-port={port}",
-            "--gdb-init=monitor reset run",
+            f"--gdb-init=break {breakpoint}",
+            "--gdb-init=continue",
+            '--gdb-init=printf "ZRO_PC_BEGIN\\n"',
+            "--gdb-init=p/x $pc",
+            '--gdb-init=printf "ZRO_PC_END\\n"',
+            '--gdb-init=printf "ZRO_INSN_BEGIN\\n"',
+            "--gdb-init=x/1i $pc",
+            '--gdb-init=printf "ZRO_INSN_END\\n"',
+            "--gdb-init=delete breakpoints",
+            "--gdb-init=monitor resume",
             "--gdb-init=echo ZRO_GDB_RTT_READY\\n",
             "--gdb-init=shell sleep 15",
             "--gdb-init=detach",
@@ -190,10 +199,13 @@ class TestRealRtt:
         finally:
             self._abort(process)
         assert "GNU gdb" in text
+        assert re.search(rf"Breakpoint \d+,\s+{re.escape(breakpoint)}\b", text)
+        assert re.search(r"ZRO_PC_BEGIN\s*\$\d+\s*=\s*0x[0-9a-fA-F]+", text)
+        assert re.search(r"ZRO_INSN_BEGIN\s*=>?\s*0x[0-9a-fA-F]+", text)
 
     def test_debugserver_exposes_gdb_and_rtt_without_clients(self, rtt_fixture):
         fixture = rtt_fixture
-        self._program(fixture)
+        breakpoint = fixture["debug_breakpoint"]
         port = int(fixture["rtt_port"])
         process = self._start(fixture, "debugserver", "--rtt-server", f"--rtt-port={port}")
         output = bytearray()
@@ -212,7 +224,25 @@ class TestRealRtt:
                     "-ex",
                     "load",
                     "-ex",
-                    "monitor reset run",
+                    f"break {breakpoint}",
+                    "-ex",
+                    "continue",
+                    "-ex",
+                    'printf "ZRO_PC_BEGIN\\n"',
+                    "-ex",
+                    "p/x $pc",
+                    "-ex",
+                    'printf "ZRO_PC_END\\n"',
+                    "-ex",
+                    'printf "ZRO_INSN_BEGIN\\n"',
+                    "-ex",
+                    "x/1i $pc",
+                    "-ex",
+                    'printf "ZRO_INSN_END\\n"',
+                    "-ex",
+                    "delete breakpoints",
+                    "-ex",
+                    "monitor resume",
                     "-ex",
                     "detach",
                     "-ex",
@@ -225,6 +255,9 @@ class TestRealRtt:
                 timeout=30,
             )
             assert client.returncode == 0, client.stdout
+            assert re.search(rf"Breakpoint \d+,\s+{re.escape(breakpoint)}\b", client.stdout)
+            assert re.search(r"ZRO_PC_BEGIN\s*\$\d+\s*=\s*0x[0-9a-fA-F]+", client.stdout)
+            assert re.search(r"ZRO_INSN_BEGIN\s*=>?\s*0x[0-9a-fA-F]+", client.stdout)
             self._rtt_round_trip(fixture, port)
             text = self._finish(fixture, process, output, interrupt=True)
         finally:

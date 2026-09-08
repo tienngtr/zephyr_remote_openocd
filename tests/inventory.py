@@ -80,6 +80,13 @@ class RttExpectation:
     response: str
     input: str
     timeout: float
+    program_survives_reset: bool
+
+
+@dataclass(frozen=True)
+class FlashExpectation:
+    precondition_build: str
+    quiescence_timeout: float
 
 
 @dataclass(frozen=True)
@@ -105,6 +112,7 @@ class OperationProfile:
     runner_args: tuple[str, ...]
     environment: tuple[tuple[str, str], ...]
     expectations: Expectations
+    flash: FlashExpectation | None
     debug: DebugExpectation | None
     rtt: RttExpectation | None
     semihosting: SemihostingExpectation | None
@@ -345,7 +353,12 @@ def _expectations(raw: Any, path: Path, location: str) -> Expectations:
 
 def _rtt(raw: Any, path: Path, location: str) -> RttExpectation:
     item = _table(raw, path, location)
-    _keys(item, {"port", "response", "input", "timeout"}, path, location)
+    _keys(
+        item,
+        {"port", "response", "input", "timeout", "program_survives_reset"},
+        path,
+        location,
+    )
     port = item.get("port")
     if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
         raise _error(path, f"{location}.port", "expected an integer TCP port from 1 through 65535")
@@ -354,7 +367,44 @@ def _rtt(raw: Any, path: Path, location: str) -> RttExpectation:
     if not isinstance(input_value, str):
         raise _error(path, f"{location}.input", "expected a string")
     timeout = _positive_number(item.get("timeout"), path, f"{location}.timeout")
-    return RttExpectation(port, response, input_value, timeout)
+    survives_reset = item.get("program_survives_reset")
+    if not isinstance(survives_reset, bool):
+        raise _error(path, f"{location}.program_survives_reset", "expected a boolean")
+    if not survives_reset:
+        raise _error(
+            path,
+            f"{location}.program_survives_reset",
+            "must be true because Zephyr west rtt resets the target",
+        )
+    return RttExpectation(port, response, input_value, timeout, survives_reset)
+
+
+def _flash(
+    raw: Any,
+    path: Path,
+    location: str,
+    builds: dict[str, BuildRecipe],
+    intended_build: str,
+) -> FlashExpectation:
+    item = _table(raw, path, location)
+    _keys(item, {"precondition_build", "quiescence_timeout"}, path, location)
+    precondition = _required_string(item, "precondition_build", path, location)
+    if precondition not in builds:
+        raise _error(
+            path,
+            f"{location}.precondition_build",
+            f"references unknown build {precondition!r}",
+        )
+    if precondition == intended_build:
+        raise _error(
+            path,
+            f"{location}.precondition_build",
+            "must differ from the profile build",
+        )
+    quiescence = _positive_number(
+        item.get("quiescence_timeout"), path, f"{location}.quiescence_timeout"
+    )
+    return FlashExpectation(precondition, quiescence)
 
 
 def _semihosting(raw: Any, path: Path, location: str) -> SemihostingExpectation:
@@ -398,6 +448,7 @@ def _profile(
             "runner_args",
             "environment",
             "expect",
+            "flash",
             "debug",
             "rtt",
             "semihosting",
@@ -433,6 +484,12 @@ def _profile(
         if not isinstance(value, str) or "\0" in value:
             raise _error(path, f"{location}.environment.{key}", "expected a string value")
     expectations = _expectations(item.get("expect"), path, f"{location}.expect")
+    raw_flash = item.get("flash")
+    flash = (
+        _flash(raw_flash, path, f"{location}.flash", builds, build_name)
+        if raw_flash is not None
+        else None
+    )
     raw_debug = item.get("debug")
     debug = _debug(raw_debug, path, f"{location}.debug") if raw_debug is not None else None
     raw_rtt = item.get("rtt")
@@ -443,10 +500,14 @@ def _profile(
         if raw_semihosting is not None
         else None
     )
+    if "flash" in capabilities and flash is None:
+        raise _error(path, location, "flash capability requires a flash table")
     if "debug" in capabilities and debug is None:
         raise _error(path, location, "debug capability requires a debug table")
     if "rtt" in capabilities and rtt is None:
         raise _error(path, location, "rtt capability requires an rtt table")
+    if "rtt" in capabilities and debug is None:
+        raise _error(path, location, "rtt capability requires a debug table")
     if "semihosting" in capabilities and semihosting is None:
         raise _error(path, location, "semihosting capability requires a semihosting table")
     return OperationProfile(
@@ -458,6 +519,7 @@ def _profile(
         runner_args,
         tuple(sorted(environment.items())),
         expectations,
+        flash,
         debug,
         rtt,
         semihosting,
