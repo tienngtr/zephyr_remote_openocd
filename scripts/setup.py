@@ -128,7 +128,7 @@ def _print_dependency_status(
         print("  YAML configuration dependencies: found")
     else:
         print("Warning: PyYAML and jsonschema are not available in this Python environment.")
-        print("Install requirements.txt before using the YAML configuration.")
+        print("Use the Python environment configured for Zephyr 4.4.")
 
 
 def main() -> int:

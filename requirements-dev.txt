@@ -1,5 +1,8 @@
-# Developer and test tooling only. Product use installs requirements.txt.
--r requirements.txt
+# Developer and test tooling only; normal module use relies on Zephyr 4.4's
+# configured Python environment and does not install this file.
+PyYAML>=6
+jsonschema>=4
+pyelftools>=0.31
 pytest>=8
 pytest-timeout>=2
 ruff>=0.6

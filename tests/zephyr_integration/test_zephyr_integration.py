@@ -532,6 +532,7 @@ class TestZephyrIntegration:
             assert f"Configuration (created): {config}" in first_setup.stdout
             assert f"Module root: {distribution}" in first_setup.stdout
             assert "pyelftools: found" in first_setup.stdout
+            assert "YAML configuration dependencies: found" in first_setup.stdout
             assert str(ROOT) not in first_setup.stdout
 
             config.write_text(

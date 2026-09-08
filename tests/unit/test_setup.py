@@ -100,3 +100,6 @@ def test_dependency_status_messages():
         setup._print_dependency_status(lambda _: None)
     assert "Warning: pyelftools is not available" in missing.getvalue()
     assert "Use the Python environment configured for Zephyr" in missing.getvalue()
+    assert "Warning: PyYAML and jsonschema are not available" in missing.getvalue()
+    assert "Use the Python environment configured for Zephyr 4.4" in missing.getvalue()
+    assert "requirements.txt" not in missing.getvalue()

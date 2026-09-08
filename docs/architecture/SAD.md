@@ -162,12 +162,12 @@ from zephyr_remote_openocd.zephyr44.runner import (
 
 The substantive implementation remains split into normal Python modules.
 
-The local runner may use `pyelftools` for ELF inspection, consistent with
-Zephyr 4.4's built-in OpenOCD runner. It is an accepted runtime dependency,
-not functionality to reimplement. Setup and diagnostics should verify that
-`elftools` is importable and report that the supported Zephyr Python environment
-is expected to provide it when it is missing. The module itself still does not
-require pip packaging or a separate bespoke installation path.
+The local runner may use `pyelftools` for ELF inspection and PyYAML plus
+jsonschema for configuration loading. Zephyr 4.4's configured Python environment
+already provides these accepted runtime dependencies; they are not functionality
+to reimplement. Setup diagnoses missing imports and directs users back to that
+environment. The module does not require pip packaging or a separate dependency
+installation path.
 
 ---
 

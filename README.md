@@ -40,15 +40,11 @@ The setup script creates `~/.config/zephyr_remote_openocd/config.yaml` if it
 does not exist (or reports its existing path), prints the absolute paths of the
 configuration file and module root, and gives equivalent
 `EXTRA_ZEPHYR_MODULES` guidance. It never overwrites an existing config or
-edits shell/repository files. Setup also checks whether `pyelftools` is
-available because some commands may need to inspect ELF files. If setup reports
-a warning, use the Python environment configured for Zephyr before running
-commands that inspect ELF files.
-
-The YAML configuration loader requires PyYAML and jsonschema. Install
-`requirements.txt` into the Python environment used by Zephyr when those
-packages are not already available; setup reports their status but does not
-install packages.
+edits shell/repository files. Setup also diagnoses whether the active Python
+environment provides `pyelftools`, PyYAML, and jsonschema. Zephyr 4.4's
+configured Python environment provides these dependencies; if setup reports a
+warning, activate or use that environment. There is no separate product package
+installation step.
 
 After activating the module, configure an application for an OpenOCD-capable
 board so Zephyr can discover the module and add `remote_openocd` alongside the

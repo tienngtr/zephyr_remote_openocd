@@ -2,8 +2,9 @@
 
 Use Python 3.12 or newer and keep the repository as a self-contained Zephyr
 module. Product use does not require pip; the Zephyr-configured Python
-environment should provide `pyelftools`. Developer-only tools may be installed
-from `requirements-dev.txt`; they are not needed by product users.
+environment provides `pyelftools`, PyYAML, and jsonschema. Module developers may
+install the convenience tooling in `requirements-dev.txt`; normal users should
+not install that file.
 
 Production code belongs under `python/zephyr_remote_openocd/` and must remain
 board/vendor-agnostic. Keep Zephyr 4.4-specific coupling in `zephyr44/runner.py`,

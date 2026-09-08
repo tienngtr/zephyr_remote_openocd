@@ -305,8 +305,8 @@ The project SHALL NOT require:
 for installation or operation.
 
 This prohibits a project-specific package-installation step; it does not
-prohibit reuse of dependencies supplied by the supported Zephyr runner
-environment, such as `pyelftools` used by the built-in OpenOCD runner.
+prohibit reuse of dependencies supplied by the supported Zephyr 4.4 runner
+environment, including `pyelftools`, PyYAML, and jsonschema.
 
 ## REQ-FUNC-INSTALL-004
 
@@ -1180,9 +1180,10 @@ pre-existing parent, directory, or file.
 
 ## AC-INSTALL-006
 
-Setup reports whether `pyelftools` is discoverable in the active Python
-environment. A missing dependency produces a warning but does not prevent
-configuration initialization.
+Setup reports whether `pyelftools`, PyYAML, and jsonschema are discoverable in
+the active Python environment. A missing dependency produces a warning directing
+the user to the Zephyr 4.4-configured Python environment, but does not prevent
+configuration initialization or recommend a separate product installation.
 
 ## AC-SELECT-001
 
