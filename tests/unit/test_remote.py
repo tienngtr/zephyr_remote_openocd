@@ -193,6 +193,12 @@ def test_missing_packaged_remote_helper_is_actionable(monkeypatch, tmp_path):
         _helper_source()
 
 
+def test_packaged_remote_helper_is_available_and_valid_python():
+    source = _helper_source()
+    assert source
+    compile(source, "remote_helper.py", "exec")
+
+
 class TestStaging:
     def test_binary_and_empty_files_round_trip(self):
         with tempfile.TemporaryDirectory() as directory:
