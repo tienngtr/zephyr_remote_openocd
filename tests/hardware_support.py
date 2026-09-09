@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from elftools.elf.elffile import ELFFile
 
 from tests.inventory import (
     Inventory,
@@ -19,6 +20,46 @@ from tests.inventory import (
     render_product_config,
 )
 from tests.support import ROOT
+
+
+def elf_memory_witness(
+    precondition_elf: Path | str, selected_elf: Path | str, *, size: int = 16
+) -> tuple[int, bytes, bytes]:
+    """Find readable, non-writable image bytes that distinguish two ELF files."""
+
+    def sections(path_value: Path | str) -> list[tuple[int, bytes]]:
+        path = Path(path_value)
+        with path.open("rb") as stream:
+            elf = ELFFile(stream)
+            return [
+                (int(section["sh_addr"]), section.data())
+                for section in elf.iter_sections()
+                if section["sh_type"] == "SHT_PROGBITS"
+                and int(section["sh_flags"]) & 0x2
+                and not int(section["sh_flags"]) & 0x1
+                and int(section["sh_size"]) >= size
+            ]
+
+    before_sections = sections(precondition_elf)
+    selected_sections = sections(selected_elf)
+    for before_address, before_data in before_sections:
+        before_end = before_address + len(before_data)
+        for selected_address, selected_data in selected_sections:
+            start = max(before_address, selected_address)
+            end = min(before_end, selected_address + len(selected_data))
+            if end - start < size:
+                continue
+            before_offset = start - before_address
+            selected_offset = start - selected_address
+            for offset in range(end - start - size + 1):
+                before = before_data[before_offset + offset : before_offset + offset + size]
+                selected = selected_data[selected_offset + offset : selected_offset + offset + size]
+                if before != selected:
+                    return start + offset, before, selected
+    raise ValueError(
+        f"no {size}-byte non-writable memory witness distinguishes "
+        f"{precondition_elf} from {selected_elf}"
+    )
 
 
 def _record(
@@ -81,6 +122,12 @@ def _record(
             precondition_build_dir=str(build_dir.parent / profile.flash.precondition_build),
             quiescence_timeout=profile.flash.quiescence_timeout,
         )
+    if profile.attach is not None:
+        precondition_dir = build_dir.parent / profile.attach.precondition_build
+        record.update(
+            attach_precondition_build_dir=str(precondition_dir),
+            attach_precondition_elf_file=str(precondition_dir / "zephyr" / "zephyr.elf"),
+        )
     if profile.debug is not None:
         record["debug_breakpoint"] = profile.debug.breakpoint
     if profile.rtt is not None:
@@ -124,6 +171,8 @@ class HardwarePreparation:
         build_dir = self._prepare_build(target, profile.build, config_path)
         if profile.flash is not None:
             self._prepare_build(target, profile.flash.precondition_build, config_path)
+        if profile.attach is not None:
+            self._prepare_build(target, profile.attach.precondition_build, config_path)
         return _record(target, host, profile, build_dir, config_path)
 
     def _prepare_build(self, target: InventoryTarget, build_name: str, config_path: Path) -> Path:

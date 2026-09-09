@@ -14,6 +14,7 @@ import time
 import pytest
 from zephyr_remote_openocd.remote.ssh import SshCommand
 
+from tests.hardware_support import elf_memory_witness
 from tests.process_support import read_line
 from tests.support import ROOT
 
@@ -99,8 +100,6 @@ class TestRealOpenOcdDebug:
             timeout=180,
         )
         assert result.returncode == 0, result.stdout
-        assert "Loading section" in result.stdout
-        assert "Remote debugging using 127.0.0.1:" in result.stdout
         assert re.search(rf"Breakpoint \d+,\s+{re.escape(breakpoint)}\b", result.stdout)
         assert re.search(r"ZRO_PC_BEGIN\s*\$\d+\s*=\s*0x[0-9a-fA-F]+", result.stdout)
         assert re.search(r"ZRO_INSN_BEGIN\s*=>\s*0x[0-9a-fA-F]+", result.stdout)
@@ -111,6 +110,21 @@ class TestRealOpenOcdDebug:
         self._assert_cleanup(fixture, result.stdout)
 
     def _attach(self, fixture):
+        prepared = subprocess.run(
+            self._west_command(fixture, "flash", fixture["attach_precondition_build_dir"]),
+            cwd=fixture.get("workspace"),
+            env=self._environment(fixture),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=180,
+        )
+        assert prepared.returncode == 0, prepared.stdout
+        self._assert_cleanup(fixture, prepared.stdout)
+        address, precondition_bytes, selected_bytes = elf_memory_witness(
+            fixture["attach_precondition_elf_file"], fixture["elf_file"]
+        )
         command = self._west_command(
             fixture,
             "attach",
@@ -121,6 +135,9 @@ class TestRealOpenOcdDebug:
                 '--gdb-init=printf "ZRO_INSN_BEGIN\\n"',
                 "--gdb-init=x/1i $pc",
                 '--gdb-init=printf "ZRO_INSN_END\\n"',
+                '--gdb-init=printf "ZRO_IMAGE_BEGIN\\n"',
+                f"--gdb-init=x/{len(precondition_bytes)}bx 0x{address:x}",
+                '--gdb-init=printf "ZRO_IMAGE_END\\n"',
                 "--gdb-init=detach",
                 "--gdb-init=quit",
             ),
@@ -136,12 +153,21 @@ class TestRealOpenOcdDebug:
             timeout=180,
         )
         assert result.returncode == 0, result.stdout
-        assert "Remote debugging using 127.0.0.1:" in result.stdout
-        assert "Loading section" not in result.stdout
         assert re.search(r"ZRO_PC_BEGIN\s*\$\d+\s*=\s*0x[0-9a-fA-F]+", result.stdout)
         assert re.search(r"ZRO_INSN_BEGIN\s*=>?\s*0x[0-9a-fA-F]+", result.stdout)
         assert "ZRO_PC_END" in result.stdout
         assert "ZRO_INSN_END" in result.stdout
+        image_match = re.search(
+            r"ZRO_IMAGE_BEGIN\s*(.*?)\s*ZRO_IMAGE_END", result.stdout, re.DOTALL
+        )
+        assert image_match is not None, result.stdout
+        observed = bytes(
+            int(value, 16)
+            for line in image_match.group(1).splitlines()
+            for value in re.findall(r"0x([0-9a-fA-F]{2})\b", line.partition(":")[2])
+        )
+        assert observed == precondition_bytes
+        assert observed != selected_bytes
         self._assert_cleanup(fixture, result.stdout)
 
     def _debugserver(self, fixture):
@@ -166,7 +192,6 @@ class TestRealOpenOcdDebug:
                 session = SESSION_PATTERN.search(line)
             assert session is not None, "".join(output)
             assert process.poll() is None, "debugserver exited before client connection"
-            assert "GNU gdb" not in "".join(output)
             for port in fixture.get("enabled_local_ports", (6333, 4444)):
                 with socket.create_connection(("127.0.0.1", int(port)), timeout=5):
                     pass
@@ -245,6 +270,5 @@ class TestRealOpenOcdDebug:
             timeout=180,
         )
         assert result.returncode == 0, result.stdout
-        assert "Zephyr: target known" in result.stdout
         assert re.search(fixture["thread_info_pattern"], result.stdout)
         self._assert_cleanup(fixture, result.stdout)

@@ -71,6 +71,9 @@ patterns = ["hello"]
 [targets.profiles.debug.debug]
 breakpoint = "main"
 
+[targets.profiles.debug.attach]
+precondition_build = "minimal"
+
 [targets.profiles.rtt]
 capabilities = ["rtt"]
 build = "hello"

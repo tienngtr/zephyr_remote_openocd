@@ -9,9 +9,10 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from elftools.elf.elffile import ELFFile
 from zephyr_remote_openocd.config import load_config, resolve_remote
 
-from tests.hardware_support import HardwarePreparation, _record, records_for
+from tests.hardware_support import HardwarePreparation, _record, elf_memory_witness, records_for
 from tests.inventory import load_inventory
 from tests.support import ROOT
 
@@ -26,6 +27,7 @@ def test_inventory_profiles_become_independent_capability_records(tmp_path):
     assert records_for([record], "rtt") == []
     assert records_for([record], "debug") == [record]
     assert record["debug_breakpoint"] == "main"
+    assert record["attach_precondition_build_dir"] == str(tmp_path / "minimal")
     assert "serial_device" not in record
 
 
@@ -81,3 +83,28 @@ def test_preparation_builds_only_requested_recipes_and_caches_success(tmp_path, 
     assert selected.ssh_host == inventory.host("lab").address
     assert not (build_root / "unavailable").exists()
     assert not (build_root / "board" / "unused").exists()
+
+
+def test_elf_memory_witness_finds_bytes_that_distinguish_images(tmp_path: Path) -> None:
+    original = Path(sys.executable).read_bytes()
+    selected_data = bytearray(original)
+    with Path(sys.executable).open("rb") as stream:
+        elf = ELFFile(stream)
+        section = next(
+            item
+            for item in elf.iter_sections()
+            if item["sh_type"] == "SHT_PROGBITS"
+            and int(item["sh_flags"]) & 0x2
+            and not int(item["sh_flags"]) & 0x1
+            and int(item["sh_size"]) >= 16
+        )
+        selected_data[int(section["sh_offset"])] ^= 0xFF
+    before_path = tmp_path / "before.elf"
+    selected_path = tmp_path / "selected.elf"
+    before_path.write_bytes(original)
+    selected_path.write_bytes(selected_data)
+
+    address, before, selected = elf_memory_witness(before_path, selected_path)
+    assert address > 0
+    assert len(before) == len(selected) == 16
+    assert before != selected

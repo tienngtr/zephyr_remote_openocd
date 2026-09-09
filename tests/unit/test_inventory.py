@@ -30,6 +30,8 @@ def test_example_is_complete_and_renderable() -> None:
     debug = next(profile for profile in target.profiles if profile.name == "debug")
     assert debug.debug is not None
     assert debug.debug.breakpoint == "main"
+    assert debug.attach is not None
+    assert debug.attach.precondition_build == "minimal"
     flash = next(profile for profile in target.profiles if profile.name == "flash")
     assert flash.flash is not None
     assert flash.flash.precondition_build == "minimal"
@@ -100,6 +102,10 @@ def valid_prefix() -> str:
             "debug capability",
         ),
         (
+            "[targets.profiles.default]\ncapabilities = [\"attach\"]\nbuild = \"hello\"\n",
+            "attach capability",
+        ),
+        (
             "[targets.profiles.default]\ncapabilities = [\"debug\"]\nbuild = \"hello\"\n"
             "[targets.profiles.default.debug]\nbreakpoint = \"main + 4\"\n",
             "breakpoint",
@@ -146,6 +152,7 @@ def test_serial_framing_and_capabilities_are_independent(tmp_path: Path) -> None
         '[targets.profiles.default.flash]\nprecondition_build = "minimal"\n'
         'quiescence_timeout = 2\n'
         '[targets.profiles.default.debug]\nbreakpoint = "main"\n'
+        '[targets.profiles.default.attach]\nprecondition_build = "minimal"\n'
         '[targets.profiles.rtt]\ncapabilities = ["rtt"]\nbuild = "hello"\n'
         'environment = {}\n[targets.profiles.rtt.rtt]\nport = 20000\n'
         'response = "ok"\ntimeout = 1\nprogram_survives_reset = true\n'
@@ -180,6 +187,22 @@ def test_flash_precondition_contract(tmp_path: Path, flash_table: str, diagnosti
         + '[targets.profiles.flash]\ncapabilities = ["flash"]\nbuild = "hello"\n'
         + '[targets.profiles.flash.flash]\n'
         + flash_table
+    )
+    with pytest.raises(InventoryError, match=diagnostic):
+        load_inventory(write_inventory(tmp_path, text))
+
+
+@pytest.mark.parametrize(
+    ("precondition", "diagnostic"),
+    (("hello", "must differ"), ("missing", "unknown build")),
+)
+def test_attach_precondition_contract(tmp_path: Path, precondition: str, diagnostic: str) -> None:
+    text = (
+        valid_prefix()
+        + '[targets.builds.minimal]\napplication = "samples/basic/minimal"\n'
+        + '[targets.profiles.attach]\ncapabilities = ["attach"]\nbuild = "hello"\n'
+        + '[targets.profiles.attach.attach]\n'
+        + f'precondition_build = "{precondition}"\n'
     )
     with pytest.raises(InventoryError, match=diagnostic):
         load_inventory(write_inventory(tmp_path, text))
