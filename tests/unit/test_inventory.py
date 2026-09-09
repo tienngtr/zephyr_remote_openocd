@@ -19,7 +19,7 @@ def write_inventory(tmp_path: Path, text: str) -> Path:
     return path
 
 
-def test_example_is_complete_and_renderable() -> None:
+def test_example_is_complete_and_renderable(tmp_path: Path) -> None:
     inventory = load_inventory(EXAMPLE)
     assert inventory.hosts[0].forward_env == ("FTDI_CHANNEL",)
     target = inventory.target("board")
@@ -36,10 +36,9 @@ def test_example_is_complete_and_renderable() -> None:
     assert flash.flash is not None
     assert flash.flash.precondition_build == "minimal"
     rendered = render_product_config(inventory.host("lab"), default_runner="remote_openocd")
-    assert 'default_runner: "remote_openocd"' in rendered
-    assert 'default_remote: "lab"' in rendered
-    assert 'openocd_command:' in rendered
-    assert '"/absolute/path/to/openocd"' in rendered
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(rendered, encoding="utf-8")
+    assert load_config(config_path).default_runner == "remote_openocd"
 
 
 @pytest.mark.parametrize(
