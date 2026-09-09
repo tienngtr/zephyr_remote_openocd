@@ -90,21 +90,19 @@ def test_elf_memory_witness_finds_bytes_that_distinguish_images(tmp_path: Path) 
     selected_data = bytearray(original)
     with Path(sys.executable).open("rb") as stream:
         elf = ELFFile(stream)
-        section = next(
+        segment = next(
             item
-            for item in elf.iter_sections()
-            if item["sh_type"] == "SHT_PROGBITS"
-            and int(item["sh_flags"]) & 0x2
-            and not int(item["sh_flags"]) & 0x1
-            and int(item["sh_size"]) >= 16
+            for item in elf.iter_segments()
+            if item["p_type"] == "PT_LOAD"
+            and int(item["p_offset"]) > 0
+            and int(item["p_filesz"]) >= 16
         )
-        selected_data[int(section["sh_offset"])] ^= 0xFF
+        selected_data[int(segment["p_offset"])] ^= 0xFF
     before_path = tmp_path / "before.elf"
     selected_path = tmp_path / "selected.elf"
     before_path.write_bytes(original)
     selected_path.write_bytes(selected_data)
 
-    address, before, selected = elf_memory_witness(before_path, selected_path)
-    assert address > 0
+    _, before, selected = elf_memory_witness(before_path, selected_path)
     assert len(before) == len(selected) == 16
     assert before != selected

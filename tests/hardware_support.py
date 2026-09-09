@@ -25,26 +25,23 @@ from tests.support import ROOT
 def elf_memory_witness(
     precondition_elf: Path | str, selected_elf: Path | str, *, size: int = 16
 ) -> tuple[int, bytes, bytes]:
-    """Find readable, non-writable image bytes that distinguish two ELF files."""
+    """Find file-backed load-address bytes that distinguish two ELF files."""
 
-    def sections(path_value: Path | str) -> list[tuple[int, bytes]]:
+    def load_segments(path_value: Path | str) -> list[tuple[int, bytes]]:
         path = Path(path_value)
         with path.open("rb") as stream:
             elf = ELFFile(stream)
             return [
-                (int(section["sh_addr"]), section.data())
-                for section in elf.iter_sections()
-                if section["sh_type"] == "SHT_PROGBITS"
-                and int(section["sh_flags"]) & 0x2
-                and not int(section["sh_flags"]) & 0x1
-                and int(section["sh_size"]) >= size
+                (int(segment["p_paddr"]), segment.data())
+                for segment in elf.iter_segments()
+                if segment["p_type"] == "PT_LOAD" and int(segment["p_filesz"]) >= size
             ]
 
-    before_sections = sections(precondition_elf)
-    selected_sections = sections(selected_elf)
-    for before_address, before_data in before_sections:
+    before_segments = load_segments(precondition_elf)
+    selected_segments = load_segments(selected_elf)
+    for before_address, before_data in before_segments:
         before_end = before_address + len(before_data)
-        for selected_address, selected_data in selected_sections:
+        for selected_address, selected_data in selected_segments:
             start = max(before_address, selected_address)
             end = min(before_end, selected_address + len(selected_data))
             if end - start < size:
@@ -57,8 +54,7 @@ def elf_memory_witness(
                 if before != selected:
                     return start + offset, before, selected
     raise ValueError(
-        f"no {size}-byte non-writable memory witness distinguishes "
-        f"{precondition_elf} from {selected_elf}"
+        f"no {size}-byte load-address witness distinguishes {precondition_elf} from {selected_elf}"
     )
 
 
