@@ -25,23 +25,47 @@ from tests.support import ROOT
 def elf_memory_witness(
     precondition_elf: Path | str, selected_elf: Path | str, *, size: int = 16
 ) -> tuple[int, bytes, bytes]:
-    """Find file-backed load-address bytes that distinguish two ELF files."""
+    """Find loadable-section bytes that distinguish two ELF files."""
 
-    def load_segments(path_value: Path | str) -> list[tuple[int, bytes]]:
+    def loadable_sections(path_value: Path | str) -> list[tuple[bool, int, bytes]]:
         path = Path(path_value)
         with path.open("rb") as stream:
             elf = ELFFile(stream)
-            return [
-                (int(segment["p_paddr"]), segment.data())
-                for segment in elf.iter_segments()
-                if segment["p_type"] == "PT_LOAD" and int(segment["p_filesz"]) >= size
+            segments = [
+                segment for segment in elf.iter_segments() if segment["p_type"] == "PT_LOAD"
             ]
+            candidates = []
+            for section in elf.iter_sections():
+                section_size = int(section["sh_size"])
+                section_flags = int(section["sh_flags"])
+                if (
+                    not section_flags & 0x2
+                    or section["sh_type"] == "SHT_NOBITS"
+                    or section_size < size
+                ):
+                    continue
+                section_vma = int(section["sh_addr"])
+                section_offset = int(section["sh_offset"])
+                for segment in segments:
+                    segment_vma = int(segment["p_vaddr"])
+                    segment_offset = int(segment["p_offset"])
+                    if (
+                        segment_vma <= section_vma
+                        and section_vma + section_size <= segment_vma + int(segment["p_filesz"])
+                        and segment_offset <= section_offset
+                        and section_offset + section_size
+                        <= segment_offset + int(segment["p_filesz"])
+                    ):
+                        load_address = int(segment["p_paddr"]) + section_vma - segment_vma
+                        candidates.append((not section_flags & 0x1, load_address, section.data()))
+                        break
+            return sorted(candidates, key=lambda candidate: not candidate[0])
 
-    before_segments = load_segments(precondition_elf)
-    selected_segments = load_segments(selected_elf)
-    for before_address, before_data in before_segments:
+    before_sections = loadable_sections(precondition_elf)
+    selected_sections = loadable_sections(selected_elf)
+    for _, before_address, before_data in before_sections:
         before_end = before_address + len(before_data)
-        for selected_address, selected_data in selected_segments:
+        for _, selected_address, selected_data in selected_sections:
             start = max(before_address, selected_address)
             end = min(before_end, selected_address + len(selected_data))
             if end - start < size:
@@ -54,7 +78,8 @@ def elf_memory_witness(
                 if before != selected:
                     return start + offset, before, selected
     raise ValueError(
-        f"no {size}-byte load-address witness distinguishes {precondition_elf} from {selected_elf}"
+        f"no {size}-byte loadable-section witness distinguishes "
+        f"{precondition_elf} from {selected_elf}"
     )
 
 

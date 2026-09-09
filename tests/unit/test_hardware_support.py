@@ -90,14 +90,14 @@ def test_elf_memory_witness_finds_bytes_that_distinguish_images(tmp_path: Path) 
     selected_data = bytearray(original)
     with Path(sys.executable).open("rb") as stream:
         elf = ELFFile(stream)
-        segment = next(
+        section = next(
             item
-            for item in elf.iter_segments()
-            if item["p_type"] == "PT_LOAD"
-            and int(item["p_offset"]) > 0
-            and int(item["p_filesz"]) >= 16
+            for item in elf.iter_sections()
+            if int(item["sh_flags"]) & 0x2
+            and item["sh_type"] != "SHT_NOBITS"
+            and int(item["sh_size"]) >= 16
         )
-        selected_data[int(segment["p_offset"])] ^= 0xFF
+        selected_data[int(section["sh_offset"])] ^= 0xFF
     before_path = tmp_path / "before.elf"
     selected_path = tmp_path / "selected.elf"
     before_path.write_bytes(original)
@@ -106,3 +106,35 @@ def test_elf_memory_witness_finds_bytes_that_distinguish_images(tmp_path: Path) 
     _, before, selected = elf_memory_witness(before_path, selected_path)
     assert len(before) == len(selected) == 16
     assert before != selected
+
+
+def test_elf_memory_witness_ignores_load_segment_padding(tmp_path: Path) -> None:
+    original = Path(sys.executable).read_bytes()
+    selected_data = bytearray(original)
+    with Path(sys.executable).open("rb") as stream:
+        elf = ELFFile(stream)
+        occupied = [
+            (int(section["sh_offset"]), int(section["sh_offset"]) + int(section["sh_size"]))
+            for section in elf.iter_sections()
+            if int(section["sh_flags"]) & 0x2 and section["sh_type"] != "SHT_NOBITS"
+        ]
+        padding_offset = next(
+            offset
+            for segment in elf.iter_segments()
+            if segment["p_type"] == "PT_LOAD" and int(segment["p_offset"]) > 0
+            for offset in range(
+                int(segment["p_offset"]), int(segment["p_offset"]) + int(segment["p_filesz"])
+            )
+            if all(
+                offset + 1 <= section_start or offset >= section_end
+                for section_start, section_end in occupied
+            )
+        )
+        selected_data[padding_offset] ^= 0xFF
+    before_path = tmp_path / "before.elf"
+    selected_path = tmp_path / "selected.elf"
+    before_path.write_bytes(original)
+    selected_path.write_bytes(selected_data)
+
+    with pytest.raises(ValueError, match="no 1-byte loadable-section witness"):
+        elf_memory_witness(before_path, selected_path, size=1)
