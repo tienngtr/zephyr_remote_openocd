@@ -14,6 +14,7 @@ import subprocess
 import pytest
 from zephyr_remote_openocd.remote.ssh import SshCommand
 
+from tests.process_support import assert_semihosting_acceptance
 from tests.support import ROOT
 
 pytestmark = [pytest.mark.hardware, pytest.mark.destructive]
@@ -99,8 +100,7 @@ class TestRealSemihosting:
             # Forced termination is emergency cleanup, never successful completion.
             output, _ = process.communicate(timeout=float(fixture.get("timeout", 30)))
             text = output.decode("utf-8", "replace")
-            assert process.returncode == 0, text
-            assert re.search(fixture["expected_output"], text), text
+            assert_semihosting_acceptance(process.returncode, text, fixture["expected_output"])
             self._assert_cleanup(fixture, text)
         finally:
             if process.poll() is None:
