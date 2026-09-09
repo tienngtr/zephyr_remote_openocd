@@ -150,8 +150,16 @@ def test_remote_leak_scan_pattern_cannot_match_its_own_command(tmp_path):
     assert report["clean"] is True
 
 
-def test_summary_contract_keeps_wsl_gates_deferred():
-    assert release.DEFERRED_GATES == ("PG-012", "PG-013")
+def test_summary_reports_supplied_deferred_gates():
+    summary = release.build_summary(
+        {"pass": True},
+        None,
+        [],
+        ("gate-a", "gate-b"),
+        {"clean": True},
+        {"clean": True},
+    )
+    assert summary["deferred"] == ["gate-a", "gate-b"]
 
 
 def test_strict_external_collection_rejects_skips(monkeypatch):
