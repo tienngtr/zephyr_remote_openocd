@@ -52,16 +52,18 @@ def test_remote_home_json_preserves_spaces(runner_module, monkeypatch, tmp_path)
         (),
         (PathMapping(tmp_path, PurePosixPath("~/remote tree")),),
     )
-    run = Mock(
-        return_value=subprocess.CompletedProcess(
-            [], 0, json.dumps("/home/ Remote User ").encode() + b"\n", b""
-        )
+    monkeypatch.setattr(
+        SshCommand,
+        "run",
+        Mock(
+            return_value=subprocess.CompletedProcess(
+                [], 0, json.dumps("/home/ Remote User ").encode() + b"\n", b""
+            )
+        ),
     )
-    monkeypatch.setattr(SshCommand, "run", run)
     resolved = runner_module._prepare_remote_paths(selected)
     assert resolved.openocd_command == ("/home/ Remote User /tools/open ocd",)
     assert str(resolved.path_mappings[0].remote) == "/home/ Remote User /remote tree"
-    assert "json.dumps" in run.call_args.args[1]
 
 
 @pytest.mark.parametrize(

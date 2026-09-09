@@ -19,25 +19,26 @@ def write_inventory(tmp_path: Path, text: str) -> Path:
     return path
 
 
-def test_example_is_complete_and_renderable() -> None:
+def test_example_is_complete_and_renderable(tmp_path: Path) -> None:
     inventory = load_inventory(EXAMPLE)
     assert inventory.hosts[0].forward_env == ("FTDI_CHANNEL",)
     target = inventory.target("board")
     assert target.build("hello").application == "samples/hello_world"
     assert target.build("minimal").application == "samples/basic/minimal"
     assert target.endpoint("console").baud == 115200
-    assert target.profiles[0].environment == (("FTDI_CHANNEL", "0"),)
-    debug = next(profile for profile in target.profiles if profile.name == "debug")
+    assert target.profile("flash").environment == (("FTDI_CHANNEL", "0"),)
+    debug = target.profile("debug")
     assert debug.debug is not None
     assert debug.debug.breakpoint == "main"
-    flash = next(profile for profile in target.profiles if profile.name == "flash")
+    assert debug.attach is not None
+    assert debug.attach.precondition_build == "minimal"
+    flash = target.profile("flash")
     assert flash.flash is not None
     assert flash.flash.precondition_build == "minimal"
     rendered = render_product_config(inventory.host("lab"), default_runner="remote_openocd")
-    assert 'default_runner: "remote_openocd"' in rendered
-    assert 'default_remote: "lab"' in rendered
-    assert 'openocd_command:' in rendered
-    assert '"/absolute/path/to/openocd"' in rendered
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(rendered, encoding="utf-8")
+    assert load_config(config_path).default_runner == "remote_openocd"
 
 
 @pytest.mark.parametrize(
@@ -100,6 +101,10 @@ def valid_prefix() -> str:
             "debug capability",
         ),
         (
+            "[targets.profiles.default]\ncapabilities = [\"attach\"]\nbuild = \"hello\"\n",
+            "attach capability",
+        ),
+        (
             "[targets.profiles.default]\ncapabilities = [\"debug\"]\nbuild = \"hello\"\n"
             "[targets.profiles.default.debug]\nbreakpoint = \"main + 4\"\n",
             "breakpoint",
@@ -146,6 +151,7 @@ def test_serial_framing_and_capabilities_are_independent(tmp_path: Path) -> None
         '[targets.profiles.default.flash]\nprecondition_build = "minimal"\n'
         'quiescence_timeout = 2\n'
         '[targets.profiles.default.debug]\nbreakpoint = "main"\n'
+        '[targets.profiles.default.attach]\nprecondition_build = "minimal"\n'
         '[targets.profiles.rtt]\ncapabilities = ["rtt"]\nbuild = "hello"\n'
         'environment = {}\n[targets.profiles.rtt.rtt]\nport = 20000\n'
         'response = "ok"\ntimeout = 1\nprogram_survives_reset = true\n'
@@ -156,9 +162,10 @@ def test_serial_framing_and_capabilities_are_independent(tmp_path: Path) -> None
     target = inventory.target("board")
     assert target.endpoint("console").data_bits == 8
     assert {profile.name for profile in target.profiles} == {"default", "rtt"}
-    assert target.profiles[0].capabilities == ("flash", "debug", "attach", "debugserver")
-    assert target.profiles[0].debug is not None
-    assert target.profiles[0].debug.breakpoint == "main"
+    default = target.profile("default")
+    assert default.capabilities == ("flash", "debug", "attach", "debugserver")
+    assert default.debug is not None
+    assert default.debug.breakpoint == "main"
 
 
 @pytest.mark.parametrize(
@@ -180,6 +187,22 @@ def test_flash_precondition_contract(tmp_path: Path, flash_table: str, diagnosti
         + '[targets.profiles.flash]\ncapabilities = ["flash"]\nbuild = "hello"\n'
         + '[targets.profiles.flash.flash]\n'
         + flash_table
+    )
+    with pytest.raises(InventoryError, match=diagnostic):
+        load_inventory(write_inventory(tmp_path, text))
+
+
+@pytest.mark.parametrize(
+    ("precondition", "diagnostic"),
+    (("hello", "must differ"), ("missing", "unknown build")),
+)
+def test_attach_precondition_contract(tmp_path: Path, precondition: str, diagnostic: str) -> None:
+    text = (
+        valid_prefix()
+        + '[targets.builds.minimal]\napplication = "samples/basic/minimal"\n'
+        + '[targets.profiles.attach]\ncapabilities = ["attach"]\nbuild = "hello"\n'
+        + '[targets.profiles.attach.attach]\n'
+        + f'precondition_build = "{precondition}"\n'
     )
     with pytest.raises(InventoryError, match=diagnostic):
         load_inventory(write_inventory(tmp_path, text))

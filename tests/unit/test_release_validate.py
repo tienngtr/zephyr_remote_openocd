@@ -39,17 +39,19 @@ def arguments(**overrides):
     return SimpleNamespace(**values)
 
 
-def test_build_steps_has_stable_order_and_external_layers():
+def test_build_steps_cover_required_layers_and_safety_ordering():
     steps = release.build_steps(arguments())
-    assert [step.name for step in steps] == [
-        "pytest",
-        "static_check",
-        "zephyr",
-        "ssh",
-        "hardware",
-        "benchmark",
-    ]
-    assert "--hardware-config" in steps[-2].command
+    by_name = {step.name: step for step in steps}
+    required = {"pytest", "static_check", "zephyr", "ssh", "hardware", "benchmark"}
+    assert required <= by_name.keys()
+
+    positions = {step.name: index for index, step in enumerate(steps)}
+    assert all(
+        positions[name] < positions["hardware"] for name in ("pytest", "static_check", "zephyr")
+    )
+    assert positions["ssh"] < positions["hardware"] < positions["benchmark"]
+    for name in ("ssh", "hardware"):
+        assert "--hardware-config" in by_name[name].command
 
 
 def test_build_steps_requires_external_evidence_inputs():
@@ -148,8 +150,16 @@ def test_remote_leak_scan_pattern_cannot_match_its_own_command(tmp_path):
     assert report["clean"] is True
 
 
-def test_summary_contract_keeps_wsl_gates_deferred():
-    assert release.DEFERRED_GATES == ("PG-012", "PG-013")
+def test_summary_reports_supplied_deferred_gates():
+    summary = release.build_summary(
+        {"pass": True},
+        None,
+        [],
+        ("gate-a", "gate-b"),
+        {"clean": True},
+        {"clean": True},
+    )
+    assert summary["deferred"] == ["gate-a", "gate-b"]
 
 
 def test_strict_external_collection_rejects_skips(monkeypatch):

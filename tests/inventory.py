@@ -90,6 +90,11 @@ class FlashExpectation:
 
 
 @dataclass(frozen=True)
+class AttachExpectation:
+    precondition_build: str
+
+
+@dataclass(frozen=True)
 class SemihostingExpectation:
     commands: tuple[str, ...]
     gdb_commands: tuple[str, ...]
@@ -113,6 +118,7 @@ class OperationProfile:
     environment: tuple[tuple[str, str], ...]
     expectations: Expectations
     flash: FlashExpectation | None
+    attach: AttachExpectation | None
     debug: DebugExpectation | None
     rtt: RttExpectation | None
     semihosting: SemihostingExpectation | None
@@ -140,6 +146,12 @@ class InventoryTarget:
         for endpoint in self.serial:
             if endpoint.name == name:
                 return endpoint
+        raise KeyError(name)
+
+    def profile(self, name: str) -> OperationProfile:
+        for profile in self.profiles:
+            if profile.name == name:
+                return profile
         raise KeyError(name)
 
 
@@ -406,6 +418,27 @@ def _flash(
     return FlashExpectation(precondition, quiescence)
 
 
+def _attach(
+    raw: Any,
+    path: Path,
+    location: str,
+    builds: dict[str, BuildRecipe],
+    intended_build: str,
+) -> AttachExpectation:
+    item = _table(raw, path, location)
+    _keys(item, {"precondition_build"}, path, location)
+    precondition = _required_string(item, "precondition_build", path, location)
+    if precondition not in builds:
+        raise _error(
+            path,
+            f"{location}.precondition_build",
+            f"references unknown build {precondition!r}",
+        )
+    if precondition == intended_build:
+        raise _error(path, f"{location}.precondition_build", "must differ from the profile build")
+    return AttachExpectation(precondition)
+
+
 def _semihosting(raw: Any, path: Path, location: str) -> SemihostingExpectation:
     item = _table(raw, path, location)
     _keys(item, {"commands", "gdb_commands", "output", "timeout"}, path, location)
@@ -448,6 +481,7 @@ def _profile(
             "environment",
             "expect",
             "flash",
+            "attach",
             "debug",
             "rtt",
             "semihosting",
@@ -489,6 +523,12 @@ def _profile(
         if raw_flash is not None
         else None
     )
+    raw_attach = item.get("attach")
+    attach = (
+        _attach(raw_attach, path, f"{location}.attach", builds, build_name)
+        if raw_attach is not None
+        else None
+    )
     raw_debug = item.get("debug")
     debug = _debug(raw_debug, path, f"{location}.debug") if raw_debug is not None else None
     raw_rtt = item.get("rtt")
@@ -501,6 +541,8 @@ def _profile(
     )
     if "flash" in capabilities and flash is None:
         raise _error(path, location, "flash capability requires a flash table")
+    if "attach" in capabilities and attach is None:
+        raise _error(path, location, "attach capability requires an attach table")
     if "debug" in capabilities and debug is None:
         raise _error(path, location, "debug capability requires a debug table")
     if "rtt" in capabilities and rtt is None:
@@ -519,6 +561,7 @@ def _profile(
         tuple(sorted(environment.items())),
         expectations,
         flash,
+        attach,
         debug,
         rtt,
         semihosting,

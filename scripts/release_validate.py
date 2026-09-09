@@ -273,6 +273,34 @@ def _metadata() -> dict[str, str]:
     }
 
 
+def build_summary(
+    capability_report: dict[str, object],
+    performance: dict[str, object] | None,
+    results: list[StepResult],
+    deferred_gates: tuple[str, ...],
+    local_leaks: dict[str, object],
+    remote_leaks: dict[str, object],
+) -> dict[str, object]:
+    """Build the machine-readable release report from observed evidence."""
+    return {
+        "schema": "zro.release_validation",
+        "metadata": _metadata(),
+        "capabilities": capability_report,
+        "performance": performance,
+        "steps": [
+            {
+                "name": result.name,
+                "command": list(result.command),
+                "returncode": result.returncode,
+            }
+            for result in results
+        ],
+        "deferred": list(deferred_gates),
+        "local_leaks": local_leaks,
+        "remote_leaks": remote_leaks,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--hardware-config", type=Path)
@@ -304,23 +332,14 @@ def main(argv: list[str] | None = None) -> int:
         (benchmark_result(result.output) for result in results if result.name == "benchmark"),
         None,
     )
-    summary = {
-        "schema": "zro.release_validation",
-        "metadata": _metadata(),
-        "capabilities": capability_report,
-        "performance": performance,
-        "steps": [
-            {
-                "name": result.name,
-                "command": list(result.command),
-                "returncode": result.returncode,
-            }
-            for result in results
-        ],
-        "deferred": list(DEFERRED_GATES),
-        "local_leaks": local_leak_scan(),
-        "remote_leaks": remote_leak_scan(args.hardware_config),
-    }
+    summary = build_summary(
+        capability_report,
+        performance,
+        results,
+        DEFERRED_GATES,
+        local_leak_scan(),
+        remote_leak_scan(args.hardware_config),
+    )
     print(json.dumps(summary, indent=2, sort_keys=True))
     failed = next((result for result in results if result.returncode), None)
     if failed:
