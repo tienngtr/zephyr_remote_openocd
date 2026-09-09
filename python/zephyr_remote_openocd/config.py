@@ -28,8 +28,6 @@ class ConfigError(ValueError):
 
 
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-_COMMAND_EXECUTABLE = re.compile(r"^(?:[^/]+|/[^/].*|~/.*|~)$")
-_LOCAL_PATH = re.compile(r"^(?:/.*|~(?:/.*|))$")
 
 
 @dataclass(frozen=True)
@@ -216,20 +214,11 @@ def _validate_schema(document: dict[str, object], config_path: Path) -> None:
         raise ConfigError(f"invalid configuration {config_path}{suffix}: {error.message}")
 
 
-def _as_command(value: object, location: str, config_path: Path) -> tuple[str, ...] | None:
+def _as_command(value: object) -> tuple[str, ...] | None:
     if value is None:
         return None
     assert isinstance(value, list)
-    command = tuple(value)
-    if not _COMMAND_EXECUTABLE.fullmatch(command[0]) or (
-        command[0].startswith("~") and command[0] not in {"~"} and not command[0].startswith("~/")
-    ):
-        raise ConfigError(
-            f"invalid configuration {config_path} at {location}[0]: invalid executable"
-        )
-    if any("\0" in arg for arg in command):
-        raise ConfigError(f"invalid configuration {config_path} at {location}: NUL is not allowed")
-    return command
+    return tuple(value)
 
 
 def _path_mappings(
@@ -241,11 +230,6 @@ def _path_mappings(
     mappings: list[PathMapping] = []
     seen: dict[Path, PurePosixPath] = {}
     for local_value, remote_value in value.items():
-        if not _LOCAL_PATH.fullmatch(local_value) or not _valid_remote_path(remote_value):
-            raise ConfigError(
-                f"invalid configuration {config_path} at {location}: "
-                "paths must be absolute or ~/path"
-            )
         try:
             local = Path(local_value).expanduser().resolve()
         except (OSError, RuntimeError) as error:
@@ -262,21 +246,6 @@ def _path_mappings(
     return tuple(mappings)
 
 
-def _valid_remote_path(value: str) -> bool:
-    """Remote paths are normalized POSIX paths or the current user's ``~``."""
-    if value == "~":
-        return True
-    if value.startswith("~/"):
-        parts = value[2:].split("/")
-    elif value.startswith("/") and not value.startswith("//"):
-        if value == "/":
-            return True
-        parts = value[1:].split("/")
-    else:
-        return False
-    return all(part not in {"", ".", ".."} for part in parts)
-
-
 def _definition(raw: dict[str, object], config_path: Path, location: str, *, remote: bool):
     kwargs: dict[str, object] = {}
     if remote:
@@ -287,7 +256,7 @@ def _definition(raw: dict[str, object], config_path: Path, location: str, *, rem
             continue
         value = raw[name]
         if name.endswith("command"):
-            kwargs[name] = _as_command(value, f"{location}.{name}", config_path)
+            kwargs[name] = _as_command(value)
         elif name == "forward_env":
             kwargs[name] = tuple(value)
         else:

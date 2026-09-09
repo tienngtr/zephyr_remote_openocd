@@ -19,16 +19,49 @@
   "$defs": {
     "command": {
       "type": "array", "minItems": 1,
-      "prefixItems": [{"type": "string", "minLength": 1, "pattern": "^(?:[^/]+|/[^/].*|~/.*|~)$"}],
-      "items": {"type": "string"}
+      "prefixItems": [{"$ref": "#/$defs/commandExecutable"}],
+      "items": {"$ref": "#/$defs/commandArgument"}
+    },
+    "commandArgument": {
+      "type": "string", "not": {"pattern": "\\u0000"}
+    },
+    "commandExecutable": {
+      "allOf": [
+        {"$ref": "#/$defs/commandArgument"},
+        {
+          "anyOf": [
+            {"pattern": "^[^~/\\u0000][^/\\u0000]*$"},
+            {"pattern": "^/[^/\\u0000][^\\u0000]*$"},
+            {"pattern": "^~/[^\\u0000]*$"},
+            {"const": "~"}
+          ]
+        }
+      ]
     },
     "environment": {
       "type": "array", "uniqueItems": true,
       "items": {"type": "string", "minLength": 1, "pattern": "^[^=\\u0000]+$"}
     },
+    "localPath": {
+      "type": "string",
+      "anyOf": [
+        {"pattern": "^/[^\\u0000]*$"},
+        {"pattern": "^~/[^\\u0000]*$"},
+        {"const": "~"}
+      ]
+    },
+    "remotePath": {
+      "type": "string",
+      "anyOf": [
+        {"const": "/"},
+        {"const": "~"},
+        {"pattern": "^/(?!\\.{1,2}(?:/|$))[^/\\u0000]+(?:/(?!\\.{1,2}(?:/|$))[^/\\u0000]+)*$"},
+        {"pattern": "^~/(?!\\.{1,2}(?:/|$))[^/\\u0000]+(?:/(?!\\.{1,2}(?:/|$))[^/\\u0000]+)*$"}
+      ]
+    },
     "paths": {
-      "type": "object", "additionalProperties": {"type": "string", "minLength": 1, "pattern": "^(?:/.*|~(?:/.*|))$"},
-      "propertyNames": {"type": "string", "pattern": "^(?:/.*|~(?:/.*|))$"}
+      "type": "object", "additionalProperties": {"$ref": "#/$defs/remotePath"},
+      "propertyNames": {"$ref": "#/$defs/localPath"}
     },
     "preset": {
       "type": "object", "additionalProperties": false,

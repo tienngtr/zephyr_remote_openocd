@@ -413,6 +413,16 @@ when that remote is used. Local mapping paths SHALL be normalized before
 duplicate detection. Remote `~` paths SHALL be resolved through SSH only for a
 real operation; recording SHALL retain them literally.
 
+The schema SHALL enforce command and path lexical validity. Every command
+element SHALL exclude NUL. A command executable SHALL be a bare name, an
+absolute path, or a current-user `~` path. Mapping keys SHALL be absolute or
+current-user `~` local paths and SHALL exclude NUL. Mapping destinations SHALL
+be absolute or current-user `~` POSIX paths, SHALL exclude NUL, and SHALL be
+lexically normalized: they SHALL NOT contain empty, `.` or `..` components or a
+trailing separator, except that `/` and `~` are valid roots. Local mapping paths
+MAY contain `.` and `..` because they are resolved using the local filesystem
+before collision detection.
+
 ## REQ-FUNC-CONFIG-011
 
 Unknown keys, explicit nulls, duplicate YAML keys, invalid types, disallowed
@@ -424,7 +434,10 @@ produce actionable configuration errors.
 
 The implementation SHALL validate parsed YAML against the canonical machine-
 readable schema at runtime rather than maintaining a separate copy of the
-structural rules in handwritten validators.
+structural or lexical rules in handwritten validators. Post-schema validation
+SHALL be limited to contextual semantics, including local path resolution and
+collision detection, selected-definition references, operationally required
+settings, and remote-home expansion.
 
 ---
 

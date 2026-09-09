@@ -55,18 +55,31 @@ named preset must exist, and a production operation must provide
 
 Commands are argv sequences, not shell strings. The first element must be a
 bare executable name, an absolute path, or `~/path`; later elements are literal
-strings and may be empty. Runner-generated OpenOCD arguments are appended after
-the configured command. Only `ssh_command[0]` expands `~` locally. OpenOCD's
-first argument and remote mapping destinations expand `~` using the SSH user's
-actual home, queried once only when needed during a real operation. Recording
-mode leaves these remote paths unresolved and performs no SSH.
+strings and may be empty. NUL is forbidden in every element. These lexical
+rules are enforced by the schema. Runner-generated OpenOCD arguments are
+appended after the configured command. Only `ssh_command[0]` expands `~`
+locally. OpenOCD's first argument and remote mapping destinations expand `~`
+using the SSH user's actual home, queried once only when needed during a real
+operation. Recording mode leaves these remote paths unresolved and performs no
+SSH.
 
 Path mappings are YAML mappings from local to remote paths. Both sides must be
-absolute or use `~` (only the current user form is supported). Local paths are
-expanded and normalized before duplicate detection; duplicate normalized local
-keys are errors even when their remote destinations match. Mappings refer to
-resources already present on the remote host and do not stage local contents.
-Local and remote paths may contain spaces; quote them as required by YAML syntax.
+absolute or use `~` (only the current user form is supported), and neither may
+contain NUL. Local paths may contain `.` and `..`; they are expanded and
+resolved on the local machine before duplicate detection. Duplicate normalized
+local keys are errors even when their remote destinations match. Remote paths
+must already be normalized: repeated or trailing separators and `.` or `..`
+components are rejected. They cannot be resolved safely while loading the
+configuration because remote components may be symbolic links and loading does
+not contact the remote host. Mappings refer to resources already present on the
+remote host and do not stage local contents. Local and remote paths may contain
+spaces; quote them as required by YAML syntax.
+
+The schema enforces the lexical forms above. Post-schema processing is limited
+to contextual semantics that cannot be expressed truthfully as string syntax:
+local home expansion and filesystem resolution, normalized-local-path collision
+detection, selected remote and preset references, mandatory settings for the
+requested operation, and remote home expansion during a real operation.
 
 `forward_env` contains names whose current local values may be sent to remote
 OpenOCD. Values are never stored in configuration. Missing local variables are

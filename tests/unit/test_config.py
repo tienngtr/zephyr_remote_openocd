@@ -123,6 +123,51 @@ def test_ssh_host_with_nul_is_rejected_at_schema_boundary(tmp_path: Path):
         load_text(tmp_path, 'remotes:\n  lab:\n    ssh_host: "host\\0suffix"\n')
 
 
+@pytest.mark.parametrize(
+    ("command", "location"),
+    (
+        ("['']", r"remotes\.lab\.openocd_command\.0"),
+        ("[~someone/bin/openocd]", r"remotes\.lab\.openocd_command\.0"),
+        ("[//server/openocd]", r"remotes\.lab\.openocd_command\.0"),
+        ('["open\\0ocd"]', r"remotes\.lab\.openocd_command\.0"),
+        ('[openocd, "argument\\0value"]', r"remotes\.lab\.openocd_command\.1"),
+    ),
+)
+def test_command_lexical_errors_are_rejected_at_schema_boundary(
+    tmp_path: Path, command: str, location: str
+):
+    with pytest.raises(ConfigError, match=rf"at {location}"):
+        load_text(tmp_path, f"remotes:\n  lab:\n    openocd_command: {command}\n")
+
+
+@pytest.mark.parametrize(
+    "remote_path",
+    (
+        "relative",
+        "~someone/remote",
+        "//remote",
+        "/remote//tree",
+        "/remote/./tree",
+        "/remote/../tree",
+        "/remote/tree/",
+        '"/remote\\0tree"',
+    ),
+)
+def test_remote_path_lexical_errors_are_rejected_at_schema_boundary(
+    tmp_path: Path, remote_path: str
+):
+    with pytest.raises(ConfigError, match=r"at remotes\.lab\.path_mappings\./tmp"):
+        load_text(
+            tmp_path,
+            f"remotes:\n  lab:\n    path_mappings:\n      /tmp: {remote_path}\n",
+        )
+
+
+def test_local_path_lexical_errors_are_rejected_at_schema_boundary(tmp_path: Path):
+    with pytest.raises(ConfigError, match=r"at remotes\.lab\.path_mappings"):
+        load_text(tmp_path, "remotes:\n  lab:\n    path_mappings:\n      relative: /remote\n")
+
+
 def test_command_arguments_and_preset_resolution(tmp_path: Path):
     config = load_text(
         tmp_path,
@@ -223,3 +268,12 @@ def test_local_mapping_duplicates_are_rejected(tmp_path: Path):
       /tmp: /one
 """,
         )
+
+
+def test_local_dot_components_are_normalized(tmp_path: Path):
+    config = load_text(
+        tmp_path,
+        "remotes:\n  r:\n    path_mappings:\n      /tmp/parent/../mapped: /remote\n",
+    )
+    mapping = resolve_remote(config, "r", require_openocd=False).path_mappings[0]
+    assert mapping.local == Path("/tmp/mapped")

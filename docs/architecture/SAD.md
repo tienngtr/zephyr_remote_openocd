@@ -215,12 +215,15 @@ remotes:
     preset: default
 ```
 
-The authoritative structural schema is
+The authoritative structural and lexical schema is
 `docs/requirements/configuration.schema.json`. The loader safely parses YAML,
 rejects duplicate keys and explicit nulls, then validates the document against
-that schema. It separately normalizes local mapping keys and detects duplicate
-intent. Remote references and required `openocd_command` are checked only when
-the selected remote is used, allowing incomplete unused definitions.
+that schema. Command and path spelling, including NUL exclusion and normalized
+remote path syntax, has no duplicate handwritten validator. Post-schema code
+expands and resolves local mapping keys and detects collisions because those
+operations depend on the local filesystem. Remote references and required
+`openocd_command` are checked only when the selected remote is used, allowing
+incomplete unused definitions.
 
 Remote fields replace preset settings wholesale. Remote `~` paths are expanded
 using the SSH user's actual home only during a real operation; recording keeps
