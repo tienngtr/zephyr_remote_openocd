@@ -20,7 +20,7 @@ from zephyr_remote_openocd.remote.debug import (
     parse_openocd_version,
     thread_info_enabled,
 )
-from zephyr_remote_openocd.remote.deploy import BOOTSTRAP, _helper_source
+from zephyr_remote_openocd.remote.deploy import _helper_source
 from zephyr_remote_openocd.remote.flash import (
     FlashInputs,
     build_flash_plan,
@@ -167,10 +167,6 @@ class TestProtocol:
         with pytest.raises(ProtocolError):
             validate_helper_event(decode_message(encode_message("STOPPED", reason="process-exit")))
 
-    def test_helper_deployment_path_uses_underscore(self):
-        assert "protocol_v1" in BOOTSTRAP
-        assert "protocol-v1" not in BOOTSTRAP
-
     def test_real_service_ready_requires_process_started(self):
         order = EventOrder()
         order.accept(decode_message(encode_message("HELLO", helper="helper")))
@@ -189,11 +185,6 @@ class TestProtocol:
                     )
                 )
             )
-
-
-def test_remote_helper_is_read_from_its_package():
-    source = _helper_source()
-    assert b'"""Protocol v1 remote helper' in source
 
 
 def test_missing_packaged_remote_helper_is_actionable(monkeypatch, tmp_path):

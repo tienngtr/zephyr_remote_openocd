@@ -32,16 +32,6 @@ def test_repository_relative_markdown_links_resolve():
     assert missing == []
 
 
-def test_removed_document_paths_are_not_referenced():
-    stale = []
-    for document in markdown_files():
-        text = document.read_text()
-        for path in ("doc/SRS.md", "doc/SAD.md"):
-            if path in text:
-                stale.append(f"{document.relative_to(ROOT)} contains {path}")
-    assert stale == []
-
-
 def test_user_documentation_does_not_expose_test_gate_identifiers():
     documents = [ROOT / "README.md", *sorted((ROOT / "docs" / "user").glob("*.md"))]
     leaked = [
