@@ -435,9 +435,10 @@ The compatibility policy is:
 
 > `runners.core` is Zephyr's explicitly supported external-runner API. `OpenOcdBinaryRunner` is reusable but is not covered by that compatibility guarantee. Any coupling to its non-private interface is Zephyr-version-specific, remains in the Zephyr compatibility layer, and excludes private attributes and methods.
 
-The Zephyr 4.4 adapter reuses `capabilities()`, `do_add_parser()`, and the
-constructor. It overrides `name()`, `do_create()`, and `do_run()`. Constructor
-and version coupling is isolated in `zephyr44/runner.py`.
+The Zephyr 4.4 adapter reuses `capabilities()` and the constructor. It overrides
+`name()`, `do_create()`, `do_add_parser()`, and `do_run()`. The parser override
+delegates to `OpenOcdBinaryRunner.do_add_parser()` before adding `--remote`.
+Constructor and version coupling is isolated in `zephyr44/runner.py`.
 
 Supporting a new Zephyr release requires validation of this boundary or a version-specific adapter update.
 
