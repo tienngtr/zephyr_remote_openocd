@@ -127,6 +127,9 @@ def test_ssh_host_with_nul_is_rejected_at_schema_boundary(tmp_path: Path):
     ("command", "location"),
     (
         ("['']", r"remotes\.lab\.openocd_command\.0"),
+        ("['~']", r"remotes\.lab\.openocd_command\.0"),
+        ("['~/']", r"remotes\.lab\.openocd_command\.0"),
+        ("['~//openocd']", r"remotes\.lab\.openocd_command\.0"),
         ("[~someone/bin/openocd]", r"remotes\.lab\.openocd_command\.0"),
         ("[//server/openocd]", r"remotes\.lab\.openocd_command\.0"),
         ('["open\\0ocd"]', r"remotes\.lab\.openocd_command\.0"),
