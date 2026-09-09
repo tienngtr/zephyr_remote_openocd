@@ -10,6 +10,12 @@ import selectors
 import time
 
 
+def assert_semihosting_acceptance(returncode: int | None, output: str, pattern: str) -> None:
+    """Require natural command success and the configured semihosting output."""
+    assert returncode == 0, output
+    assert re.search(pattern, output), output
+
+
 def read_line(stream, timeout=30):
     """Read one binary line without prefetching bytes needed by communicate()."""
     deadline = time.monotonic() + timeout

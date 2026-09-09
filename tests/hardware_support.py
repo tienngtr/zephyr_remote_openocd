@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from elftools.elf.elffile import ELFFile
 
 from tests.inventory import (
     Inventory,
@@ -19,6 +20,67 @@ from tests.inventory import (
     render_product_config,
 )
 from tests.support import ROOT
+
+
+def elf_memory_witness(
+    precondition_elf: Path | str, selected_elf: Path | str, *, size: int = 16
+) -> tuple[int, bytes, bytes]:
+    """Find loadable-section bytes that distinguish two ELF files."""
+
+    def loadable_sections(path_value: Path | str) -> list[tuple[bool, int, bytes]]:
+        path = Path(path_value)
+        with path.open("rb") as stream:
+            elf = ELFFile(stream)
+            segments = [
+                segment for segment in elf.iter_segments() if segment["p_type"] == "PT_LOAD"
+            ]
+            candidates = []
+            for section in elf.iter_sections():
+                section_size = int(section["sh_size"])
+                section_flags = int(section["sh_flags"])
+                if (
+                    not section_flags & 0x2
+                    or section["sh_type"] == "SHT_NOBITS"
+                    or section_size < size
+                ):
+                    continue
+                section_vma = int(section["sh_addr"])
+                section_offset = int(section["sh_offset"])
+                for segment in segments:
+                    segment_vma = int(segment["p_vaddr"])
+                    segment_offset = int(segment["p_offset"])
+                    if (
+                        segment_vma <= section_vma
+                        and section_vma + section_size <= segment_vma + int(segment["p_filesz"])
+                        and segment_offset <= section_offset
+                        and section_offset + section_size
+                        <= segment_offset + int(segment["p_filesz"])
+                    ):
+                        load_address = int(segment["p_paddr"]) + section_offset - segment_offset
+                        candidates.append((not section_flags & 0x1, load_address, section.data()))
+                        break
+            return sorted(candidates, key=lambda candidate: not candidate[0])
+
+    before_sections = loadable_sections(precondition_elf)
+    selected_sections = loadable_sections(selected_elf)
+    for _, before_address, before_data in before_sections:
+        before_end = before_address + len(before_data)
+        for _, selected_address, selected_data in selected_sections:
+            start = max(before_address, selected_address)
+            end = min(before_end, selected_address + len(selected_data))
+            if end - start < size:
+                continue
+            before_offset = start - before_address
+            selected_offset = start - selected_address
+            for offset in range(end - start - size + 1):
+                before = before_data[before_offset + offset : before_offset + offset + size]
+                selected = selected_data[selected_offset + offset : selected_offset + offset + size]
+                if before != selected:
+                    return start + offset, before, selected
+    raise ValueError(
+        f"no {size}-byte loadable-section witness distinguishes "
+        f"{precondition_elf} from {selected_elf}"
+    )
 
 
 def _record(
@@ -81,6 +143,12 @@ def _record(
             precondition_build_dir=str(build_dir.parent / profile.flash.precondition_build),
             quiescence_timeout=profile.flash.quiescence_timeout,
         )
+    if profile.attach is not None:
+        precondition_dir = build_dir.parent / profile.attach.precondition_build
+        record.update(
+            attach_precondition_build_dir=str(precondition_dir),
+            attach_precondition_elf_file=str(precondition_dir / "zephyr" / "zephyr.elf"),
+        )
     if profile.debug is not None:
         record["debug_breakpoint"] = profile.debug.breakpoint
     if profile.rtt is not None:
@@ -113,7 +181,7 @@ class HardwarePreparation:
     def prepare(self, identifier: str) -> dict[str, Any]:
         target_id, profile_name = identifier.split(":", 1)
         target = self.inventory.target(target_id)
-        profile = next(item for item in target.profiles if item.name == profile_name)
+        profile = target.profile(profile_name)
         if not target.zephyr_base.is_dir():
             pytest.fail(f"target {target.id} Zephyr tree is missing: {target.zephyr_base}")
         if not target.west.is_file() or not os.access(target.west, os.X_OK):
@@ -124,6 +192,8 @@ class HardwarePreparation:
         build_dir = self._prepare_build(target, profile.build, config_path)
         if profile.flash is not None:
             self._prepare_build(target, profile.flash.precondition_build, config_path)
+        if profile.attach is not None:
+            self._prepare_build(target, profile.attach.precondition_build, config_path)
         return _record(target, host, profile, build_dir, config_path)
 
     def _prepare_build(self, target: InventoryTarget, build_name: str, config_path: Path) -> Path:

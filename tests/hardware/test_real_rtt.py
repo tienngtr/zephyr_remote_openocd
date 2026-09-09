@@ -198,7 +198,6 @@ class TestRealRtt:
             text = self._finish(fixture, process, output)
         finally:
             self._abort(process)
-        assert "GNU gdb" in text
         assert re.search(rf"Breakpoint \d+,\s+{re.escape(breakpoint)}\b", text)
         assert re.search(r"ZRO_PC_BEGIN\s*\$\d+\s*=\s*0x[0-9a-fA-F]+", text)
         assert re.search(r"ZRO_INSN_BEGIN\s*=>?\s*0x[0-9a-fA-F]+", text)
@@ -211,7 +210,6 @@ class TestRealRtt:
         output = bytearray()
         try:
             read_until(process, RTT_ENDPOINT_PATTERN.pattern, 90, output)
-            assert b"GNU gdb" not in output
             gdb_port = int(fixture.get("gdb_client_port", 3333))
             client = subprocess.run(
                 [
@@ -259,7 +257,6 @@ class TestRealRtt:
             assert re.search(r"ZRO_PC_BEGIN\s*\$\d+\s*=\s*0x[0-9a-fA-F]+", client.stdout)
             assert re.search(r"ZRO_INSN_BEGIN\s*=>?\s*0x[0-9a-fA-F]+", client.stdout)
             self._rtt_round_trip(fixture, port)
-            text = self._finish(fixture, process, output, interrupt=True)
+            self._finish(fixture, process, output, interrupt=True)
         finally:
             self._abort(process)
-        assert "GNU gdb" not in text

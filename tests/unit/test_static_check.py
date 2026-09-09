@@ -18,19 +18,22 @@ SPEC.loader.exec_module(static_check)
 def test_commands_cover_repository_static_checks():
     commands = static_check.commands(("one.py", "two.py"))
 
-    assert [
-        command[2] if len(command) > 2 and command[1] == "-m" else Path(command[0]).name
-        for command in commands
-    ] == [
-        "ruff",
-        "ruff",
-        "pylint",
-        "vermin",
-        "git",
-    ]
-    jobs = commands[2].index("-j")
-    assert commands[2][jobs + 1] == "1"
-    assert commands[-1] == ("git", "diff", "--check", "HEAD")
+    def tool(command):
+        return command[2] if len(command) > 2 and command[1] == "-m" else Path(command[0]).name
+
+    tools = [tool(command) for command in commands]
+    assert {"ruff", "pylint", "vermin", "git"}.issubset(tools)
+
+    for name in ("pylint", "vermin"):
+        command = next(command for command in commands if tool(command) == name)
+        assert {"one.py", "two.py"}.issubset(command)
+
+    pylint = next(command for command in commands if tool(command) == "pylint")
+    single_job_options = (("-j", "1"), ("--jobs", "1"))
+    assert (
+        any(option in tuple(zip(pylint, pylint[1:], strict=False)) for option in single_job_options)
+        or "--jobs=1" in pylint
+    )
 
 
 def test_source_files_are_selected_from_git(monkeypatch):

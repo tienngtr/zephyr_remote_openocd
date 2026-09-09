@@ -8,12 +8,15 @@ import os
 import subprocess
 import sys
 from contextlib import contextmanager
-from unittest.mock import patch
 
 import pytest
 
-from tests.hardware import test_real_semihosting as semihosting
-from tests.process_support import read_line, read_lines, read_until
+from tests.process_support import (
+    assert_semihosting_acceptance,
+    read_line,
+    read_lines,
+    read_until,
+)
 
 
 @contextmanager
@@ -58,27 +61,17 @@ def test_rtt_reader_matches_markers_in_same_chunk_after_exit():
 
 
 @pytest.mark.parametrize(
-    ("code", "error"),
+    ("returncode", "output", "error"),
     (
-        ("print('console'); raise SystemExit(0)", None),
-        ("print('console'); raise SystemExit(1)", AssertionError),
-        ("print('wrong output')", AssertionError),
-        ("print('console', flush=True); import time; time.sleep(60)", subprocess.TimeoutExpired),
+        (0, "console", None),
+        (1, "console", AssertionError),
+        (0, "wrong output", AssertionError),
+        (-9, "console", AssertionError),
     ),
 )
-def test_semihosting_acceptance_requires_output_and_natural_success(code, error):
-    oracle = semihosting.TestRealSemihosting()
-    fixture = {"semihosting_gdb_init": [], "expected_output": "console", "timeout": 0.5}
-    with (
-        patch.object(oracle, "_flash"),
-        patch.object(oracle, "_west", return_value=[sys.executable, "-c", code]),
-        patch.object(oracle, "_environment", return_value=os.environ.copy()),
-        patch.object(oracle, "_assert_cleanup") as cleanup,
-    ):
-        if error:
-            with pytest.raises(error):
-                oracle.test_direct_semihosting_console_normal_completion(fixture)
-            cleanup.assert_not_called()
-        else:
-            oracle.test_direct_semihosting_console_normal_completion(fixture)
-            cleanup.assert_called_once()
+def test_semihosting_acceptance_requires_output_and_natural_success(returncode, output, error):
+    if error:
+        with pytest.raises(error):
+            assert_semihosting_acceptance(returncode, output, "console")
+    else:
+        assert_semihosting_acceptance(returncode, output, "console")

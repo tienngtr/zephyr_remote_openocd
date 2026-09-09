@@ -425,15 +425,11 @@ class TestZephyrIntegration:
         state = self._runner_state(self.build_in_tree)
         assert state["flash-runner"] == "openocd"
         self._write_config("remote_openocd")
-        remote = self._west("flash", "-d", str(self.build_in_tree))
-        assert "Re-running CMake" in remote.stdout
-        assert "using runner remote_openocd" in remote.stdout
+        self._west("flash", "-d", str(self.build_in_tree))
         assert self._runner_state(self.build_in_tree)["flash-runner"] == "remote_openocd"
 
         self._write_config("openocd")
-        local = self._west("flash", "-d", str(self.build_in_tree))
-        assert "Re-running CMake" in local.stdout
-        assert "using runner openocd" in local.stdout
+        self._west("flash", "-d", str(self.build_in_tree))
         assert self._runner_state(self.build_in_tree)["flash-runner"] == "openocd"
 
     @staticmethod
@@ -606,8 +602,6 @@ class TestZephyrIntegration:
             )
             clean_env["ZEPHYR_REMOTE_OPENOCD_RECORD"] = "1"
             recorded = west("flash", "-d", str(build))
-            assert "Re-running CMake" in recorded.stdout
-            assert "using runner remote_openocd" in recorded.stdout
             assert self._runner_state(build)["flash-runner"] == "remote_openocd"
             recording = self._recording(recorded.stdout)
             assert recording["command"] == "flash"

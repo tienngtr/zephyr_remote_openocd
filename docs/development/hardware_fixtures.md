@@ -44,6 +44,13 @@ build = "hello"
 [targets.profiles.flash.flash]
 precondition_build = "minimal"
 quiescence_timeout = 2
+
+[targets.profiles.debug]
+capabilities = ["debug", "attach", "debugserver"]
+build = "hello"
+
+[targets.profiles.debug.attach]
+precondition_build = "minimal"
 ```
 
 The normal precondition recipe is Zephyr `samples/basic/minimal`; the selected
@@ -84,8 +91,13 @@ program counter and current instruction. GDB and OpenOCD may implement the
 ordinary breakpoint as a software breakpoint in writable RAM or a hardware
 breakpoint in read-only memory. A debug-only profile does not need a serial
 endpoint because `west debug` does not guarantee fresh application output.
-Attach acceptance does not load an image; it reads the program counter and
-current instruction from the existing target state before detaching.
+An attach-capable profile must name a distinct precondition build in its
+`attach` table. The test flashes that image, derives bytes at ELF load addresses
+that distinguish it from the selected ELF, and requires those bytes to remain
+on the target after `west attach`. It also reads the program counter and current
+instruction before detaching. This proves that GDB connected without replacing
+the existing image; examining target state alone would not prove the no-load
+requirement.
 
 The serial observer acknowledges arming after discarding queued input. Its
 deadline includes the 180-second west operation budget plus the inventory's

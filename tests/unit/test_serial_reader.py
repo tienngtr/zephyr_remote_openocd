@@ -19,5 +19,13 @@ def test_reader_command_carries_structured_framing_and_expectation():
         flow_control="hardware",
     )
     argv = shlex.split(command)
-    assert argv[:2] == ["python3", "-c"]
-    assert argv[3:] == ["/dev/tty example", "921600", "7", "even", "2", "hardware", "ready", "3.5"]
+    assert argv[-8:] == [
+        "/dev/tty example",
+        "921600",
+        "7",
+        "even",
+        "2",
+        "hardware",
+        "ready",
+        "3.5",
+    ]
