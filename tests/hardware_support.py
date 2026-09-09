@@ -56,7 +56,7 @@ def elf_memory_witness(
                         and section_offset + section_size
                         <= segment_offset + int(segment["p_filesz"])
                     ):
-                        load_address = int(segment["p_paddr"]) + section_vma - segment_vma
+                        load_address = int(segment["p_paddr"]) + section_offset - segment_offset
                         candidates.append((not section_flags & 0x1, load_address, section.data()))
                         break
             return sorted(candidates, key=lambda candidate: not candidate[0])

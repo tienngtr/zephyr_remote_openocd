@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import struct
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -90,20 +91,38 @@ def test_elf_memory_witness_finds_bytes_that_distinguish_images(tmp_path: Path) 
     selected_data = bytearray(original)
     with Path(sys.executable).open("rb") as stream:
         elf = ELFFile(stream)
-        section = next(
-            item
-            for item in elf.iter_sections()
-            if int(item["sh_flags"]) & 0x2
-            and item["sh_type"] != "SHT_NOBITS"
-            and int(item["sh_size"]) >= 16
+        segment_index, segment, section = next(
+            (segment_index, segment, section)
+            for segment_index, segment in enumerate(elf.iter_segments())
+            if segment["p_type"] == "PT_LOAD"
+            for section in elf.iter_sections()
+            if int(section["sh_flags"]) & 0x2
+            and section["sh_type"] != "SHT_NOBITS"
+            and int(section["sh_size"]) >= 16
+            and int(segment["p_vaddr"]) < int(section["sh_addr"])
+            and int(section["sh_addr"]) + int(section["sh_size"])
+            < int(segment["p_vaddr"]) + int(segment["p_filesz"])
+            and int(segment["p_offset"]) <= int(section["sh_offset"])
+            and int(section["sh_offset"]) + int(section["sh_size"])
+            <= int(segment["p_offset"]) + int(segment["p_filesz"])
         )
         selected_data[int(section["sh_offset"])] ^= 0xFF
+        original_vma = int(segment["p_vaddr"])
+        header_offset = int(elf.header["e_phoff"]) + segment_index * int(elf.header["e_phentsize"])
+        vma_offset = header_offset + (16 if elf.elfclass == 64 else 8)
+        byte_order = "<" if elf.little_endian else ">"
+        address_format = "Q" if elf.elfclass == 64 else "I"
+        struct.pack_into(byte_order + address_format, selected_data, vma_offset, original_vma + 1)
+        expected_address = (
+            int(segment["p_paddr"]) + int(section["sh_offset"]) - int(segment["p_offset"])
+        )
     before_path = tmp_path / "before.elf"
     selected_path = tmp_path / "selected.elf"
     before_path.write_bytes(original)
     selected_path.write_bytes(selected_data)
 
-    _, before, selected = elf_memory_witness(before_path, selected_path)
+    address, before, selected = elf_memory_witness(before_path, selected_path)
+    assert address == expected_address
     assert len(before) == len(selected) == 16
     assert before != selected
 
