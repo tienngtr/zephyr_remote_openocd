@@ -274,6 +274,9 @@ def local_leak_scan() -> dict[str, object]:
     return {"available": result.returncode == 0, "clean": not matches, "matches": matches}
 
 
+REMOTE_LEAK_PATTERN = "[r]emote_[o]penocd|[r]emote_[h]elper|[h]elper[.]py|[o]penocd"
+
+
 def remote_leak_scan(inventory_path: Path) -> dict[str, object]:
     """Check each inventory host for helper/OpenOCD processes after the run."""
     try:
@@ -287,7 +290,7 @@ def remote_leak_scan(inventory_path: Path) -> dict[str, object]:
         command = [
             *host.ssh_command,
             host.address,
-            "pgrep -af 'remote_openocd|remote_helper|helper.py|openocd' || true",
+            f"pgrep -af '{REMOTE_LEAK_PATTERN}' || true",
         ]
         result = subprocess.run(command, capture_output=True, text=True, check=False)
         lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]

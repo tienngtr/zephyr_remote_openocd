@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -132,6 +133,31 @@ def test_run_steps_stops_after_first_failure_and_preserves_order():
     assert [item.name for item in results] == ["first", "second"]
     assert len(calls) == 2
     assert calls[0][1]["check"] is False
+
+
+def test_remote_leak_scan_pattern_cannot_match_its_own_command(tmp_path):
+    host = SimpleNamespace(id="lab", address="host", ssh_command=("ssh",))
+    completed = SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with (
+        patch(
+            "tests.inventory.load_inventory",
+            return_value=SimpleNamespace(hosts=(host,)),
+        ),
+        patch.object(release.subprocess, "run", return_value=completed) as run,
+    ):
+        report = release.remote_leak_scan(tmp_path / "inventory.toml")
+
+    remote_command = run.call_args.args[0][-1]
+    assert re.search(release.REMOTE_LEAK_PATTERN, remote_command) is None
+    for process in (
+        "python -m zephyr_remote_openocd.remote_helper",
+        "python remote_helper.py",
+        "python helper.py",
+        "/opt/openocd/bin/openocd -f board.cfg",
+    ):
+        assert re.search(release.REMOTE_LEAK_PATTERN, process)
+    assert report["clean"] is True
 
 
 def test_summary_contract_keeps_wsl_gates_deferred():
