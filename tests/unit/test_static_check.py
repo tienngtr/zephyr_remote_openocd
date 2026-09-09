@@ -24,6 +24,10 @@ def test_commands_cover_repository_static_checks():
     tools = [tool(command) for command in commands]
     assert {"ruff", "pylint", "vermin", "git"}.issubset(tools)
 
+    for name in ("pylint", "vermin"):
+        command = next(command for command in commands if tool(command) == name)
+        assert {"one.py", "two.py"}.issubset(command)
+
     pylint = next(command for command in commands if tool(command) == "pylint")
     single_job_options = (("-j", "1"), ("--jobs", "1"))
     assert (
