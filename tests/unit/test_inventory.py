@@ -26,13 +26,13 @@ def test_example_is_complete_and_renderable(tmp_path: Path) -> None:
     assert target.build("hello").application == "samples/hello_world"
     assert target.build("minimal").application == "samples/basic/minimal"
     assert target.endpoint("console").baud == 115200
-    assert target.profiles[0].environment == (("FTDI_CHANNEL", "0"),)
-    debug = next(profile for profile in target.profiles if profile.name == "debug")
+    assert target.profile("flash").environment == (("FTDI_CHANNEL", "0"),)
+    debug = target.profile("debug")
     assert debug.debug is not None
     assert debug.debug.breakpoint == "main"
     assert debug.attach is not None
     assert debug.attach.precondition_build == "minimal"
-    flash = next(profile for profile in target.profiles if profile.name == "flash")
+    flash = target.profile("flash")
     assert flash.flash is not None
     assert flash.flash.precondition_build == "minimal"
     rendered = render_product_config(inventory.host("lab"), default_runner="remote_openocd")
@@ -162,9 +162,10 @@ def test_serial_framing_and_capabilities_are_independent(tmp_path: Path) -> None
     target = inventory.target("board")
     assert target.endpoint("console").data_bits == 8
     assert {profile.name for profile in target.profiles} == {"default", "rtt"}
-    assert target.profiles[0].capabilities == ("flash", "debug", "attach", "debugserver")
-    assert target.profiles[0].debug is not None
-    assert target.profiles[0].debug.breakpoint == "main"
+    default = target.profile("default")
+    assert default.capabilities == ("flash", "debug", "attach", "debugserver")
+    assert default.debug is not None
+    assert default.debug.breakpoint == "main"
 
 
 @pytest.mark.parametrize(

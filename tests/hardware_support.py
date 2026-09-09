@@ -181,7 +181,7 @@ class HardwarePreparation:
     def prepare(self, identifier: str) -> dict[str, Any]:
         target_id, profile_name = identifier.split(":", 1)
         target = self.inventory.target(target_id)
-        profile = next(item for item in target.profiles if item.name == profile_name)
+        profile = target.profile(profile_name)
         if not target.zephyr_base.is_dir():
             pytest.fail(f"target {target.id} Zephyr tree is missing: {target.zephyr_base}")
         if not target.west.is_file() or not os.access(target.west, os.X_OK):

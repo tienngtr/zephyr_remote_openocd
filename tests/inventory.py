@@ -148,6 +148,12 @@ class InventoryTarget:
                 return endpoint
         raise KeyError(name)
 
+    def profile(self, name: str) -> OperationProfile:
+        for profile in self.profiles:
+            if profile.name == name:
+                return profile
+        raise KeyError(name)
+
 
 @dataclass(frozen=True)
 class Inventory:

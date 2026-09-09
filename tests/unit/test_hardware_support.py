@@ -22,7 +22,7 @@ def test_inventory_profiles_become_independent_capability_records(tmp_path):
     inventory = load_inventory(ROOT / "tests/fixtures/hardware.example.toml")
     host = inventory.host("lab")
     target = inventory.target("board")
-    profile = next(item for item in target.profiles if item.name == "debug")
+    profile = target.profile("debug")
     record = _record(target, host, profile, tmp_path / "build", tmp_path / "config.yaml")
     assert {"debug", "attach", "debugserver"}.issubset(record["capabilities"])
     assert records_for([record], "rtt") == []
@@ -37,7 +37,7 @@ def test_probe_serial_is_translated_to_runner_argument(tmp_path):
     host = inventory.host("lab")
     target = inventory.target("board")
     profile = replace(
-        next(item for item in target.profiles if item.name == "flash"),
+        target.profile("flash"),
         probe_serial="example_probe",
     )
     record = _record(target, host, profile, tmp_path / "build", tmp_path / "config.yaml")
@@ -53,7 +53,7 @@ def test_preparation_builds_only_requested_recipes_and_caches_success(tmp_path, 
     # An unavailable unrelated target and recipe must not affect selection.
     unrelated = replace(original, id="unavailable")
     extra = replace(target.builds[0], name="unused", application="/unavailable/application")
-    unused_profile = replace(target.profiles[0], name="unused", build="unused")
+    unused_profile = replace(target.profile("flash"), name="unused", build="unused")
     target = replace(
         target, builds=(*target.builds, extra), profiles=(*target.profiles, unused_profile)
     )
