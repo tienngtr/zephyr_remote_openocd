@@ -59,6 +59,38 @@ the longer `ZEPHYR_REMOTE_OPENOCD_` prefix; for example,
 `ZEPHYR_REMOTE_OPENOCD_CONFIG` selects the product YAML configuration, not this
 test inventory.
 
+## Runner recording mode
+
+Set `ZRO_RECORD=1` to make `remote_openocd` construct the requested operation
+and print its structured JSON record instead of executing it:
+
+```sh
+ZRO_RECORD=1 west flash -r remote_openocd --remote lab
+```
+
+The runner still loads product configuration and local build metadata needed to
+construct the plan. It returns before starting SSH, OpenOCD, GDB, port
+forwarding, or hardware access. Values other than the exact string `1` do not
+enable recording.
+
+Recording verifies configuration and command construction only. It does not
+exercise packaged-helper discovery or deployment, remote connectivity, process
+lifecycle and cleanup, target state, or hardware behavior. Do not use a
+recording result as acceptance evidence for those behaviors.
+
+For a thread-info-enabled `debug`, `attach`, `debugserver`, or `rtt` build, set
+`ZRO_RECORD_VERSION` to representative output from `openocd --version`:
+
+```sh
+ZRO_RECORD=1 \
+ZRO_RECORD_VERSION='Open On-Chip Debugger 0.12.0' \
+west debug -r remote_openocd --remote lab
+```
+
+The injected version lets the runner construct its thread-awareness plan
+without querying remote OpenOCD. It is ignored when thread information is not
+requested and is not a substitute for testing the configured remote executable.
+
 ## Native Linux
 
 The focused adapter contract tests need only the Zephyr source and its Python

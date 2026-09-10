@@ -94,7 +94,7 @@ class RemoteOpenOcdBinaryRunner(OpenOcdBinaryRunner):
     def do_run(self, command, **kwargs):
         try:
             document = load_config()
-            recording = os.environ.get("ZEPHYR_REMOTE_OPENOCD_RECORD") == "1"
+            recording = os.environ.get("ZRO_RECORD") == "1"
             selected = resolve_remote(
                 document,
                 getattr(self.parsed_args, "remote", None),
@@ -107,7 +107,7 @@ class RemoteOpenOcdBinaryRunner(OpenOcdBinaryRunner):
             _record_runner(self, command, selected)
             return
         try:
-            if os.environ.get("ZEPHYR_REMOTE_OPENOCD_RECORD") != "1":
+            if os.environ.get("ZRO_RECORD") != "1":
                 selected = _prepare_remote_paths(selected)
             if command == "flash":
                 request = _flash_request(self, selected)
@@ -228,11 +228,10 @@ def _record_runner(runner, command, selected):
         and selected.remote_openocd
     ):
         requested = runner.thread_info_enabled
-        supplied = os.environ.get("ZEPHYR_REMOTE_OPENOCD_RECORD_VERSION")
+        supplied = os.environ.get("ZRO_RECORD_VERSION")
         if requested and supplied is None:
             raise RuntimeError(
-                "ZEPHYR_REMOTE_OPENOCD_RECORD_VERSION is required to record a "
-                "thread-info-enabled build"
+                "ZRO_RECORD_VERSION is required to record a thread-info-enabled build"
             )
         version = parse_openocd_version(supplied) if requested else None
         plan = _debug_plan(runner, command, selected, version)

@@ -64,9 +64,8 @@ files.
 
 Use pytest `test_` names and separate parametrized nodes for external profiles.
 Add focused coverage for protocol ordering, lifecycle failures, cleanup, path
-safety, and command construction. Recording mode
-(`ZEPHYR_REMOTE_OPENOCD_RECORD=1`) must perform no SSH, OpenOCD, GDB, or hardware
-I/O.
+safety, and command construction. Recording mode (`ZRO_RECORD=1`) must perform
+no SSH, OpenOCD, GDB, or hardware I/O.
 
 Never commit lab identities, serial devices, capability values, expected lab
 output, or populated inventories; committed examples use placeholders.

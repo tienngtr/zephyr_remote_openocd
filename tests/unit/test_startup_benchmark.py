@@ -92,7 +92,7 @@ def test_benchmark_cli_reports_measured_overhead(monkeypatch, capsys, remote, me
     baseline_call, remote_call = measure.call_args_list
     assert baseline_call.args[0][-3:] == ["-r", "openocd", "--context"]
     assert remote_call.args[0][-2:] == ["-r", "remote_openocd"]
-    assert remote_call.args[1]["ZEPHYR_REMOTE_OPENOCD_RECORD"] == "1"
+    assert remote_call.args[1]["ZRO_RECORD"] == "1"
     assert remote_call.args[3:] == (1, 3)
 
 

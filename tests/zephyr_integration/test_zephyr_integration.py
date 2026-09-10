@@ -141,12 +141,12 @@ class TestZephyrIntegration:
     def _west(cls, *args: str, check: bool = True, extra_env=None):
         env = os.environ.copy()
         env.pop("ZEPHYR_REMOTE_OPENOCD_REMOTE", None)
-        env.pop("ZEPHYR_REMOTE_OPENOCD_RECORD_VERSION", None)
+        env.pop("ZRO_RECORD_VERSION", None)
         env.update(
             {
                 "EXTRA_ZEPHYR_MODULES": str(ROOT),
                 "ZEPHYR_REMOTE_OPENOCD_CONFIG": str(cls.config),
-                "ZEPHYR_REMOTE_OPENOCD_RECORD": "1",
+                "ZRO_RECORD": "1",
                 "CCACHE_DIR": str(cls.ccache),
                 "CCACHE_TEMPDIR": str(cls.ccache_tmp),
             }
@@ -286,7 +286,7 @@ class TestZephyrIntegration:
             "-r",
             "remote_openocd",
             "--no-rebuild",
-            extra_env={"ZEPHYR_REMOTE_OPENOCD_RECORD_VERSION": "Open On-Chip Debugger 0.12.0"},
+            extra_env={"ZRO_RECORD_VERSION": "Open On-Chip Debugger 0.12.0"},
         )
         recording = self._recording(result.stdout)
         assert recording["thread_info"] == {
@@ -311,7 +311,7 @@ class TestZephyrIntegration:
             check=False,
         )
         assert result.returncode != 0
-        assert "ZEPHYR_REMOTE_OPENOCD_RECORD_VERSION is required" in result.stdout
+        assert "ZRO_RECORD_VERSION is required" in result.stdout
 
     def test_recording_rtt_reuses_thread_info_decision(self):
         result = self._west(
@@ -323,7 +323,7 @@ class TestZephyrIntegration:
             "--no-rebuild",
             "--",
             "--rtt-address=0x20001000",
-            extra_env={"ZEPHYR_REMOTE_OPENOCD_RECORD_VERSION": "Open On-Chip Debugger 0.12.0"},
+            extra_env={"ZRO_RECORD_VERSION": "Open On-Chip Debugger 0.12.0"},
         )
         recording = self._recording(result.stdout)
         assert recording["thread_info"]["rtos_awareness"]
@@ -486,8 +486,8 @@ class TestZephyrIntegration:
                 "PYTHONPATH",
                 "ZEPHYR_REMOTE_OPENOCD_CONFIG",
                 "ZEPHYR_REMOTE_OPENOCD_REMOTE",
-                "ZEPHYR_REMOTE_OPENOCD_RECORD",
-                "ZEPHYR_REMOTE_OPENOCD_RECORD_VERSION",
+                "ZRO_RECORD",
+                "ZRO_RECORD_VERSION",
                 "EXTRA_ZEPHYR_MODULES",
                 "ZEPHYR_EXTRA_MODULES",
                 "ZEPHYR_MODULES",
@@ -600,7 +600,7 @@ class TestZephyrIntegration:
                     "default_runner: openocd", "default_runner: remote_openocd"
                 )
             )
-            clean_env["ZEPHYR_REMOTE_OPENOCD_RECORD"] = "1"
+            clean_env["ZRO_RECORD"] = "1"
             recorded = west("flash", "-d", str(build))
             assert self._runner_state(build)["flash-runner"] == "remote_openocd"
             recording = self._recording(recorded.stdout)

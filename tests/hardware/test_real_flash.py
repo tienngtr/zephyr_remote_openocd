@@ -130,7 +130,7 @@ class TestRealOpenOcdFlash:
         if runner_args:
             command.extend(("--", *map(str, runner_args)))
         environment = os.environ.copy()
-        environment.pop("ZEPHYR_REMOTE_OPENOCD_RECORD", None)
+        environment.pop("ZRO_RECORD", None)
         environment.update(
             {
                 "EXTRA_ZEPHYR_MODULES": str(ROOT),
