@@ -224,7 +224,9 @@ class TestStaging:
     def test_path_components_with_spaces_round_trip(self, tmp_path: Path):
         source = tmp_path / "source file.bin"
         source.write_bytes(b"payload")
-        archive = build_archive((StagedFile(source, "directory with spaces/file name.bin"),))
+        archive = build_archive(
+            (StagedFile(source, PurePosixPath("directory with spaces/file name.bin")),)
+        )
         output = tmp_path / "output directory"
         output.mkdir()
         _, _, files = extract_archive(archive.stream, output)
@@ -617,6 +619,7 @@ class TestDebugPlanning:
         assert plan.process.argv[plan.process.argv.index("-f") + 1] == (
             "/remote support/board config.cfg"
         )
+        assert plan.gdb_argv is not None
         assert plan.gdb_argv[0] == "/local tools/gdb"
         assert str(elf) in plan.gdb_argv
 

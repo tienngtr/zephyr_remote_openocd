@@ -16,17 +16,20 @@ SPEC.loader.exec_module(static_check)
 
 
 def test_commands_cover_repository_static_checks():
-    commands = static_check.commands(("one.py", "two.py"))
+    commands = static_check.commands(("one.py", "two.py"), ("workflow.yml", "config.yaml.example"))
 
     def tool(command):
         return command[2] if len(command) > 2 and command[1] == "-m" else Path(command[0]).name
 
     tools = [tool(command) for command in commands]
-    assert {"ruff", "pylint", "vermin", "git"}.issubset(tools)
+    assert {"mypy", "ruff", "pylint", "vermin", "yamllint", "git"}.issubset(tools)
 
-    for name in ("pylint", "vermin"):
+    for name in ("mypy", "pylint", "vermin"):
         command = next(command for command in commands if tool(command) == name)
         assert {"one.py", "two.py"}.issubset(command)
+
+    yamllint = next(command for command in commands if tool(command) == "yamllint")
+    assert {"workflow.yml", "config.yaml.example"}.issubset(yamllint)
 
     pylint = next(command for command in commands if tool(command) == "pylint")
     single_job_options = (("-j", "1"), ("--jobs", "1"))
@@ -42,6 +45,14 @@ def test_source_files_are_selected_from_git(monkeypatch):
 
     monkeypatch.setattr(static_check.subprocess, "run", lambda *args, **kwargs: Result())
     assert static_check.source_files(ROOT) == ("one.py", "two.py")
+
+
+def test_yaml_files_include_configuration_examples(monkeypatch):
+    class Result:
+        stdout = "workflow.yml\nconfig.yaml.example\n"
+
+    monkeypatch.setattr(static_check.subprocess, "run", lambda *args, **kwargs: Result())
+    assert static_check.yaml_files(ROOT) == ("workflow.yml", "config.yaml.example")
 
 
 def test_repository_root_is_reported_by_git(monkeypatch, tmp_path):

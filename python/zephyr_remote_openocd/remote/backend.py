@@ -13,6 +13,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable, Iterable
+from typing import BinaryIO, cast
 
 from .deploy import DeploymentResult, deploy_helper
 from .model import RemoteSessionRequest, Service, SessionAllocation, SessionDescriptor, StagedFile
@@ -108,7 +109,7 @@ class SshHelperSession(BackendSession):
 
     def _read_event(self) -> dict:
         try:
-            message = read_message(self.helper_process.stdout)
+            message = read_message(cast(BinaryIO, self.helper_process.stdout))
         except EOFError as error:
             diagnostic = b""
             if self.helper_process.stderr is not None:
@@ -205,7 +206,7 @@ class SshHelperSession(BackendSession):
                 raise SessionError("helper stdin was not captured")
             process = self.request.process
             write_message(
-                self.helper_process.stdin,
+                cast(BinaryIO, self.helper_process.stdin),
                 "START_OPENOCD",
                 argv=list(process.argv),
                 environment=dict(process.environment),
@@ -255,7 +256,7 @@ class SshHelperSession(BackendSession):
         if self.helper_process.stdin is None:
             raise SessionError("helper stdin was not captured")
         write_message(
-            self.helper_process.stdin,
+            cast(BinaryIO, self.helper_process.stdin),
             "START",
             services=[
                 {"name": item.name, "remote_port": item.remote_port} for item in service_list
@@ -348,7 +349,7 @@ class SshHelperSession(BackendSession):
                 if result is not None:
                     break
                 if deadline is not None and time.monotonic() >= deadline:
-                    raise subprocess.TimeoutExpired(self.helper_process.args, timeout)
+                    raise subprocess.TimeoutExpired(self.helper_process.args, timeout or 0.0)
                 time.sleep(0.05)
             if self.reader_thread is not None:
                 self.reader_thread.join(timeout=2)
@@ -406,7 +407,7 @@ class SshHelperSession(BackendSession):
         self._close_forwards()
         if self.helper_process.poll() is None and self.helper_process.stdin is not None:
             try:
-                write_message(self.helper_process.stdin, "STOP")
+                write_message(cast(BinaryIO, self.helper_process.stdin), "STOP")
                 self.helper_process.stdin.close()
                 self.helper_process.wait(timeout=5)
             except (BrokenPipeError, OSError, subprocess.TimeoutExpired):

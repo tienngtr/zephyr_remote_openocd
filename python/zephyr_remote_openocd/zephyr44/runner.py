@@ -233,7 +233,11 @@ def _record_runner(runner, command, selected):
             raise RuntimeError(
                 "ZRO_RECORD_VERSION is required to record a thread-info-enabled build"
             )
-        version = parse_openocd_version(supplied) if requested else None
+        if requested:
+            assert supplied is not None
+            version = parse_openocd_version(supplied)
+        else:
+            version = None
         plan = _debug_plan(runner, command, selected, version)
         request = _debug_request(runner, selected, plan)
         local_gdb = list(plan.gdb_argv) if plan.gdb_argv is not None else None

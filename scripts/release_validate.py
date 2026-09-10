@@ -19,6 +19,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 DEFERRED_GATES = ("PG-012", "PG-013")
 REQUIRED_CAPABILITIES = frozenset(
@@ -181,7 +182,7 @@ def inventory_capabilities(path: Path) -> dict[str, object]:
 
 def validate_inventory_capabilities(path: Path) -> None:
     """Require the configured inventory to advertise the required evidence."""
-    missing = inventory_capabilities(path)["missing"]
+    missing = cast(list[str], inventory_capabilities(path)["missing"])
     if missing:
         raise ValueError(
             "hardware inventory is missing required capabilities: " + ", ".join(missing)
@@ -317,7 +318,7 @@ def main(argv: list[str] | None = None) -> int:
         "--python-files",
         nargs="*",
         default=(),
-        help="tracked Python files to pass to Pylint and Vermin",
+        help="tracked Python files to pass to the Python static analyzers",
     )
     args = parser.parse_args(argv)
     try:
@@ -345,7 +346,9 @@ def main(argv: list[str] | None = None) -> int:
     if failed:
         print(f"{failed.name} failed:\n{failed.output}", file=sys.stderr)
         return failed.returncode or 1
-    if summary["local_leaks"]["clean"] is False or summary["remote_leaks"]["clean"] is False:
+    local_leaks = cast(dict[str, object], summary["local_leaks"])
+    remote_leaks = cast(dict[str, object], summary["remote_leaks"])
+    if local_leaks["clean"] is False or remote_leaks["clean"] is False:
         print("process leak detected", file=sys.stderr)
         return 1
     return 0

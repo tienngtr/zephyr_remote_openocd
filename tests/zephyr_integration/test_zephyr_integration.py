@@ -27,6 +27,14 @@ except ImportError:  # pragma: no cover - handled as an integration prerequisite
 class TestZephyrIntegration:
     """Permanent coverage for retired prototype gates PG-001 through PG-010."""
 
+    zephyr_base: Path
+    openocd_board: str
+    no_openocd_board: str
+    west: Path
+    config: Path
+    ccache: Path
+    ccache_tmp: Path
+
     @classmethod
     def setup_class(cls):
         cls.zephyr_base = env_path("ZEPHYR_BASE")

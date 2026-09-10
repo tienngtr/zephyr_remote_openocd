@@ -61,7 +61,7 @@ finally:
 '''
 
 
-def read_event(process: subprocess.Popen[str], timeout: float) -> dict[str, object]:
+def read_event(process: subprocess.Popen[bytes], timeout: float) -> dict[str, object]:
     """Read one JSON event from the remote reader."""
     if process.stdout is None:
         raise AssertionError("remote serial reader has no stdout")
@@ -73,7 +73,7 @@ def read_event(process: subprocess.Popen[str], timeout: float) -> dict[str, obje
     return json.loads(line)
 
 
-def stop_reader(process: subprocess.Popen[str]) -> None:
+def stop_reader(process: subprocess.Popen[bytes]) -> None:
     """Terminate a reader and close all of its pipes."""
     if process.poll() is None:
         process.terminate()
