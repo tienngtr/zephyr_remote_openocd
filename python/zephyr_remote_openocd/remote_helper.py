@@ -95,7 +95,7 @@ def stage(workspace):
         spool.seek(0)
         with tarfile.open(fileobj=spool, mode="r:*") as archive:
             members = archive.getmembers()
-            seen = set()
+            seen: set[PurePosixPath] = set()
             validated = []
             for member in members:
                 relative = valid_member(member, seen)
@@ -148,7 +148,10 @@ def fake_child(address, ports):
             selector.register(listener, selectors.EVENT_READ)
         while True:
             for key, _ in selector.select():
-                connection, _ = key.fileobj.accept()
+                selected_listener = key.fileobj
+                if not isinstance(selected_listener, socket.socket):
+                    raise TypeError("selector returned a non-socket listener")
+                connection, _ = selected_listener.accept()
                 threading.Thread(target=echo, args=(connection,), daemon=True).start()
     finally:
         for listener in listeners:
@@ -243,8 +246,8 @@ def openocd_version(argv):
 
 def control():
     session_id, work = new_workspace()
-    child = None
-    relay_threads = []
+    child: subprocess.Popen[bytes] | None = None
+    relay_threads: list[threading.Thread] = []
     stopping = False
 
     def close_child_streams():
@@ -337,6 +340,8 @@ def control():
                             stderr=subprocess.PIPE,
                             start_new_session=True,
                         )
+                        if child.stdout is None:
+                            raise RuntimeError("fake child stdout was not captured")
                         ready = child.stdout.readline()
                         try:
                             ready_message = json.loads(ready) if ready else {}
@@ -453,7 +458,7 @@ def control():
                             start_new_session=True,
                         )
                         marker_seen = threading.Event()
-                        startup_output = []
+                        startup_output: list[bytes] = []
                         relay_threads = [
                             threading.Thread(
                                 target=relay,

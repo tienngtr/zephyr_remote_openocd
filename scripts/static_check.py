@@ -39,12 +39,37 @@ def source_files(root: Path) -> tuple[str, ...]:
     return tuple(result.stdout.splitlines())
 
 
-def commands(python_files: tuple[str, ...]) -> tuple[tuple[str, ...], ...]:
+def yaml_files(root: Path) -> tuple[str, ...]:
+    """Return tracked YAML files, including the canonical example."""
+    result = subprocess.run(
+        (
+            "git",
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "--",
+            "*.yaml",
+            "*.yml",
+            "*.yaml.example",
+        ),
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return tuple(result.stdout.splitlines())
+
+
+def commands(
+    python_files: tuple[str, ...], yaml_paths: tuple[str, ...]
+) -> tuple[tuple[str, ...], ...]:
     """Build the ordered static-check commands."""
     python = sys.executable
     return (
         (python, "-m", "ruff", "check", "."),
         (python, "-m", "ruff", "format", "--check", "."),
+        (python, "-m", "mypy", "--config-file=mypy.ini", *python_files),
         (python, "-m", "pylint", "-j", "1", "--rcfile=pylintrc", *python_files),
         (
             tool_executable("vermin"),
@@ -56,6 +81,7 @@ def commands(python_files: tuple[str, ...]) -> tuple[tuple[str, ...], ...]:
             "--no-make-paths-absolute",
             *python_files,
         ),
+        (python, "-m", "yamllint", "-c", ".yamllint", *yaml_paths),
         ("git", "diff", "--check", "HEAD"),
     )
 
@@ -63,7 +89,7 @@ def commands(python_files: tuple[str, ...]) -> tuple[tuple[str, ...], ...]:
 def main() -> int:
     """Run checks in order and stop after the first failure."""
     root = repository_root()
-    for command in commands(source_files(root)):
+    for command in commands(source_files(root), yaml_files(root)):
         result = subprocess.run(command, cwd=root, check=False)
         if result.returncode:
             return result.returncode

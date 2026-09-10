@@ -19,6 +19,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any, cast
 
 from tests.support import ROOT
 
@@ -191,7 +192,7 @@ def main() -> int:
     args = parser.parse_args()
     if args.warmup < 0 or args.iterations < 1:
         parser.error("warmup must be non-negative and iterations must be positive")
-    result = run_benchmark(args)
+    result = cast(dict[str, Any], run_benchmark(args))
     print(json.dumps(result, indent=2, sort_keys=True))
     print(
         f"{args.command}: median additional startup "

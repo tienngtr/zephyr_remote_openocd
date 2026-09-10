@@ -2,6 +2,7 @@
 # configured Python environment and does not install this file.
 gitlint-core>=0.19.1
 jsonschema
+mypy
 pyelftools>=0.29
 pylint>=3
 pytest
@@ -9,3 +10,4 @@ pytest-timeout>=2
 PyYAML>=6.0
 ruff==0.14.2
 vermin
+yamllint

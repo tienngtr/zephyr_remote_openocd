@@ -11,7 +11,7 @@ import tempfile
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import BinaryIO
+from typing import BinaryIO, cast
 
 from .model import StagedFile, validated_destination
 
@@ -48,7 +48,10 @@ def build_archive(files: Iterable[StagedFile], *, spool_limit: int = 1024 * 1024
     destinations = [str(item.destination) for item in manifest]
     if len(destinations) != len(set(destinations)):
         raise StagingError("duplicate staged destination")
-    stream = tempfile.SpooledTemporaryFile(max_size=spool_limit, mode="w+b")  # noqa: SIM115
+    stream = cast(
+        BinaryIO,
+        tempfile.SpooledTemporaryFile(max_size=spool_limit, mode="w+b"),  # noqa: SIM115
+    )
     try:
         digest = hashlib.sha256()
         size = 0
