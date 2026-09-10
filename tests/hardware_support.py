@@ -220,8 +220,8 @@ class HardwarePreparation:
             environment = os.environ.copy()
             for name in (
                 "ZEPHYR_REMOTE_OPENOCD_REMOTE",
-                "ZEPHYR_REMOTE_OPENOCD_RECORD",
-                "ZEPHYR_REMOTE_OPENOCD_RECORD_VERSION",
+                "ZRO_RECORD",
+                "ZRO_RECORD_VERSION",
             ):
                 environment.pop(name, None)
             environment.update(

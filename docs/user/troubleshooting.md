@@ -18,6 +18,8 @@ of the SSH control connection. A failure message containing a session workspace
 or forwarding endpoint is useful diagnostic evidence; do not remove another
 user's workspace.
 
-Recording mode (`ZEPHYR_REMOTE_OPENOCD_RECORD=1`) is deliberately no-I/O. It
-is useful for checking generated commands and configuration without requiring
-SSH, OpenOCD, GDB, or hardware.
+Contributors can set `ZRO_RECORD=1` to inspect the runner's generated JSON plan
+without starting SSH, OpenOCD, GDB, forwarding, or hardware access. This checks
+plan construction, not deployment or real command behavior. See
+[Runner recording mode](../development/testing.md#runner-recording-mode) for
+usage, limitations, and the optional injected OpenOCD version.

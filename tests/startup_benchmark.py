@@ -143,7 +143,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, object]:
         {
             "EXTRA_ZEPHYR_MODULES": str(ROOT),
             "ZEPHYR_REMOTE_OPENOCD_CONFIG": str(args.config),
-            "ZEPHYR_REMOTE_OPENOCD_RECORD": "1",
+            "ZRO_RECORD": "1",
         }
     )
     baseline = _measure(

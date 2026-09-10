@@ -182,9 +182,9 @@ def test_recording_runs_real_adapter_without_external_io(
     )
     monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", str(config))
     monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_REMOTE", "unused")
-    monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_RECORD", "1")
+    monkeypatch.setenv("ZRO_RECORD", "1")
     if thread_info:
-        monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_RECORD_VERSION", "Open On-Chip Debugger 0.12.0")
+        monkeypatch.setenv("ZRO_RECORD_VERSION", "Open On-Chip Debugger 0.12.0")
     cfg = core.RunnerConfig(
         build_dir=str(build),
         board_dir=str(tmp_path),

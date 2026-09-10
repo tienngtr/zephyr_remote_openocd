@@ -19,7 +19,9 @@ Environment variables read by the product use the
 harness, validation tools, test payloads, and generated internal markers. In
 particular, `ZEPHYR_REMOTE_OPENOCD_CONFIG` selects the product YAML file, while
 `ZRO_HARDWARE_CONFIG` selects the ignored TOML inventory used by external
-tests. Do not introduce a public product setting with the `ZRO_` prefix.
+tests. `ZRO_RECORD` and `ZRO_RECORD_VERSION` control the runner's test-only
+[recording mode](docs/development/testing.md#runner-recording-mode). Do not
+introduce a public product setting with the `ZRO_` prefix.
 
 The current hardware-free checks are:
 
@@ -42,7 +44,7 @@ Zephyr, SSH, and hardware tests require external environments and ignored
 fixture data; see [`docs/development/testing.md`](docs/development/testing.md)
 before running them.
 Never commit credentials, host/device details, generated builds, or `.scratch/`
-files. Recording mode must remain free of SSH, OpenOCD, GDB, and hardware I/O.
+files.
 
 Submit focused commits. Describe behavior, validation performed,
 fixture coverage, and any deferred WSL checks in pull requests. Update the SRS
