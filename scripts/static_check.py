@@ -66,6 +66,9 @@ def commands(
 ) -> tuple[tuple[str, ...], ...]:
     """Build the ordered static-check commands."""
     python = sys.executable
+    workflow_paths = tuple(
+        path for path in yaml_paths if Path(path).parts[:2] == (".github", "workflows")
+    )
     return (
         (python, "-m", "ruff", "check", "."),
         (python, "-m", "ruff", "format", "--check", "."),
@@ -82,6 +85,7 @@ def commands(
             *python_files,
         ),
         (python, "-m", "yamllint", "-c", ".yamllint", *yaml_paths),
+        (tool_executable("actionlint"), "-no-color", *workflow_paths),
         ("git", "diff", "--check", "HEAD"),
     )
 
