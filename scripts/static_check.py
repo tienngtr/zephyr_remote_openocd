@@ -61,8 +61,22 @@ def yaml_files(root: Path) -> tuple[str, ...]:
     return tuple(result.stdout.splitlines())
 
 
+def markdown_files(root: Path) -> tuple[str, ...]:
+    """Return tracked and non-ignored Markdown files."""
+    result = subprocess.run(
+        ("git", "ls-files", "--cached", "--others", "--exclude-standard", "--", "*.md"),
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return tuple(result.stdout.splitlines())
+
+
 def commands(
-    python_files: tuple[str, ...], yaml_paths: tuple[str, ...]
+    python_files: tuple[str, ...],
+    yaml_paths: tuple[str, ...],
+    markdown_paths: tuple[str, ...],
 ) -> tuple[tuple[str, ...], ...]:
     """Build the ordered static-check commands."""
     python = sys.executable
@@ -97,6 +111,19 @@ def commands(
             example,
         ),
         (tool_executable("actionlint"), "-no-color", *workflow_paths),
+        (
+            tool_executable("rumdl"),
+            "check",
+            "--no-config",
+            "--no-cache",
+            "--color",
+            "never",
+            "--flavor",
+            "gfm",
+            "--enable",
+            "MD051,MD057",
+            *markdown_paths,
+        ),
         ("git", "diff", "--check", "HEAD"),
     )
 
@@ -104,7 +131,7 @@ def commands(
 def main() -> int:
     """Run checks in order and stop after the first failure."""
     root = repository_root()
-    for command in commands(source_files(root), yaml_files(root)):
+    for command in commands(source_files(root), yaml_files(root), markdown_files(root)):
         result = subprocess.run(command, cwd=root, check=False)
         if result.returncode:
             return result.returncode
