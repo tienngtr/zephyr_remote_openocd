@@ -1,15 +1,17 @@
 # Acceptance Traceability
 
-This matrix maps each acceptance criterion to maintained automated or hardware
-evidence. PG-012 and PG-013 are the only deferred validations.
+This matrix maps each acceptance criterion to maintained automated test coverage
+and, where applicable, hardware-test coverage. It does not claim that hardware
+has been executed recently. Executed validation belongs in a dated record under
+`docs/validation/`; PG-012 and PG-013 remain deferred validations.
 
 
-Status is classified by the strongest maintained evidence: **Automated** means
-permanent unit, Zephyr, or SSH integration coverage; **Hardware** means an
-executed real-hardware acceptance test that requires a configured fixture;
-**Both** has both forms. Hardware tests remain part of the acceptance evidence
-when their external fixture is unavailable on a developer machine. The only
-deferred criteria are the WSL-specific PG-012 and PG-013 validations.
+Status is classified by maintained coverage: **Automated** means permanent unit,
+Zephyr, or SSH integration coverage; **Hardware** means a maintained
+real-hardware test requiring a configured fixture; **Both** has both forms.
+Availability of a fixture does not imply that the hardware test has been
+executed. The only deferred criteria are the WSL-specific PG-012 and PG-013
+validations.
 
 | Criterion | Status | Permanent evidence |
 | --- | --- | --- |

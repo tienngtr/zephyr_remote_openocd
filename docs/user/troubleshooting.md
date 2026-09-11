@@ -23,3 +23,30 @@ without starting SSH, OpenOCD, GDB, forwarding, or hardware access. This checks
 plan construction, not deployment or real command behavior. See
 [Runner recording mode](../development/testing.md#runner-recording-mode) for
 usage, limitations, and the optional injected OpenOCD version.
+
+## Common symptoms
+
+**`remote_openocd` is not listed by `west flash --context`.** Ensure the module
+is in `EXTRA_ZEPHYR_MODULES`, then rebuild or regenerate the application so west
+reloads its runners.
+
+**No remote is selected.** Pass `--remote NAME`, set
+`ZEPHYR_REMOTE_OPENOCD_REMOTE`, or configure `default_remote`. The selected
+name must exist in the YAML file.
+
+**SSH works manually but the runner fails.** Check the complete configured
+`ssh_command`, including fixed options, and verify that remote `python3` and
+the configured OpenOCD executable are available to that SSH environment.
+
+**Mapped input is missing remotely.** Remove the mapping to stage the local
+input automatically, or install the resource at the mapped remote path and
+ensure its path is normalized.
+
+**A GDB client cannot connect.** Use the local endpoint printed by
+`debugserver` or an RTT-server operation. Check that the client uses the local
+forwarded port, not the remote OpenOCD port, and that the west process is still
+running.
+
+**Editing the configuration has no effect.** Re-run `west build` after changing
+the default runner or use explicit `-r remote_openocd`; west stores runner
+selection in generated build metadata.

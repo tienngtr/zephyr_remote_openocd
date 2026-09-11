@@ -7,6 +7,18 @@ the remote host through SSH.
 The custom runner is intended for native Linux and WSL 2. WSL 2 validation is still
 pending, and WSL 1 is not tested.
 
+## Prerequisites and support
+
+The supported integration boundary is Zephyr 4.4 with Python 3.12 or newer.
+Native Linux is validated; WSL 2 is a supported design target whose validation
+is pending; WSL 1 is unsupported.
+
+The local machine needs a Zephyr 4.4 workspace, its configured Python
+environment, west, and a board build that supports Zephyr's built-in `openocd`
+runner. The remote machine needs Linux, SSH access, `python3`, and an
+OpenOCD executable compatible with the board. OpenOCD and its board-support
+files run remotely; west, GDB, and client tools remain local.
+
 ## Install and activate
 
 Place a checkout, a filesystem copy, or an extracted archive of this module at
@@ -46,12 +58,19 @@ configured Python environment provides these dependencies; if setup reports a
 warning, activate or use that environment. There is no separate product package
 installation step.
 
-After activating the module, configure an application for an OpenOCD-capable
-board so Zephyr can discover the module and add `remote_openocd` alongside the
-built-in `openocd` runner. For example, Zephyr 4.4's
-`stm32f746g_disco` board supports the built-in OpenOCD runner, and
-`samples/hello_world` provides a concrete starting point. From a Zephyr
-workspace, use:
+After activating the module, configure a remote before running a remote
+operation. Add this minimum definition to the setup-created YAML file:
+
+```yaml
+default_remote: lab
+remotes:
+  lab:
+    ssh_host: openocd_host
+    openocd_command: [/absolute/path/to/openocd]
+```
+
+For an OpenOCD-capable board, Zephyr 4.4's `stm32f746g_disco` and
+`samples/hello_world` provide a concrete example. From a Zephyr workspace, use:
 
 ```sh
 west build -p always -b stm32f746g_disco samples/hello_world
@@ -59,10 +78,9 @@ west flash --context
 west flash -r remote_openocd --remote lab
 ```
 
-The final command assumes that the `lab` remote shown below has been
-configured. This board is an example, not a requirement; the runner remains
-board-agnostic and works with builds that expose Zephyr's built-in `openocd`
-runner. Subsequent builds can use the normal incremental `west build` command.
+This board is an example, not a requirement; the runner remains board-agnostic
+and works with builds that expose Zephyr's built-in `openocd` runner. Subsequent
+builds can use the normal incremental `west build` command.
 The context output for an OpenOCD-capable build lists both `openocd` and
 `remote_openocd`.
 

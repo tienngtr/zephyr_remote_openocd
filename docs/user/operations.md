@@ -53,3 +53,65 @@ Direct semihosting uses ordinary user-supplied OpenOCD commands, typically
 through `--cmd-pre-init`, and the existing OpenOCD stdout/stderr relay. It is
 intentionally not a semihosting proxy, filesystem virtualization, TCP redirect,
 or GDB File-I/O implementation.
+
+## Operation recipes
+
+### Flash
+
+Build an image and run `west flash -r remote_openocd --remote lab`. This loads
+the selected image on the target and should produce that application's normal
+output. Use `west flash --context` first if you need to inspect available
+runners.
+
+### Debug
+
+Run `west debug -r remote_openocd --remote lab`. The command starts remote
+OpenOCD, loads the ELF, and starts local GDB. Set breakpoints and use GDB as
+usual; the command cleans up the session when GDB exits. Debug does not promise
+fresh application output.
+
+### Attach
+
+Run `west attach -r remote_openocd --remote lab` to connect GDB to the running
+target without flashing or loading an image. Inspect the existing target state
+and detach when finished.
+
+### Debug server
+
+Run `west debugserver -r remote_openocd --remote lab`. This starts remote
+OpenOCD and forwards its GDB service, but does not start GDB. The runner prints
+the local endpoint; connect a local GDB client using the printed address and
+the build ELF, for example:
+
+```text
+target extended-remote 127.0.0.1:<printed-gdb-port>
+```
+
+The local port follows the OpenOCD runner's configured GDB client port and may
+be changed with the normal Zephyr runner option. Stop the debugserver process
+after the client detaches.
+
+### RTT
+
+`west rtt -r remote_openocd --remote lab` requires an RTT-capable target and
+configures channel 0 before launching the local RTT client. The command ends
+when the client exits. With `--rtt-server`, for example
+`west debugserver -r remote_openocd --remote lab --rtt-server`, the runner
+prints both forwarded endpoints but leaves GDB and the RTT client to the user.
+
+### Direct semihosting
+
+For a target and OpenOCD configuration that support semihosting, pass the
+ordinary OpenOCD setup commands through `--cmd-pre-init`, then run debug. A
+representative invocation is:
+
+```sh
+west debug -r remote_openocd --remote lab \
+  --cmd-pre-init='arm semihosting enable' \
+  --cmd-pre-init='arm semihosting_fileio disable' \
+  --cmd-pre-init='arm semihosting_redirect disable'
+```
+
+Semihosting text appears in the relayed OpenOCD output. The runner provides no
+filesystem proxy or GDB File-I/O transport; the target and OpenOCD commands
+must define the behavior.

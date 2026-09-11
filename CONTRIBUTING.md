@@ -6,6 +6,23 @@ environment provides `pyelftools`, PyYAML, and jsonschema. Module developers may
 install the convenience tooling in `requirements_dev.txt`; normal users should
 not install that file.
 
+Set up the contributor environment and run the ordinary checks with:
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements_dev.txt
+.venv/bin/python -m pytest
+.venv/bin/python scripts/static_check.py
+```
+
+The repository map is small: `python/zephyr_remote_openocd/remote/` contains
+generic transport and session logic, `zephyr44/runner.py` contains Zephyr 4.4
+integration, `runners/remote_openocd.py` registers the west runner,
+`remote_helper.py` is the deployed helper, and `resources/` contains the user
+configuration contract. Matching tests live under `tests/unit/`,
+`tests/local_integration/`, `tests/zephyr_integration/`,
+`tests/ssh_integration/`, and `tests/hardware/`.
+
 Production code belongs under `python/zephyr_remote_openocd/` and must remain
 board/vendor-agnostic. Keep Zephyr 4.4-specific coupling in `zephyr44/runner.py`,
 use only the supported runner interface, and do not access private
@@ -23,13 +40,6 @@ tests. `ZRO_RECORD` and `ZRO_RECORD_VERSION` control the runner's test-only
 [recording mode](docs/development/testing.md#runner-recording-mode). Do not
 introduce a public product setting with the `ZRO_` prefix.
 
-The current hardware-free checks are:
-
-```sh
-pytest
-python3 scripts/static_check.py
-```
-
 Install gitlint's default `commit-msg` hook with:
 
 ```sh
@@ -42,7 +52,9 @@ a concise body that explains the change.
 
 Zephyr, SSH, and hardware tests require external environments and ignored
 fixture data; see [`docs/development/testing.md`](docs/development/testing.md)
-before running them.
+before running them. Update [`SRS`](docs/requirements/SRS.md) for behavior and
+requirements, [`SAD`](docs/architecture/SAD.md) for architecture and rationale,
+and [`protocol.md`](docs/architecture/protocol.md) for the helper wire contract.
 Never commit credentials, host/device details, generated builds, or `.scratch/`
 files.
 

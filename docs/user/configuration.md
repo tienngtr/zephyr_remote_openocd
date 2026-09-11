@@ -14,6 +14,21 @@ A genuinely absent configuration file uses the defaults. A dangling symbolic
 link or another existing path that cannot be read as a file is an error; valid
 symbolic links to configuration files are supported.
 
+## What runs where
+
+`ssh_command` is an argv sequence executed on the local machine to start SSH.
+`openocd_command` is an argv sequence sent through SSH and executed on the
+remote machine. West and GDB remain local.
+
+## What is copied to the remote
+
+Required local files and directories are staged automatically unless a path
+mapping supplies an existing remote resource. Local Zephyr board-support and
+configuration directories are normally staged, so local changes are retained.
+Use a mapping for large, stable resources already installed remotely, such as
+an OpenOCD scripts tree; mapped resources are not copied. Paths with spaces are
+supported when quoted as required by YAML.
+
 ## Top-level settings
 
 ```yaml
