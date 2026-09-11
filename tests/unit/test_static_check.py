@@ -16,20 +16,36 @@ SPEC.loader.exec_module(static_check)
 
 
 def test_commands_cover_repository_static_checks():
-    commands = static_check.commands(("one.py", "two.py"), ("workflow.yml", "config.yaml.example"))
+    commands = static_check.commands(
+        ("one.py", "two.py"),
+        (".github/workflows/check.yml", "config.yaml.example"),
+    )
 
     def tool(command):
         return command[2] if len(command) > 2 and command[1] == "-m" else Path(command[0]).name
 
     tools = [tool(command) for command in commands]
-    assert {"mypy", "ruff", "pylint", "vermin", "yamllint", "git"}.issubset(tools)
+    assert {
+        "actionlint",
+        "git",
+        "mypy",
+        "pylint",
+        "ruff",
+        "vermin",
+        "yamllint",
+    }.issubset(tools)
 
     for name in ("mypy", "pylint", "vermin"):
         command = next(command for command in commands if tool(command) == name)
         assert {"one.py", "two.py"}.issubset(command)
 
     yamllint = next(command for command in commands if tool(command) == "yamllint")
-    assert {"workflow.yml", "config.yaml.example"}.issubset(yamllint)
+    assert {".github/workflows/check.yml", "config.yaml.example"}.issubset(yamllint)
+
+    actionlint = next(command for command in commands if tool(command) == "actionlint")
+    assert "-no-color" in actionlint
+    assert ".github/workflows/check.yml" in actionlint
+    assert "config.yaml.example" not in actionlint
 
     pylint = next(command for command in commands if tool(command) == "pylint")
     single_job_options = (("-j", "1"), ("--jobs", "1"))
