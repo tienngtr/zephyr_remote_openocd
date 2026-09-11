@@ -1,5 +1,20 @@
 # Testing layers
 
+Choose the smallest layer that covers the change:
+
+- Every change: `pytest` and `python3 scripts/static_check.py`.
+- Zephyr adapter or build integration: `tests/zephyr_integration/` with a
+  Zephyr 4.4 source tree and its configured Python environment.
+- SSH transport behavior: `tests/ssh_integration/` with an ignored inventory.
+- Real board behavior: `tests/hardware/` with a board, probe, serial endpoint,
+  and remote OpenOCD.
+- Release evidence: `scripts/release_validate.py`, which runs selected layers
+  serially and requires the additional release inputs described below.
+
+Run external nodes only after `--collect-only` confirms the intended selection.
+Hardware and SSH tests can change external state; keep destructive profiles
+serial and inspect cleanup output before reusing a target.
+
 The maintained suite uses pytest. Plain `pytest` runs only hardware-free unit
 and local-process tests. External layers are selected explicitly so a normal
 contributor run never needs SSH, a Zephyr checkout, or lab hardware:

@@ -4,8 +4,8 @@ This Zephyr module provides a west runner that runs OpenOCD on a remote Linux
 host while keeping west, GDB, and client tools on the local machine. It accesses
 the remote host through SSH.
 
-The custom runner is intended for native Linux and WSL 2. WSL 2 validation is still
-pending, and WSL 1 is not tested.
+The custom runner is intended for native Linux and WSL 2. WSL 2 validation is
+still pending; WSL 1 is unsupported.
 
 ## Prerequisites and support
 
