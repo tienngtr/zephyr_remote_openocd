@@ -54,7 +54,7 @@ def test_commands_cover_repository_static_checks():
     assert {"README.md", "docs/guide.md"}.issubset(rumdl)
     assert "one.py" not in rumdl
     assert "config.yaml.example" not in rumdl
-    assert "MD051,MD057" in rumdl
+    assert "MD001,MD025,MD041,MD051,MD057" in rumdl
     assert "gfm" in rumdl
     assert "--no-cache" in rumdl
 

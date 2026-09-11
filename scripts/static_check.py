@@ -121,7 +121,7 @@ def commands(
             "--flavor",
             "gfm",
             "--enable",
-            "MD051,MD057",
+            "MD001,MD025,MD041,MD051,MD057",
             *markdown_paths,
         ),
         ("git", "diff", "--check", "HEAD"),
