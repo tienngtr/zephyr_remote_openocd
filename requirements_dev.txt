@@ -1,6 +1,7 @@
 # Developer and test tooling only; normal module use relies on Zephyr 4.4's
 # configured Python environment and does not install this file.
 actionlint-py
+check-jsonschema
 gitlint-core>=0.19.1
 jsonschema
 mypy

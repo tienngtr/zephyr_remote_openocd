@@ -27,6 +27,7 @@ def test_commands_cover_repository_static_checks():
     tools = [tool(command) for command in commands]
     assert {
         "actionlint",
+        "check-jsonschema",
         "git",
         "mypy",
         "pylint",
@@ -46,6 +47,15 @@ def test_commands_cover_repository_static_checks():
     assert "-no-color" in actionlint
     assert ".github/workflows/check.yml" in actionlint
     assert "config.yaml.example" not in actionlint
+
+    schema_checks = [command for command in commands if tool(command) == "check-jsonschema"]
+    assert any("--check-metaschema" in command for command in schema_checks)
+    example_check = next(command for command in schema_checks if "--schemafile" in command)
+    assert "python/zephyr_remote_openocd/resources/configuration.schema.json" in example_check
+    assert "resources/config.yaml.example" in example_check
+    assert ("--force-filetype", "yaml") in tuple(
+        zip(example_check, example_check[1:], strict=False)
+    )
 
     pylint = next(command for command in commands if tool(command) == "pylint")
     single_job_options = (("-j", "1"), ("--jobs", "1"))

@@ -66,6 +66,8 @@ def commands(
 ) -> tuple[tuple[str, ...], ...]:
     """Build the ordered static-check commands."""
     python = sys.executable
+    schema = "python/zephyr_remote_openocd/resources/configuration.schema.json"
+    example = "resources/config.yaml.example"
     workflow_paths = tuple(
         path for path in yaml_paths if Path(path).parts[:2] == (".github", "workflows")
     )
@@ -85,6 +87,15 @@ def commands(
             *python_files,
         ),
         (python, "-m", "yamllint", "-c", ".yamllint", *yaml_paths),
+        (tool_executable("check-jsonschema"), "--check-metaschema", schema),
+        (
+            tool_executable("check-jsonschema"),
+            "--schemafile",
+            schema,
+            "--force-filetype",
+            "yaml",
+            example,
+        ),
         (tool_executable("actionlint"), "-no-color", *workflow_paths),
         ("git", "diff", "--check", "HEAD"),
     )
