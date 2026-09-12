@@ -3,15 +3,14 @@
 This matrix maps each acceptance criterion to maintained automated test coverage
 and, where applicable, hardware-test coverage. It does not claim that hardware
 has been executed recently. Executed validation belongs in a dated record under
-`docs/validation/`; PG-012 and PG-013 remain deferred validations.
+`docs/validation/`.
 
 
 Status is classified by maintained coverage: **Automated** means permanent unit,
 Zephyr, or SSH integration coverage; **Hardware** means a maintained
 real-hardware test requiring a configured fixture; **Both** has both forms.
 Availability of a fixture does not imply that the hardware test has been
-executed. The only deferred criteria are the WSL-specific PG-012 and PG-013
-validations.
+executed.
 
 | Criterion | Status | Permanent evidence |
 | --- | --- | --- |
@@ -38,11 +37,9 @@ validations.
 | AC-CONC-001 | Automated | [`TestSshTransportIntegration.test_concurrent_fake_sessions_isolate_identical_remote_ports`](../../tests/ssh_integration/test_ssh_integration.py) |
 | AC-LIFE-001 | Both | [`TestRealProcessHelper.test_output_exit_status_and_workspace_cleanup`](../../tests/local_integration/test_remote_process.py); real [flash](../../tests/hardware/test_real_flash.py), [debug](../../tests/hardware/test_real_debug.py), [RTT](../../tests/hardware/test_real_rtt.py), and [semihosting](../../tests/hardware/test_real_semihosting.py) cleanup assertions |
 | AC-LIFE-002 | Automated | [`TestRealProcessHelper.test_helper_eof_cleans_child_and_workspace`](../../tests/local_integration/test_remote_process.py); [`TestSshTransportIntegration.test_helper_ssh_loss_cleans_fake_session`](../../tests/ssh_integration/test_ssh_integration.py) |
-| AC-PLAT-001 | Both | Native-Linux [Zephyr](../../tests/zephyr_integration/) and [SSH](../../tests/ssh_integration/) integration plus [real hardware](../../tests/hardware/) fixtures |
-| AC-PLAT-002 | Deferred | PG-012 (WSL Linux SSH) and PG-013 (Windows `ssh.exe` from WSL 2) |
-| AC-SSH-001 | Automated | [SSH unit tests](../../tests/unit/test_ssh.py); [`TestLinuxSshIntegration.test_configured_linux_ssh_and_fixed_arguments`](../../tests/ssh_integration/test_ssh_integration.py) |
-| AC-SSH-002 | Deferred | PG-013 / [`TestWslSshIntegration.test_windows_ssh_exe_from_wsl`](../../tests/ssh_integration/test_ssh_integration.py) |
-| AC-SSH-003 | Automated | [`test_fixed_arguments_are_preserved_without_a_shell`](../../tests/unit/test_ssh.py); [`TestLinuxSshIntegration.test_configured_linux_ssh_and_fixed_arguments`](../../tests/ssh_integration/test_ssh_integration.py) |
+| AC-PLAT-001 | Both | Linux [Zephyr](../../tests/zephyr_integration/) and [SSH](../../tests/ssh_integration/) integration plus [real hardware](../../tests/hardware/) fixtures |
+| AC-SSH-001 | Automated | [SSH unit tests](../../tests/unit/test_ssh.py); [`TestConfiguredSshIntegration.test_configured_ssh_and_fixed_arguments`](../../tests/ssh_integration/test_ssh_integration.py) |
+| AC-SSH-002 | Automated | [SSH command tests](../../tests/unit/test_ssh.py); [`TestConfiguredSshIntegration`](../../tests/ssh_integration/test_ssh_integration.py) fixed-argument and alternate-name cases; [`TestSshTransportIntegration.test_forwarding_does_not_require_controlmaster`](../../tests/ssh_integration/test_ssh_integration.py) |
 
 This table records the current acceptance status. The following sections
 summarize implementation, validation, and compatibility status by requirement.

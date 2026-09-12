@@ -41,12 +41,7 @@ The implementation and user-facing documentation SHALL be board- and board-vendo
 
 ### 2.1 Local host
 
-A supported developer machine running either:
-
-- native Linux; or
-- Linux under WSL 2.
-
-Both are first-class supported platforms.
+A supported developer machine running Linux with Python 3.12 or newer.
 
 ### 2.2 Remote host
 
@@ -97,9 +92,8 @@ A separate operation performed after installation which initializes per-user fil
 
 The OpenSSH-compatible client command selected by the user for remote communication.
 
-On native Linux or WSL 2 this will normally be `ssh` from the local Linux environment.
-
-A WSL 2 user may instead configure a Windows OpenSSH client such as `ssh.exe`.
+This will normally be `ssh` found through `PATH`, but configuration may name
+another OpenSSH-compatible executable and fixed arguments.
 
 ### 2.9 Remote helper
 
@@ -202,7 +196,7 @@ The project has the following primary goals:
 7. Minimize remote-host administration.
 8. Reuse applicable Zephyr OpenOCD runner behavior.
 9. Keep Zephyr-version-specific integration isolated from the generic remote subsystem.
-10. Support native Linux and WSL 2 equally.
+10. Support Linux as the local platform.
 11. Avoid imposing a particular SSH-key or SSH-agent arrangement on developers.
 
 ---
@@ -355,7 +349,7 @@ The implementation SHALL use:
 ~/.config/zephyr_remote_openocd/config.yaml
 ```
 
-as its default per-user configuration path on Linux and WSL 2.
+as its default per-user configuration path on Linux.
 
 ### REQ-FUNC-CONFIG-002
 
@@ -865,7 +859,8 @@ The runner SHALL NOT require a dedicated semihosting network protocol or proxy.
 
 ### REQ-FUNC-SSH-001
 
-The runner SHALL use an OpenSSH-compatible external client command for SSH transport.
+The runner SHALL use a configured OpenSSH-compatible external client command
+for every SSH transport operation.
 
 ### REQ-FUNC-SSH-002
 
@@ -873,26 +868,29 @@ The default SSH command SHALL use `ssh` resolved from the local host's normal co
 
 ### REQ-FUNC-SSH-003
 
-The per-user configuration SHALL allow the SSH command to be overridden.
-
-Rationale:
-
-A WSL 2 user may select Windows `ssh.exe` to reuse an existing Windows OpenSSH
-configuration, credentials, and SSH agent instead of configuring SSH again
-inside WSL.
+The per-user configuration SHALL allow the complete SSH command prefix to be
+overridden as an argv sequence.
 
 ### REQ-FUNC-SSH-004
 
-The SSH command override SHALL permit selection of:
-
-- a different executable; and
-- fixed command-line arguments required for that executable.
+The first SSH argv element SHALL permit either a bare executable resolved
+through `PATH` or an explicit executable path. The implementation SHALL NOT
+assume that its basename is `ssh`.
 
 ### REQ-FUNC-SSH-005
 
-The configured SSH command SHALL be used consistently for remote-runner SSH operations.
+Fixed user-supplied SSH argv elements SHALL be preserved exactly and in order.
 
 ### REQ-FUNC-SSH-006
+
+The runner SHALL invoke the SSH argv directly without inserting a shell.
+
+### REQ-FUNC-SSH-007
+
+The configured SSH command SHALL be used consistently for remote-runner SSH
+operations.
+
+### REQ-FUNC-SSH-008
 
 The runner SHALL remain compatible with normal features provided by the selected OpenSSH client, including where supported:
 
@@ -902,23 +900,24 @@ The runner SHALL remain compatible with normal features provided by the selected
 - interactive authentication;
 - ProxyJump.
 
-### REQ-FUNC-SSH-007
+### REQ-FUNC-SSH-009
 
 The runner SHALL NOT require users to duplicate normal SSH credentials, keys, or proxy configuration in the remote-runner configuration.
 
-### REQ-FUNC-SSH-008
+### REQ-FUNC-SSH-010
 
 Correctness SHALL NOT depend on SSH ControlMaster or client connection multiplexing.
 
-### REQ-FUNC-SSH-009
+### REQ-FUNC-SSH-011
 
-The implementation MAY use client connection multiplexing when the configured SSH client supports it.
+The runner SHALL NOT inject ControlMaster arguments. A user MAY configure
+multiplexing explicitly when the selected SSH client supports it.
 
-### REQ-FUNC-SSH-010
+### REQ-FUNC-SSH-012
 
 Loss of the controlling SSH session SHALL cause the corresponding remote OpenOCD session to terminate.
 
-### REQ-FUNC-SSH-011
+### REQ-FUNC-SSH-013
 
 The runner SHALL NOT attempt transparent reconstruction of an interrupted debugging session after SSH loss.
 
@@ -1011,21 +1010,11 @@ Repeated use SHALL NOT cause unbounded accumulation of abandoned session data.
 
 ### REQ-NFUNC-PLAT-001
 
-The runner SHALL support native Linux and WSL 2 as first-class local development platforms.
-
-Neither platform SHALL be treated as a secondary or future port.
+The local platform SHALL be Linux with Python 3.12 or newer.
 
 ### REQ-NFUNC-PLAT-002
 
-Features required for normal remote-runner operation SHOULD behave equivalently on native Linux and WSL 2.
-
-### REQ-NFUNC-PLAT-003
-
 The remote platform SHALL be Linux with Python 3.12 or newer.
-
-### REQ-NFUNC-PLAT-004
-
-The local host SHALL provide Python 3.12 or newer.
 
 ### REQ-NFUNC-PORT-001
 
@@ -1084,7 +1073,8 @@ Remote-session and forwarding behavior SHALL be testable using fake OpenOCD endp
 
 ### REQ-NFUNC-TEST-003
 
-Automated integration tests SHALL exercise both native Linux and WSL 2 where practical.
+Automated integration tests SHALL exercise the supported Linux platform where
+practical.
 
 ---
 
@@ -1163,17 +1153,17 @@ Keep all use of `OpenOcdBinaryRunner` in the Zephyr 4.4 compatibility layer.
 Do not use private attributes or methods. Validate or update the adapter for
 each newly supported Zephyr version.
 
-### RISK-007 — SSH client differences, especially WSL with Windows `ssh.exe`
+### RISK-007 — SSH client differences
 
-WSL Linux OpenSSH and Windows `ssh.exe` can differ in process, path,
-authentication, and forwarding behavior. Test them separately.
+OpenSSH-compatible clients can differ in supported options, process behavior,
+authentication, and forwarding behavior.
 
 Severity: Medium.
 
 Mitigation:
 
-Depend only on required OpenSSH-compatible behavior and keep multiplexing
-optional. Complete PG-012 and PG-013 before claiming WSL 2 compatibility.
+Depend only on the required OpenSSH-compatible behavior, preserve configured
+argv, and keep multiplexing optional.
 
 
 ## 30. Acceptance Criteria
@@ -1308,11 +1298,7 @@ Loss of the controlling SSH session terminates the corresponding remote OpenOCD 
 
 ### AC-PLAT-001
 
-The normal flash/debug workflow works on native Linux.
-
-### AC-PLAT-002
-
-The normal flash/debug workflow works under WSL 2.
+The normal flash/debug workflow works on Linux.
 
 ### AC-SSH-001
 
@@ -1320,9 +1306,6 @@ With no SSH override configured, the runner uses `ssh` from the local command se
 
 ### AC-SSH-002
 
-On WSL 2, the runner can use a configured Windows OpenSSH client instead of the
-WSL distribution's `ssh` executable.
-
-### AC-SSH-003
-
-An SSH command containing fixed user-configured arguments can be used without those arguments needing to be duplicated by every operation.
+An SSH command with a bare or explicit-path executable and fixed user arguments
+is used directly, without reordering its arguments, inserting a shell, or
+injecting ControlMaster options.

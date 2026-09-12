@@ -25,7 +25,7 @@ The primary drivers are:
 
 - no development-repository changes;
 - board-agnostic design;
-- one design for native Linux and WSL 2;
+- one Linux implementation;
 - Zephyr 4.4 compatibility;
 - local GDB and remote OpenOCD;
 - reuse of existing board OpenOCD configuration;
@@ -40,7 +40,7 @@ The primary drivers are:
 
 ```text
                    LOCAL HOST
-             Linux or WSL 2
+                  Linux
 
                west command
                     |
@@ -60,8 +60,7 @@ The primary drivers are:
            +----------------+
             SSH abstraction
                     |
-           configured client
-             ssh / ssh.exe
+       configured SSH client
                     |
 ====================|====================
                     |
@@ -87,22 +86,11 @@ No component above the normal OpenOCD configuration layer is board-specific.
 
 ---
 
-## 4. Supported Local Platforms
+## 4. Supported Local Platform
 
-The architecture supports native Linux and targets equivalent behavior under
-WSL 2. Native Linux has been validated. WSL 2 validation is pending PG-012 and
-PG-013, so compatibility must not be claimed until those criteria pass. WSL 1
-is unsupported.
-
-The generic Python implementation shall not branch into separate Linux and WSL product architectures.
-
-Platform-specific handling should be confined to narrow adapter points such as:
-
-- command discovery;
-- subprocess invocation;
-- path representation when interacting with an external Windows executable.
-
-WSL 2 is not treated as a compatibility port of a Linux-only design.
+The local platform is Linux with Python 3.12 or newer. The generic Python
+implementation uses one Linux architecture and does not select platform
+backends.
 
 ---
 
@@ -259,7 +247,7 @@ An argv representation:
 - permits fixed arguments;
 - avoids unnecessary shell invocation;
 - works naturally with Python `subprocess`;
-- supports both Linux executables and Windows executables invoked from WSL.
+- permits a bare executable name or explicit executable path.
 
 This remains analogous in purpose to `GIT_SSH_COMMAND` without requiring shell-string semantics.
 
@@ -761,7 +749,7 @@ Examples:
 ["ssh"]
 ```
 
-or, from WSL 2:
+or with an alternate explicit path:
 
 ```python
 ["/mnt/c/Windows/System32/OpenSSH/ssh.exe"]
@@ -796,7 +784,8 @@ It does not duplicate:
 - host-key configuration;
 - host aliases.
 
-This permits, for example, a WSL 2 user to invoke Windows `ssh.exe` and rely on the SSH environment already configured on Windows.
+This permits users to select another OpenSSH-compatible executable and rely on
+the configuration, credentials, and agent behavior provided by that client.
 
 ---
 
@@ -824,32 +813,10 @@ The transport implementation shall not make optional client capabilities prerequ
 
 ## 32. ControlMaster and Multiplexing
 
-The transport does not require ControlMaster.
-
-If the selected SSH client supports connection multiplexing, the implementation MAY use it as an optimization.
-
-If it does not, the session uses another topology.
-
-Therefore:
-
-```text
-ControlMaster available
-        |
-       yes
-        |
-   optional optimization
-```
-
-versus:
-
-```text
-ControlMaster unavailable
-        |
-        v
-normal supported transport
-```
-
-No user-visible feature is lost solely because multiplexing is unavailable.
+The runner neither injects nor requires ControlMaster options. If the user
+enables connection multiplexing in `ssh_command` or the selected client's
+configuration, that client may use it transparently. No runner behavior
+depends on whether multiplexing is available.
 
 ---
 
@@ -887,9 +854,8 @@ Disadvantages:
 
 - more local proxy logic.
 
-This alternative remains available if WSL testing or normal use shows that
-repeated authentication is unacceptable. PG-012 and PG-013 validate the current
-design with WSL Linux OpenSSH and Windows OpenSSH invoked from WSL 2.
+This alternative remains available if normal use shows that repeated
+authentication is unacceptable.
 
 ---
 
@@ -919,10 +885,7 @@ Advantages include:
 - only one configurable SSH executable;
 - consistent authentication behavior;
 - no separate `scp` configuration;
-- use of the same configurable abstraction for Linux `ssh` and Windows `ssh.exe`.
-
-WSL-specific validation remains tracked separately in the requirements and
-validation documents.
+- use of the same configurable abstraction for any selected client.
 
 The Protocol v1 helper and flash implementation handle the staging manifest,
 safe archive encoding and extraction, private remote filesystem layout, path
@@ -1148,8 +1111,7 @@ Selected for the current architecture:
 
 - board-agnostic custom runner;
 - no board/vendor-specific product behavior;
-- one implementation for native Linux and WSL 2, with WSL 2 compatibility
-  pending PG-012 and PG-013;
+- Linux supported by one implementation;
 - runner name `remote_openocd`;
 - built-in `openocd` retained;
 - per-user default runner selection;
@@ -1165,7 +1127,6 @@ Selected for the current architecture:
 - Zephyr-version-specific reuse of the non-private `OpenOcdBinaryRunner` interface only;
 - configurable OpenSSH-compatible client command;
 - default SSH command `ssh`;
-- WSL 2 may use Windows `ssh.exe`;
 - SSH command may contain fixed arguments;
 - all SSH operations use the configured client abstraction;
 - correctness does not depend on ControlMaster;

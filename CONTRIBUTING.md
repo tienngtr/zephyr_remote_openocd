@@ -58,7 +58,7 @@ and [`protocol.md`](docs/architecture/protocol.md) for the helper wire contract.
 Never commit credentials, host/device details, generated builds, or `.scratch/`
 files.
 
-Submit focused commits. Describe behavior, validation performed,
-fixture coverage, and any deferred WSL checks in pull requests. Update the SRS
+Submit focused commits. Describe behavior, validation performed, and fixture
+coverage in pull requests. Update the SRS
 or SAD when a lifecycle, protocol, compatibility, or other architectural
 decision changes.

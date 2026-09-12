@@ -8,8 +8,8 @@ dependency-installation step.
 
 For remote operations, verify the configured SSH argv can connect directly and
 that the selected remote has an executable `openocd_command`. Use
-`ssh_command` for fixed SSH arguments (for example,
-`ControlMaster=no`); do not put shell pipelines in the value. Path mappings
+`ssh_command` for fixed SSH arguments (for example, `-F /path/to/ssh_config`);
+do not put shell pipelines in the value. Path mappings
 must point to existing local inputs and normalized remote POSIX destinations.
 
 The helper deploys under the remote user's private runtime or cache directory.

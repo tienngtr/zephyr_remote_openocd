@@ -12,7 +12,7 @@ No release validation record exists yet.
 
 ## Prerequisites
 
-Run the procedure from the repository root on native Linux. First prepare the
+Run the procedure from the repository root on Linux. First prepare the
 developer environment and understand the external-test safety rules in the
 [testing guide](../development/testing.md). The strict driver requires:
 
@@ -46,16 +46,14 @@ Use the Python environment containing the repository's developer dependencies:
 ```
 
 The driver writes a JSON summary to stdout. It records environment metadata,
-advertised fixture capabilities, step return codes, benchmark results, deferred
-gates, and local and remote process-leak scans. On a failed step, its captured
-output is also written to stderr. PG-012 and PG-013 remain reported as deferred
-until they are run in an actual WSL 2 environment; the native-Linux driver does
-not turn that deferral into WSL evidence.
+advertised fixture capabilities, step return codes, benchmark results, and
+local and remote process-leak scans. On a failed step, its captured output is
+also written to stderr.
 
 ## Retain evidence
 
 When a result must be retained, add a dated document in this directory. Record
 the exact command, relevant environment and tool versions, selected fixture
-profiles, pass/fail result, benchmark result, cleanup result, and deferred
+profiles, pass/fail result, benchmark result, cleanup result, and unmet
 criteria. Do not include credentials, SSH host identities, probe serials,
 device paths, populated inventories, or other lab-specific values.

@@ -79,11 +79,22 @@ the runner appends the selected `ssh_host` and remote command:
 remotes:
   lab:
     openocd_command: [/path/to/openocd]
-    ssh_command: [ssh, -F, /path/to/ssh_config, -o, ControlMaster=no]
+    ssh_command: [custom-ssh, -F, /path/to/ssh_config]
 ```
 
 Do not use shell pipelines, redirections, or a command string. SSH
 authentication remains the configured client's responsibility.
+
+The executable need not be named `ssh`. A bare name is found through `PATH`,
+and an explicit path is preserved. For example, a Linux environment that can
+execute an OpenSSH-compatible client at a mounted path may use:
+
+```yaml
+ssh_command: [/mnt/c/Windows/System32/OpenSSH/ssh.exe]
+```
+
+This is generic executable selection; it does not select another product
+backend or claim compatibility with a particular client implementation.
 
 ### Installed resources and environment
 
