@@ -8,7 +8,7 @@ presets:
   default:
     # Add an OpenOCD command when this preset is used:
     # openocd_command:
-    #   - /opt/zephyr-sdk/hosttools/bin/openocd
+    #   - /opt/zephyr-sdk-1.0.1/hosttools/sysroots/x86_64-pokysdk-linux/usr/bin/openocd
     ssh_command:
       - ssh
     forward_env: []

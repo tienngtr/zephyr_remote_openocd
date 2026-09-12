@@ -66,6 +66,8 @@ presets:
   default:
     openocd_command:
       - /opt/zephyr-sdk-1.0.1/hosttools/sysroots/x86_64-pokysdk-linux/usr/bin/openocd
+    ssh_command:
+      - ssh
     forward_env: []
     # Keys are local paths and values are normalized remote POSIX paths.
     path_mappings: {}
