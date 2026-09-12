@@ -38,9 +38,26 @@ name must exist in the YAML file.
 `ssh_command`, including fixed options, and verify that remote `python3` and
 the configured OpenOCD executable are available to that SSH environment.
 
+**The remote reports that `python3` is missing.** The helper is a Python
+program deployed and started through the configured SSH command. Install a
+remote `python3` executable available to non-interactive SSH commands, then
+repeat the preflight command from the README with the same SSH options.
+
+**The runner reports `remote OpenOCD version query failed`.** Run the configured
+`openocd_command` with `--version` through the configured SSH command. Correct
+the executable path, permissions, fixed arguments, or remote shared-library
+environment before retrying. An `invalid remote OpenOCD version response`
+instead indicates that the helper response was incomplete or incompatible.
+
 **Mapped input is missing remotely.** Remove the mapping to stage the local
 input automatically, or install the resource at the mapped remote path and
 ensure its path is normalized.
+
+**The runner says an allow-listed environment variable is absent.** A warning
+of the form `allow-listed environment variable NAME is absent; omitting it`
+means `NAME` appears in `forward_env` but is not set locally. Export it before
+starting west, or remove it from `forward_env` if remote OpenOCD does not need
+it. Missing values are never forwarded as empty strings.
 
 **A GDB client cannot connect.** Use the local endpoint printed by
 `debugserver` or an RTT-server operation. Check that the client uses the local

@@ -87,9 +87,11 @@ the build ELF, for example:
 target extended-remote 127.0.0.1:<printed-gdb-port>
 ```
 
-The local port follows the OpenOCD runner's configured GDB client port and may
-be changed with the normal Zephyr runner option. Stop the debugserver process
-after the client detaches.
+The local port is `--gdb-client-port` (3333 by default); `--gdb-port` selects
+the remote OpenOCD server port. For example,
+`west debugserver -r remote_openocd --remote lab --gdb-client-port=3334`
+prints `127.0.0.1:3334` as the GDB endpoint. Stop the debugserver process after
+the client detaches.
 
 ### RTT
 
@@ -98,6 +100,10 @@ configures channel 0 before launching the local RTT client. The command ends
 when the client exits. With `--rtt-server`, for example
 `west debugserver -r remote_openocd --remote lab --rtt-server`, the runner
 prints both forwarded endpoints but leaves GDB and the RTT client to the user.
+The RTT endpoint is a raw TCP channel at `127.0.0.1:5555` by default. Connect a
+client such as `telnet 127.0.0.1 5555`, using the port printed by the runner.
+Select another local and remote RTT port with `--rtt-port`, for example
+`--rtt-port=5556`.
 
 ### Direct semihosting
 

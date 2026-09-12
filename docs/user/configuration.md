@@ -70,6 +70,40 @@ remotes:
     ssh_host: lab_alias
 ```
 
+### Custom SSH arguments
+
+`ssh_command` is a local argv list. Put fixed client options before the host;
+the runner appends the selected `ssh_host` and remote command:
+
+```yaml
+remotes:
+  lab:
+    openocd_command: [/path/to/openocd]
+    ssh_command: [ssh, -F, /path/to/ssh_config, -o, ControlMaster=no]
+```
+
+Do not use shell pipelines, redirections, or a command string. SSH
+authentication remains the configured client's responsibility.
+
+### Installed resources and environment
+
+Map a large resource only when it already exists on the remote. Forward an
+environment variable only when the remote OpenOCD configuration needs its
+local value:
+
+```yaml
+remotes:
+  lab:
+    openocd_command: [/opt/openocd/bin/openocd]
+    forward_env: [OPENOCD_ADAPTER_SERIAL]
+    path_mappings:
+      /path/to/local/openocd/scripts: /opt/openocd/share/openocd/scripts
+```
+
+Here the mapping key is inspected locally, its value is used remotely, and
+`OPENOCD_ADAPTER_SERIAL` is sent only if it is set in the local environment.
+Unmapped required inputs continue to be staged automatically.
+
 ## Defaults and inheritance
 
 | Key | Effect when omitted |
