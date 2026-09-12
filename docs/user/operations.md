@@ -115,3 +115,27 @@ west debug -r remote_openocd --remote lab \
 Semihosting text appears in the relayed OpenOCD output. The runner provides no
 filesystem proxy or GDB File-I/O transport; the target and OpenOCD commands
 must define the behavior.
+
+## Stop and uninstall
+
+Remote sessions relay OpenOCD output locally and clean up automatically after
+success, failure, interruption, or SSH loss. Stop active west operations before
+removing the module.
+
+Delete the module copy and, if it is no longer needed, the configuration created
+by setup:
+
+```sh
+rm -rf "$HOME/zephyrproject/zephyr_remote_openocd"
+rm -rf "$HOME/.config/zephyr_remote_openocd"
+```
+
+Remove the activation export from the current shell and from `~/.zephyrrc` if
+you added it. After all sessions have stopped, these remote locations may also
+be removed:
+
+```text
+~/.local/libexec/zephyr_remote_openocd/
+$XDG_RUNTIME_DIR/zephyr_remote_openocd/
+~/.cache/zephyr_remote_openocd/sessions/
+```
