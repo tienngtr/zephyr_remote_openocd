@@ -9,11 +9,10 @@ Documentation is grouped by audience:
 - [`architecture/protocol.md`](architecture/protocol.md): Protocol v1 wire
   format and behavior.
 - [`development/`](development/): contributor test and fixture guidance.
-- [`traceability/acceptance.md`](traceability/acceptance.md): acceptance-criteria evidence
-  mapping.
-- Validation commands and acceptance criteria are documented in
-  [`requirements/SRS.md`](requirements/SRS.md) and
-  [`development/testing.md`](development/testing.md).
+- [`traceability/acceptance.md`](traceability/acceptance.md): acceptance-criteria
+  evidence mapping.
+- [`validation/`](validation/): strict release procedure and retained execution
+  evidence.
 
 The root [`README.md`](../README.md) is the quickest user entry point. Human
 contribution guidance is in [`CONTRIBUTING.md`](../CONTRIBUTING.md), while
