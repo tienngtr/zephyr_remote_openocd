@@ -10,8 +10,9 @@ current integration target is Zephyr 4.4.
 ## Prerequisites and support
 
 The supported integration boundary is Zephyr 4.4 with Python 3.12 or newer.
-Native Linux is validated; WSL 2 is a supported design target whose validation
-is pending; WSL 1 is unsupported.
+Native Linux and WSL 2 are supported platforms. Native Linux has been validated;
+WSL 2 validation is pending because a WSL 2 test environment is not currently
+available.
 
 The local machine needs a Zephyr 4.4 workspace, its configured Python
 environment, west, and a board build that supports Zephyr's built-in `openocd`

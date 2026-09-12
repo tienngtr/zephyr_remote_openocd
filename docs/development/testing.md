@@ -193,8 +193,9 @@ ZRO_STRICT_EXTERNAL=1 .venv/bin/python -m pytest \
 ```
 
 The tests detect WSL 2 from the kernel identity. On native Linux, the same
-nodes skip by design; PG-012 and PG-013 remain deferred until this procedure
-is run in WSL 2.
+nodes skip by design. PG-012 and PG-013 validation remains pending because a
+WSL 2 test environment is not currently available. This evidence gap does not
+defer WSL 2 support.
 
 Run all configured static checks with:
 

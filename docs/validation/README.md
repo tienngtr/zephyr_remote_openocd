@@ -48,9 +48,10 @@ Use the Python environment containing the repository's developer dependencies:
 The driver writes a JSON summary to stdout. It records environment metadata,
 advertised fixture capabilities, step return codes, benchmark results, deferred
 gates, and local and remote process-leak scans. On a failed step, its captured
-output is also written to stderr. PG-012 and PG-013 remain reported as deferred
-until they are run in an actual WSL 2 environment; the native-Linux driver does
-not turn that deferral into WSL evidence.
+output is also written to stderr. The report lists PG-012 and PG-013 as deferred
+gates because the native-Linux driver cannot produce WSL 2 evidence. WSL 2 is a
+supported platform; only its validation execution is pending while no WSL 2
+test environment is available.
 
 ## Retain evidence
 

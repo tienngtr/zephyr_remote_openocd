@@ -89,10 +89,11 @@ No component above the normal OpenOCD configuration layer is board-specific.
 
 ## 4. Supported Local Platforms
 
-The architecture supports native Linux and targets equivalent behavior under
-WSL 2. Native Linux has been validated. WSL 2 validation is pending PG-012 and
-PG-013, so compatibility must not be claimed until those criteria pass. WSL 1
-is unsupported.
+The architecture supports native Linux and WSL 2 as first-class platforms
+through one implementation. Native Linux has been validated. WSL 2 validation
+is pending PG-012 and PG-013 because a WSL 2 test environment is not currently
+available; this is a gap in executed evidence, not a deferred support
+requirement.
 
 The generic Python implementation shall not branch into separate Linux and WSL product architectures.
 
@@ -1148,8 +1149,8 @@ Selected for the current architecture:
 
 - board-agnostic custom runner;
 - no board/vendor-specific product behavior;
-- one implementation for native Linux and WSL 2, with WSL 2 compatibility
-  pending PG-012 and PG-013;
+- native Linux and WSL 2 supported by one implementation, with WSL 2 validation
+  evidence pending PG-012 and PG-013;
 - runner name `remote_openocd`;
 - built-in `openocd` retained;
 - per-user default runner selection;

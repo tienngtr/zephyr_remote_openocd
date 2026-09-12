@@ -29,12 +29,22 @@ def env_path(name: str) -> Path | None:
     return Path(value).expanduser().resolve() if value else None
 
 
-def is_wsl2() -> bool:
+def _wsl_identity() -> tuple[str, str] | None:
     if sys.platform != "linux":
-        return False
+        return None
     try:
         release = Path("/proc/sys/kernel/osrelease").read_text().lower()
         version = Path("/proc/version").read_text().lower()
     except OSError:
-        return False
-    return "microsoft" in release and "wsl2" in version
+        return None
+    return release, version
+
+
+def is_wsl() -> bool:
+    identity = _wsl_identity()
+    return identity is not None and any("microsoft" in item for item in identity)
+
+
+def is_wsl2() -> bool:
+    identity = _wsl_identity()
+    return identity is not None and "microsoft" in identity[0] and "wsl2" in identity[1]

@@ -59,6 +59,6 @@ Never commit credentials, host/device details, generated builds, or `.scratch/`
 files.
 
 Submit focused commits. Describe behavior, validation performed,
-fixture coverage, and any deferred WSL checks in pull requests. Update the SRS
+fixture coverage, and any pending WSL validation in pull requests. Update the SRS
 or SAD when a lifecycle, protocol, compatibility, or other architectural
 decision changes.
