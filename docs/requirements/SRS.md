@@ -1173,8 +1173,7 @@ Severity: Medium.
 Mitigation:
 
 Depend only on required OpenSSH-compatible behavior and keep multiplexing
-optional. Complete PG-012 and PG-013 before recording WSL 2 validation
-evidence.
+optional. Complete PG-012 and PG-013 before claiming WSL 2 compatibility.
 
 
 ## 30. Acceptance Criteria
