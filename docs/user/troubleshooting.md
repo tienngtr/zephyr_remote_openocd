@@ -38,10 +38,11 @@ name must exist in the YAML file.
 `ssh_command`, including fixed options, and verify that remote `python3` and
 the configured OpenOCD executable are available to that SSH environment.
 
-**The remote reports that `python3` is missing.** The helper is a Python
-program deployed and started through the configured SSH command. Install a
-remote `python3` executable available to non-interactive SSH commands, then
-repeat the preflight command from the README with the same SSH options.
+**The remote reports that `python3` is missing or too old.** The helper is a
+Python program deployed and started through the configured SSH command. Install
+a remote `python3` version 3.12 or newer that is available to non-interactive
+SSH commands, then repeat the preflight command from the README with the same
+SSH options.
 
 **The runner reports `remote OpenOCD version query failed`.** Run the configured
 `openocd_command` with `--version` through the configured SSH command. Correct

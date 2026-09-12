@@ -15,9 +15,9 @@ is pending; WSL 1 is unsupported.
 
 The local machine needs a Zephyr 4.4 workspace, its configured Python
 environment, west, and a board build that supports Zephyr's built-in `openocd`
-runner. The remote machine needs Linux, SSH access, `python3`, and an
-OpenOCD executable compatible with the board. OpenOCD and its board-support
-files run remotely; west, GDB, and client tools remain local.
+runner. The remote machine needs Linux, SSH access, `python3` version 3.12 or
+newer, and an OpenOCD executable compatible with the board. OpenOCD and its
+board-support files run remotely; west, GDB, and client tools remain local.
 
 ## Quick start
 
@@ -84,8 +84,9 @@ ssh lab python3 --version
 ssh lab /opt/zephyr-sdk-1.0.1/hosttools/sysroots/x86_64-pokysdk-linux/usr/bin/openocd --version
 ```
 
-Both commands must succeed. If your SSH command needs fixed options, configure
-`ssh_command` and run the equivalent check with those options.
+Both commands must succeed, and the first must report Python 3.12 or newer. If
+your SSH command needs fixed options, configure `ssh_command` and run the
+equivalent check with those options.
 
 The runner is board-agnostic and works with builds that expose Zephyr's built-in
 `openocd` runner. `stm32f746g_disco` is a board that supports the `openocd`
