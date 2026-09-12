@@ -25,7 +25,7 @@ The primary drivers are:
 
 - no development-repository changes;
 - board-agnostic design;
-- native Linux and WSL 2 as equal supported platforms;
+- one design for native Linux and WSL 2;
 - Zephyr 4.4 compatibility;
 - local GDB and remote OpenOCD;
 - reuse of existing board OpenOCD configuration;
@@ -89,7 +89,10 @@ No component above the normal OpenOCD configuration layer is board-specific.
 
 ## 4. Supported Local Platforms
 
-Native Linux and WSL 2 are both supported development platforms.
+The architecture supports native Linux and targets equivalent behavior under
+WSL 2. Native Linux has been validated. WSL 2 validation is pending PG-012 and
+PG-013, so compatibility must not be claimed until those criteria pass. WSL 1
+is unsupported.
 
 The generic Python implementation shall not branch into separate Linux and WSL product architectures.
 
@@ -1145,7 +1148,8 @@ Selected for the current architecture:
 
 - board-agnostic custom runner;
 - no board/vendor-specific product behavior;
-- native Linux and WSL 2 equally supported;
+- one implementation for native Linux and WSL 2, with WSL 2 compatibility
+  pending PG-012 and PG-013;
 - runner name `remote_openocd`;
 - built-in `openocd` retained;
 - per-user default runner selection;
