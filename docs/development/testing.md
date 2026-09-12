@@ -1,5 +1,20 @@
 # Testing layers
 
+Choose the smallest layer that covers the change:
+
+- Every change: `pytest` and `python3 scripts/static_check.py`.
+- Zephyr adapter or build integration: `tests/zephyr_integration/` with a
+  Zephyr 4.4 source tree and its configured Python environment.
+- SSH transport behavior: `tests/ssh_integration/` with an ignored inventory.
+- Real board behavior: `tests/hardware/` with a board, probe, serial endpoint,
+  and remote OpenOCD.
+- Release evidence: the serial procedure in
+  [`docs/validation/README.md`](../validation/README.md).
+
+Run external nodes only after `--collect-only` confirms the intended selection.
+Hardware and SSH tests can change external state; keep destructive profiles
+serial and inspect cleanup output before reusing a target.
+
 The maintained suite uses pytest. Plain `pytest` runs only hardware-free unit
 and local-process tests. External layers are selected explicitly so a normal
 contributor run never needs SSH, a Zephyr checkout, or lab hardware:
@@ -178,26 +193,9 @@ ZRO_STRICT_EXTERNAL=1 .venv/bin/python -m pytest \
 ```
 
 The tests detect WSL 2 from the kernel identity. On native Linux, the same
-nodes skip by design; PG-012 and PG-013 remain deferred until this procedure
-is run in WSL 2.
-
-The strict release driver runs applicable layers serially and additionally
-requires benchmark inputs:
-
-```sh
-python3 scripts/release_validate.py \
-  --hardware-config /path/to/hardware.toml \
-  --zephyr-base /path/to/zephyr \
-  --west /path/to/west \
-  --board stm32f746g_disco \
-  --benchmark-build-dir /path/to/build \
-  --benchmark-config /path/to/remote_openocd.yaml \
-  --benchmark-cwd /path/to/zephyr-workspace
-```
-
-PG-012 and PG-013 remain explicitly reported as deferred until a real WSL2
-environment is available. The benchmark remains a manual timing check outside
-CI.
+nodes skip by design. PG-012 and PG-013 validation remains pending because a
+WSL 2 test environment is not currently available. This evidence gap does not
+defer WSL 2 support.
 
 Run all configured static checks with:
 

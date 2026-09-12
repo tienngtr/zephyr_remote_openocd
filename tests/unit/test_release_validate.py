@@ -65,6 +65,14 @@ def test_build_steps_requires_external_evidence_inputs():
         )
 
 
+def test_native_release_validation_rejects_wsl(monkeypatch):
+    monkeypatch.setattr(release.sys, "platform", "linux")
+    monkeypatch.setattr(release, "is_wsl", lambda: True)
+
+    with pytest.raises(ValueError, match="native Linux, not WSL"):
+        release.validate_inputs(arguments())
+
+
 def test_inventory_capability_gate_reports_missing_evidence(tmp_path):
     class Profile:
         capabilities = ("flash",)

@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
+from tests.support import is_wsl
+
 DEFERRED_GATES = ("PG-012", "PG-013")
 REQUIRED_CAPABILITIES = frozenset(
     {"flash", "debug", "attach", "debugserver", "thread_info", "rtt", "semihosting"}
@@ -138,6 +140,8 @@ def build_steps(args: argparse.Namespace) -> list[Step]:
 
 def validate_inputs(args: argparse.Namespace) -> None:
     """Reject missing strict-release prerequisites before running destructive steps."""
+    if sys.platform != "linux" or is_wsl():
+        raise ValueError("strict native-Linux validation requires native Linux, not WSL")
     if args.hardware_config is None or not args.hardware_config.is_file():
         raise ValueError("strict validation requires an existing --hardware-config")
     if args.zephyr_base is None or not args.zephyr_base.is_dir():

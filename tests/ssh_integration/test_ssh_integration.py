@@ -27,7 +27,7 @@ from zephyr_remote_openocd.remote.deploy import deploy_helper
 from zephyr_remote_openocd.remote.ssh import SshCommand
 
 from tests.process_support import read_line
-from tests.support import is_wsl2
+from tests.support import is_wsl, is_wsl2
 
 pytestmark = pytest.mark.ssh
 
@@ -91,7 +91,7 @@ def stop_and_close(process, timeout: float = 20):
 
 class TestLinuxSshIntegration:
     def setup_method(self):
-        if is_wsl2():
+        if is_wsl():
             pytest.skip("native-Linux SSH test; WSL has dedicated coverage")
         if shutil.which("ssh") is None:
             pytest.skip("Linux ssh is not available on PATH")
@@ -122,14 +122,14 @@ class TestWslSshIntegration:
         self.ssh = SshCommand(ssh_settings.ssh_command)
 
     def test_wsl_linux_ssh(self):
-        """Deferred WSL regression coverage for prototype gate PG-012."""
+        """WSL 2 validation coverage for PG-012."""
         executable = shutil.which("ssh")
         if executable is None:
             pytest.skip("WSL distribution ssh is not available on PATH")
         assert_remote_marker(SshCommand((executable,)), self.host)
 
     def test_windows_ssh_exe_from_wsl(self):
-        """Deferred WSL regression coverage for prototype gate PG-013."""
+        """WSL 2 validation coverage for PG-013."""
         configured = os.environ.get("ZRO_WINDOWS_SSH", "/mnt/c/Windows/System32/OpenSSH/ssh.exe")
         executable = Path(configured)
         if not executable.is_file():

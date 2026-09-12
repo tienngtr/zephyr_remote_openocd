@@ -1,8 +1,15 @@
-# Zephyr west runner for remote OpenOCD
-## Software Architecture Document
-### Current Development Architecture
+# Zephyr Remote OpenOCD Software Architecture Document
 
-# 1. Purpose
+## Navigation
+
+- [Purpose, drivers, and overview](#1-purpose)
+- [Module structure and setup](#5-self-contained-zephyr-module)
+- [Zephyr runner integration](#9-module-discovery)
+- [Remote execution planning](#18-generic-remote-session-model)
+- [Services, SSH, staging, and lifecycle](#27-remote-openocd-service-isolation)
+- [Errors, code boundaries, tests, and decisions](#42-error-handling)
+
+## 1. Purpose
 
 This document describes the current architecture for the Zephyr west runner for remote OpenOCD.
 
@@ -12,13 +19,13 @@ This document describes implementation structure and architectural decisions.
 
 ---
 
-# 2. Architecture Drivers
+## 2. Architecture Drivers
 
 The primary drivers are:
 
 - no development-repository changes;
 - board-agnostic design;
-- native Linux and WSL 2 as equal supported platforms;
+- one design for native Linux and WSL 2;
 - Zephyr 4.4 compatibility;
 - local GDB and remote OpenOCD;
 - reuse of existing board OpenOCD configuration;
@@ -29,7 +36,7 @@ The primary drivers are:
 
 ---
 
-# 3. Architecture Overview
+## 3. Architecture Overview
 
 ```text
                    LOCAL HOST
@@ -80,9 +87,13 @@ No component above the normal OpenOCD configuration layer is board-specific.
 
 ---
 
-# 4. Supported Local Platforms
+## 4. Supported Local Platforms
 
-Native Linux and WSL 2 are both supported development platforms.
+The architecture supports native Linux and WSL 2 as first-class platforms
+through one implementation. Native Linux has been validated. WSL 2 validation
+is pending PG-012 and PG-013 because a WSL 2 test environment is not currently
+available; this is a gap in executed evidence, not a deferred support
+requirement.
 
 The generic Python implementation shall not branch into separate Linux and WSL product architectures.
 
@@ -96,7 +107,7 @@ WSL 2 is not treated as a compatibility port of a Linux-only design.
 
 ---
 
-# 5. Self-Contained Zephyr Module
+## 5. Self-Contained Zephyr Module
 
 The project is distributed as a self-contained Zephyr module rather than an installed Python distribution.
 
@@ -144,7 +155,7 @@ packaging is not required.
 
 ---
 
-# 6. Python Import Model
+## 6. Python Import Model
 
 Zephyr loads the external runner entry point from the module.
 
@@ -180,7 +191,7 @@ installation path.
 
 ---
 
-# 7. Distribution and User Setup
+## 7. Distribution and User Setup
 
 Distribution places the complete module at an arbitrary persistent path. A
 convenient documented example is:
@@ -206,7 +217,7 @@ It does not edit shell startup files, repositories, or `.zephyrrc`.
 
 ---
 
-# 8. Configuration Template
+## 8. Configuration Template
 
 The canonical template is `resources/config.yaml.example`:
 
@@ -261,7 +272,7 @@ importable package are structural contracts; their nesting depth is not.
 
 ---
 
-# 9. Module Discovery
+## 9. Module Discovery
 
 The module is supplied through:
 
@@ -275,7 +286,7 @@ Documentation shall show at least one convenient repository-independent approach
 
 ---
 
-# 10. External Runner Registration
+## 10. External Runner Registration
 
 `zephyr/module.yml` declares:
 
@@ -296,7 +307,7 @@ Python discovery is complemented by CMake integration because west also validate
 
 ---
 
-# 11. Conditional Build-Time Runner Augmentation
+## 11. Conditional Build-Time Runner Augmentation
 
 For a build with:
 
@@ -320,7 +331,7 @@ Eligibility is based exclusively on existing OpenOCD runner support.
 
 ---
 
-# 12. Common Runner Configuration
+## 12. Common Runner Configuration
 
 Common `RunnerConfig` data is reused directly.
 
@@ -339,7 +350,7 @@ The remote runner does not duplicate these fields under board-specific configura
 
 ---
 
-# 13. Runner-Specific Argument Mirroring
+## 13. Runner-Specific Argument Mirroring
 
 The CMake compatibility layer mirrors applicable arguments associated with:
 
@@ -376,7 +387,7 @@ The mechanism is independent of which board generated those arguments.
 
 ---
 
-# 14. Default Runner Selection
+## 14. Default Runner Selection
 
 User configuration specifies:
 
@@ -408,7 +419,7 @@ remote_openocd
 
 ---
 
-# 15. Automatic Default Regeneration
+## 15. Automatic Default Regeneration
 
 The module adds:
 
@@ -443,7 +454,7 @@ When rebuilding is explicitly suppressed, stale generated state may remain until
 
 ---
 
-# 16. Zephyr Runner Reuse Strategy
+## 16. Zephyr Runner Reuse Strategy
 
 The runner may subclass and reuse the non-private interface of Zephyr 4.4's
 `OpenOcdBinaryRunner` when doing so reduces duplication.
@@ -465,7 +476,7 @@ the version-specific adapter.
 
 ---
 
-# 17. Zephyr Compatibility Boundary
+## 17. Zephyr Compatibility Boundary
 
 The Zephyr-specific layer owns:
 
@@ -488,7 +499,7 @@ It does not own:
 
 ---
 
-# 18. Generic Remote Session Model
+## 18. Generic Remote Session Model
 
 The generic subsystem receives structured data, conceptually:
 
@@ -507,7 +518,7 @@ This subsystem has no dependency on a specific board or SoC.
 
 ---
 
-# 19. Path Classification
+## 19. Path Classification
 
 Required local paths are handled through:
 
@@ -535,7 +546,7 @@ Mappings are recursive and component-aware.
 
 ---
 
-# 20. OpenOCD Search Trees
+## 20. OpenOCD Search Trees
 
 Large OpenOCD search trees which exist equivalently on both systems may be explicitly mapped.
 
@@ -547,7 +558,7 @@ Board-support directories from the active Zephyr checkout will typically be stag
 
 ---
 
-# 21. Flash Flow
+## 21. Flash Flow
 
 ```text
 west flash
@@ -576,7 +587,7 @@ There is no command-line re-parsing stage.
 
 ---
 
-# 22. Debug Flow
+## 22. Debug Flow
 
 ```text
 west debug
@@ -610,7 +621,7 @@ The runner controls client startup, eliminating the executable-facade startup ra
 
 ---
 
-# 23. GDB Port Model
+## 23. GDB Port Model
 
 Structured runner state contains both the OpenOCD server and local client ports.
 
@@ -626,7 +637,7 @@ The mapping is deliberate:
 
 ---
 
-# 24. Attach and Debugserver
+## 24. Attach and Debugserver
 
 Attach uses the debug server setup without performing a load solely because the target is remote.
 
@@ -636,7 +647,7 @@ Both remain board-agnostic.
 
 ---
 
-# 25. RTT
+## 25. RTT
 
 The custom runner knows the RTT port before configuring RTT.
 
@@ -674,7 +685,7 @@ No GDB RSP observer is needed.
 
 ---
 
-# 26. Semihosting
+## 26. Semihosting
 
 Semihosting console follows the normal OpenOCD process-output path:
 
@@ -697,7 +708,7 @@ No semihosting-specific network subsystem exists.
 
 ---
 
-# 27. Remote OpenOCD Service Isolation
+## 27. Remote OpenOCD Service Isolation
 
 Each OpenOCD session receives a random loopback address from:
 
@@ -711,7 +722,7 @@ No board-specific addressing is involved.
 
 ---
 
-# 28. Local Service Forwarding
+## 28. Local Service Forwarding
 
 The generic session layer uses explicit logical service descriptions:
 
@@ -734,7 +745,7 @@ Disabled services have no local listener.
 
 ---
 
-# 29. SSH Command Abstraction
+## 29. SSH Command Abstraction
 
 All SSH operations are built through one abstraction.
 
@@ -769,7 +780,7 @@ The runner never assumes that the executable basename is literally `ssh`.
 
 ---
 
-# 30. SSH Configuration Ownership
+## 30. SSH Configuration Ownership
 
 The selected SSH executable remains responsible for normal SSH behavior.
 
@@ -790,7 +801,7 @@ This permits, for example, a WSL 2 user to invoke Windows `ssh.exe` and rely on 
 
 ---
 
-# 31. SSH Transport Capability Model
+## 31. SSH Transport Capability Model
 
 Correctness shall depend only on the subset of functionality required from the configured OpenSSH-compatible client.
 
@@ -812,7 +823,7 @@ The transport implementation shall not make optional client capabilities prerequ
 
 ---
 
-# 32. ControlMaster and Multiplexing
+## 32. ControlMaster and Multiplexing
 
 The transport does not require ControlMaster.
 
@@ -843,11 +854,11 @@ No user-visible feature is lost solely because multiplexing is unavailable.
 
 ---
 
-# 33. Cross-Client SSH Topology
+## 33. Cross-Client SSH Topology
 
 The topology uses multiple SSH processes without requiring ControlMaster.
 
-## 33.1 Current design: multiple SSH processes
+### 33.1 Current design: multiple SSH processes
 
 One SSH connection controls the helper.
 
@@ -862,7 +873,7 @@ Disadvantages:
 
 - may perform multiple authentications when no agent or multiplexing is available.
 
-## 33.2 Retained alternative: one control session plus generic forwarding tunnel
+### 33.2 Retained alternative: one control session plus generic forwarding tunnel
 
 A long-lived SSH connection may provide a generic forwarding facility while simultaneously running the helper.
 
@@ -883,7 +894,7 @@ design with WSL Linux OpenSSH and Windows OpenSSH invoked from WSL 2.
 
 ---
 
-# 34. Staging Transport
+## 34. Staging Transport
 
 Staging SHOULD use the configured SSH command rather than require a separate `scp` executable.
 
@@ -920,7 +931,7 @@ rewriting, helper deployment, and OpenOCD artifact staging.
 
 ---
 
-# 35. Remote Helper Deployment
+## 35. Remote Helper Deployment
 
 The helper is automatically deployed to a per-user location such as:
 
@@ -934,7 +945,7 @@ No assumption is made that the local SSH executable comes from the local Linux d
 
 ---
 
-# 36. Remote Helper Protocol
+## 36. Remote Helper Protocol
 
 The exact Protocol v1 wire format and behavior are specified in
 [protocol.md](protocol.md). Changes require explicit authorization. Helper
@@ -942,7 +953,7 @@ stdout contains only JSON protocol frames. Each authorized client/helper
 protocol change must explicitly decide whether compatibility or the numeric
 version changes.
 
-# 37. Remote Session Storage
+## 37. Remote Session Storage
 
 Preferred:
 
@@ -962,7 +973,7 @@ Persistent fallback data older than 24 hours may be cleaned opportunistically.
 
 ---
 
-# 38. Process Supervision
+## 38. Process Supervision
 
 OpenOCD executes in a helper-supervised process group.
 
@@ -982,7 +993,7 @@ Unexpected controlling-session loss follows the same cleanup path.
 
 ---
 
-# 39. Local Runner State Machine
+## 39. Local Runner State Machine
 
 ```text
 NEW
@@ -1025,7 +1036,7 @@ Flash omits local-client stages when unnecessary.
 
 ---
 
-# 40. Service Readiness
+## 40. Service Readiness
 
 A dependent local client is not started until the required remote service is ready.
 
@@ -1040,7 +1051,7 @@ on ordinary human-readable OpenOCD diagnostics.
 
 ---
 
-# 41. OpenOCD stdout/stderr
+## 41. OpenOCD stdout/stderr
 
 Remote OpenOCD output is relayed with low buffering.
 
@@ -1056,43 +1067,43 @@ Application console output is not interpreted or rewritten.
 
 ---
 
-# 42. Error Handling
+## 42. Error Handling
 
-## Configuration
+### Configuration
 
 Identify the invalid/missing key and configuration path.
 
-## SSH command
+### SSH command
 
 If the configured SSH executable cannot be started, identify the configured command.
 
-## SSH authentication/connection
+### SSH authentication/connection
 
 Report failure as an SSH transport error.
 
-## Staging
+### Staging
 
 Do not start OpenOCD with incomplete staging state.
 
-## OpenOCD
+### OpenOCD
 
 Relay diagnostics and propagate failure.
 
-## Local port conflict
+### Local port conflict
 
 Identify the service and port before launching its local client.
 
-## Probe contention
+### Probe contention
 
 Expose OpenOCD's normal acquisition failure.
 
-## SSH loss
+### SSH loss
 
 Fail the local operation and clean the remote OpenOCD session.
 
 ---
 
-# 43. Suggested Code Boundaries
+## 43. Suggested Code Boundaries
 
 ```text
 python/zephyr_remote_openocd/
@@ -1119,7 +1130,7 @@ Platform-specific SSH behavior, if any is eventually needed, shall remain inside
 
 ---
 
-# 44. Test Architecture
+## 44. Test Architecture
 
 The maintained test suite separates self-contained unit tests, local process and
 socket integration, Zephyr integration, SSH integration, destructive hardware
@@ -1132,13 +1143,14 @@ evidence; this document describes only the architecture of that test boundary.
 
 ---
 
-# 45. Architecture Decisions
+## 45. Architecture Decisions
 
 Selected for the current architecture:
 
 - board-agnostic custom runner;
 - no board/vendor-specific product behavior;
-- native Linux and WSL 2 equally supported;
+- native Linux and WSL 2 supported by one implementation, with WSL 2 validation
+  evidence pending PG-012 and PG-013;
 - runner name `remote_openocd`;
 - built-in `openocd` retained;
 - per-user default runner selection;
