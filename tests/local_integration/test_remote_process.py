@@ -107,8 +107,30 @@ class TestForwardingLifecycle:
         connect.assert_not_called()
         assert command.calls[0][1].startswith("python3 -c ")
         assert "-N" not in command.calls[0][2]
+        assert not any("ControlMaster" in item for item in command.calls[0][2])
         session._close_forwards()
         assert process.terminate_calls == 1
+
+    def test_helper_control_connection_injects_no_optional_ssh_arguments(self):
+        process = self.Process()
+        process.stdout = io.BytesIO()
+        command = self.Command(process)
+        events = (
+            {"type": "HELLO"},
+            {
+                "type": "SESSION_CREATED",
+                "session_id": "session",
+                "remote_workspace": "/workspace",
+            },
+        )
+        with patch.object(SshHelperSession, "_read_event", side_effect=events):
+            SshHelperSession(
+                RemoteSessionRequest("target", command),
+                DeploymentResult("/helper.py", "digest", False),
+                1,
+            )
+
+        assert command.calls == [("target", "python3 /helper.py control", ())]
 
     def test_stale_gdb_forward_cannot_mask_current_forward_failure(self):
         stale = self.Process()

@@ -25,8 +25,6 @@ except ImportError:  # pragma: no cover - handled as an integration prerequisite
 
 
 class TestZephyrIntegration:
-    """Permanent coverage for retired prototype gates PG-001 through PG-010."""
-
     zephyr_base: Path
     openocd_board: str
     no_openocd_board: str
@@ -188,18 +186,15 @@ class TestZephyrIntegration:
         return json.loads(output[start:])
 
     def test_module_discovery_and_in_tree_application_build(self):
-        """Regression coverage for prototype gates PG-001 and PG-002."""
         modules = (self.build_in_tree / "zephyr_modules.txt").read_text()
         assert str(ROOT) in modules
         assert (self.build_in_tree / "zephyr" / "zephyr.elf").is_file()
 
     def test_out_of_tree_application_build(self):
-        """Regression coverage for prototype gate PG-003."""
         assert not str(self.app_out_tree).startswith(str(self.zephyr_base))
         assert (self.build_out_tree / "zephyr" / "zephyr.elf").is_file()
 
     def test_runner_registration_is_conditional_and_non_destructive(self):
-        """Regression coverage for prototype gates PG-004 and PG-007."""
         enabled = self._runner_state(self.build_in_tree)["runners"]
         disabled = self._runner_state(self.build_without_openocd)["runners"]
         assert enabled.count("remote_openocd") == 1
@@ -209,12 +204,10 @@ class TestZephyrIntegration:
         assert "openocd capabilities:" in context.stdout
 
     def test_openocd_arguments_are_mirrored_exactly(self):
-        """Regression coverage for prototype gate PG-005."""
         args = self._runner_state(self.build_in_tree)["args"]
         assert args["remote_openocd"] == args["openocd"]
 
     def test_recording_commands_receive_runner_config_without_io(self):
-        """Regression coverage for prototype gates PG-006 and PG-008."""
         for command in ("flash", "debug", "attach", "debugserver"):
             result = self._west(
                 command,
@@ -429,7 +422,6 @@ class TestZephyrIntegration:
         assert not any(argument.startswith("flash write_image ") for argument in argv)
 
     def test_config_change_regenerates_default_runner(self):
-        """Regression coverage for prototype gate PG-009."""
         state = self._runner_state(self.build_in_tree)
         assert state["flash-runner"] == "openocd"
         self._write_config("remote_openocd")
