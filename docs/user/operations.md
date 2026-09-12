@@ -113,14 +113,15 @@ representative invocation is:
 
 ```sh
 west debug -r remote_openocd --remote lab \
-  --cmd-pre-init='arm semihosting enable' \
-  --cmd-pre-init='arm semihosting_fileio disable' \
-  --cmd-pre-init='arm semihosting_redirect disable'
+  --cmd-pre-init='lappend post_init_commands {arm semihosting enable}' \
+  --cmd-pre-init='lappend post_init_commands {arm semihosting_fileio disable}' \
+  --cmd-pre-init='lappend post_init_commands {arm semihosting_redirect disable}'
 ```
 
-Semihosting text appears in the relayed OpenOCD output. The runner provides no
-filesystem proxy or GDB File-I/O transport; the target and OpenOCD commands
-must define the behavior.
+The `lappend` form registers the commands before initialization and executes
+them afterward, when the target is available. Semihosting text appears in the
+relayed OpenOCD output. The runner provides no filesystem proxy or GDB File-I/O
+transport; the target and OpenOCD commands must define the behavior.
 
 ## Stop and uninstall
 
