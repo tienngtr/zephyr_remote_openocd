@@ -6,10 +6,10 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from pathlib import Path
 
 from .model import RemoteProcess, Service
-from .paths import ADDRESS_TOKEN, PathPlanner
+from .openocd_plan import base_argv, plan_support_paths
+from .paths import PathPlanner
 
 
 class DebugPlanError(RuntimeError):
@@ -142,28 +142,13 @@ def build_debug_plan(
         if inputs.command != "rtt":
             services.append(rtt_service)
 
-    indexed_search = list(enumerate(inputs.search_paths))
-    planned_search = {}
-    for index, path in sorted(indexed_search, key=lambda item: len(Path(item[1]).resolve().parts)):
-        planned_search[index] = planner.plan_directory(Path(path), f"search_{index}").remote
-    remote_search = [planned_search[index] for index, _ in indexed_search]
-    remote_configs = [
-        planner.plan_file(Path(path), f"config-{index}").remote
-        for index, path in enumerate(inputs.config_files)
-    ]
+    remote_search, remote_configs = plan_support_paths(
+        inputs.search_paths, inputs.config_files, planner
+    )
 
     rtos = thread_info_enabled(inputs.thread_info_requested, inputs.openocd_version)
     executable = (inputs.executable,) if isinstance(inputs.executable, str) else inputs.executable
-    argv = list(executable)
-    # Board configurations can inspect _ZEPHYR_BOARD_SERIAL as they are
-    # loaded, so preserve Zephyr's serial-before-config ordering.
-    if inputs.serial:
-        argv.extend(("-c", "set _ZEPHYR_BOARD_SERIAL " + inputs.serial))
-    for path in remote_search:
-        argv.extend(("-s", path))
-    for path in remote_configs:
-        argv.extend(("-f", path))
-    argv.extend(("-c", f"bindto {ADDRESS_TOKEN}"))
+    argv = base_argv(inputs.executable, inputs.serial, remote_search, remote_configs)
     for name, port in (
         ("tcl_port", remote_tcl),
         ("telnet_port", remote_telnet),

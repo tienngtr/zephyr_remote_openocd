@@ -8,7 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .model import RemoteProcess
-from .paths import ADDRESS_TOKEN, PathPlanner
+from .openocd_plan import base_argv, plan_support_paths
+from .paths import PathPlanner
 
 
 class FlashPlanError(RuntimeError):
@@ -98,29 +99,13 @@ def build_flash_plan(
     if inputs.erase and not inputs.erase_commands:
         raise FlashPlanError("erase requested but the target supplies no erase command")
 
-    indexed_search = list(enumerate(inputs.search_paths))
-    planned_search = {}
-    for index, path in sorted(indexed_search, key=lambda item: len(Path(item[1]).resolve().parts)):
-        planned_search[index] = planner.plan_directory(Path(path), f"search_{index}").remote
-    remote_search = [planned_search[index] for index, _ in indexed_search]
-    remote_configs = [
-        planner.plan_file(Path(path), f"config-{index}").remote
-        for index, path in enumerate(inputs.config_files)
-    ]
+    remote_search, remote_configs = plan_support_paths(
+        inputs.search_paths, inputs.config_files, planner
+    )
     remote_image = planner.plan_file(source_path, "firmware").remote
 
+    argv = base_argv(inputs.executable, inputs.serial, remote_search, remote_configs)
     executable = (inputs.executable,) if isinstance(inputs.executable, str) else inputs.executable
-    argv = list(executable)
-    # Zephyr's OpenOCD runner sets the board serial before loading the board
-    # configuration.  The configuration may consume _ZEPHYR_BOARD_SERIAL
-    # while it is being evaluated (for example via ``adapter serial``).
-    if inputs.serial:
-        argv.extend(("-c", "set _ZEPHYR_BOARD_SERIAL " + inputs.serial))
-    for path in remote_search:
-        argv.extend(("-s", path))
-    for path in remote_configs:
-        argv.extend(("-f", path))
-    argv.extend(("-c", f"bindto {ADDRESS_TOKEN}"))
     argv.extend(_commands(inputs.pre_init))
     if not inputs.no_init:
         argv.extend(("-c", "init"))
