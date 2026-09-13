@@ -1,18 +1,96 @@
 # Configuration
 
-Run `python3 /path/to/zephyr_remote_openocd/scripts/setup.py` to create the
-canonical file `~/.config/zephyr_remote_openocd/config.yaml`. Setup never
-overwrites an existing file. Set `ZEPHYR_REMOTE_OPENOCD_CONFIG` to read a
-different file; its contents are YAML regardless of its filename extension.
+## Quick start
+
+Create the canonical configuration:
+
+```sh
+python3 /path/to/zephyr_remote_openocd/scripts/setup.py
+```
+
+Setup creates `~/.config/zephyr_remote_openocd/config.yaml` and never
+overwrites an existing file. The generated file contains a safe, unselected
+`lab` remote. Edit it and replace these two placeholders:
+
+```yaml
+remotes:
+  lab:
+    ssh_host: replace-with-ssh-host-or-alias
+    openocd_command:
+      - /opt/zephyr-sdk-1.0.1/hosttools/sysroots/x86_64-pokysdk-linux/usr/bin/openocd
+```
+
+The SSH host may be a host name or an alias from your normal SSH configuration.
+The OpenOCD path is interpreted on that remote host. Validate the file and show
+the effective settings without contacting SSH, OpenOCD, GDB, or hardware:
+
+```sh
+python3 /path/to/zephyr_remote_openocd/scripts/validate_configuration.py \
+  --remote lab
+```
+
+Validation always checks syntax and schema rules. When a remote is selected, it
+also checks that remote's preset reference, applies its defaults, and checks its
+required settings. Broken references or missing operational settings in
+unselected remotes remain allowed. Validation does not verify connectivity or
+that the configured executable exists. Check those prerequisites separately:
+
+```sh
+ssh replace-with-ssh-host-or-alias python3 --version
+ssh replace-with-ssh-host-or-alias \
+  /opt/zephyr-sdk-1.0.1/hosttools/sysroots/x86_64-pokysdk-linux/usr/bin/openocd \
+  --version
+```
+
+Then use the remote explicitly:
+
+```sh
+west flash -r remote_openocd --remote lab
+```
+
+After that works, uncomment `default_remote: lab` if desired. Keep
+`default_runner: openocd` to preserve local OpenOCD as the default, or change it
+to `remote_openocd` and run `west build` to regenerate the build's runner
+configuration.
+
+Set `ZEPHYR_REMOTE_OPENOCD_CONFIG` to read a different file; its contents are
+YAML regardless of its filename extension. The validator uses the same override
+when no configuration path is passed. An explicit validator `--remote` takes
+precedence over `default_remote`; unlike a real runner operation, validation
+deliberately ignores `ZEPHYR_REMOTE_OPENOCD_REMOTE` so its result is
+deterministic.
 
 The complete machine-readable contract is
 [`configuration.schema.json`](../../python/zephyr_remote_openocd/resources/configuration.schema.json), and
-the commented template is [`config.yaml.example`](../../resources/config.yaml.example).
+the commented template is [`config.example.yaml`](../../resources/config.example.yaml).
 An empty YAML document is equivalent to `{}`. Unknown keys, duplicate YAML
 mapping keys, null values, and type mismatches are errors.
 A genuinely absent configuration file uses the defaults. A dangling symbolic
 link or another existing path that cannot be read as a file is an error; valid
 symbolic links to configuration files are supported.
+
+The user-facing validator requires its target file to exist. If setup has not
+created the default file, it exits with guidance instead of reporting empty
+runtime defaults as a valid user configuration.
+
+## Editor assistance
+
+The JSON Schema provides hover text, defaults, examples, completion choices,
+and unknown-key validation. With the Red Hat YAML extension for VS Code, add an
+association like this to user settings, replacing both absolute paths:
+
+```json
+{
+  "yaml.schemas": {
+    "/path/to/zephyr_remote_openocd/python/zephyr_remote_openocd/resources/configuration.schema.json": [
+      "/home/USER/.config/zephyr_remote_openocd/config.yaml"
+    ]
+  }
+}
+```
+
+The schema is authoritative for structure and lexical rules. The validator
+also resolves preset references and settings required by the selected remote.
 
 ## What runs where
 

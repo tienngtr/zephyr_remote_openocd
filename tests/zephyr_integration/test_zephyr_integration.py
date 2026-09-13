@@ -523,7 +523,7 @@ class TestZephyrIntegration:
             config = home / ".config" / "zephyr_remote_openocd" / "config.yaml"
             assert (
                 config.read_bytes()
-                == (distribution / "resources" / "config.yaml.example").read_bytes()
+                == (distribution / "resources" / "config.example.yaml").read_bytes()
             )
             assert stat.S_IMODE(config.parent.stat().st_mode) == 0o700
             assert stat.S_IMODE(config.stat().st_mode) == 0o600

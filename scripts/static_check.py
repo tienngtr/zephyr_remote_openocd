@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -51,7 +52,6 @@ def yaml_files(root: Path) -> tuple[str, ...]:
             "--",
             "*.yaml",
             "*.yml",
-            "*.yaml.example",
         ),
         cwd=root,
         check=True,
@@ -73,6 +73,38 @@ def markdown_files(root: Path) -> tuple[str, ...]:
     return tuple(result.stdout.splitlines())
 
 
+def json_schema_files() -> tuple[str, ...]:
+    """Return repository JSON schemas that use the canonical formatting."""
+    return (
+        "python/zephyr_remote_openocd/resources/configuration.schema.json",
+        "tests/fixtures/hardware.schema.json",
+    )
+
+
+def check_json_format(root: Path, paths: tuple[str, ...]) -> bool:
+    """Check that JSON files use two-space indentation and end with a newline."""
+    valid = True
+    for relative_path in paths:
+        path = root / relative_path
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            print(f"JSON formatting check failed for {relative_path}: {error}", file=sys.stderr)
+            valid = False
+            continue
+        expected = json.dumps(document, ensure_ascii=False, indent=2) + "\n"
+        actual = path.read_text(encoding="utf-8")
+        if actual != expected:
+            print(
+                f"JSON formatting check failed for {relative_path}; use this command "
+                "template: python3 -m json.tool --indent 2 INPUT.json > "
+                "OUTPUT.json.tmp && mv OUTPUT.json.tmp OUTPUT.json",
+                file=sys.stderr,
+            )
+            valid = False
+    return valid
+
+
 def commands(
     python_files: tuple[str, ...],
     yaml_paths: tuple[str, ...],
@@ -80,9 +112,8 @@ def commands(
 ) -> tuple[tuple[str, ...], ...]:
     """Build the ordered static-check commands."""
     python = sys.executable
-    schema = "python/zephyr_remote_openocd/resources/configuration.schema.json"
-    example = "resources/config.yaml.example"
-    hardware_schema = "tests/fixtures/hardware.schema.json"
+    schema, hardware_schema = json_schema_files()
+    example = "resources/config.example.yaml"
     hardware_example = "tests/fixtures/hardware.example.yaml"
     hardware_complete_example = "tests/fixtures/hardware.complete.example.yaml"
     workflow_paths = tuple(
@@ -151,6 +182,8 @@ def commands(
 def main() -> int:
     """Run checks in order and stop after the first failure."""
     root = repository_root()
+    if not check_json_format(root, json_schema_files()):
+        return 1
     for command in commands(source_files(root), yaml_files(root), markdown_files(root)):
         result = subprocess.run(command, cwd=root, check=False)
         if result.returncode:

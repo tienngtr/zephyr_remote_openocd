@@ -16,13 +16,13 @@ max_line_length = 100
 indent_style = space
 indent_size = 4
 
-# Markdown and plain-text documentation
-[*.{md,txt}]
+# JSON
+[*.json]
 indent_style = space
 indent_size = 2
 
-# TOML and example configuration
-[*.{toml,example}]
+# Markdown and plain-text documentation
+[*.{md,txt}]
 indent_style = space
 indent_size = 2
 

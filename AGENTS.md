@@ -39,7 +39,7 @@ loss.
 ## Configuration and Protocol
 
 `python/zephyr_remote_openocd/resources/configuration.schema.json` defines the YAML contract, and
-`resources/config.yaml.example` is its canonical template. Unknown keys are
+`resources/config.example.yaml` is its canonical template. Unknown keys are
 errors. Do not add, remove, or relax keys without explicit authorization. An
 authorized contract change must update the schema, example, loader, tests,
 requirements, and user documentation together and state its compatibility and

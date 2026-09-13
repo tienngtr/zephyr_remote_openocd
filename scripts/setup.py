@@ -74,7 +74,7 @@ def _ensure_config_directory(path: Path) -> None:
 
 def initialize_config(root: Path, destination: Path) -> bool:
     """Create ``destination`` from the shipped template when absent."""
-    template = root / "resources" / "config.yaml.example"
+    template = root / "resources" / "config.example.yaml"
     try:
         contents = template.read_bytes()
     except OSError as error:
@@ -149,6 +149,10 @@ def main() -> int:
         f'  export EXTRA_ZEPHYR_MODULES="${{EXTRA_ZEPHYR_MODULES:+$EXTRA_ZEPHYR_MODULES;}}"'
         f"{quoted_root}"
     )
+    print("Next, edit the configuration and validate a remote:")
+    print(f"  {destination}")
+    validator = shlex.quote(str(root / "scripts" / "validate_configuration.py"))
+    print(f"  python3 {validator} --remote NAME")
     _print_dependency_status()
     return 0
 

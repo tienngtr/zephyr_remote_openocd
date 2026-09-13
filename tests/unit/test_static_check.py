@@ -18,7 +18,7 @@ SPEC.loader.exec_module(static_check)
 def test_commands_cover_repository_static_checks():
     commands = static_check.commands(
         ("one.py", "two.py"),
-        (".github/workflows/check.yml", "config.yaml.example"),
+        (".github/workflows/check.yml", "config.example.yaml"),
         ("README.md", "docs/guide.md"),
     )
 
@@ -43,17 +43,17 @@ def test_commands_cover_repository_static_checks():
         assert {"one.py", "two.py"}.issubset(command)
 
     yamllint = next(command for command in commands if tool(command) == "yamllint")
-    assert {".github/workflows/check.yml", "config.yaml.example"}.issubset(yamllint)
+    assert {".github/workflows/check.yml", "config.example.yaml"}.issubset(yamllint)
 
     actionlint = next(command for command in commands if tool(command) == "actionlint")
     assert "-no-color" in actionlint
     assert ".github/workflows/check.yml" in actionlint
-    assert "config.yaml.example" not in actionlint
+    assert "config.example.yaml" not in actionlint
 
     rumdl = next(command for command in commands if tool(command) == "rumdl")
     assert {"README.md", "docs/guide.md"}.issubset(rumdl)
     assert "one.py" not in rumdl
-    assert "config.yaml.example" not in rumdl
+    assert "config.example.yaml" not in rumdl
     assert "MD001,MD025,MD041,MD051,MD057" in rumdl
     assert "gfm" in rumdl
     assert "--no-cache" in rumdl
@@ -64,7 +64,7 @@ def test_commands_cover_repository_static_checks():
     assert len(example_checks) == 3
     assert any(
         "python/zephyr_remote_openocd/resources/configuration.schema.json" in command
-        and "resources/config.yaml.example" in command
+        and "resources/config.example.yaml" in command
         for command in example_checks
     )
     assert any(
@@ -90,6 +90,25 @@ def test_commands_cover_repository_static_checks():
     )
 
 
+def test_json_schema_files_are_checked_with_canonical_formatting(tmp_path, capsys):
+    assert static_check.json_schema_files() == (
+        "python/zephyr_remote_openocd/resources/configuration.schema.json",
+        "tests/fixtures/hardware.schema.json",
+    )
+    assert static_check.check_json_format(ROOT, static_check.json_schema_files())
+
+    path = tmp_path / "schema.json"
+    path.write_text('{"type": "object"}\n', encoding="utf-8")
+    assert not static_check.check_json_format(tmp_path, ("schema.json",))
+    assert (
+        "use this command template: python3 -m json.tool --indent 2 INPUT.json > "
+        "OUTPUT.json.tmp && mv OUTPUT.json.tmp OUTPUT.json"
+    ) in capsys.readouterr().err
+
+    path.write_text('{\n  "type": "object"\n}\n', encoding="utf-8")
+    assert static_check.check_json_format(tmp_path, ("schema.json",))
+
+
 def test_source_files_are_selected_from_git(monkeypatch):
     class Result:
         stdout = "one.py\ntwo.py\n"
@@ -100,10 +119,10 @@ def test_source_files_are_selected_from_git(monkeypatch):
 
 def test_yaml_files_include_configuration_examples(monkeypatch):
     class Result:
-        stdout = "workflow.yml\nconfig.yaml.example\n"
+        stdout = "workflow.yml\nconfig.example.yaml\n"
 
     monkeypatch.setattr(static_check.subprocess, "run", lambda *args, **kwargs: Result())
-    assert static_check.yaml_files(ROOT) == ("workflow.yml", "config.yaml.example")
+    assert static_check.yaml_files(ROOT) == ("workflow.yml", "config.example.yaml")
 
 
 def test_markdown_files_are_selected_from_git(monkeypatch):

@@ -17,7 +17,7 @@ from tests.support import ROOT
 
 SETUP = ROOT / "scripts" / "setup.py"
 CONFIG_DEFAULT = ROOT / "scripts" / "config_default.py"
-TEMPLATE = ROOT / "resources" / "config.yaml.example"
+TEMPLATE = ROOT / "resources" / "config.example.yaml"
 
 
 def run_setup(home: Path, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -43,6 +43,9 @@ def test_creates_template_and_reports_activation(tmp_path: Path):
     assert "EXTRA_ZEPHYR_MODULES" in result.stdout
     assert "${EXTRA_ZEPHYR_MODULES:+$EXTRA_ZEPHYR_MODULES;}" in result.stdout
     assert "Activate the module by making this path available to Zephyr:" in result.stdout
+    assert "Next, edit the configuration and validate a remote:" in result.stdout
+    validator = ROOT / "scripts" / "validate_configuration.py"
+    assert f"python3 {validator} --remote NAME" in result.stdout
     assert stat.S_IMODE(config.parent.stat().st_mode) == 0o700
     assert stat.S_IMODE(config.stat().st_mode) == 0o600
 
