@@ -16,18 +16,32 @@ max_line_length = 100
 indent_style = space
 indent_size = 4
 
+# INI
+[{*.ini,.coveragerc,pylintrc}]
+indent_style = space
+indent_size = 4
+
 # JSON
 [*.json]
 indent_style = space
 indent_size = 2
+
+# Line-delimited JSON
+[*.jsonl]
+max_line_length = off
 
 # Markdown and plain-text documentation
 [*.{md,txt}]
 indent_style = space
 indent_size = 2
 
+# TOML
+[*.toml]
+indent_style = space
+indent_size = 2
+
 # YAML
-[*.{yml,yaml}]
+[{*.yml,*.yaml,.yamllint}]
 indent_style = space
 indent_size = 2
 
