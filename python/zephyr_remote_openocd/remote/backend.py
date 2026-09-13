@@ -200,52 +200,61 @@ class SshHelperSession(BackendSession):
     def start(self, services: Iterable[Service]) -> SessionDescriptor:
         service_list = tuple(services)
         if self.request.process is not None:
-            if self.helper_process.stdin is None:
-                raise SessionError("helper stdin was not captured")
-            process = self.request.process
-            write_message(
-                cast(BinaryIO, self.helper_process.stdin),
-                "START_OPENOCD",
-                argv=list(process.argv),
-                environment=dict(process.environment),
-                required_paths=[
-                    {"path": check.path, "kind": check.kind} for check in process.required_paths
-                ],
-                services=[
-                    {"name": item.name, "remote_port": item.remote_port} for item in service_list
-                ],
-                readiness_marker=process.readiness_marker,
-                readiness_timeout=process.readiness_timeout,
-                literal_prefix=process.literal_prefix,
-            )
-            ready = set()
-            while True:
-                event = self._read_event()
-                self._dispatch(event)
-                if event["type"] == "PROCESS_STARTED":
-                    address = event["remote_address"]
-                    if not service_list:
-                        break
-                elif event["type"] == "SERVICE_READY":
-                    service = event.get("service", {})
-                    ready.add(service.get("name"))
-                    address = event["remote_address"]
-                    if ready == {item.name for item in service_list}:
-                        break
-                elif event["type"] == "PROCESS_EXIT":
-                    raise SessionError(
-                        f"remote OpenOCD exited before services were ready ({event['returncode']})"
-                    )
-            if service_list:
-                try:
-                    self._start_forwards(service_list, address)
-                except BaseException:
-                    self._close_forwards()
-                    raise
-            self.reader_thread = threading.Thread(target=self._drain_events, daemon=True)
-            self.reader_thread.start()
-            self.descriptor = SessionDescriptor(self.allocation, address)
-            return self.descriptor
+            return self._start_openocd(service_list)
+        return self._start_fake(service_list)
+
+    def _start_openocd(self, service_list: tuple[Service, ...]) -> SessionDescriptor:
+        process = self.request.process
+        assert process is not None
+        if self.helper_process.stdin is None:
+            raise SessionError("helper stdin was not captured")
+        write_message(
+            cast(BinaryIO, self.helper_process.stdin),
+            "START_OPENOCD",
+            argv=list(process.argv),
+            environment=dict(process.environment),
+            required_paths=[
+                {"path": check.path, "kind": check.kind} for check in process.required_paths
+            ],
+            services=[
+                {"name": item.name, "remote_port": item.remote_port} for item in service_list
+            ],
+            readiness_marker=process.readiness_marker,
+            readiness_timeout=process.readiness_timeout,
+            literal_prefix=process.literal_prefix,
+        )
+        address = self._await_openocd_ready(service_list)
+        if service_list:
+            try:
+                self._start_forwards(service_list, address)
+            except BaseException:
+                self._close_forwards()
+                raise
+        self._start_event_drain()
+        self.descriptor = SessionDescriptor(self.allocation, address)
+        return self.descriptor
+
+    def _await_openocd_ready(self, service_list: tuple[Service, ...]) -> str:
+        ready: set[object] = set()
+        while True:
+            event = self._read_event()
+            self._dispatch(event)
+            if event["type"] == "PROCESS_STARTED":
+                address = event["remote_address"]
+                if not service_list:
+                    return address
+            elif event["type"] == "SERVICE_READY":
+                service = event.get("service", {})
+                ready.add(service.get("name"))
+                address = event["remote_address"]
+                if ready == {item.name for item in service_list}:
+                    return address
+            elif event["type"] == "PROCESS_EXIT":
+                raise SessionError(
+                    f"remote OpenOCD exited before services were ready ({event['returncode']})"
+                )
+
+    def _start_fake(self, service_list: tuple[Service, ...]) -> SessionDescriptor:
         if not service_list:
             raise SessionError("at least one service is required")
         advisories = [
@@ -272,6 +281,10 @@ class SshHelperSession(BackendSession):
         except BaseException:
             self._close_forwards()
             raise
+
+    def _start_event_drain(self) -> None:
+        self.reader_thread = threading.Thread(target=self._drain_events, daemon=True)
+        self.reader_thread.start()
 
     def forward(self, services: Iterable[Service]) -> None:
         if self.closed or self.descriptor is None:
