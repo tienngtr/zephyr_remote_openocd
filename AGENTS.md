@@ -44,7 +44,7 @@ errors. Do not add, remove, or relax keys without explicit authorization. An
 authorized contract change must update the schema, example, loader, tests,
 requirements, and user documentation together and state its compatibility and
 migration decision. Do not create a schema version to record development
-history. Hardware fixture inventories may remain TOML.
+history. Hardware fixture inventories use their separate YAML schema.
 
 Protocol v1 is the current wire contract. Version equality is insufficient
 unless both peers implement the complete contract. Change it only with explicit

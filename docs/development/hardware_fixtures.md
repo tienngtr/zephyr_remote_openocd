@@ -42,28 +42,6 @@ session; deselected targets and recipes are not built or checked for local tool
 availability. The complete inventory is still structurally and semantically
 validated during collection.
 
-## One-time migration from TOML
-
-The former test-only TOML format is no longer accepted. Convert existing ignored
-lab inventories once using these mappings:
-
-- Convert `[[hosts]]` and its `id` into a key under `hosts`.
-- Rename host `address` to `ssh_host` and scalar `openocd` to the
-  `openocd_command` array.
-- Convert path-mapping arrays into a local-to-remote mapping.
-- Move target `zephyr_base` and `west` into a named `build_environments` entry
-  and reference it with `build_environment`.
-- Move target `gdb` into a named `toolchains` entry and reference it with
-  `toolchain`.
-- Convert `[[targets]]` and its `id` into a key under `targets`.
-- Replace every profile's `capabilities` list and matching sibling tables with
-  an `operations` mapping.
-- Move serial `pattern` and observation `timeout` into
-  `operations.flash.serial`; serial endpoints retain only physical framing.
-- Move `expect.patterns` into the relevant flash or debug operation, move
-  `expect.assert_bindto` into flash, and move `thread_info_pattern` into the
-  thread-info operation.
-
 The canonical example and
 [`hardware.schema.json`](../../tests/fixtures/hardware.schema.json) define the
 complete structural contract. Unknown keys, duplicate YAML keys, malformed
