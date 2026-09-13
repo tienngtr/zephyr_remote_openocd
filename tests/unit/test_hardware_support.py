@@ -24,26 +24,26 @@ from tests.support import ROOT
 
 
 def test_inventory_profiles_expose_operations_without_capability_records():
-    inventory = load_inventory(ROOT / "tests/fixtures/hardware.example.yaml")
-    target = inventory.target("board")
-    profile = target.profile("debug")
-    assert profile.operation_names == ("debug", "attach", "debugserver")
+    inventory = load_inventory(ROOT / "tests/fixtures/hardware.complete.example.yaml")
+    target = inventory.target("stm32f746g_disco")
+    profile = target.profile("core")
+    assert profile.operation_names == ("flash", "debug", "attach", "debugserver")
     assert "rtt" not in profile.operations
 
 
 def test_preparation_builds_only_requested_recipes_and_caches_success(tmp_path, monkeypatch):
-    inventory = load_inventory(ROOT / "tests/fixtures/hardware.example.yaml")
-    original = inventory.target("board")
+    inventory = load_inventory(ROOT / "tests/fixtures/hardware.complete.example.yaml")
+    original = inventory.target("stm32f746g_disco")
     build_environment = replace(
         inventory.build_environment("zephyr44"),
         zephyr_base=tmp_path,
         west=Path(sys.executable),
     )
-    flash_profile = replace(original.profile("flash"), probe_serial="example_probe")
+    flash_profile = replace(original.profile("core"), probe_serial="example_probe")
     target = replace(
         original,
         profiles=tuple(
-            flash_profile if profile.name == "flash" else profile for profile in original.profiles
+            flash_profile if profile.name == "core" else profile for profile in original.profiles
         ),
     )
     # An unavailable unrelated target and recipe must not affect selection.
@@ -54,7 +54,7 @@ def test_preparation_builds_only_requested_recipes_and_caches_success(tmp_path, 
     )
     unrelated = replace(original, name="unavailable", build_environment="unavailable")
     extra = replace(target.builds[0], name="unused", application="/unavailable/application")
-    unused_profile = replace(target.profile("flash"), name="unused", build="unused")
+    unused_profile = replace(target.profile("core"), name="unused", build="unused")
     target = replace(
         target, builds=(*target.builds, extra), profiles=(*target.profiles, unused_profile)
     )
@@ -73,19 +73,19 @@ def test_preparation_builds_only_requested_recipes_and_caches_success(tmp_path, 
     with patch("tests.hardware_support.subprocess.run") as run:
         run.return_value = SimpleNamespace(returncode=1, stdout="build failed")
         with pytest.raises(pytest.fail.Exception, match="build failed"):
-            preparation.prepare("board:flash", "flash")
+            preparation.prepare("stm32f746g_disco:core", "flash")
         run.return_value = SimpleNamespace(returncode=0, stdout="")
-        flash = preparation.prepare("board:flash", "flash")
-        debug = preparation.prepare("board:debug", "debug")
+        flash = preparation.prepare("stm32f746g_disco:core", "flash")
+        debug = preparation.prepare("stm32f746g_disco:core", "debug")
     # Failed attempts are retried; the successful flash preparation builds both
     # the intended and precondition recipes, and debug reuses the intended one.
     assert run.call_count == 3
     assert isinstance(flash, FlashFixture)
     assert isinstance(debug, DebugFixture)
     assert flash.target.build_dir == debug.target.build_dir
-    assert flash.target.id != debug.target.id
+    assert flash.target.id == debug.target.id
     assert "--serial=example_probe" in flash.target.runner_args
-    assert flash.precondition_build_dir == build_root / "board" / "minimal"
+    assert flash.precondition_build_dir == build_root / "stm32f746g_disco" / "minimal"
     assert flash.operation.quiescence_timeout == 2
     environment = run.call_args.kwargs["env"]
     assert "ZEPHYR_REMOTE_OPENOCD_REMOTE" not in environment
@@ -93,7 +93,7 @@ def test_preparation_builds_only_requested_recipes_and_caches_success(tmp_path, 
     selected = resolve_remote(load_config(flash.target.config_path), remote_name="lab")
     assert selected.ssh_host == inventory.host("lab").ssh_host
     assert not (build_root / "unavailable").exists()
-    assert not (build_root / "board" / "unused").exists()
+    assert not (build_root / "stm32f746g_disco" / "unused").exists()
 
 
 def test_elf_memory_witness_finds_bytes_that_distinguish_images(tmp_path: Path) -> None:

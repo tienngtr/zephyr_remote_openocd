@@ -5,7 +5,7 @@ Choose the smallest layer that covers the change:
 - Every change: `pytest` and `python3 scripts/static_check.py`.
 - Zephyr adapter or build integration: `tests/zephyr_integration/` with a
   Zephyr 4.4 source tree and its configured Python environment.
-- SSH transport behavior: `tests/ssh_integration/` with an ignored inventory.
+- SSH transport behavior: `tests/ssh_integration/` with a local hardware inventory.
 - Real board behavior: `tests/hardware/` with a board, probe, serial endpoint,
   and remote OpenOCD.
 - Release evidence: the serial procedure in
@@ -45,17 +45,25 @@ python3 -m venv .venv
 
 Normal product use instead runs through Zephyr's configured Python environment.
 External tests do not require pytest itself to run from that environment: they
-use the Zephyr source, `west`, toolchain, and external fixtures required by the
+use the Zephyr source, `west`, toolchain, and external test resources required by the
 selected layer. Running pytest from Zephyr's environment is also valid if that
 interpreter has every dependency in `requirements_dev.txt`.
 
 Copy [`tests/fixtures/hardware.example.yaml`](../../tests/fixtures/hardware.example.yaml)
-to an ignored location, then replace its host, target, and tool placeholders.
+to `.scratch/config/hardware.yaml`, then replace its host, target, and tool
+placeholders. The repository excludes `.scratch/` from version control.
 The inventory must contain at least one host and one syntactically complete
 target record, even for SSH-only tests; target build fields are not executed by
 the SSH cases. Keep credentials, device paths, and lab identities outside Git.
 The schema and capability profiles are documented in
-[`hardware_fixtures.md`](hardware_fixtures.md).
+[`hardware_inventories.md`](hardware_inventories.md).
+
+Validate the inventory without external I/O before collection:
+
+```sh
+.venv/bin/python scripts/validate_hardware_inventory.py \
+  .scratch/config/hardware.yaml --check-local
+```
 
 Validate collection before execution:
 

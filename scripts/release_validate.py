@@ -4,8 +4,8 @@
 
 This driver is intentionally separate from pytest discovery.  It provides a
 repeatable, fail-fast command sequence and makes missing external evidence
-explicit instead of silently converting it to a skip.  Hardware values remain
-in the ignored inventory supplied by the operator.
+explicit instead of silently converting it to a skip. Hardware values remain
+in the local inventory supplied by the operator.
 """
 
 from __future__ import annotations

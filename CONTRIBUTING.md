@@ -46,7 +46,7 @@ Environment variables read by the product use the
 `ZEPHYR_REMOTE_OPENOCD_` prefix. Reserve the shorter `ZRO_` prefix for the test
 harness, validation tools, test payloads, and generated internal markers. In
 particular, `ZEPHYR_REMOTE_OPENOCD_CONFIG` selects the product YAML file, while
-`ZRO_HARDWARE_CONFIG` selects the ignored YAML inventory used by external
+`ZRO_HARDWARE_CONFIG` selects the local YAML hardware inventory used by external
 tests. `ZRO_RECORD` and `ZRO_RECORD_VERSION` control the runner's test-only
 [recording mode](docs/development/testing.md#runner-recording-mode). Do not
 introduce a public product setting with the `ZRO_` prefix.
@@ -61,8 +61,8 @@ The installer refuses to replace an existing `commit-msg` hook. Commit messages
 must pass gitlint's default rules; use an imperative subject, a blank line, and
 a concise body that explains the change.
 
-Zephyr, SSH, and hardware tests require external environments and ignored
-fixture data; see [`docs/development/testing.md`](docs/development/testing.md)
+Zephyr, SSH, and hardware tests require external test environments and a local
+hardware inventory; see [`docs/development/testing.md`](docs/development/testing.md)
 before running them. Update [`SRS`](docs/requirements/SRS.md) for behavior and
 requirements, [`SAD`](docs/architecture/SAD.md) for architecture and rationale,
 and [`protocol.md`](docs/architecture/protocol.md) for the helper wire contract.

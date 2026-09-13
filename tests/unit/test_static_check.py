@@ -61,7 +61,7 @@ def test_commands_cover_repository_static_checks():
     schema_checks = [command for command in commands if tool(command) == "check-jsonschema"]
     assert len([command for command in schema_checks if "--check-metaschema" in command]) == 2
     example_checks = [command for command in schema_checks if "--schemafile" in command]
-    assert len(example_checks) == 2
+    assert len(example_checks) == 3
     assert any(
         "python/zephyr_remote_openocd/resources/configuration.schema.json" in command
         and "resources/config.yaml.example" in command
@@ -70,6 +70,11 @@ def test_commands_cover_repository_static_checks():
     assert any(
         "tests/fixtures/hardware.schema.json" in command
         and "tests/fixtures/hardware.example.yaml" in command
+        for command in example_checks
+    )
+    assert any(
+        "tests/fixtures/hardware.schema.json" in command
+        and "tests/fixtures/hardware.complete.example.yaml" in command
         for command in example_checks
     )
     assert all(

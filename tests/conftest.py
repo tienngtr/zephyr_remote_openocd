@@ -32,7 +32,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--hardware-config",
         action="store",
         default=None,
-        help="path to the ignored YAML hardware inventory (or use ZRO_HARDWARE_CONFIG)",
+        help="path to the local YAML hardware inventory (or use ZRO_HARDWARE_CONFIG)",
     )
 
 
