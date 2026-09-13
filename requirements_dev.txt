@@ -14,5 +14,6 @@ pytest-timeout>=2
 PyYAML>=6.0
 ruff==0.14.2
 rumdl
+shellcheck-py>=0.11.0.1
 vermin
 yamllint
