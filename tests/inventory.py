@@ -474,6 +474,34 @@ def _target(
     path: Path,
 ) -> InventoryTarget:
     location = f"targets.{name}"
+    host_name, environment_name, toolchain_name = _target_references(
+        raw, location, hosts, build_environments, toolchains, path
+    )
+    target_board = raw.get("board")
+    builds = _target_builds(raw["builds"], target_board, location, path)
+    serial = _target_serial(raw.get("serial", {}))
+    host = hosts[host_name]
+    profiles = _target_profiles(raw["profiles"], host, builds, serial, path)
+    direct_gdb = any(
+        operation in {"debugserver", "rtt"}
+        for profile in profiles
+        for operation in profile.operation_names
+    )
+    if direct_gdb and toolchain_name is None:
+        raise _error(path, f"{location}.toolchain", "is required by debugserver and rtt")
+    return InventoryTarget(
+        name,
+        host_name,
+        environment_name,
+        toolchain_name,
+        target_board,
+        tuple(builds.values()),
+        tuple(serial.values()),
+        profiles,
+    )
+
+
+def _target_references(raw, location, hosts, build_environments, toolchains, path):
     host_name = raw["host"]
     if host_name not in hosts:
         raise _error(path, f"{location}.host", f"references unknown host {host_name!r}")
@@ -487,13 +515,14 @@ def _target(
     toolchain_name = raw.get("toolchain")
     if toolchain_name is not None and toolchain_name not in toolchains:
         raise _error(
-            path,
-            f"{location}.toolchain",
-            f"references unknown toolchain {toolchain_name!r}",
+            path, f"{location}.toolchain", f"references unknown toolchain {toolchain_name!r}"
         )
-    target_board = raw.get("board")
-    builds: dict[str, BuildRecipe] = {}
-    for build_name, build_raw in raw["builds"].items():
+    return host_name, environment_name, toolchain_name
+
+
+def _target_builds(raw_builds, target_board, location, path):
+    builds = {}
+    for build_name, build_raw in raw_builds.items():
         application = build_raw["application"]
         if not Path(application).is_absolute() and ".." in Path(application).parts:
             raise _error(
@@ -515,31 +544,20 @@ def _target(
             tuple(build_raw.get("west_args", [])),
             tuple(build_raw.get("cmake_args", [])),
         )
-    serial = {
+    return builds
+
+
+def _target_serial(raw_serial):
+    return {
         endpoint_name: _serial(endpoint_name, endpoint_raw)
-        for endpoint_name, endpoint_raw in raw.get("serial", {}).items()
+        for endpoint_name, endpoint_raw in raw_serial.items()
     }
-    host = hosts[host_name]
-    profiles = tuple(
+
+
+def _target_profiles(raw_profiles, host, builds, serial, path):
+    return tuple(
         _profile(profile_name, profile_raw, host, builds, serial, path)
-        for profile_name, profile_raw in raw["profiles"].items()
-    )
-    direct_gdb = any(
-        operation in {"debugserver", "rtt"}
-        for profile in profiles
-        for operation in profile.operation_names
-    )
-    if direct_gdb and toolchain_name is None:
-        raise _error(path, f"{location}.toolchain", "is required by debugserver and rtt")
-    return InventoryTarget(
-        name,
-        host_name,
-        environment_name,
-        toolchain_name,
-        target_board,
-        tuple(builds.values()),
-        tuple(serial.values()),
-        profiles,
+        for profile_name, profile_raw in raw_profiles.items()
     )
 
 

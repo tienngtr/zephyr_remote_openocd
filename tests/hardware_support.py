@@ -21,6 +21,7 @@ from tests.inventory import (
     Inventory,
     InventoryHost,
     InventoryTarget,
+    Operation,
     OperationProfile,
     RttOperation,
     SemihostingOperation,
@@ -198,14 +199,7 @@ class HardwarePreparation:
         profile = target.profile(profile_name)
         operation = profile.operation(operation_name)
         build_environment = self.inventory.build_environment(target.build_environment)
-        if not build_environment.zephyr_base.is_dir():
-            pytest.fail(
-                f"target {target.name} Zephyr tree is missing: {build_environment.zephyr_base}"
-            )
-        if not build_environment.west.is_file() or not os.access(build_environment.west, os.X_OK):
-            pytest.fail(
-                f"target {target.name} west executable is unavailable: {build_environment.west}"
-            )
+        self._check_build_environment(target, build_environment)
         host = self.inventory.host(target.host)
         toolchain = self.inventory.toolchain(target.toolchain) if target.toolchain else None
         config_path = self.config_root / f"{host.name}.yaml"
@@ -214,9 +208,26 @@ class HardwarePreparation:
         prepared = self._prepared_target(
             target, profile, host, build_environment, toolchain, build_dir, config_path
         )
+        return self._prepare_operation(prepared, target, profile, operation, config_path)
+
+    @staticmethod
+    def _check_build_environment(target: InventoryTarget, environment: BuildEnvironment) -> None:
+        if not environment.zephyr_base.is_dir():
+            pytest.fail(f"target {target.name} Zephyr tree is missing: {environment.zephyr_base}")
+        if not environment.west.is_file() or not os.access(environment.west, os.X_OK):
+            pytest.fail(f"target {target.name} west executable is unavailable: {environment.west}")
+
+    def _prepare_operation(
+        self,
+        prepared: PreparedTarget,
+        target: InventoryTarget,
+        profile: OperationProfile,
+        operation: Operation,
+        config_path: Path,
+    ) -> PreparedOperation:
         if isinstance(operation, FlashOperation):
             precondition = self._prepare_build(
-                target, build_environment, operation.precondition_build, config_path
+                target, prepared.build_environment, operation.precondition_build, config_path
             )
             return FlashFixture(
                 prepared, operation, target.endpoint(operation.serial.endpoint), precondition
@@ -225,7 +236,7 @@ class HardwarePreparation:
             return DebugFixture(prepared, operation)
         if isinstance(operation, AttachOperation):
             precondition = self._prepare_build(
-                target, build_environment, operation.precondition_build, config_path
+                target, prepared.build_environment, operation.precondition_build, config_path
             )
             return AttachFixture(prepared, operation, precondition)
         if isinstance(operation, DebugServerOperation):
@@ -236,7 +247,7 @@ class HardwarePreparation:
             return RttFixture(prepared, operation)
         if isinstance(operation, SemihostingOperation):
             return SemihostingFixture(prepared, operation)
-        raise AssertionError(f"unsupported operation {operation_name!r}")
+        raise AssertionError(f"unsupported operation {profile.name!r}")
 
     @staticmethod
     def _prepared_target(
