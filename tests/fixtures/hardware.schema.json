@@ -5,12 +5,28 @@
   "description": "Local test-lab configuration for Zephyr builds, remote OpenOCD hosts, physical targets, and operation-specific expectations.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["build_environments", "hosts", "targets"],
+  "required": [
+    "build_environments",
+    "hosts",
+    "targets"
+  ],
   "properties": {
-    "build_environments": {"$ref": "#/$defs/buildEnvironments", "description": "Named local Zephyr source trees and west executables shared by targets."},
-    "toolchains": {"$ref": "#/$defs/toolchains", "description": "Named local GDB toolchains used by RTT and debugserver tests."},
-    "hosts": {"$ref": "#/$defs/hosts", "description": "Named remote Linux hosts that run OpenOCD and expose target serial devices."},
-    "targets": {"$ref": "#/$defs/targets", "description": "Physical boards, their builds, serial endpoints, and test-operation profiles."}
+    "build_environments": {
+      "$ref": "#/$defs/buildEnvironments",
+      "description": "Named local Zephyr source trees and west executables shared by targets."
+    },
+    "toolchains": {
+      "$ref": "#/$defs/toolchains",
+      "description": "Named local GDB toolchains used by RTT and debugserver tests."
+    },
+    "hosts": {
+      "$ref": "#/$defs/hosts",
+      "description": "Named remote Linux hosts that run OpenOCD and expose target serial devices."
+    },
+    "targets": {
+      "$ref": "#/$defs/targets",
+      "description": "Physical boards, their builds, serial endpoints, and test-operation profiles."
+    }
   },
   "$defs": {
     "identifier": {
@@ -23,28 +39,43 @@
       "type": "string",
       "minLength": 1,
       "pattern": ".*\\S.*",
-      "not": {"pattern": "\\u0000"}
+      "not": {
+        "pattern": "\\u0000"
+      }
     },
     "stringArray": {
       "description": "Arguments passed as separate strings, without shell splitting.",
       "type": "array",
-      "items": {"$ref": "#/$defs/nonemptyString", "description": "One complete argument; do not combine multiple arguments into one string."}
+      "items": {
+        "$ref": "#/$defs/nonemptyString",
+        "description": "One complete argument; do not combine multiple arguments into one string."
+      }
     },
     "localPath": {
       "description": "An absolute path or home-relative path interpreted on the contributor's machine.",
       "type": "string",
       "anyOf": [
-        {"pattern": "^/[^\\u0000]*$"},
-        {"pattern": "^~/[^\\u0000]*$"},
-        {"const": "~"}
+        {
+          "pattern": "^/[^\\u0000]*$"
+        },
+        {
+          "pattern": "^~/[^\\u0000]*$"
+        },
+        {
+          "const": "~"
+        }
       ]
     },
     "remotePath": {
       "description": "An absolute normalized POSIX path interpreted on the remote host.",
       "type": "string",
       "anyOf": [
-        {"const": "/"},
-        {"pattern": "^/(?!\\.{1,2}(?:/|$))[^/\\u0000]+(?:/(?!\\.{1,2}(?:/|$))[^/\\u0000]+)*$"}
+        {
+          "const": "/"
+        },
+        {
+          "pattern": "^/(?!\\.{1,2}(?:/|$))[^/\\u0000]+(?:/(?!\\.{1,2}(?:/|$))[^/\\u0000]+)*$"
+        }
       ]
     },
     "positiveNumber": {
@@ -55,13 +86,23 @@
     "namedMap": {
       "description": "A mapping whose keys are reusable identifiers referenced elsewhere in the inventory.",
       "type": "object",
-      "propertyNames": {"$ref": "#/$defs/identifier"}
+      "propertyNames": {
+        "$ref": "#/$defs/identifier"
+      }
     },
     "buildEnvironments": {
       "description": "One or more named local Zephyr development environments.",
       "allOf": [
-        {"$ref": "#/$defs/namedMap"},
-        {"minProperties": 1, "additionalProperties": {"$ref": "#/$defs/buildEnvironment", "description": "One named local build environment."}}
+        {
+          "$ref": "#/$defs/namedMap"
+        },
+        {
+          "minProperties": 1,
+          "additionalProperties": {
+            "$ref": "#/$defs/buildEnvironment",
+            "description": "One named local build environment."
+          }
+        }
       ]
     },
     "buildEnvironment": {
@@ -69,17 +110,39 @@
       "description": "A local Zephyr checkout and the west executable configured for that workspace.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["zephyr_base", "west"],
+      "required": [
+        "zephyr_base",
+        "west"
+      ],
       "properties": {
-        "zephyr_base": {"$ref": "#/$defs/localPath", "description": "Local root of a Zephyr 4.4 source tree.", "examples": ["/work/zephyrproject/zephyr"]},
-        "west": {"$ref": "#/$defs/localPath", "description": "Local executable west command for this Zephyr workspace.", "examples": ["/work/zephyrproject/.venv/bin/west"]}
+        "zephyr_base": {
+          "$ref": "#/$defs/localPath",
+          "description": "Local root of a Zephyr 4.4 source tree.",
+          "examples": [
+            "/work/zephyrproject/zephyr"
+          ]
+        },
+        "west": {
+          "$ref": "#/$defs/localPath",
+          "description": "Local executable west command for this Zephyr workspace.",
+          "examples": [
+            "/work/zephyrproject/.venv/bin/west"
+          ]
+        }
       }
     },
     "toolchains": {
       "description": "Named local debugger toolchains; omit this section when no operation requires direct GDB.",
       "allOf": [
-        {"$ref": "#/$defs/namedMap"},
-        {"additionalProperties": {"$ref": "#/$defs/toolchain", "description": "One named local debugger toolchain."}}
+        {
+          "$ref": "#/$defs/namedMap"
+        },
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/toolchain",
+            "description": "One named local debugger toolchain."
+          }
+        }
       ],
       "default": {}
     },
@@ -88,14 +151,32 @@
       "description": "A local architecture-specific debugger used by RTT and debugserver acceptance tests.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["gdb"],
-      "properties": {"gdb": {"$ref": "#/$defs/localPath", "description": "Local executable GDB matching the target architecture.", "examples": ["/opt/zephyr-sdk/arm-zephyr-eabi/bin/arm-zephyr-eabi-gdb"]}}
+      "required": [
+        "gdb"
+      ],
+      "properties": {
+        "gdb": {
+          "$ref": "#/$defs/localPath",
+          "description": "Local executable GDB matching the target architecture.",
+          "examples": [
+            "/opt/zephyr-sdk/arm-zephyr-eabi/bin/arm-zephyr-eabi-gdb"
+          ]
+        }
+      }
     },
     "hosts": {
       "description": "One or more named remote OpenOCD hosts.",
       "allOf": [
-        {"$ref": "#/$defs/namedMap"},
-        {"minProperties": 1, "additionalProperties": {"$ref": "#/$defs/host", "description": "One named remote OpenOCD host."}}
+        {
+          "$ref": "#/$defs/namedMap"
+        },
+        {
+          "minProperties": 1,
+          "additionalProperties": {
+            "$ref": "#/$defs/host",
+            "description": "One named remote OpenOCD host."
+          }
+        }
       ]
     },
     "host": {
@@ -103,36 +184,77 @@
       "description": "Connection and OpenOCD settings for a remote Linux machine. Serial device paths also refer to this machine.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["ssh_host", "openocd_command"],
+      "required": [
+        "ssh_host",
+        "openocd_command"
+      ],
       "properties": {
-        "ssh_host": {"$ref": "#/$defs/nonemptyString", "description": "Host name or SSH configuration alias passed to the configured SSH command.", "examples": ["lab-board-host"]},
+        "ssh_host": {
+          "$ref": "#/$defs/nonemptyString",
+          "description": "Host name or SSH configuration alias passed to the configured SSH command.",
+          "examples": [
+            "lab-board-host"
+          ]
+        },
         "openocd_command": {
           "description": "Remote OpenOCD executable followed by optional fixed arguments. The first item must be an absolute remote path.",
           "type": "array",
           "minItems": 1,
-          "prefixItems": [{"$ref": "#/$defs/remotePath", "description": "Absolute path to the OpenOCD executable on the remote host."}],
-          "items": {"type": "string", "description": "One remote OpenOCD command argument.", "not": {"pattern": "\\u0000"}},
-          "examples": [["/opt/openocd/bin/openocd"]]
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/remotePath",
+              "description": "Absolute path to the OpenOCD executable on the remote host."
+            }
+          ],
+          "items": {
+            "type": "string",
+            "description": "One remote OpenOCD command argument.",
+            "not": {
+              "pattern": "\\u0000"
+            }
+          },
+          "examples": [
+            [
+              "/opt/openocd/bin/openocd"
+            ]
+          ]
         },
         "ssh_command": {
           "description": "Local SSH executable and fixed arguments used for every remote action.",
           "type": "array",
           "minItems": 1,
-          "items": {"type": "string", "description": "One SSH executable or fixed argument; values are passed without shell splitting.", "not": {"pattern": "\\u0000"}},
-          "default": ["ssh"]
+          "items": {
+            "type": "string",
+            "description": "One SSH executable or fixed argument; values are passed without shell splitting.",
+            "not": {
+              "pattern": "\\u0000"
+            }
+          },
+          "default": [
+            "ssh"
+          ]
         },
         "forward_env": {
           "description": "Environment-variable allow-list. A profile may set only names declared here.",
           "type": "array",
           "uniqueItems": true,
-          "items": {"type": "string", "description": "One environment variable name allowed to reach remote OpenOCD.", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
+          "items": {
+            "type": "string",
+            "description": "One environment variable name allowed to reach remote OpenOCD.",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
           "default": []
         },
         "path_mappings": {
           "description": "Map local absolute path roots to their equivalent absolute roots on the remote host. Mappings are recursive.",
           "type": "object",
-          "propertyNames": {"$ref": "#/$defs/localPath"},
-          "additionalProperties": {"$ref": "#/$defs/remotePath", "description": "Equivalent absolute path root on the remote host."},
+          "propertyNames": {
+            "$ref": "#/$defs/localPath"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/remotePath",
+            "description": "Equivalent absolute path root on the remote host."
+          },
           "default": {}
         }
       }
@@ -140,8 +262,16 @@
     "targets": {
       "description": "One or more named physical targets.",
       "allOf": [
-        {"$ref": "#/$defs/namedMap"},
-        {"minProperties": 1, "additionalProperties": {"$ref": "#/$defs/target", "description": "One named physical target."}}
+        {
+          "$ref": "#/$defs/namedMap"
+        },
+        {
+          "minProperties": 1,
+          "additionalProperties": {
+            "$ref": "#/$defs/target",
+            "description": "One named physical target."
+          }
+        }
       ]
     },
     "target": {
@@ -149,32 +279,75 @@
       "description": "A board attached to a remote host, plus its local build recipes and operation profiles.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["host", "build_environment", "builds", "profiles"],
+      "required": [
+        "host",
+        "build_environment",
+        "builds",
+        "profiles"
+      ],
       "properties": {
-        "host": {"$ref": "#/$defs/identifier", "description": "Name of the remote host to which this target is attached."},
-        "build_environment": {"$ref": "#/$defs/identifier", "description": "Name of the local Zephyr build environment used for this target."},
-        "toolchain": {"$ref": "#/$defs/identifier", "description": "Name of the local GDB toolchain. Required when any profile enables RTT or debugserver."},
-        "board": {"$ref": "#/$defs/nonemptyString", "description": "Default Zephyr board identifier for every build on this target. Individual builds may override it.", "examples": ["stm32f746g_disco"]},
+        "host": {
+          "$ref": "#/$defs/identifier",
+          "description": "Name of the remote host to which this target is attached."
+        },
+        "build_environment": {
+          "$ref": "#/$defs/identifier",
+          "description": "Name of the local Zephyr build environment used for this target."
+        },
+        "toolchain": {
+          "$ref": "#/$defs/identifier",
+          "description": "Name of the local GDB toolchain. Required when any profile enables RTT or debugserver."
+        },
+        "board": {
+          "$ref": "#/$defs/nonemptyString",
+          "description": "Default Zephyr board identifier for every build on this target. Individual builds may override it.",
+          "examples": [
+            "stm32f746g_disco"
+          ]
+        },
         "builds": {
           "description": "Named Zephyr application recipes referenced by profiles and preconditions.",
           "allOf": [
-            {"$ref": "#/$defs/namedMap"},
-            {"minProperties": 1, "additionalProperties": {"$ref": "#/$defs/build", "description": "One named Zephyr build recipe."}}
+            {
+              "$ref": "#/$defs/namedMap"
+            },
+            {
+              "minProperties": 1,
+              "additionalProperties": {
+                "$ref": "#/$defs/build",
+                "description": "One named Zephyr build recipe."
+              }
+            }
           ]
         },
         "serial": {
           "description": "Named serial endpoints on the remote host. Required only by operations that observe serial output.",
           "allOf": [
-            {"$ref": "#/$defs/namedMap"},
-            {"additionalProperties": {"$ref": "#/$defs/serialEndpoint", "description": "One named serial endpoint on the remote host."}}
+            {
+              "$ref": "#/$defs/namedMap"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/serialEndpoint",
+                "description": "One named serial endpoint on the remote host."
+              }
+            }
           ],
           "default": {}
         },
         "profiles": {
           "description": "Named groups of operations that share a selected build, runner arguments, probe, and environment.",
           "allOf": [
-            {"$ref": "#/$defs/namedMap"},
-            {"minProperties": 1, "additionalProperties": {"$ref": "#/$defs/profile", "description": "One named operation profile."}}
+            {
+              "$ref": "#/$defs/namedMap"
+            },
+            {
+              "minProperties": 1,
+              "additionalProperties": {
+                "$ref": "#/$defs/profile",
+                "description": "One named operation profile."
+              }
+            }
           ]
         }
       }
@@ -184,12 +357,36 @@
       "description": "A Zephyr application and arguments used to produce one reusable build directory.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["application"],
+      "required": [
+        "application"
+      ],
       "properties": {
-        "application": {"$ref": "#/$defs/nonemptyString", "description": "Application directory. Relative paths resolve beneath zephyr_base and may not escape it; absolute paths name external applications.", "examples": ["samples/hello_world"]},
-        "board": {"$ref": "#/$defs/nonemptyString", "description": "Zephyr board override for this build. Required when the target has no default board."},
-        "west_args": {"$ref": "#/$defs/stringArray", "description": "Arguments inserted into west build before the application and CMake separator.", "default": []},
-        "cmake_args": {"$ref": "#/$defs/stringArray", "description": "CMake cache arguments passed after west build's -- separator.", "default": [], "examples": [["-DCONF_FILE=prj_minimal_rtt.conf"]]}
+        "application": {
+          "$ref": "#/$defs/nonemptyString",
+          "description": "Application directory. Relative paths resolve beneath zephyr_base and may not escape it; absolute paths name external applications.",
+          "examples": [
+            "samples/hello_world"
+          ]
+        },
+        "board": {
+          "$ref": "#/$defs/nonemptyString",
+          "description": "Zephyr board override for this build. Required when the target has no default board."
+        },
+        "west_args": {
+          "$ref": "#/$defs/stringArray",
+          "description": "Arguments inserted into west build before the application and CMake separator.",
+          "default": []
+        },
+        "cmake_args": {
+          "$ref": "#/$defs/stringArray",
+          "description": "CMake cache arguments passed after west build's -- separator.",
+          "default": [],
+          "examples": [
+            [
+              "-DCONF_FILE=prj_minimal_rtt.conf"
+            ]
+          ]
+        }
       }
     },
     "serialEndpoint": {
@@ -197,17 +394,61 @@
       "description": "Physical serial framing and device path as seen by the remote host.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["device", "baud"],
+      "required": [
+        "device",
+        "baud"
+      ],
       "properties": {
-        "device": {"$ref": "#/$defs/nonemptyString", "description": "Stable serial device path on the remote host; prefer /dev/serial/by-id over a transient tty name."},
-        "baud": {"type": "integer", "description": "Serial baud rate.", "minimum": 1, "examples": [115200]},
-        "data_bits": {"type": "integer", "description": "Number of serial data bits.", "enum": [5, 6, 7, 8], "default": 8},
-        "parity": {"type": "string", "description": "Serial parity mode.", "enum": ["none", "even", "odd"], "default": "none"},
-        "stop_bits": {"type": "integer", "description": "Number of serial stop bits.", "enum": [1, 2], "default": 1},
+        "device": {
+          "$ref": "#/$defs/nonemptyString",
+          "description": "Stable serial device path on the remote host; prefer /dev/serial/by-id over a transient tty name."
+        },
+        "baud": {
+          "type": "integer",
+          "description": "Serial baud rate.",
+          "minimum": 1,
+          "examples": [
+            115200
+          ]
+        },
+        "data_bits": {
+          "type": "integer",
+          "description": "Number of serial data bits.",
+          "enum": [
+            5,
+            6,
+            7,
+            8
+          ],
+          "default": 8
+        },
+        "parity": {
+          "type": "string",
+          "description": "Serial parity mode.",
+          "enum": [
+            "none",
+            "even",
+            "odd"
+          ],
+          "default": "none"
+        },
+        "stop_bits": {
+          "type": "integer",
+          "description": "Number of serial stop bits.",
+          "enum": [
+            1,
+            2
+          ],
+          "default": 1
+        },
         "flow_control": {
           "description": "Serial flow-control mode.",
           "type": "string",
-          "enum": ["none", "hardware", "software"],
+          "enum": [
+            "none",
+            "hardware",
+            "software"
+          ],
           "default": "none"
         }
       }
@@ -217,19 +458,43 @@
       "description": "Operations sharing one firmware build and the same probe, runner arguments, and forwarded environment.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["build", "operations"],
+      "required": [
+        "build",
+        "operations"
+      ],
       "properties": {
-        "build": {"$ref": "#/$defs/identifier", "description": "Name of the build recipe used by every operation in this profile."},
-        "probe_serial": {"$ref": "#/$defs/nonemptyString", "description": "Probe identifier passed to west as --dev-id. Set it when the remote host can see multiple probes."},
-        "runner_args": {"$ref": "#/$defs/stringArray", "description": "Additional remote_openocd runner arguments shared by every operation in this profile.", "default": []},
+        "build": {
+          "$ref": "#/$defs/identifier",
+          "description": "Name of the build recipe used by every operation in this profile."
+        },
+        "probe_serial": {
+          "$ref": "#/$defs/nonemptyString",
+          "description": "Probe identifier passed to west as --dev-id. Set it when the remote host can see multiple probes."
+        },
+        "runner_args": {
+          "$ref": "#/$defs/stringArray",
+          "description": "Additional remote_openocd runner arguments shared by every operation in this profile.",
+          "default": []
+        },
         "environment": {
           "description": "Environment values forwarded to remote OpenOCD. Every key must be listed by the selected host's forward_env.",
           "type": "object",
-          "propertyNames": {"pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
-          "additionalProperties": {"type": "string", "description": "Literal environment value forwarded without shell expansion.", "not": {"pattern": "\\u0000"}},
+          "propertyNames": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "description": "Literal environment value forwarded without shell expansion.",
+            "not": {
+              "pattern": "\\u0000"
+            }
+          },
           "default": {}
         },
-        "operations": {"$ref": "#/$defs/operations", "description": "Operations enabled by this profile; each key creates an independently selectable pytest node."}
+        "operations": {
+          "$ref": "#/$defs/operations",
+          "description": "Operations enabled by this profile; each key creates an independently selectable pytest node."
+        }
       }
     },
     "operations": {
@@ -238,13 +503,34 @@
       "additionalProperties": false,
       "minProperties": 1,
       "properties": {
-        "flash": {"$ref": "#/$defs/flash", "description": "Flash a quiet precondition image, then the selected build, and prove fresh serial output."},
-        "debug": {"$ref": "#/$defs/debug", "description": "Load the selected build with west debug and stop at a source-level breakpoint."},
-        "attach": {"$ref": "#/$defs/attach", "description": "Flash a precondition image, attach without loading, and prove its memory remains unchanged."},
-        "debugserver": {"$ref": "#/$defs/debugserver", "description": "Start west debugserver and verify its GDB service using the target toolchain."},
-        "thread_info": {"$ref": "#/$defs/threadInfo", "description": "Verify that the remote debug service reports Zephyr thread information."},
-        "rtt": {"$ref": "#/$defs/rtt", "description": "Verify standalone and debug-integrated bidirectional RTT service behavior."},
-        "semihosting": {"$ref": "#/$defs/semihosting", "description": "Run direct semihosting with configured OpenOCD and GDB commands and verify relayed output."}
+        "flash": {
+          "$ref": "#/$defs/flash",
+          "description": "Flash a quiet precondition image, then the selected build, and prove fresh serial output."
+        },
+        "debug": {
+          "$ref": "#/$defs/debug",
+          "description": "Load the selected build with west debug and stop at a source-level breakpoint."
+        },
+        "attach": {
+          "$ref": "#/$defs/attach",
+          "description": "Flash a precondition image, attach without loading, and prove its memory remains unchanged."
+        },
+        "debugserver": {
+          "$ref": "#/$defs/debugserver",
+          "description": "Start west debugserver and verify its GDB service using the target toolchain."
+        },
+        "thread_info": {
+          "$ref": "#/$defs/threadInfo",
+          "description": "Verify that the remote debug service reports Zephyr thread information."
+        },
+        "rtt": {
+          "$ref": "#/$defs/rtt",
+          "description": "Verify standalone and debug-integrated bidirectional RTT service behavior."
+        },
+        "semihosting": {
+          "$ref": "#/$defs/semihosting",
+          "description": "Run direct semihosting with configured OpenOCD and GDB commands and verify relayed output."
+        }
       }
     },
     "flash": {
@@ -252,13 +538,34 @@
       "description": "Proves that flashing replaces a distinct quiet image and emits fresh application-specific serial output.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["precondition_build", "quiescence_timeout", "serial"],
+      "required": [
+        "precondition_build",
+        "quiescence_timeout",
+        "serial"
+      ],
       "properties": {
-        "precondition_build": {"$ref": "#/$defs/identifier", "description": "A declared build different from the profile build, flashed before the test image."},
-        "quiescence_timeout": {"$ref": "#/$defs/positiveNumber", "description": "Seconds for which the precondition image must not emit the expected test-image marker."},
-        "serial": {"$ref": "#/$defs/serialExpectation", "description": "Remote serial endpoint and fresh-output expectation for the selected build."},
-        "output_patterns": {"$ref": "#/$defs/stringArray", "description": "Regular expressions that must occur in combined west/OpenOCD process output.", "default": []},
-        "assert_bindto": {"type": "boolean", "description": "Require session output to prove remote OpenOCD bound to its allocated loopback address.", "default": false}
+        "precondition_build": {
+          "$ref": "#/$defs/identifier",
+          "description": "A declared build different from the profile build, flashed before the test image."
+        },
+        "quiescence_timeout": {
+          "$ref": "#/$defs/positiveNumber",
+          "description": "Seconds for which the precondition image must not emit the expected test-image marker."
+        },
+        "serial": {
+          "$ref": "#/$defs/serialExpectation",
+          "description": "Remote serial endpoint and fresh-output expectation for the selected build."
+        },
+        "output_patterns": {
+          "$ref": "#/$defs/stringArray",
+          "description": "Regular expressions that must occur in combined west/OpenOCD process output.",
+          "default": []
+        },
+        "assert_bindto": {
+          "type": "boolean",
+          "description": "Require session output to prove remote OpenOCD bound to its allocated loopback address.",
+          "default": false
+        }
       }
     },
     "serialExpectation": {
@@ -266,11 +573,24 @@
       "description": "Application-specific serial evidence collected from a named remote endpoint.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["endpoint", "pattern", "timeout"],
+      "required": [
+        "endpoint",
+        "pattern",
+        "timeout"
+      ],
       "properties": {
-        "endpoint": {"$ref": "#/$defs/identifier", "description": "Name of a serial endpoint declared by this target."},
-        "pattern": {"$ref": "#/$defs/nonemptyString", "description": "Regular expression uniquely identifying output from the selected application."},
-        "timeout": {"$ref": "#/$defs/positiveNumber", "description": "Seconds to wait for the serial pattern after flashing."}
+        "endpoint": {
+          "$ref": "#/$defs/identifier",
+          "description": "Name of a serial endpoint declared by this target."
+        },
+        "pattern": {
+          "$ref": "#/$defs/nonemptyString",
+          "description": "Regular expression uniquely identifying output from the selected application."
+        },
+        "timeout": {
+          "$ref": "#/$defs/positiveNumber",
+          "description": "Seconds to wait for the serial pattern after flashing."
+        }
       }
     },
     "debug": {
@@ -278,10 +598,22 @@
       "description": "Loads the profile build, continues without a post-load reset, and verifies a source-level stop.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["breakpoint"],
+      "required": [
+        "breakpoint"
+      ],
       "properties": {
-        "breakpoint": {"$ref": "#/$defs/identifier", "description": "C symbol present in the ELF debug information at which GDB must stop.", "examples": ["main"]},
-        "output_patterns": {"$ref": "#/$defs/stringArray", "description": "Regular expressions that must occur in combined west/OpenOCD process output.", "default": []}
+        "breakpoint": {
+          "$ref": "#/$defs/identifier",
+          "description": "C symbol present in the ELF debug information at which GDB must stop.",
+          "examples": [
+            "main"
+          ]
+        },
+        "output_patterns": {
+          "$ref": "#/$defs/stringArray",
+          "description": "Regular expressions that must occur in combined west/OpenOCD process output.",
+          "default": []
+        }
       }
     },
     "attach": {
@@ -289,8 +621,15 @@
       "description": "Verifies that west attach connects without replacing the firmware already on the target.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["precondition_build"],
-      "properties": {"precondition_build": {"$ref": "#/$defs/identifier", "description": "A declared build different from the profile build, flashed before attaching."}}
+      "required": [
+        "precondition_build"
+      ],
+      "properties": {
+        "precondition_build": {
+          "$ref": "#/$defs/identifier",
+          "description": "A declared build different from the profile build, flashed before attaching."
+        }
+      }
     },
     "debugserver": {
       "title": "Debugserver operation",
@@ -303,22 +642,68 @@
       "description": "Checks GDB thread listings produced by an OpenOCD build with Zephyr thread awareness.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["pattern"],
-      "properties": {"pattern": {"$ref": "#/$defs/nonemptyString", "description": "Regular expression expected in GDB's thread information output.", "examples": ["Thread"]}}
+      "required": [
+        "pattern"
+      ],
+      "properties": {
+        "pattern": {
+          "$ref": "#/$defs/nonemptyString",
+          "description": "Regular expression expected in GDB's thread information output.",
+          "examples": [
+            "Thread"
+          ]
+        }
+      }
     },
     "rtt": {
       "title": "RTT operation",
       "description": "Exercises standalone RTT and RTT alongside debug services. The target must reference a toolchain.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["port", "response", "timeout", "program_survives_reset", "breakpoint"],
+      "required": [
+        "port",
+        "response",
+        "timeout",
+        "program_survives_reset",
+        "breakpoint"
+      ],
       "properties": {
-        "port": {"type": "integer", "description": "Configured remote OpenOCD RTT TCP port before local forwarding.", "minimum": 1, "maximum": 65535, "examples": [19021]},
-        "input": {"type": "string", "description": "Text sent to the target through RTT after connecting.", "default": "", "examples": ["help\n"]},
-        "response": {"$ref": "#/$defs/nonemptyString", "description": "Application-specific text expected in the RTT response."},
-        "timeout": {"$ref": "#/$defs/positiveNumber", "description": "Seconds to wait for the RTT endpoint and expected response."},
-        "program_survives_reset": {"const": true, "description": "Required acknowledgement that the selected program remains usable after standalone west rtt resets the target."},
-        "breakpoint": {"$ref": "#/$defs/identifier", "description": "C symbol used to prove GDB and RTT work concurrently.", "examples": ["main"]}
+        "port": {
+          "type": "integer",
+          "description": "Configured remote OpenOCD RTT TCP port before local forwarding.",
+          "minimum": 1,
+          "maximum": 65535,
+          "examples": [
+            19021
+          ]
+        },
+        "input": {
+          "type": "string",
+          "description": "Text sent to the target through RTT after connecting.",
+          "default": "",
+          "examples": [
+            "help\n"
+          ]
+        },
+        "response": {
+          "$ref": "#/$defs/nonemptyString",
+          "description": "Application-specific text expected in the RTT response."
+        },
+        "timeout": {
+          "$ref": "#/$defs/positiveNumber",
+          "description": "Seconds to wait for the RTT endpoint and expected response."
+        },
+        "program_survives_reset": {
+          "const": true,
+          "description": "Required acknowledgement that the selected program remains usable after standalone west rtt resets the target."
+        },
+        "breakpoint": {
+          "$ref": "#/$defs/identifier",
+          "description": "C symbol used to prove GDB and RTT work concurrently.",
+          "examples": [
+            "main"
+          ]
+        }
       }
     },
     "semihosting": {
@@ -326,12 +711,29 @@
       "description": "Enables direct OpenOCD semihosting, drives the application with GDB, and checks relayed console output.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["commands", "output", "timeout"],
+      "required": [
+        "commands",
+        "output",
+        "timeout"
+      ],
       "properties": {
-        "commands": {"$ref": "#/$defs/stringArray", "description": "OpenOCD --cmd-pre-init Tcl commands used to enable and configure semihosting."},
-        "gdb_commands": {"$ref": "#/$defs/stringArray", "description": "GDB commands executed in order; they must allow GDB and west to exit naturally.", "default": []},
-        "output": {"$ref": "#/$defs/nonemptyString", "description": "Application-specific text required in relayed semihosting stdout/stderr."},
-        "timeout": {"$ref": "#/$defs/positiveNumber", "description": "Seconds allowed for the semihosting session to finish naturally."}
+        "commands": {
+          "$ref": "#/$defs/stringArray",
+          "description": "OpenOCD --cmd-pre-init Tcl commands used to enable and configure semihosting."
+        },
+        "gdb_commands": {
+          "$ref": "#/$defs/stringArray",
+          "description": "GDB commands executed in order; they must allow GDB and west to exit naturally.",
+          "default": []
+        },
+        "output": {
+          "$ref": "#/$defs/nonemptyString",
+          "description": "Application-specific text required in relayed semihosting stdout/stderr."
+        },
+        "timeout": {
+          "$ref": "#/$defs/positiveNumber",
+          "description": "Seconds allowed for the semihosting session to finish naturally."
+        }
       }
     }
   }
