@@ -1,0 +1,100 @@
+# SPDX-License-Identifier: Apache-2.0
+
+# Complete reference inventory for all hardware operations on an STM32F746G
+# Discovery board. Replace every /path, ssh_alias, device ID, and probe ID.
+
+build_environments:
+  zephyr44:
+    zephyr_base: /path/to/zephyr
+    west: /path/to/zephyrproject/.venv/bin/west
+
+toolchains:
+  arm:
+    gdb: /path/to/zephyr-sdk/arm-zephyr-eabi/bin/arm-zephyr-eabi-gdb
+
+hosts:
+  lab:
+    ssh_host: ssh_alias
+    ssh_command: [ssh]
+    openocd_command: [/absolute/remote/path/to/openocd]
+    forward_env: [PROBE_CHANNEL]
+    path_mappings:
+      /path/to/local/openocd/scripts: /absolute/remote/path/to/openocd/scripts
+
+targets:
+  stm32f746g_disco:
+    host: lab
+    build_environment: zephyr44
+    toolchain: arm
+    board: stm32f746g_disco
+    builds:
+      hello:
+        application: samples/hello_world
+      minimal:
+        application: samples/basic/minimal
+      rtt_shell:
+        application: samples/subsys/shell/shell_module
+        cmake_args: [-DCONF_FILE=prj_minimal_rtt.conf]
+      threads:
+        application: samples/philosophers
+      semihosting_console:
+        application: tests/drivers/console/hello_world
+        cmake_args: [-DCONF_FILE=prj_semihost.conf]
+    serial:
+      console:
+        device: /dev/serial/by-id/replace-with-stable-device-id
+        baud: 115200
+        data_bits: 8
+        parity: none
+        stop_bits: 1
+        flow_control: none
+    profiles:
+      core:
+        # Every operation in this profile shares these settings and build.
+        build: hello
+        probe_serial: replace-with-probe-id
+        runner_args: [--cmd-pre-init=bindto]
+        environment:
+          PROBE_CHANNEL: "0"
+        operations:
+          flash:
+            precondition_build: minimal
+            quiescence_timeout: 2
+            serial:
+              endpoint: console
+              pattern: Hello World
+              timeout: 30
+            output_patterns: [Open On-Chip Debugger]
+            assert_bindto: true
+          debug:
+            breakpoint: main
+            output_patterns: [Open On-Chip Debugger]
+          attach:
+            precondition_build: minimal
+          debugserver: {}
+      rtt:
+        build: rtt_shell
+        operations:
+          rtt:
+            port: 19021
+            input: "help\n"
+            response: "Available commands:"
+            timeout: 30
+            program_survives_reset: true
+            breakpoint: main
+      thread_info:
+        build: threads
+        operations:
+          thread_info:
+            pattern: Thread
+      semihosting:
+        build: semihosting_console
+        operations:
+          semihosting:
+            commands:
+              - lappend post_init_commands {arm semihosting enable}
+              - lappend post_init_commands {arm semihosting_fileio disable}
+              - lappend post_init_commands {arm semihosting_redirect disable}
+            gdb_commands: [break main, continue, next, detach, quit]
+            output: Hello World from Console
+            timeout: 30

@@ -18,13 +18,13 @@ developer environment and understand the external-test safety rules in the
 
 - a Zephyr 4.4 source tree and its executable `west`;
 - a board name supported by the Zephyr integration tests;
-- an ignored hardware inventory whose selected fixtures collectively advertise
+- a local hardware inventory whose selected profiles collectively advertise
   flash, debug, attach, debugserver, thread-info, RTT, and semihosting;
 - a completed Zephyr build for the startup benchmark;
 - the product YAML configuration and working directory used by that benchmark.
 
 The inventory format and capability rules are documented in
-[`hardware_fixtures.md`](../development/hardware_fixtures.md). Inspect the
+[`hardware_inventories.md`](../development/hardware_inventories.md). Inspect the
 selected pytest nodes with `--collect-only` before starting. The driver runs
 the unit/local, static, Zephyr, native SSH, hardware, and benchmark steps
 serially and stops at the first failure. These operations can build, flash,
@@ -36,7 +36,7 @@ Use the Python environment containing the repository's developer dependencies:
 
 ```sh
 .venv/bin/python scripts/release_validate.py \
-  --hardware-config /path/to/hardware.toml \
+  --hardware-config /path/to/hardware.yaml \
   --zephyr-base /path/to/zephyr \
   --west /path/to/west \
   --board stm32f746g_disco \
@@ -46,14 +46,14 @@ Use the Python environment containing the repository's developer dependencies:
 ```
 
 The driver writes a JSON summary to stdout. It records environment metadata,
-advertised fixture capabilities, step return codes, benchmark results, and
+advertised operation capabilities, step return codes, benchmark results, and
 local and remote process-leak scans. On a failed step, its captured output is
 also written to stderr.
 
 ## Retain evidence
 
 When a result must be retained, add a dated document in this directory. Record
-the exact command, relevant environment and tool versions, selected fixture
+the exact command, relevant environment and tool versions, selected inventory
 profiles, pass/fail result, benchmark result, cleanup result, and unmet
 criteria. Do not include credentials, SSH host identities, probe serials,
 device paths, populated inventories, or other lab-specific values.

@@ -291,7 +291,8 @@ class TestSshTransportIntegration:
 
     def test_remote_openocd_config_consumes_forwarded_environment(self):
         """Verify allow-listed environment reaches remote OpenOCD Tcl config."""
-        executable = self.ssh_settings.openocd
+        openocd_command = self.ssh_settings.openocd_command
+        executable = openocd_command[0]
         executable_result = self.ssh.run(
             self.host, f"test -x {shlex.quote(executable)}", timeout=20
         )
@@ -307,7 +308,7 @@ class TestSshTransportIntegration:
             output = []
             process = RemoteProcess(
                 "openocd",
-                (executable, "-f", "{workspace}/staged/environment.cfg"),
+                (*openocd_command, "-f", "{workspace}/staged/environment.cfg"),
                 (("ZRO_CONFIG_VALUE", "channel_1"),),
             )
             request = RemoteSessionRequest(

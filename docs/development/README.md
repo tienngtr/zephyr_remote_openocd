@@ -1,7 +1,7 @@
 # Development Documentation
 
-Contributor testing and external fixture guidance:
+Contributor testing and hardware-inventory guidance:
 
-- [`hardware_fixtures.md`](hardware_fixtures.md) describes the ignored TOML
-  inventory and capability selection.
+- [`hardware_inventories.md`](hardware_inventories.md) describes local YAML hardware
+  inventories and operation selection.
 - [`testing.md`](testing.md) describes the pytest layers and commands.

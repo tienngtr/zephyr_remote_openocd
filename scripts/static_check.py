@@ -82,6 +82,9 @@ def commands(
     python = sys.executable
     schema = "python/zephyr_remote_openocd/resources/configuration.schema.json"
     example = "resources/config.yaml.example"
+    hardware_schema = "tests/fixtures/hardware.schema.json"
+    hardware_example = "tests/fixtures/hardware.example.yaml"
+    hardware_complete_example = "tests/fixtures/hardware.complete.example.yaml"
     workflow_paths = tuple(
         path for path in yaml_paths if Path(path).parts[:2] == (".github", "workflows")
     )
@@ -102,6 +105,7 @@ def commands(
         ),
         (python, "-m", "yamllint", "-c", ".yamllint", *yaml_paths),
         (tool_executable("check-jsonschema"), "--check-metaschema", schema),
+        (tool_executable("check-jsonschema"), "--check-metaschema", hardware_schema),
         (
             tool_executable("check-jsonschema"),
             "--schemafile",
@@ -109,6 +113,22 @@ def commands(
             "--force-filetype",
             "yaml",
             example,
+        ),
+        (
+            tool_executable("check-jsonschema"),
+            "--schemafile",
+            hardware_schema,
+            "--force-filetype",
+            "yaml",
+            hardware_example,
+        ),
+        (
+            tool_executable("check-jsonschema"),
+            "--schemafile",
+            hardware_schema,
+            "--force-filetype",
+            "yaml",
+            hardware_complete_example,
         ),
         (tool_executable("actionlint"), "-no-color", *workflow_paths),
         (

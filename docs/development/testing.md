@@ -5,7 +5,7 @@ Choose the smallest layer that covers the change:
 - Every change: `pytest` and `python3 scripts/static_check.py`.
 - Zephyr adapter or build integration: `tests/zephyr_integration/` with a
   Zephyr 4.4 source tree and its configured Python environment.
-- SSH transport behavior: `tests/ssh_integration/` with an ignored inventory.
+- SSH transport behavior: `tests/ssh_integration/` with a local hardware inventory.
 - Real board behavior: `tests/hardware/` with a board, probe, serial endpoint,
   and remote OpenOCD.
 - Release evidence: the serial procedure in
@@ -22,8 +22,8 @@ contributor run never needs SSH, a Zephyr checkout, or lab hardware:
 ```sh
 pytest                         # unit + local integration
 pytest tests/zephyr_integration -m zephyr
-pytest tests/ssh_integration -m ssh --hardware-config /path/to/hardware.toml
-pytest tests/hardware -m hardware --hardware-config /path/to/hardware.toml
+pytest tests/ssh_integration -m ssh --hardware-config /path/to/hardware.yaml
+pytest tests/hardware -m hardware --hardware-config /path/to/hardware.yaml
 ```
 
 ## Common external-test setup
@@ -45,23 +45,31 @@ python3 -m venv .venv
 
 Normal product use instead runs through Zephyr's configured Python environment.
 External tests do not require pytest itself to run from that environment: they
-use the Zephyr source, `west`, toolchain, and external fixtures required by the
+use the Zephyr source, `west`, toolchain, and external test resources required by the
 selected layer. Running pytest from Zephyr's environment is also valid if that
 interpreter has every dependency in `requirements_dev.txt`.
 
-Copy [`tests/fixtures/hardware.example.toml`](../../tests/fixtures/hardware.example.toml)
-to an ignored location, then replace its host, target, and tool placeholders.
+Copy [`tests/fixtures/hardware.example.yaml`](../../tests/fixtures/hardware.example.yaml)
+to `.scratch/config/hardware.yaml`, then replace its host, target, and tool
+placeholders. The repository excludes `.scratch/` from version control.
 The inventory must contain at least one host and one syntactically complete
 target record, even for SSH-only tests; target build fields are not executed by
 the SSH cases. Keep credentials, device paths, and lab identities outside Git.
 The schema and capability profiles are documented in
-[`hardware_fixtures.md`](hardware_fixtures.md).
+[`hardware_inventories.md`](hardware_inventories.md).
+
+Validate the inventory without external I/O before collection:
+
+```sh
+.venv/bin/python scripts/validate_hardware_inventory.py \
+  .scratch/config/hardware.yaml --check-local
+```
 
 Validate collection before execution:
 
 ```sh
 .venv/bin/python -m pytest --collect-only -q \
-  --hardware-config /path/to/hardware.toml
+  --hardware-config /path/to/hardware.yaml
 ```
 
 Use `ZRO_STRICT_EXTERNAL=1` when a missing prerequisite or unexpected skip
@@ -146,7 +154,7 @@ Run the desired layers explicitly:
 ```sh
 ZRO_STRICT_EXTERNAL=1 .venv/bin/python -m pytest \
   tests/ssh_integration -m ssh \
-  --hardware-config /path/to/hardware.toml
+  --hardware-config /path/to/hardware.yaml
 
 ZEPHYR_BASE=/path/to/zephyr \
 WEST=/path/to/west \
@@ -156,7 +164,7 @@ ZRO_STRICT_EXTERNAL=1 .venv/bin/python -m pytest \
 
 ZRO_STRICT_EXTERNAL=1 .venv/bin/python -m pytest \
   tests/hardware -m hardware \
-  --hardware-config /path/to/hardware.toml
+  --hardware-config /path/to/hardware.yaml
 ```
 
 Select one real debug profile without running other destructive nodes by using
@@ -165,7 +173,7 @@ its complete parametrized node ID:
 ```sh
 ZRO_STRICT_EXTERNAL=1 .venv/bin/python -m pytest \
   'tests/hardware/test_real_debug.py::TestRealOpenOcdDebug::test_debug[board:debug]' \
-  --hardware-config /path/to/hardware.toml
+  --hardware-config /path/to/hardware.yaml
 ```
 
 Run all configured static checks with:
@@ -173,3 +181,19 @@ Run all configured static checks with:
 ```sh
 python3 scripts/static_check.py
 ```
+
+## Coverage
+
+The self-contained suite can collect branch coverage for the production
+package, west runner entry point, maintained scripts, and locally launched
+Python helper processes:
+
+```sh
+.venv/bin/python -m pytest --cov --cov-config=.coveragerc \
+  --cov-report=term-missing
+```
+
+GitHub Actions also writes the report to its job summary and uploads
+`coverage.xml`. Coverage is currently informational; no percentage threshold
+is enforced. Remote SSH and hardware processes are outside the self-contained
+CI coverage measurement.

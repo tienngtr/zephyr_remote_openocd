@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.hardware_support import HardwarePreparation, PreparedOperation
 from tests.hardware_support import prepared_hardware as _prepared_hardware
 from tests.inventory import Inventory, InventoryError, load_inventory
 
@@ -31,7 +32,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--hardware-config",
         action="store",
         default=None,
-        help="path to the ignored TOML hardware inventory (or use ZRO_HARDWARE_CONFIG)",
+        help="path to the local YAML hardware inventory (or use ZRO_HARDWARE_CONFIG)",
     )
 
 
@@ -66,10 +67,10 @@ def _inventory_profile_ids(config: pytest.Config, capability: str) -> list[str]:
         # report the ordinary skip/failure instead of aborting collection.
         return ["__invalid_inventory__"]
     identifiers = [
-        f"{target.id}:{profile.name}"
+        f"{target.name}:{profile.name}"
         for target in inventory.targets
         for profile in target.profiles
-        if capability in profile.capabilities
+        if capability in profile.operation_names
     ]
     return identifiers or [f"__no_{capability}__"]
 
@@ -106,55 +107,59 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
-def _profile_record(request: pytest.FixtureRequest, preparation) -> dict:
+def _profile_record(
+    request: pytest.FixtureRequest,
+    preparation: HardwarePreparation,
+    operation: str,
+) -> PreparedOperation:
     if request.param.startswith("__"):
         pytest.skip("hardware inventory has no matching capability profile")
-    return preparation.prepare(request.param)
+    return preparation.prepare(request.param, operation)
 
 
 @pytest.fixture
-def flash_fixture(request: pytest.FixtureRequest) -> dict:
-    return _profile_record(request, request.getfixturevalue("prepared_hardware"))
+def flash_fixture(request: pytest.FixtureRequest) -> PreparedOperation:
+    return _profile_record(request, request.getfixturevalue("prepared_hardware"), "flash")
 
 
 @pytest.fixture
-def debug_fixture(request: pytest.FixtureRequest) -> dict:
-    return _profile_record(request, request.getfixturevalue("prepared_hardware"))
+def debug_fixture(request: pytest.FixtureRequest) -> PreparedOperation:
+    return _profile_record(request, request.getfixturevalue("prepared_hardware"), "debug")
 
 
 @pytest.fixture
-def attach_fixture(request: pytest.FixtureRequest) -> dict:
-    return _profile_record(request, request.getfixturevalue("prepared_hardware"))
+def attach_fixture(request: pytest.FixtureRequest) -> PreparedOperation:
+    return _profile_record(request, request.getfixturevalue("prepared_hardware"), "attach")
 
 
 @pytest.fixture
-def debugserver_fixture(request: pytest.FixtureRequest) -> dict:
-    return _profile_record(request, request.getfixturevalue("prepared_hardware"))
+def debugserver_fixture(request: pytest.FixtureRequest) -> PreparedOperation:
+    return _profile_record(request, request.getfixturevalue("prepared_hardware"), "debugserver")
 
 
 @pytest.fixture
 def thread_info_fixture(
     request: pytest.FixtureRequest,
-) -> dict:
-    return _profile_record(request, request.getfixturevalue("prepared_hardware"))
+) -> PreparedOperation:
+    return _profile_record(request, request.getfixturevalue("prepared_hardware"), "thread_info")
 
 
 @pytest.fixture
-def rtt_fixture(request: pytest.FixtureRequest) -> dict:
-    return _profile_record(request, request.getfixturevalue("prepared_hardware"))
+def rtt_fixture(request: pytest.FixtureRequest) -> PreparedOperation:
+    return _profile_record(request, request.getfixturevalue("prepared_hardware"), "rtt")
 
 
 @pytest.fixture
 def semihosting_fixture(
     request: pytest.FixtureRequest,
-) -> dict:
-    return _profile_record(request, request.getfixturevalue("prepared_hardware"))
+) -> PreparedOperation:
+    return _profile_record(request, request.getfixturevalue("prepared_hardware"), "semihosting")
 
 
 @pytest.fixture
 def ssh_host(hardware_inventory: Inventory) -> str:
     """Use the first declared host for transport-only SSH coverage."""
-    return hardware_inventory.hosts[0].address
+    return hardware_inventory.hosts[0].ssh_host
 
 
 @pytest.fixture

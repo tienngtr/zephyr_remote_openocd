@@ -28,7 +28,7 @@ def arguments(**overrides):
         "zephyr_base": Path("/zephyr"),
         "west": Path("/west"),
         "board": "native_sim/native/64",
-        "hardware_config": Path("/fixtures/hardware.toml"),
+        "hardware_config": Path("/fixtures/hardware.yaml"),
         "benchmark_build_dir": Path("/build"),
         "benchmark_config": Path("/config.yaml"),
         "benchmark_cwd": Path("/workspace"),
@@ -68,7 +68,7 @@ def test_build_steps_requires_external_evidence_inputs():
 
 def test_inventory_capability_gate_reports_missing_evidence(tmp_path):
     class Profile:
-        capabilities = ("flash",)
+        operation_names = ("flash",)
 
     class Target:
         profiles = (Profile(),)
@@ -77,18 +77,18 @@ def test_inventory_capability_gate_reports_missing_evidence(tmp_path):
         patch("tests.inventory.load_inventory", return_value=SimpleNamespace(targets=(Target(),))),
         pytest.raises(ValueError, match="required capabilities"),
     ):
-        release.validate_inventory_capabilities(tmp_path / "inventory.toml")
+        release.validate_inventory_capabilities(tmp_path / "inventory.yaml")
 
 
 def test_inventory_capability_report_is_machine_readable():
     class Profile:
-        capabilities = tuple(release.REQUIRED_CAPABILITIES)
+        operation_names = tuple(release.REQUIRED_CAPABILITIES)
 
     class Target:
         profiles = (Profile(),)
 
     with patch("tests.inventory.load_inventory", return_value=SimpleNamespace(targets=(Target(),))):
-        report = release.inventory_capabilities(Path("inventory.toml"))
+        report = release.inventory_capabilities(Path("inventory.yaml"))
     assert report["pass"] is True
     assert report["missing"] == []
 
@@ -127,7 +127,7 @@ def test_run_steps_stops_after_first_failure_and_preserves_order():
 
 
 def test_remote_leak_scan_pattern_cannot_match_its_own_command(tmp_path):
-    host = SimpleNamespace(id="lab", address="host", ssh_command=("ssh",))
+    host = SimpleNamespace(name="lab", ssh_host="host", ssh_command=("ssh",))
     completed = SimpleNamespace(returncode=0, stdout="", stderr="")
 
     with (
@@ -137,7 +137,7 @@ def test_remote_leak_scan_pattern_cannot_match_its_own_command(tmp_path):
         ),
         patch.object(release.subprocess, "run", return_value=completed) as run,
     ):
-        report = release.remote_leak_scan(tmp_path / "inventory.toml")
+        report = release.remote_leak_scan(tmp_path / "inventory.yaml")
 
     remote_command = run.call_args.args[0][-1]
     assert re.search(release.REMOTE_LEAK_PATTERN, remote_command) is None

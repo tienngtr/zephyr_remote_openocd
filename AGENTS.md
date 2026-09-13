@@ -10,12 +10,12 @@ Use Python 3.12 or newer. Production code is under
 
 Tests are divided among `tests/unit/`, `tests/zephyr_integration/`,
 `tests/ssh_integration/`, and `tests/hardware/`; the last two require external
-fixtures. Keep generated builds, populated fixtures, and temporary agent notes
-in ignored `.scratch/` paths.
+test resources. Keep generated builds, populated hardware inventories, and
+temporary agent notes under `.scratch/`, which is excluded from version control.
 
 Follow `CONTRIBUTING.md` for setup, naming, environment-variable prefixes, and
 ordinary checks. Follow `docs/development/testing.md` and
-`docs/development/hardware_fixtures.md` before external or hardware validation.
+`docs/development/hardware_inventories.md` before external or hardware validation.
 External tests can build and flash targets, so collect nodes before execution
 and keep destructive profiles serial.
 
@@ -44,7 +44,7 @@ errors. Do not add, remove, or relax keys without explicit authorization. An
 authorized contract change must update the schema, example, loader, tests,
 requirements, and user documentation together and state its compatibility and
 migration decision. Do not create a schema version to record development
-history. Hardware fixture inventories may remain TOML.
+history. Hardware inventories use their separate YAML schema.
 
 Protocol v1 is the current wire contract. Version equality is insufficient
 unless both peers implement the complete contract. Change it only with explicit
@@ -57,8 +57,8 @@ RTT must use structured runner state and its configured port, never inferred
 GDB RSP traffic. Direct semihosting validation uses fixture-supplied OpenOCD
 `--cmd-pre-init` commands and normal stdout/stderr relay; it adds no proxy,
 filesystem virtualization, or GDB File-I/O path. Serial observation is
-test-only. Real equipment capabilities and commands belong in ignored fixture
-files.
+test-only. Real equipment capabilities and commands belong in local hardware
+inventories under `.scratch/config/`.
 
 ## Test Rules
 
@@ -83,7 +83,7 @@ release driver described in `docs/validation/README.md`.
 
 Durable rules belong here. Follow task-specific `.agents/GOAL.md` and
 `.agents/PLAN.md` when present. Put temporary investigations and handoffs under
-ignored `.scratch/agents/`; put requirements, architecture decisions, and
+untracked `.scratch/agents/`; put requirements, architecture decisions, and
 release results in their tracked documents.
 
 Commit, push, or create/update a pull request only with explicit user

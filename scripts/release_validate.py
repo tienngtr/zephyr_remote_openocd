@@ -4,8 +4,8 @@
 
 This driver is intentionally separate from pytest discovery.  It provides a
 repeatable, fail-fast command sequence and makes missing external evidence
-explicit instead of silently converting it to a skip.  Hardware values remain
-in the ignored inventory supplied by the operator.
+explicit instead of silently converting it to a skip. Hardware values remain
+in the local inventory supplied by the operator.
 """
 
 from __future__ import annotations
@@ -166,7 +166,7 @@ def inventory_capabilities(path: Path) -> dict[str, object]:
         capability
         for target in inventory.targets
         for profile in target.profiles
-        for capability in profile.capabilities
+        for capability in profile.operation_names
     }
     missing = sorted(REQUIRED_CAPABILITIES - advertised)
     return {
@@ -250,12 +250,12 @@ def remote_leak_scan(inventory_path: Path) -> dict[str, object]:
     for host in inventory.hosts:
         command = [
             *host.ssh_command,
-            host.address,
+            host.ssh_host,
             f"pgrep -af '{REMOTE_LEAK_PATTERN}' || true",
         ]
         result = subprocess.run(command, capture_output=True, text=True, check=False)
         lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-        hosts.append({"host": host.id, "available": result.returncode == 0, "matches": lines})
+        hosts.append({"host": host.name, "available": result.returncode == 0, "matches": lines})
     return {
         "available": all(item["available"] for item in hosts),
         "clean": all(not item["matches"] for item in hosts),

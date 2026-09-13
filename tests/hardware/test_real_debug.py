@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import re
 import shlex
-import shutil
 import signal
 import socket
 import subprocess
@@ -14,66 +13,80 @@ import time
 import pytest
 from zephyr_remote_openocd.remote.ssh import SshCommand
 
-from tests.hardware_support import elf_memory_witness
+from tests.hardware_support import (
+    AttachFixture,
+    DebugFixture,
+    DebugServerFixture,
+    ThreadInfoFixture,
+    elf_memory_witness,
+)
 from tests.process_support import read_line
 from tests.support import ROOT
 
 pytestmark = [pytest.mark.hardware, pytest.mark.destructive]
 
 SESSION_PATTERN = re.compile(r"Remote OpenOCD session (\S+) workspace=(\S+) bindto=(\S+)")
+DebugHardwareFixture = DebugFixture | AttachFixture | DebugServerFixture | ThreadInfoFixture
 
 
 class TestRealOpenOcdDebug:
-    def _environment(self, fixture):
+    def _environment(self, fixture: DebugHardwareFixture) -> dict[str, str]:
+        target = fixture.target
         environment = os.environ.copy()
         environment.pop("ZRO_RECORD", None)
         environment.update(
             {
                 "EXTRA_ZEPHYR_MODULES": str(ROOT),
-                "ZEPHYR_REMOTE_OPENOCD_CONFIG": str(fixture["config_path"]),
+                "ZEPHYR_REMOTE_OPENOCD_CONFIG": str(target.config_path),
             }
         )
-        environment.update(
-            {str(key): str(value) for key, value in fixture.get("environment", {}).items()}
-        )
+        environment.update(dict(target.environment))
         return environment
 
-    def _west_command(self, fixture, command, build_dir=None, extra_args=()):
-        west = fixture.get("west") or shutil.which("west")
-        if not west:
-            pytest.fail("fixture has no west executable and west is not on PATH")
+    def _west_command(
+        self,
+        fixture: DebugHardwareFixture,
+        command: str,
+        build_dir=None,
+        extra_args=(),
+    ) -> list[str]:
+        target = fixture.target
         result = [
-            str(west),
+            str(target.build_environment.west),
             command,
             "-d",
-            str(build_dir or fixture["build_dir"]),
+            str(build_dir or target.build_dir),
             "-r",
             "remote_openocd",
             "--no-rebuild",
         ]
-        runner_args = [*fixture.get("debug_runner_args", ()), *extra_args]
+        runner_args = [*target.runner_args, *extra_args]
         if runner_args:
             result.extend(("--", *map(str, runner_args)))
         return result
 
-    def _assert_cleanup(self, fixture, output):
+    def _assert_cleanup(self, fixture: DebugHardwareFixture, output: str) -> None:
         session = SESSION_PATTERN.search(output)
         assert session is not None, output
-        ssh = SshCommand(tuple(fixture["ssh_command"]))
-        cleanup = ssh.run(fixture["host"], f"test ! -e {shlex.quote(session.group(2))}", timeout=20)
+        ssh = SshCommand(fixture.target.host.ssh_command)
+        cleanup = ssh.run(
+            fixture.target.host.ssh_host,
+            f"test ! -e {shlex.quote(session.group(2))}",
+            timeout=20,
+        )
         assert cleanup.returncode == 0, cleanup.stderr.decode("utf-8", "replace")
 
-    def test_debug(self, debug_fixture):
+    def test_debug(self, debug_fixture: DebugFixture) -> None:
         self._debug(debug_fixture)
 
-    def test_attach(self, attach_fixture):
+    def test_attach(self, attach_fixture: AttachFixture) -> None:
         self._attach(attach_fixture)
 
-    def test_debugserver(self, debugserver_fixture):
+    def test_debugserver(self, debugserver_fixture: DebugServerFixture) -> None:
         self._debugserver(debugserver_fixture)
 
-    def _debug(self, fixture):
-        breakpoint = fixture["debug_breakpoint"]
+    def _debug(self, fixture: DebugFixture) -> None:
+        breakpoint = fixture.operation.breakpoint
         commands = (
             f"break {breakpoint}",
             "continue",
@@ -91,7 +104,7 @@ class TestRealOpenOcdDebug:
         )
         result = subprocess.run(
             command,
-            cwd=fixture.get("workspace"),
+            cwd=fixture.target.workspace,
             env=self._environment(fixture),
             text=True,
             stdout=subprocess.PIPE,
@@ -105,14 +118,14 @@ class TestRealOpenOcdDebug:
         assert re.search(r"ZRO_INSN_BEGIN\s*=>\s*0x[0-9a-fA-F]+", result.stdout)
         assert "ZRO_PC_END" in result.stdout
         assert "ZRO_INSN_END" in result.stdout
-        for pattern in fixture.get("debug_patterns", ()):
+        for pattern in fixture.operation.output_patterns:
             assert re.search(pattern, result.stdout)
         self._assert_cleanup(fixture, result.stdout)
 
-    def _attach(self, fixture):
+    def _attach(self, fixture: AttachFixture) -> None:
         prepared = subprocess.run(
-            self._west_command(fixture, "flash", fixture["attach_precondition_build_dir"]),
-            cwd=fixture.get("workspace"),
+            self._west_command(fixture, "flash", fixture.precondition_build_dir),
+            cwd=fixture.target.workspace,
             env=self._environment(fixture),
             text=True,
             stdout=subprocess.PIPE,
@@ -123,7 +136,7 @@ class TestRealOpenOcdDebug:
         assert prepared.returncode == 0, prepared.stdout
         self._assert_cleanup(fixture, prepared.stdout)
         address, precondition_bytes, selected_bytes = elf_memory_witness(
-            fixture["attach_precondition_elf_file"], fixture["elf_file"]
+            fixture.precondition_elf_file, fixture.target.elf_file
         )
         command = self._west_command(
             fixture,
@@ -144,7 +157,7 @@ class TestRealOpenOcdDebug:
         )
         result = subprocess.run(
             command,
-            cwd=fixture.get("workspace"),
+            cwd=fixture.target.workspace,
             env=self._environment(fixture),
             text=True,
             stdout=subprocess.PIPE,
@@ -170,10 +183,10 @@ class TestRealOpenOcdDebug:
         assert observed != selected_bytes
         self._assert_cleanup(fixture, result.stdout)
 
-    def _debugserver(self, fixture):
+    def _debugserver(self, fixture: DebugServerFixture) -> None:
         process = subprocess.Popen(
             self._west_command(fixture, "debugserver"),
-            cwd=fixture.get("workspace"),
+            cwd=fixture.target.workspace,
             env=self._environment(fixture),
             text=True,
             stdout=subprocess.PIPE,
@@ -182,7 +195,7 @@ class TestRealOpenOcdDebug:
         output = []
         try:
             assert process.stdout is not None
-            end = time.monotonic() + float(fixture.get("startup_timeout", 90))
+            end = time.monotonic() + 90
             session = None
             while time.monotonic() < end and session is None:
                 line = read_line(process.stdout, end - time.monotonic()).decode("utf-8", "replace")
@@ -192,16 +205,16 @@ class TestRealOpenOcdDebug:
                 session = SESSION_PATTERN.search(line)
             assert session is not None, "".join(output)
             assert process.poll() is None, "debugserver exited before client connection"
-            for port in fixture.get("enabled_local_ports", (6333, 4444)):
+            for port in (6333, 4444):
                 with socket.create_connection(("127.0.0.1", int(port)), timeout=5):
                     pass
-            gdb_port = int(fixture.get("gdb_client_port", 3333))
+            gdb_port = 3333
             client = subprocess.run(
                 [
-                    fixture["gdb"],
+                    str(fixture.target.gdb),
                     "-q",
                     "-batch",
-                    fixture["elf_file"],
+                    str(fixture.target.elf_file),
                     "-ex",
                     f"target extended-remote 127.0.0.1:{gdb_port}",
                     "-ex",
@@ -234,16 +247,16 @@ class TestRealOpenOcdDebug:
                     process.kill()
                     process.wait()
 
-    def test_thread_info_on_capable_fixture(self, thread_info_fixture):
+    def test_thread_info_on_capable_fixture(self, thread_info_fixture: ThreadInfoFixture) -> None:
         fixture = thread_info_fixture
         prepare = self._west_command(
             fixture,
             "flash",
-            fixture["thread_build_dir"],
+            fixture.target.build_dir,
         )
         prepared = subprocess.run(
             prepare,
-            cwd=fixture.get("workspace"),
+            cwd=fixture.target.workspace,
             env=self._environment(fixture),
             text=True,
             stdout=subprocess.PIPE,
@@ -256,12 +269,12 @@ class TestRealOpenOcdDebug:
         command = self._west_command(
             fixture,
             "attach",
-            fixture["thread_build_dir"],
+            fixture.target.build_dir,
             ("--gdb-init=info threads", "--gdb-init=detach", "--gdb-init=quit"),
         )
         result = subprocess.run(
             command,
-            cwd=fixture.get("workspace"),
+            cwd=fixture.target.workspace,
             env=self._environment(fixture),
             text=True,
             stdout=subprocess.PIPE,
@@ -270,5 +283,5 @@ class TestRealOpenOcdDebug:
             timeout=180,
         )
         assert result.returncode == 0, result.stdout
-        assert re.search(fixture["thread_info_pattern"], result.stdout)
+        assert re.search(fixture.operation.pattern, result.stdout)
         self._assert_cleanup(fixture, result.stdout)

@@ -1,32 +1,52 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Parser for the ignored hardware-validation inventory.
-
-This module is test infrastructure, not part of the product configuration
-surface.  The inventory deliberately has a small, explicit schema so fixture
-files remain reviewable and cannot silently acquire new behavior.
-"""
+"""Strict YAML inventory for external hardware validation."""
 
 from __future__ import annotations
 
 import json
 import os
-import re
-import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any
+from types import MappingProxyType
+from typing import Any, cast
+
+import yaml
+from jsonschema import Draft202012Validator
 
 
 class InventoryError(ValueError):
     """An actionable inventory validation error."""
 
 
-_IDENTIFIER = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
-_ENVIRONMENT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_CAPABILITIES = frozenset(
-    {"flash", "debug", "attach", "debugserver", "thread_info", "rtt", "semihosting"}
-)
+class _StrictLoader(yaml.SafeLoader):
+    """Safe YAML loader that rejects duplicate and non-string mapping keys."""
+
+    def construct_mapping(self, node, deep: bool = False):
+        if not isinstance(node, yaml.MappingNode):
+            raise yaml.constructor.ConstructorError(
+                None, None, "expected a mapping", node.start_mark
+            )
+        result: dict[str, object] = {}
+        for key_node, value_node in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            if not isinstance(key, str):
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    "mapping keys must be strings",
+                    key_node.start_mark,
+                )
+            if key in result:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    f"found duplicate key {key!r}",
+                    key_node.start_mark,
+                )
+            result[key] = self.construct_object(value_node, deep=deep)
+        return result
 
 
 @dataclass(frozen=True)
@@ -36,11 +56,24 @@ class InventoryPathMapping:
 
 
 @dataclass(frozen=True)
+class BuildEnvironment:
+    name: str
+    zephyr_base: Path
+    west: Path
+
+
+@dataclass(frozen=True)
+class Toolchain:
+    name: str
+    gdb: Path
+
+
+@dataclass(frozen=True)
 class InventoryHost:
-    id: str
-    address: str
+    name: str
+    ssh_host: str
+    openocd_command: tuple[str, ...]
     ssh_command: tuple[str, ...]
-    openocd: str
     forward_env: tuple[str, ...]
     path_mappings: tuple[InventoryPathMapping, ...]
 
@@ -63,74 +96,97 @@ class SerialEndpoint:
     parity: str
     stop_bits: int
     flow_control: str
+
+
+@dataclass(frozen=True)
+class SerialExpectation:
+    endpoint: str
     pattern: str
     timeout: float
 
 
 @dataclass(frozen=True)
-class Expectations:
-    patterns: tuple[str, ...]
-    thread_info_pattern: str | None
+class FlashOperation:
+    precondition_build: str
+    quiescence_timeout: float
+    serial: SerialExpectation
+    output_patterns: tuple[str, ...]
     assert_bindto: bool
 
 
 @dataclass(frozen=True)
-class RttExpectation:
+class DebugOperation:
+    breakpoint: str
+    output_patterns: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class AttachOperation:
+    precondition_build: str
+
+
+@dataclass(frozen=True)
+class DebugServerOperation:
+    pass
+
+
+@dataclass(frozen=True)
+class ThreadInfoOperation:
+    pattern: str
+
+
+@dataclass(frozen=True)
+class RttOperation:
     port: int
     response: str
     input: str
     timeout: float
     program_survives_reset: bool
+    breakpoint: str
 
 
 @dataclass(frozen=True)
-class FlashExpectation:
-    precondition_build: str
-    quiescence_timeout: float
-
-
-@dataclass(frozen=True)
-class AttachExpectation:
-    precondition_build: str
-
-
-@dataclass(frozen=True)
-class SemihostingExpectation:
+class SemihostingOperation:
     commands: tuple[str, ...]
     gdb_commands: tuple[str, ...]
     output: str
     timeout: float
 
 
-@dataclass(frozen=True)
-class DebugExpectation:
-    breakpoint: str
+type Operation = (
+    FlashOperation
+    | DebugOperation
+    | AttachOperation
+    | DebugServerOperation
+    | ThreadInfoOperation
+    | RttOperation
+    | SemihostingOperation
+)
 
 
 @dataclass(frozen=True)
 class OperationProfile:
     name: str
-    capabilities: tuple[str, ...]
     build: str
-    serial: str | None
     probe_serial: str | None
     runner_args: tuple[str, ...]
     environment: tuple[tuple[str, str], ...]
-    expectations: Expectations
-    flash: FlashExpectation | None
-    attach: AttachExpectation | None
-    debug: DebugExpectation | None
-    rtt: RttExpectation | None
-    semihosting: SemihostingExpectation | None
+    operations: Mapping[str, Operation]
+
+    def operation(self, name: str) -> Operation:
+        return self.operations[name]
+
+    @property
+    def operation_names(self) -> tuple[str, ...]:
+        return tuple(self.operations)
 
 
 @dataclass(frozen=True)
 class InventoryTarget:
-    id: str
+    name: str
     host: str
-    zephyr_base: Path
-    west: Path
-    gdb: Path | None
+    build_environment: str
+    toolchain: str | None
     board: str | None
     builds: tuple[BuildRecipe, ...]
     serial: tuple[SerialEndpoint, ...]
@@ -158,18 +214,32 @@ class InventoryTarget:
 @dataclass(frozen=True)
 class Inventory:
     path: Path
+    build_environments: tuple[BuildEnvironment, ...]
+    toolchains: tuple[Toolchain, ...]
     hosts: tuple[InventoryHost, ...]
     targets: tuple[InventoryTarget, ...]
 
+    def build_environment(self, name: str) -> BuildEnvironment:
+        for environment in self.build_environments:
+            if environment.name == name:
+                return environment
+        raise KeyError(name)
+
+    def toolchain(self, name: str) -> Toolchain:
+        for toolchain in self.toolchains:
+            if toolchain.name == name:
+                return toolchain
+        raise KeyError(name)
+
     def host(self, name: str) -> InventoryHost:
         for host in self.hosts:
-            if host.id == name:
+            if host.name == name:
                 return host
         raise KeyError(name)
 
     def target(self, name: str) -> InventoryTarget:
         for target in self.targets:
-            if target.id == name:
+            if target.name == name:
                 return target
         raise KeyError(name)
 
@@ -178,459 +248,295 @@ def _error(path: Path, location: str, message: str) -> InventoryError:
     return InventoryError(f"invalid {location} in {path}: {message}")
 
 
-def _table(value: Any, path: Path, location: str) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise _error(path, location, "expected a TOML table")
-    return value
-
-
-def _keys(table: dict[str, Any], allowed: set[str], path: Path, location: str) -> None:
-    unknown = sorted(set(table) - allowed)
-    if unknown:
-        raise _error(path, location, "unknown key(s): " + ", ".join(unknown))
-
-
-def _required_string(table: dict[str, Any], key: str, path: Path, location: str) -> str:
-    value = table.get(key)
-    if not isinstance(value, str) or not value.strip() or "\0" in value:
-        raise _error(path, f"{location}.{key}", "expected a non-empty string")
-    return value
-
-
-def _optional_string(table: dict[str, Any], key: str, path: Path, location: str) -> str | None:
-    if key not in table or table[key] is None:
-        return None
-    return _required_string(table, key, path, location)
-
-
-def _identifier(value: str, path: Path, location: str) -> str:
-    if not _IDENTIFIER.fullmatch(value):
-        raise _error(
-            path, location, "must start with a letter and contain only letters, digits, _ or -"
-        )
-    return value
-
-
-def _string_array(
-    value: Any, path: Path, location: str, *, nonempty: bool = False
-) -> tuple[str, ...]:
-    if (
-        not isinstance(value, list)
-        or (nonempty and not value)
-        or not all(isinstance(item, str) and item.strip() and "\0" not in item for item in value)
-    ):
-        expected = "a non-empty string array" if nonempty else "a string array"
-        raise _error(path, location, f"expected {expected}")
-    return tuple(value)
-
-
-def _absolute_remote(value: str, path: Path, location: str) -> str:
-    posix = PurePosixPath(value)
-    if (
-        not posix.is_absolute()
-        or value.startswith("//")
-        or (value != "/" and any(part in {"", ".", ".."} for part in value.split("/")[1:]))
-    ):
-        raise _error(path, location, "expected a normalized absolute POSIX path")
-    return value
-
-
 def _local_path(value: str, path: Path, location: str) -> Path:
     try:
-        expanded = Path(value).expanduser()
+        return Path(value).expanduser().resolve()
     except (OSError, RuntimeError) as error:
         raise _error(path, location, str(error)) from error
-    if not expanded.is_absolute():
-        raise _error(path, location, "expected an absolute path or ~ path")
-    return expanded.resolve()
 
 
-def _unique_names(items: list[str], path: Path, location: str) -> None:
-    if len(items) != len(set(items)):
-        raise _error(path, location, "names must be unique")
+def _schema_path() -> Path:
+    return Path(__file__).resolve().parent / "fixtures" / "hardware.schema.json"
 
 
-def _path_mappings(value: Any, path: Path, location: str) -> tuple[InventoryPathMapping, ...]:
-    if not isinstance(value, list):
-        raise _error(path, location, "expected an array of tables")
+def _load_document(path: Path) -> dict[str, Any]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise InventoryError(f"cannot read inventory {path}: {error}") from error
+    try:
+        documents = list(yaml.load_all(text, Loader=_StrictLoader))
+    except yaml.YAMLError as error:
+        raise InventoryError(f"cannot read inventory {path}: {error}") from error
+    if len(documents) != 1:
+        raise InventoryError(f"invalid inventory in {path}: expected one YAML document")
+    document = documents[0]
+    if not isinstance(document, dict):
+        raise InventoryError(f"invalid inventory in {path}: expected a YAML mapping")
+    return cast(dict[str, Any], document)
+
+
+def _validate_schema(document: dict[str, Any], path: Path) -> None:
+    try:
+        schema = json.loads(_schema_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise InventoryError(f"cannot read hardware inventory schema: {error}") from error
+    errors = sorted(
+        Draft202012Validator(schema).iter_errors(document),
+        key=lambda error: tuple(str(item) for item in error.absolute_path),
+    )
+    if errors:
+        schema_error = errors[0]
+        location = ".".join(str(item) for item in schema_error.absolute_path) or "inventory"
+        raise _error(path, location, schema_error.message)
+
+
+def _path_mappings(
+    values: Mapping[str, str], path: Path, location: str
+) -> tuple[InventoryPathMapping, ...]:
     result: list[InventoryPathMapping] = []
     locals_seen: dict[Path, PurePosixPath] = {}
-    for index, raw in enumerate(value):
-        item_location = f"{location}[{index}]"
-        item = _table(raw, path, item_location)
-        _keys(item, {"local", "remote"}, path, item_location)
-        local = _local_path(
-            _required_string(item, "local", path, item_location), path, f"{item_location}.local"
-        )
-        remote = PurePosixPath(
-            _absolute_remote(
-                _required_string(item, "remote", path, item_location),
-                path,
-                f"{item_location}.remote",
-            )
-        )
+    for local_text, remote_text in values.items():
+        local = _local_path(local_text, path, f"{location}.{local_text}")
+        remote = PurePosixPath(remote_text)
         if local in locals_seen:
             kind = "duplicate" if locals_seen[local] == remote else "conflicting"
-            raise _error(path, item_location, f"{kind} mapping for {local}")
+            raise _error(path, location, f"{kind} mapping for {local}")
         locals_seen[local] = remote
         result.append(InventoryPathMapping(local, remote))
     return tuple(result)
 
 
-def _host(raw: Any, path: Path, index: int) -> InventoryHost:
-    location = f"hosts[{index}]"
-    item = _table(raw, path, location)
-    _keys(
-        item,
-        {"id", "address", "ssh_command", "openocd", "forward_env", "path_mappings"},
-        path,
-        location,
+def _build_environment(name: str, raw: dict[str, Any], path: Path) -> BuildEnvironment:
+    location = f"build_environments.{name}"
+    return BuildEnvironment(
+        name,
+        _local_path(raw["zephyr_base"], path, f"{location}.zephyr_base"),
+        _local_path(raw["west"], path, f"{location}.west"),
     )
-    host_id = _identifier(_required_string(item, "id", path, location), path, f"{location}.id")
-    address = _required_string(item, "address", path, location)
-    command = _string_array(
-        item.get("ssh_command", ["ssh"]), path, f"{location}.ssh_command", nonempty=True
+
+
+def _toolchain(name: str, raw: dict[str, Any], path: Path) -> Toolchain:
+    return Toolchain(name, _local_path(raw["gdb"], path, f"toolchains.{name}.gdb"))
+
+
+def _host(name: str, raw: dict[str, Any], path: Path) -> InventoryHost:
+    return InventoryHost(
+        name,
+        raw["ssh_host"],
+        tuple(raw["openocd_command"]),
+        tuple(raw.get("ssh_command", ["ssh"])),
+        tuple(raw.get("forward_env", [])),
+        _path_mappings(raw.get("path_mappings", {}), path, f"hosts.{name}.path_mappings"),
     )
-    openocd = _absolute_remote(
-        _required_string(item, "openocd", path, location), path, f"{location}.openocd"
+
+
+def _serial(name: str, raw: dict[str, Any]) -> SerialEndpoint:
+    return SerialEndpoint(
+        name,
+        raw["device"],
+        raw["baud"],
+        raw.get("data_bits", 8),
+        raw.get("parity", "none"),
+        raw.get("stop_bits", 1),
+        raw.get("flow_control", "none"),
     )
-    forward_env = _string_array(item.get("forward_env", []), path, f"{location}.forward_env")
-    if any(not _ENVIRONMENT_NAME.fullmatch(name) for name in forward_env):
-        raise _error(path, f"{location}.forward_env", "contains an invalid environment name")
-    _unique_names(list(forward_env), path, f"{location}.forward_env")
-    mappings = _path_mappings(item.get("path_mappings", []), path, f"{location}.path_mappings")
-    return InventoryHost(host_id, address, command, openocd, forward_env, mappings)
 
 
-def _positive_number(value: Any, path: Path, location: str) -> float:
-    if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
-        raise _error(path, location, "expected a positive number")
-    return float(value)
-
-
-def _serial(raw: Any, path: Path, name: str) -> SerialEndpoint:
-    location = f"serial.{name}"
-    item = _table(raw, path, location)
-    _keys(
-        item,
-        {
-            "device",
-            "baud",
-            "data_bits",
-            "parity",
-            "stop_bits",
-            "flow_control",
-            "pattern",
-            "timeout",
-        },
-        path,
-        location,
-    )
-    device = _required_string(item, "device", path, location)
-    baud = item.get("baud")
-    if not isinstance(baud, int) or isinstance(baud, bool) or baud <= 0:
-        raise _error(path, f"{location}.baud", "expected a positive integer")
-    data_bits = item.get("data_bits", 8)
-    if (
-        not isinstance(data_bits, int)
-        or isinstance(data_bits, bool)
-        or data_bits not in {5, 6, 7, 8}
-    ):
-        raise _error(path, f"{location}.data_bits", "expected an integer from 5 through 8")
-    parity = item.get("parity", "none")
-    if parity not in {"none", "even", "odd"}:
-        raise _error(path, f"{location}.parity", "expected none, even, or odd")
-    stop_bits = item.get("stop_bits", 1)
-    if not isinstance(stop_bits, int) or isinstance(stop_bits, bool) or stop_bits not in {1, 2}:
-        raise _error(path, f"{location}.stop_bits", "expected 1 or 2")
-    flow = item.get("flow_control", "none")
-    if flow not in {"none", "hardware", "software"}:
-        raise _error(path, f"{location}.flow_control", "expected none, hardware, or software")
-    pattern = _required_string(item, "pattern", path, location)
-    timeout = _positive_number(item.get("timeout"), path, f"{location}.timeout")
-    return SerialEndpoint(name, device, baud, data_bits, parity, stop_bits, flow, pattern, timeout)
-
-
-def _expectations(raw: Any, path: Path, location: str) -> Expectations:
-    item = _table(raw if raw is not None else {}, path, location)
-    _keys(item, {"patterns", "thread_info_pattern", "assert_bindto"}, path, location)
-    patterns = _string_array(item.get("patterns", []), path, f"{location}.patterns")
-    thread = _optional_string(item, "thread_info_pattern", path, location)
-    assert_bindto = item.get("assert_bindto", False)
-    if not isinstance(assert_bindto, bool):
-        raise _error(path, f"{location}.assert_bindto", "expected a boolean")
-    return Expectations(patterns, thread, assert_bindto)
-
-
-def _rtt(raw: Any, path: Path, location: str) -> RttExpectation:
-    item = _table(raw, path, location)
-    _keys(
-        item,
-        {"port", "response", "input", "timeout", "program_survives_reset"},
-        path,
-        location,
-    )
-    port = item.get("port")
-    if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
-        raise _error(path, f"{location}.port", "expected an integer TCP port from 1 through 65535")
-    response = _required_string(item, "response", path, location)
-    input_value = item.get("input", "")
-    if not isinstance(input_value, str):
-        raise _error(path, f"{location}.input", "expected a string")
-    timeout = _positive_number(item.get("timeout"), path, f"{location}.timeout")
-    survives_reset = item.get("program_survives_reset")
-    if not isinstance(survives_reset, bool):
-        raise _error(path, f"{location}.program_survives_reset", "expected a boolean")
-    if not survives_reset:
-        raise _error(
-            path,
-            f"{location}.program_survives_reset",
-            "must be true because Zephyr west rtt resets the target",
-        )
-    return RttExpectation(port, response, input_value, timeout, survives_reset)
-
-
-def _flash(
-    raw: Any,
+def _precondition(
+    value: str,
+    builds: Mapping[str, BuildRecipe],
+    selected: str,
     path: Path,
     location: str,
-    builds: dict[str, BuildRecipe],
-    intended_build: str,
-) -> FlashExpectation:
-    item = _table(raw, path, location)
-    _keys(item, {"precondition_build", "quiescence_timeout"}, path, location)
-    precondition = _required_string(item, "precondition_build", path, location)
-    if precondition not in builds:
-        raise _error(
-            path,
-            f"{location}.precondition_build",
-            f"references unknown build {precondition!r}",
-        )
-    if precondition == intended_build:
-        raise _error(
-            path,
-            f"{location}.precondition_build",
-            "must differ from the profile build",
-        )
-    quiescence = _positive_number(
-        item.get("quiescence_timeout"), path, f"{location}.quiescence_timeout"
-    )
-    return FlashExpectation(precondition, quiescence)
+) -> str:
+    if value not in builds:
+        raise _error(path, location, f"references unknown build {value!r}")
+    if value == selected:
+        raise _error(path, location, "must differ from the profile build")
+    return value
 
 
-def _attach(
-    raw: Any,
+def _operation(
+    name: str,
+    raw: dict[str, Any],
+    builds: Mapping[str, BuildRecipe],
+    serial: Mapping[str, SerialEndpoint],
+    selected_build: str,
     path: Path,
     location: str,
-    builds: dict[str, BuildRecipe],
-    intended_build: str,
-) -> AttachExpectation:
-    item = _table(raw, path, location)
-    _keys(item, {"precondition_build"}, path, location)
-    precondition = _required_string(item, "precondition_build", path, location)
-    if precondition not in builds:
-        raise _error(
-            path,
-            f"{location}.precondition_build",
-            f"references unknown build {precondition!r}",
+) -> Operation:
+    if name == "flash":
+        serial_raw = raw["serial"]
+        endpoint = serial_raw["endpoint"]
+        if endpoint not in serial:
+            raise _error(
+                path,
+                f"{location}.serial.endpoint",
+                f"references unknown serial {endpoint!r}",
+            )
+        return FlashOperation(
+            _precondition(
+                raw["precondition_build"],
+                builds,
+                selected_build,
+                path,
+                f"{location}.precondition_build",
+            ),
+            float(raw["quiescence_timeout"]),
+            SerialExpectation(endpoint, serial_raw["pattern"], float(serial_raw["timeout"])),
+            tuple(raw.get("output_patterns", [])),
+            raw.get("assert_bindto", False),
         )
-    if precondition == intended_build:
-        raise _error(path, f"{location}.precondition_build", "must differ from the profile build")
-    return AttachExpectation(precondition)
-
-
-def _semihosting(raw: Any, path: Path, location: str) -> SemihostingExpectation:
-    item = _table(raw, path, location)
-    _keys(item, {"commands", "gdb_commands", "output", "timeout"}, path, location)
-    commands = _string_array(item.get("commands"), path, f"{location}.commands")
-    gdb_commands = _string_array(item.get("gdb_commands", []), path, f"{location}.gdb_commands")
-    output = _required_string(item, "output", path, location)
-    timeout = _positive_number(item.get("timeout"), path, f"{location}.timeout")
-    return SemihostingExpectation(commands, gdb_commands, output, timeout)
-
-
-def _debug(raw: Any, path: Path, location: str) -> DebugExpectation:
-    item = _table(raw, path, location)
-    _keys(item, {"breakpoint"}, path, location)
-    breakpoint = _identifier(
-        _required_string(item, "breakpoint", path, location),
-        path,
-        f"{location}.breakpoint",
-    )
-    return DebugExpectation(breakpoint)
+    if name == "debug":
+        return DebugOperation(raw["breakpoint"], tuple(raw.get("output_patterns", [])))
+    if name == "attach":
+        return AttachOperation(
+            _precondition(
+                raw["precondition_build"],
+                builds,
+                selected_build,
+                path,
+                f"{location}.precondition_build",
+            )
+        )
+    if name == "debugserver":
+        return DebugServerOperation()
+    if name == "thread_info":
+        return ThreadInfoOperation(raw["pattern"])
+    if name == "rtt":
+        return RttOperation(
+            raw["port"],
+            raw["response"],
+            raw.get("input", ""),
+            float(raw["timeout"]),
+            raw["program_survives_reset"],
+            raw["breakpoint"],
+        )
+    if name == "semihosting":
+        return SemihostingOperation(
+            tuple(raw["commands"]),
+            tuple(raw.get("gdb_commands", [])),
+            raw["output"],
+            float(raw["timeout"]),
+        )
+    raise AssertionError(f"schema allowed unsupported operation {name!r}")
 
 
 def _profile(
-    raw: Any,
-    path: Path,
     name: str,
+    raw: dict[str, Any],
     host: InventoryHost,
-    builds: dict[str, BuildRecipe],
-    serial: dict[str, SerialEndpoint],
+    builds: Mapping[str, BuildRecipe],
+    serial: Mapping[str, SerialEndpoint],
+    path: Path,
 ) -> OperationProfile:
     location = f"profiles.{name}"
-    item = _table(raw, path, location)
-    _keys(
-        item,
-        {
-            "capabilities",
-            "build",
-            "serial",
-            "probe_serial",
-            "runner_args",
-            "environment",
-            "expect",
-            "flash",
-            "attach",
-            "debug",
-            "rtt",
-            "semihosting",
-        },
-        path,
-        location,
-    )
-    capabilities = _string_array(
-        item.get("capabilities"), path, f"{location}.capabilities", nonempty=True
-    )
-    if any(capability not in _CAPABILITIES for capability in capabilities):
-        raise _error(path, f"{location}.capabilities", "contains an unsupported capability")
-    _unique_names(list(capabilities), path, f"{location}.capabilities")
-    build_name = _required_string(item, "build", path, location)
-    if build_name not in builds:
-        raise _error(path, f"{location}.build", f"references unknown build {build_name!r}")
-    serial_name = _optional_string(item, "serial", path, location)
-    if serial_name is not None and serial_name not in serial:
-        raise _error(
-            path, f"{location}.serial", f"references unknown serial endpoint {serial_name!r}"
-        )
-    probe_serial = _optional_string(item, "probe_serial", path, location)
-    runner_args = _string_array(item.get("runner_args", []), path, f"{location}.runner_args")
-    raw_environment = item.get("environment", {})
-    environment = _table(raw_environment, path, f"{location}.environment")
-    for key, value in environment.items():
-        if not _ENVIRONMENT_NAME.fullmatch(key):
-            raise _error(path, f"{location}.environment", f"invalid environment name {key!r}")
+    selected_build = raw["build"]
+    if selected_build not in builds:
+        raise _error(path, f"{location}.build", f"references unknown build {selected_build!r}")
+    environment = raw.get("environment", {})
+    for key in environment:
         if key not in host.forward_env:
             raise _error(
-                path, f"{location}.environment.{key}", "is not in the host forward_env allow-list"
+                path,
+                f"{location}.environment.{key}",
+                "is not in the host forward_env allow-list",
             )
-        if not isinstance(value, str) or "\0" in value:
-            raise _error(path, f"{location}.environment.{key}", "expected a string value")
-    expectations = _expectations(item.get("expect"), path, f"{location}.expect")
-    raw_flash = item.get("flash")
-    flash = (
-        _flash(raw_flash, path, f"{location}.flash", builds, build_name)
-        if raw_flash is not None
-        else None
-    )
-    raw_attach = item.get("attach")
-    attach = (
-        _attach(raw_attach, path, f"{location}.attach", builds, build_name)
-        if raw_attach is not None
-        else None
-    )
-    raw_debug = item.get("debug")
-    debug = _debug(raw_debug, path, f"{location}.debug") if raw_debug is not None else None
-    raw_rtt = item.get("rtt")
-    rtt = _rtt(raw_rtt, path, f"{location}.rtt") if raw_rtt is not None else None
-    raw_semihosting = item.get("semihosting")
-    semihosting = (
-        _semihosting(raw_semihosting, path, f"{location}.semihosting")
-        if raw_semihosting is not None
-        else None
-    )
-    if "flash" in capabilities and flash is None:
-        raise _error(path, location, "flash capability requires a flash table")
-    if "attach" in capabilities and attach is None:
-        raise _error(path, location, "attach capability requires an attach table")
-    if "debug" in capabilities and debug is None:
-        raise _error(path, location, "debug capability requires a debug table")
-    if "rtt" in capabilities and rtt is None:
-        raise _error(path, location, "rtt capability requires an rtt table")
-    if "rtt" in capabilities and debug is None:
-        raise _error(path, location, "rtt capability requires a debug table")
-    if "semihosting" in capabilities and semihosting is None:
-        raise _error(path, location, "semihosting capability requires a semihosting table")
+    operations = {
+        operation_name: _operation(
+            operation_name,
+            operation_raw,
+            builds,
+            serial,
+            selected_build,
+            path,
+            f"{location}.operations.{operation_name}",
+        )
+        for operation_name, operation_raw in raw["operations"].items()
+    }
     return OperationProfile(
         name,
-        capabilities,
-        build_name,
-        serial_name,
-        probe_serial,
-        runner_args,
+        selected_build,
+        raw.get("probe_serial"),
+        tuple(raw.get("runner_args", [])),
         tuple(sorted(environment.items())),
-        expectations,
-        flash,
-        attach,
-        debug,
-        rtt,
-        semihosting,
+        MappingProxyType(operations),
     )
 
 
-def _build(raw: Any, path: Path, name: str, target_board: str | None) -> BuildRecipe:
-    location = f"builds.{name}"
-    item = _table(raw, path, location)
-    _keys(item, {"application", "board", "west_args", "cmake_args"}, path, location)
-    application = _required_string(item, "application", path, location)
-    if not Path(application).is_absolute() and any(
-        part == ".." for part in Path(application).parts
-    ):
-        raise _error(path, f"{location}.application", "relative paths may not escape Zephyr tree")
-    board = _optional_string(item, "board", path, location) or target_board
-    if board is None:
-        raise _error(path, f"{location}.board", "is required when target.board is absent")
-    return BuildRecipe(
-        name,
-        application,
-        board,
-        _string_array(item.get("west_args", []), path, f"{location}.west_args"),
-        _string_array(item.get("cmake_args", []), path, f"{location}.cmake_args"),
-    )
-
-
-def _target(raw: Any, path: Path, index: int, hosts: dict[str, InventoryHost]) -> InventoryTarget:
-    location = f"targets[{index}]"
-    item = _table(raw, path, location)
-    _keys(
-        item,
-        {"id", "host", "zephyr_base", "west", "gdb", "board", "builds", "serial", "profiles"},
-        path,
-        location,
-    )
-    target_id = _identifier(_required_string(item, "id", path, location), path, f"{location}.id")
-    host_name = _required_string(item, "host", path, location)
+def _target(
+    name: str,
+    raw: dict[str, Any],
+    hosts: Mapping[str, InventoryHost],
+    build_environments: Mapping[str, BuildEnvironment],
+    toolchains: Mapping[str, Toolchain],
+    path: Path,
+) -> InventoryTarget:
+    location = f"targets.{name}"
+    host_name = raw["host"]
     if host_name not in hosts:
         raise _error(path, f"{location}.host", f"references unknown host {host_name!r}")
-    zephyr_base = _local_path(
-        _required_string(item, "zephyr_base", path, location), path, f"{location}.zephyr_base"
-    )
-    west = _local_path(_required_string(item, "west", path, location), path, f"{location}.west")
-    gdb_text = _optional_string(item, "gdb", path, location)
-    gdb = _local_path(gdb_text, path, f"{location}.gdb") if gdb_text else None
-    board = _optional_string(item, "board", path, location)
-    raw_builds = _table(item.get("builds"), path, f"{location}.builds")
-    if not raw_builds:
-        raise _error(path, f"{location}.builds", "must contain at least one named recipe")
-    builds = {name: _build(raw, path, name, board) for name, raw in raw_builds.items()}
-    _unique_names(list(builds), path, f"{location}.builds")
-    raw_serial = _table(item.get("serial", {}), path, f"{location}.serial")
-    serial = {name: _serial(raw, path, name) for name, raw in raw_serial.items()}
-    _unique_names(list(serial), path, f"{location}.serial")
+    environment_name = raw["build_environment"]
+    if environment_name not in build_environments:
+        raise _error(
+            path,
+            f"{location}.build_environment",
+            f"references unknown build environment {environment_name!r}",
+        )
+    toolchain_name = raw.get("toolchain")
+    if toolchain_name is not None and toolchain_name not in toolchains:
+        raise _error(
+            path,
+            f"{location}.toolchain",
+            f"references unknown toolchain {toolchain_name!r}",
+        )
+    target_board = raw.get("board")
+    builds: dict[str, BuildRecipe] = {}
+    for build_name, build_raw in raw["builds"].items():
+        application = build_raw["application"]
+        if not Path(application).is_absolute() and ".." in Path(application).parts:
+            raise _error(
+                path,
+                f"{location}.builds.{build_name}.application",
+                "relative paths may not escape Zephyr tree",
+            )
+        board = build_raw.get("board", target_board)
+        if board is None:
+            raise _error(
+                path,
+                f"{location}.builds.{build_name}.board",
+                "is required when target.board is absent",
+            )
+        builds[build_name] = BuildRecipe(
+            build_name,
+            application,
+            board,
+            tuple(build_raw.get("west_args", [])),
+            tuple(build_raw.get("cmake_args", [])),
+        )
+    serial = {
+        endpoint_name: _serial(endpoint_name, endpoint_raw)
+        for endpoint_name, endpoint_raw in raw.get("serial", {}).items()
+    }
     host = hosts[host_name]
-    raw_profiles = _table(item.get("profiles"), path, f"{location}.profiles")
-    if not raw_profiles:
-        raise _error(path, f"{location}.profiles", "must contain at least one named profile")
     profiles = tuple(
-        _profile(raw, path, name, host, builds, serial) for name, raw in raw_profiles.items()
+        _profile(profile_name, profile_raw, host, builds, serial, path)
+        for profile_name, profile_raw in raw["profiles"].items()
     )
+    direct_gdb = any(
+        operation in {"debugserver", "rtt"}
+        for profile in profiles
+        for operation in profile.operation_names
+    )
+    if direct_gdb and toolchain_name is None:
+        raise _error(path, f"{location}.toolchain", "is required by debugserver and rtt")
     return InventoryTarget(
-        target_id,
+        name,
         host_name,
-        zephyr_base,
-        west,
-        gdb,
-        board,
+        environment_name,
+        toolchain_name,
+        target_board,
         tuple(builds.values()),
         tuple(serial.values()),
         profiles,
@@ -638,65 +544,53 @@ def _target(raw: Any, path: Path, index: int, hosts: dict[str, InventoryHost]) -
 
 
 def load_inventory(path: Path | str) -> Inventory:
-    """Load and strictly validate an external inventory TOML file."""
+    """Load and strictly validate an external inventory YAML file."""
     inventory_path = Path(path).expanduser().resolve()
-    try:
-        with inventory_path.open("rb") as stream:
-            document = tomllib.load(stream)
-    except (OSError, tomllib.TOMLDecodeError) as error:
-        raise InventoryError(f"cannot read inventory {inventory_path}: {error}") from error
-    if not isinstance(document, dict):
-        raise InventoryError(f"invalid inventory {inventory_path}: expected a TOML table")
-    _keys(document, {"hosts", "targets"}, inventory_path, "inventory")
-    raw_hosts = document.get("hosts")
-    if not isinstance(raw_hosts, list) or not raw_hosts:
-        raise _error(inventory_path, "hosts", "expected a non-empty array of tables")
-    hosts_list = [_host(raw, inventory_path, index) for index, raw in enumerate(raw_hosts)]
-    _unique_names([host.id for host in hosts_list], inventory_path, "hosts")
-    hosts = {host.id: host for host in hosts_list}
-    raw_targets = document.get("targets")
-    if not isinstance(raw_targets, list) or not raw_targets:
-        raise _error(inventory_path, "targets", "expected a non-empty array of tables")
-    targets_list = [
-        _target(raw, inventory_path, index, hosts) for index, raw in enumerate(raw_targets)
-    ]
-    _unique_names([target.id for target in targets_list], inventory_path, "targets")
-    return Inventory(inventory_path, tuple(hosts_list), tuple(targets_list))
+    document = _load_document(inventory_path)
+    _validate_schema(document, inventory_path)
+    build_environments = {
+        name: _build_environment(name, raw, inventory_path)
+        for name, raw in document["build_environments"].items()
+    }
+    toolchains = {
+        name: _toolchain(name, raw, inventory_path)
+        for name, raw in document.get("toolchains", {}).items()
+    }
+    hosts = {name: _host(name, raw, inventory_path) for name, raw in document["hosts"].items()}
+    targets = tuple(
+        _target(name, raw, hosts, build_environments, toolchains, inventory_path)
+        for name, raw in document["targets"].items()
+    )
+    return Inventory(
+        inventory_path,
+        tuple(build_environments.values()),
+        tuple(toolchains.values()),
+        tuple(hosts.values()),
+        targets,
+    )
 
 
 def render_product_config(host: InventoryHost, *, default_runner: str = "openocd") -> str:
-    """Render a YAML product config from one inventory host."""
+    """Render a product YAML config from one inventory host."""
     if default_runner not in {"openocd", "remote_openocd"}:
         raise ValueError("default_runner must be openocd or remote_openocd")
-
-    def quote(value: str) -> str:
-        return json.dumps(value)
-
-    remote_name = host.id
-    lines = [
-        f"default_runner: {quote(default_runner)}",
-        f"default_remote: {quote(remote_name)}",
-        "",
-        "remotes:",
-        f"  {quote(remote_name)}:",
-    ]
-    lines.extend((f"    ssh_host: {quote(host.address)}", "    openocd_command:"))
-    lines.extend(f"      - {quote(item)}" for item in (host.openocd,))
-    lines.append("    ssh_command:")
-    lines.extend(f"      - {quote(item)}" for item in host.ssh_command)
-    lines.append("    forward_env:")
-    if host.forward_env:
-        lines.extend(f"      - {quote(item)}" for item in host.forward_env)
-    else:
-        lines[-1] = "    forward_env: []"
-    lines.append("    path_mappings: {}")
-    if host.path_mappings:
-        lines[-1] = "    path_mappings:"
-        lines.extend(
-            f"      {quote(str(mapping.local))}: {quote(str(mapping.remote))}"
-            for mapping in host.path_mappings
-        )
-    return "\n".join(lines) + "\n"
+    remote = {
+        "ssh_host": host.ssh_host,
+        "openocd_command": list(host.openocd_command),
+        "ssh_command": list(host.ssh_command),
+        "forward_env": list(host.forward_env),
+        "path_mappings": {
+            str(mapping.local): str(mapping.remote) for mapping in host.path_mappings
+        },
+    }
+    return yaml.safe_dump(
+        {
+            "default_runner": default_runner,
+            "default_remote": host.name,
+            "remotes": {host.name: remote},
+        },
+        sort_keys=False,
+    )
 
 
 def inventory_path_from_environment() -> Path | None:

@@ -7,7 +7,6 @@ from __future__ import annotations
 import os
 import re
 import shlex
-import shutil
 import signal
 import socket
 import subprocess
@@ -17,6 +16,7 @@ import pytest
 from zephyr_remote_openocd.remote.ssh import SshCommand
 
 from tests.hardware.test_real_debug import SESSION_PATTERN
+from tests.hardware_support import RttFixture
 from tests.process_support import read_until
 from tests.support import ROOT
 
@@ -28,60 +28,57 @@ RTT_ENDPOINT_PATTERN = re.compile(r"RTT server available at 127\.0\.0\.1:(\d+)")
 class TestRealRtt:
     """Validate channel-0 RTT and the two persistent server variants."""
 
-    def _environment(self, fixture):
+    def _environment(self, fixture: RttFixture) -> dict[str, str]:
         environment = os.environ.copy()
         environment.pop("ZRO_RECORD", None)
         environment.update(
             {
                 "EXTRA_ZEPHYR_MODULES": str(ROOT),
-                "ZEPHYR_REMOTE_OPENOCD_CONFIG": str(fixture["config_path"]),
+                "ZEPHYR_REMOTE_OPENOCD_CONFIG": str(fixture.target.config_path),
             }
         )
-        environment.update(
-            {str(key): str(value) for key, value in fixture.get("environment", {}).items()}
-        )
+        environment.update(dict(fixture.target.environment))
         return environment
 
-    def _assert_cleanup(self, fixture, output):
+    def _assert_cleanup(self, fixture: RttFixture, output: str) -> None:
         session = SESSION_PATTERN.search(output)
         assert session is not None, output
-        result = SshCommand(tuple(fixture["ssh_command"])).run(
-            fixture["host"], f"test ! -e {shlex.quote(session.group(2))}", timeout=20
+        result = SshCommand(fixture.target.host.ssh_command).run(
+            fixture.target.host.ssh_host,
+            f"test ! -e {shlex.quote(session.group(2))}",
+            timeout=20,
         )
         assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
 
     @staticmethod
-    def _west_command(fixture, command, *runner_args):
-        west = fixture.get("west") or shutil.which("west")
-        if not west:
-            raise AssertionError("fixture has no west executable and west is not on PATH")
+    def _west_command(fixture: RttFixture, command: str, *runner_args: str) -> list[str]:
         return [
-            str(west),
+            str(fixture.target.build_environment.west),
             command,
             "-d",
-            str(fixture["rtt_build_dir"]),
+            str(fixture.target.build_dir),
             "-r",
             "remote_openocd",
             "--no-rebuild",
             "--",
-            *map(str, fixture.get("rtt_runner_args", ())),
+            *fixture.target.runner_args,
             *map(str, runner_args),
         ]
 
-    def _start(self, fixture, command, *runner_args):
+    def _start(self, fixture: RttFixture, command: str, *runner_args: str):
         return subprocess.Popen(
             self._west_command(fixture, command, *runner_args),
-            cwd=fixture.get("workspace"),
+            cwd=fixture.target.workspace,
             env=self._environment(fixture),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
         )
 
-    def _program(self, fixture):
+    def _program(self, fixture: RttFixture) -> None:
         result = subprocess.run(
             self._west_command(fixture, "flash"),
-            cwd=fixture.get("workspace"),
+            cwd=fixture.target.workspace,
             env=self._environment(fixture),
             text=True,
             stdout=subprocess.PIPE,
@@ -92,7 +89,7 @@ class TestRealRtt:
         assert result.returncode == 0, result.stdout
         self._assert_cleanup(fixture, result.stdout)
 
-    def _finish(self, fixture, process, output, *, interrupt=False):
+    def _finish(self, fixture: RttFixture, process, output, *, interrupt=False):
         if process.poll() is None and interrupt:
             process.send_signal(signal.SIGINT)
         try:
@@ -119,13 +116,13 @@ class TestRealRtt:
             if stream is not None and not stream.closed:
                 stream.close()
 
-    def _rtt_round_trip(self, fixture, port):
+    def _rtt_round_trip(self, fixture: RttFixture, port: int) -> None:
         with socket.create_connection(("127.0.0.1", port), timeout=10) as connection:
             connection.settimeout(1)
-            request = str(fixture.get("rtt_input", "help\n")).encode()
-            expected = str(fixture["expected_rtt_response"]).encode()
+            request = fixture.operation.input.encode()
+            expected = fixture.operation.response.encode()
             received = bytearray()
-            deadline = time.monotonic() + float(fixture.get("rtt_timeout", 30))
+            deadline = time.monotonic() + fixture.operation.timeout
             next_send = 0.0
             while expected not in received and time.monotonic() < deadline:
                 if time.monotonic() >= next_send:
@@ -137,10 +134,10 @@ class TestRealRtt:
                     continue
             assert expected in received, received.decode("utf-8", "replace")
 
-    def test_standalone_rtt(self, rtt_fixture):
+    def test_standalone_rtt(self, rtt_fixture: RttFixture) -> None:
         fixture = rtt_fixture
         self._program(fixture)
-        port = int(fixture["rtt_port"])
+        port = fixture.operation.port
         process = self._start(fixture, "rtt", f"--rtt-port={port}")
         output = bytearray()
         try:
@@ -149,22 +146,22 @@ class TestRealRtt:
             assert f"127.0.0.1:{port}".encode() in output
             time.sleep(1)
             assert process.stdin is not None
-            process.stdin.write(str(fixture.get("rtt_input", "help\n")).encode())
+            process.stdin.write(fixture.operation.input.encode())
             process.stdin.flush()
             read_until(
                 process,
-                str(fixture["expected_rtt_response"]),
-                float(fixture.get("rtt_timeout", 30)),
+                fixture.operation.response,
+                fixture.operation.timeout,
                 output,
             )
         finally:
             text = self._finish(fixture, process, output, interrupt=True)
         assert SESSION_PATTERN.search(text)
 
-    def test_debug_rtt_server_keeps_gdb_foreground(self, rtt_fixture):
+    def test_debug_rtt_server_keeps_gdb_foreground(self, rtt_fixture: RttFixture) -> None:
         fixture = rtt_fixture
-        breakpoint = fixture["debug_breakpoint"]
-        port = int(fixture["rtt_port"])
+        breakpoint = fixture.operation.breakpoint
+        port = fixture.operation.port
         process = self._start(
             fixture,
             "debug",
@@ -202,21 +199,21 @@ class TestRealRtt:
         assert re.search(r"ZRO_PC_BEGIN\s*\$\d+\s*=\s*0x[0-9a-fA-F]+", text)
         assert re.search(r"ZRO_INSN_BEGIN\s*=>?\s*0x[0-9a-fA-F]+", text)
 
-    def test_debugserver_exposes_gdb_and_rtt_without_clients(self, rtt_fixture):
+    def test_debugserver_exposes_gdb_and_rtt_without_clients(self, rtt_fixture: RttFixture) -> None:
         fixture = rtt_fixture
-        breakpoint = fixture["debug_breakpoint"]
-        port = int(fixture["rtt_port"])
+        breakpoint = fixture.operation.breakpoint
+        port = fixture.operation.port
         process = self._start(fixture, "debugserver", "--rtt-server", f"--rtt-port={port}")
         output = bytearray()
         try:
             read_until(process, RTT_ENDPOINT_PATTERN.pattern, 90, output)
-            gdb_port = int(fixture.get("gdb_client_port", 3333))
+            gdb_port = 3333
             client = subprocess.run(
                 [
-                    str(fixture["gdb"]),
+                    str(fixture.target.gdb),
                     "-q",
                     "-batch",
-                    str(fixture["rtt_elf_file"]),
+                    str(fixture.target.elf_file),
                     "-ex",
                     f"target extended-remote 127.0.0.1:{gdb_port}",
                     "-ex",
