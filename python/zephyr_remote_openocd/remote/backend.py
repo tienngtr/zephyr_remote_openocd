@@ -89,9 +89,7 @@ class SshHelperSession(BackendSession):
         self.events: list[dict[str, object]] = []
         self.descriptor: SessionDescriptor | None = None
         command = f"python3 {shlex.quote(deployment.path)} control"
-        self.helper_process = request.ssh_command.popen(
-            request.host, command, "-o", "ControlMaster=no"
-        )
+        self.helper_process = request.ssh_command.popen(request.host, command)
         try:
             if self.helper_process.stdout is None:
                 raise SessionError("helper stdout was not captured")
@@ -313,8 +311,6 @@ class SshHelperSession(BackendSession):
             process = self.request.ssh_command.popen(
                 self.request.host,
                 self._forward_ready_command(token),
-                "-o",
-                "ControlMaster=no",
                 "-o",
                 "ExitOnForwardFailure=yes",
                 "-L",
