@@ -52,35 +52,37 @@ an existing file. It also reports the module path and diagnoses required Python
 dependencies. If it reports a dependency warning, use Zephyr 4.4's configured
 Python environment; there is no separate product installation step.
 
-Configure a remote before running a remote operation. The example below
-declares `lab` as the default remote. SSH uses the same host name, and OpenOCD
-comes from Zephyr SDK 1.0.1 installed under `/opt` on that machine:
+The generated configuration contains a safe, unselected `lab` remote. Replace
+its SSH host and remote OpenOCD path:
 
 ```yaml
 default_runner: openocd
 
-default_remote: lab
-
-presets:
-  default:
+remotes:
+  lab:
+    ssh_host: replace-with-ssh-host-or-alias
     openocd_command:
       - /opt/zephyr-sdk-1.0.1/hosttools/sysroots/x86_64-pokysdk-linux/usr/bin/openocd
     ssh_command:
       - ssh
     forward_env: []
-    # Keys are local paths and values are normalized remote POSIX paths.
     path_mappings: {}
-
-remotes:
-  lab:
-    preset: default
 ```
 
-Verify the remote prerequisites using the same host name and OpenOCD path:
+Validate syntax and effective settings without contacting the remote:
 
 ```sh
-ssh lab python3 --version
-ssh lab /opt/zephyr-sdk-1.0.1/hosttools/sysroots/x86_64-pokysdk-linux/usr/bin/openocd --version
+python3 zephyr_remote_openocd/scripts/validate_configuration.py --remote lab
+```
+
+Then verify the remote prerequisites using the configured host and OpenOCD
+path:
+
+```sh
+ssh replace-with-ssh-host-or-alias python3 --version
+ssh replace-with-ssh-host-or-alias \
+  /opt/zephyr-sdk-1.0.1/hosttools/sysroots/x86_64-pokysdk-linux/usr/bin/openocd \
+  --version
 ```
 
 Both commands must succeed, and the first must report Python 3.12 or newer. If
@@ -105,8 +107,8 @@ Subsequent builds can use the normal incremental `west build` command. Now run:
 west flash -r remote_openocd --remote lab
 ```
 
-to flash the board through the remote OpenOCD. The `--remote lab` part can be
-omitted because `lab` is the default remote.
+to flash the board through the remote OpenOCD. Uncomment `default_remote: lab`
+in the configuration if you want to omit `--remote lab` later.
 
 The built-in local runner remains the default. To make `remote_openocd` the
 default, update `default_runner` and run an incremental `west build` so CMake

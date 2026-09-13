@@ -1,18 +1,43 @@
-# Built-in default is "openocd".
+# Keep local OpenOCD as the default runner until remote operation is ready.
 default_runner: openocd
 
-# Used by remote_openocd when no --remote or environment override is given.
-# default_remote: remote_host_name
+# After replacing the placeholders below, uncomment this to select lab whenever
+# --remote and ZEPHYR_REMOTE_OPENOCD_REMOTE are both omitted.
+# default_remote: lab
 
-presets:
-  default:
-    # Add an OpenOCD command when this preset is used:
-    # openocd_command:
-    #   - /opt/zephyr-sdk-1.0.1/hosttools/sysroots/x86_64-pokysdk-linux/usr/bin/openocd
+# Presets are optional. They reduce duplication when several remotes share
+# settings. A field set directly on a remote replaces the whole preset field.
+# presets:
+#   common:
+#     openocd_command:
+#       - /absolute/remote/path/to/openocd
+#     ssh_command:
+#       - ssh
+#     forward_env:
+#       - OPENOCD_ADAPTER_SERIAL
+#     # Keys are local paths; values are normalized remote POSIX paths.
+#     path_mappings:
+#       /absolute/local/path: /absolute/remote/path
+
+remotes:
+  lab:
+    # An SSH configuration alias or host name, interpreted by ssh_command.
+    ssh_host: replace-with-ssh-host-or-alias
+
+    # An argv sequence executed on the remote host. Replace this path.
+    openocd_command:
+      - /opt/zephyr-sdk-1.0.1/hosttools/sysroots/x86_64-pokysdk-linux/usr/bin/openocd
+
+    # An argv sequence executed locally. Fixed SSH options may follow "ssh".
     ssh_command:
       - ssh
+
+    # Names only: values are read from the local environment when lab is used.
     forward_env: []
-    # Keys are local paths and values are normalized remote POSIX paths.
+
+    # Map large local resources to equivalent paths already on the remote.
+    # Unmapped required files are staged automatically.
     path_mappings: {}
 
-remotes: {}
+    # To inherit the optional preset above, define it and uncomment this line.
+    # preset: common

@@ -372,7 +372,10 @@ The generated configuration SHALL contain:
 
 - safe defaults;
 - explanatory comments;
-- commented examples for environment-specific settings.
+- a schema-valid but unselected placeholder remote;
+- every direct remote setting needed as a starting point;
+- commented examples for default selection, presets, and environment-specific
+  settings.
 
 ### REQ-FUNC-CONFIG-006
 
@@ -442,6 +445,19 @@ structural or lexical rules in handwritten validators. Post-schema validation
 SHALL be limited to contextual semantics, including local path resolution and
 collision detection, selected-definition references, operationally required
 settings, and remote-home expansion.
+
+### REQ-FUNC-CONFIG-013
+
+The module SHALL provide a user-facing command that validates an existing
+configuration and summarizes its effective non-secret settings without SSH,
+OpenOCD, GDB, subprocess, socket, or hardware operations.
+
+The command SHALL resolve an explicitly named remote, otherwise
+`default_remote`, while deliberately ignoring
+`ZEPHYR_REMOTE_OPENOCD_REMOTE`. When neither is selected, it SHALL report
+structural success and the available definitions. A missing target file SHALL
+be an actionable validation failure rather than being treated as empty runtime
+configuration.
 
 ---
 
@@ -1214,6 +1230,18 @@ Setup reports whether `pyelftools`, PyYAML, and jsonschema are discoverable in
 the active Python environment. A missing dependency produces a warning directing
 the user to the Zephyr 4.4-configured Python environment, but does not prevent
 configuration initialization or recommend a separate product installation.
+
+### AC-CONFIG-001
+
+The generated configuration preserves local OpenOCD as the default, contains a
+schema-valid but unselected placeholder remote, and guides the user through
+every direct remote setting.
+
+### AC-CONFIG-002
+
+The configuration validator reports structural and selected-remote errors,
+shows effective non-secret settings for an explicit or configured default
+remote, and performs no external I/O.
 
 ### AC-SELECT-001
 

@@ -197,7 +197,8 @@ python3 scripts/setup.py
 
 The setup script copies `resources/config.example.yaml` only when the canonical
 per-user configuration is absent, reports the created/reused status and both
-absolute paths, and prints guidance for `EXTRA_ZEPHYR_MODULES`. It creates the
+absolute paths, and prints guidance for `EXTRA_ZEPHYR_MODULES`, editing the
+configuration, and running the configuration validator. It creates the
 `zephyr_remote_openocd` configuration directory with mode `0700` and the file
 with mode `0600`; existing parents, directories, and files are never chmodded.
 It does not edit shell startup files, repositories, or `.zephyrrc`.
@@ -210,17 +211,21 @@ The canonical template is `resources/config.example.yaml`:
 
 ```yaml
 default_runner: openocd
-default_remote: lab
-presets:
-  default:
-    openocd_command: [~/openocd/bin/openocd]
+remotes:
+  lab:
+    ssh_host: replace-with-ssh-host-or-alias
+    openocd_command:
+      - /opt/zephyr-sdk-1.0.1/hosttools/sysroots/x86_64-pokysdk-linux/usr/bin/openocd
     ssh_command: [ssh]
     forward_env: []
     path_mappings: {}
-remotes:
-  lab:
-    preset: default
 ```
+
+The shipped comments show how to select this remote by default, define and use
+a preset, forward environment names, and map an existing remote resource. The
+placeholder remote is not selected by default, and `default_runner: openocd`
+keeps local OpenOCD active until the user deliberately opts into remote
+operation.
 
 `python/zephyr_remote_openocd/resources/configuration.schema.json` defines the
 configuration's structure and lexical rules. The loader reads it by package
@@ -238,6 +243,16 @@ merged. Remote `~` paths are expanded using the SSH user's actual home only
 during a real operation; recording keeps them unresolved.
 
 The SSH command is represented as an argv list rather than a shell command string.
+
+`scripts/validate_configuration.py` is a no-I/O front end to this loader and
+resolver. Its optional configuration path follows the product default and
+`ZEPHYR_REMOTE_OPENOCD_CONFIG`. It resolves an explicit `--remote`, otherwise
+the file's `default_remote`; it does not consult
+`ZEPHYR_REMOTE_OPENOCD_REMOTE`, so shell state cannot silently change the
+summary. With no selected remote it reports structural validity and available
+definitions. It requires the target file to exist, prints commands as argv and
+forwarded environment names without values, and does not test local or remote
+resource existence.
 
 Rationale:
 

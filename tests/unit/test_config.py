@@ -71,7 +71,14 @@ def test_explicit_root_null_is_rejected(tmp_path: Path, text: str):
 def test_canonical_template_loads():
     config = load_config(ROOT / "resources" / "config.example.yaml")
     assert config.default_runner == "openocd"
-    assert "default" in config.presets
+    assert config.default_remote is None
+    assert config.presets == {}
+    assert tuple(config.remotes) == ("lab",)
+    remote = resolve_remote(config, "lab")
+    assert remote.ssh_host == "replace-with-ssh-host-or-alias"
+    assert remote.openocd_command == (
+        "/opt/zephyr-sdk-1.0.1/hosttools/sysroots/x86_64-pokysdk-linux/usr/bin/openocd",
+    )
 
 
 def test_configuration_schema_is_a_package_resource():
