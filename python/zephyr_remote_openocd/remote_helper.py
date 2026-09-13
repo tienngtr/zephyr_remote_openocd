@@ -285,6 +285,97 @@ def openocd_version(argv):
     emit("OPENOCD_VERSION", output=output)
 
 
+def _protocol_kind(message):
+    if (
+        not isinstance(message, dict)
+        or not isinstance(message.get("version"), int)
+        or isinstance(message.get("version"), bool)
+        or message["version"] != VERSION
+    ):
+        raise ValueError("incompatible or missing protocol version")
+    return message.get("type")
+
+
+def _service_ports(services, label, *, require_name=False):
+    if not isinstance(services, list) or not all(
+        isinstance(item, dict)
+        and (not require_name or isinstance(item.get("name"), str))
+        and isinstance(item.get("remote_port"), int)
+        and not isinstance(item.get("remote_port"), bool)
+        and 1 <= item["remote_port"] <= 65535
+        for item in services
+    ):
+        raise ValueError(f"{label} services are invalid")
+    ports = [item["remote_port"] for item in services]
+    if len(ports) != len(set(ports)):
+        raise ValueError(f"{label} services must use unique remote ports")
+    return ports
+
+
+def _validate_fake_request(message):
+    services = message.get("services")
+    if not isinstance(services, list) or not services:
+        raise ValueError("START requires services")
+    return services, _service_ports(services, "START")
+
+
+def _validate_openocd_request(message):
+    argv = message.get("argv")
+    environment = message.get("environment", {})
+    checks = message.get("required_paths", [])
+    services = message.get("services", [])
+    marker = message.get("readiness_marker")
+    timeout = message.get("readiness_timeout", 30.0)
+    literal_prefix = message.get("literal_prefix", 0)
+    if (
+        not isinstance(argv, list)
+        or not argv
+        or not isinstance(argv[0], str)
+        or not argv[0]
+        or not all(isinstance(arg, str) for arg in argv[1:])
+    ):
+        raise ValueError("START_OPENOCD requires a non-empty string argv")
+    if not isinstance(environment, dict) or not all(
+        isinstance(key, str) and isinstance(value, str) for key, value in environment.items()
+    ):
+        raise ValueError("START_OPENOCD environment must contain string values")
+    if marker is not None and (
+        not isinstance(marker, str) or not marker or any(c.isspace() for c in marker)
+    ):
+        raise ValueError("START_OPENOCD readiness marker is invalid")
+    if (
+        not isinstance(timeout, (int, float))
+        or isinstance(timeout, bool)
+        or timeout <= 0
+        or isinstance(literal_prefix, bool)
+        or not isinstance(literal_prefix, int)
+        or not 0 <= literal_prefix <= len(argv)
+    ):
+        raise ValueError("START_OPENOCD readiness timeout is invalid")
+    _service_ports(services, "START_OPENOCD", require_name=True)
+    return argv, environment, checks, services, marker, timeout, literal_prefix
+
+
+def _expand(value, replacements):
+    for token, replacement in replacements.items():
+        value = value.replace(token, replacement)
+    return value
+
+
+def _validate_required_paths(checks, replacements):
+    for check in checks:
+        if (
+            not isinstance(check, dict)
+            or check.get("kind") not in ("file", "directory")
+            or not isinstance(check.get("path"), str)
+        ):
+            raise ValueError("invalid required-path assertion")
+        candidate = Path(_expand(check["path"], replacements))
+        valid = candidate.is_file() if check["kind"] == "file" else candidate.is_dir()
+        if not valid:
+            raise ValueError(f"required remote {check['kind']} is missing: {candidate}")
+
+
 def control():
     session_id, work, workspace_lock = new_workspace()
     child: subprocess.Popen[bytes] | None = None
@@ -347,26 +438,11 @@ def control():
                 return
             try:
                 message = json.loads(line)
-                if (
-                    not isinstance(message, dict)
-                    or not isinstance(message.get("version"), int)
-                    or isinstance(message.get("version"), bool)
-                    or message["version"] != VERSION
-                ):
-                    raise ValueError("incompatible or missing protocol version")
-                kind = message.get("type")
+                kind = _protocol_kind(message)
                 if kind == "START":
                     if child is not None:
                         raise ValueError("START is only valid once")
-                    services = message.get("services")
-                    if not isinstance(services, list) or not services:
-                        raise ValueError("START requires services")
-                    ports = [item["remote_port"] for item in services]
-                    if any(
-                        isinstance(p, bool) or not isinstance(p, int) or not 1 <= p <= 65535
-                        for p in ports
-                    ):
-                        raise ValueError("invalid remote service port")
+                    services, ports = _validate_fake_request(message)
                     for _attempt in range(32):
                         address = random_address()
                         child = subprocess.Popen(
@@ -410,84 +486,25 @@ def control():
                 elif kind == "START_OPENOCD":
                     if child is not None:
                         raise ValueError("a child process is already running")
-                    argv = message.get("argv")
-                    environment = message.get("environment", {})
-                    checks = message.get("required_paths", [])
-                    services = message.get("services", [])
-                    marker = message.get("readiness_marker")
-                    readiness_timeout = message.get("readiness_timeout", 30.0)
-                    literal_prefix = message.get("literal_prefix", 0)
-                    if (
-                        not isinstance(argv, list)
-                        or not argv
-                        or not isinstance(argv[0], str)
-                        or not argv[0]
-                        or not all(isinstance(arg, str) for arg in argv[1:])
-                    ):
-                        raise ValueError("START_OPENOCD requires a non-empty string argv")
-                    if not isinstance(environment, dict) or not all(
-                        isinstance(key, str) and isinstance(value, str)
-                        for key, value in environment.items()
-                    ):
-                        raise ValueError("START_OPENOCD environment must contain string values")
-                    if not isinstance(services, list) or not all(
-                        isinstance(item, dict)
-                        and isinstance(item.get("name"), str)
-                        and isinstance(item.get("remote_port"), int)
-                        and not isinstance(item.get("remote_port"), bool)
-                        and 1 <= item["remote_port"] <= 65535
-                        for item in services
-                    ):
-                        raise ValueError("START_OPENOCD services are invalid")
-                    if marker is not None and (
-                        not isinstance(marker, str)
-                        or not marker
-                        or any(c.isspace() for c in marker)
-                    ):
-                        raise ValueError("START_OPENOCD readiness marker is invalid")
-                    if (
-                        not isinstance(readiness_timeout, (int, float))
-                        or isinstance(readiness_timeout, bool)
-                        or readiness_timeout <= 0
-                        or isinstance(literal_prefix, bool)
-                        or not isinstance(literal_prefix, int)
-                        or literal_prefix < 0
-                        or literal_prefix > len(argv)
-                    ):
-                        raise ValueError("START_OPENOCD readiness timeout is invalid")
+                    (
+                        argv,
+                        environment,
+                        checks,
+                        services,
+                        marker,
+                        readiness_timeout,
+                        literal_prefix,
+                    ) = _validate_openocd_request(message)
                     ports = [item["remote_port"] for item in services]
-                    if len(ports) != len(set(ports)):
-                        raise ValueError("START_OPENOCD services must use unique remote ports")
-
-                    def expand(value, replacements):
-                        for token, replacement in replacements.items():
-                            value = value.replace(token, replacement)
-                        return value
 
                     for attempt in range(32 if marker is not None else 1):
                         address = allocate_service_address(ports) if ports else random_address()
                         replacements = {"{workspace}": str(work), "{address}": address}
                         expanded_argv = [
-                            arg if index < literal_prefix else expand(arg, replacements)
+                            arg if index < literal_prefix else _expand(arg, replacements)
                             for index, arg in enumerate(argv)
                         ]
-                        for check in checks:
-                            if (
-                                not isinstance(check, dict)
-                                or check.get("kind") not in ("file", "directory")
-                                or not isinstance(check.get("path"), str)
-                            ):
-                                raise ValueError("invalid required-path assertion")
-                            candidate = Path(expand(check["path"], replacements))
-                            valid = (
-                                candidate.is_file()
-                                if check["kind"] == "file"
-                                else candidate.is_dir()
-                            )
-                            if not valid:
-                                raise ValueError(
-                                    f"required remote {check['kind']} is missing: {candidate}"
-                                )
+                        _validate_required_paths(checks, replacements)
                         child_environment = os.environ.copy()
                         child_environment.update(environment)
                         child = subprocess.Popen(
