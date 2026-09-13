@@ -39,7 +39,7 @@ executed.
 | AC-LIFE-002 | Automated | [`TestRealProcessHelper.test_helper_eof_cleans_child_and_workspace`](../../tests/local_integration/test_remote_process.py); [`TestSshTransportIntegration.test_helper_ssh_loss_cleans_fake_session`](../../tests/ssh_integration/test_ssh_integration.py) |
 | AC-PLAT-001 | Both | Linux [Zephyr](../../tests/zephyr_integration/) and [SSH](../../tests/ssh_integration/) integration plus [real hardware](../../tests/hardware/) fixtures |
 | AC-SSH-001 | Automated | [SSH unit tests](../../tests/unit/test_ssh.py); [`TestConfiguredSshIntegration.test_configured_ssh_and_fixed_arguments`](../../tests/ssh_integration/test_ssh_integration.py) |
-| AC-SSH-002 | Automated | [SSH command tests](../../tests/unit/test_ssh.py); [`TestConfiguredSshIntegration`](../../tests/ssh_integration/test_ssh_integration.py) fixed-argument and alternate-name cases; [`TestSshTransportIntegration.test_forwarding_does_not_require_controlmaster`](../../tests/ssh_integration/test_ssh_integration.py) |
+| AC-SSH-002 | Automated | [SSH command tests](../../tests/unit/test_ssh.py); [`TestConfiguredSshIntegration`](../../tests/ssh_integration/test_ssh_integration.py) fixed-argument and alternate-name cases; [`TestSshTransportIntegration.test_forwarding_and_session_lifecycle_use_configured_client`](../../tests/ssh_integration/test_ssh_integration.py) |
 
 This table records the current acceptance status. The following sections
 summarize implementation, validation, and compatibility status by requirement.

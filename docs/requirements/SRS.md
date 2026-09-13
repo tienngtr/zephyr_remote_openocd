@@ -906,18 +906,9 @@ The runner SHALL NOT require users to duplicate normal SSH credentials, keys, or
 
 ### REQ-FUNC-SSH-010
 
-Correctness SHALL NOT depend on SSH ControlMaster or client connection multiplexing.
-
-### REQ-FUNC-SSH-011
-
-The runner SHALL NOT inject ControlMaster arguments. A user MAY configure
-multiplexing explicitly when the selected SSH client supports it.
-
-### REQ-FUNC-SSH-012
-
 Loss of the controlling SSH session SHALL cause the corresponding remote OpenOCD session to terminate.
 
-### REQ-FUNC-SSH-013
+### REQ-FUNC-SSH-011
 
 The runner SHALL NOT attempt transparent reconstruction of an interrupted debugging session after SSH loss.
 
@@ -1132,8 +1123,7 @@ The current scope does not include:
 - multiple simultaneous RTT clients;
 - semihosting filesystem virtualization;
 - GDB File-I/O remoting for semihosting;
-- requiring a specific SSH-agent implementation;
-- requiring SSH ControlMaster.
+- requiring a specific SSH-agent implementation.
 
 ---
 
@@ -1162,8 +1152,8 @@ Severity: Medium.
 
 Mitigation:
 
-Depend only on the required OpenSSH-compatible behavior, preserve configured
-argv, and keep multiplexing optional.
+Depend only on the required OpenSSH-compatible behavior and preserve configured
+argv.
 
 
 ## 30. Acceptance Criteria
@@ -1307,5 +1297,4 @@ With no SSH override configured, the runner uses `ssh` from the local command se
 ### AC-SSH-002
 
 An SSH command with a bare or explicit-path executable and fixed user arguments
-is used directly, without reordering its arguments, inserting a shell, or
-injecting ControlMaster options.
+is used directly, without reordering its arguments or inserting a shell.

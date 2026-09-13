@@ -804,25 +804,24 @@ required:
     TCP forwarding
 
 optional:
-    ControlMaster / connection sharing
+    client-supported connection sharing
 ```
 
 The transport implementation shall not make optional client capabilities prerequisites for correct operation.
 
 ---
 
-## 32. ControlMaster and Multiplexing
+## 32. Optional Connection Sharing
 
-The runner neither injects nor requires ControlMaster options. If the user
-enables connection multiplexing in `ssh_command` or the selected client's
-configuration, that client may use it transparently. No runner behavior
-depends on whether multiplexing is available.
+Client-supported connection sharing could be considered as a future
+performance optimization. It is not part of the current session design or
+required SSH-client behavior.
 
 ---
 
 ## 33. Cross-Client SSH Topology
 
-The topology uses multiple SSH processes without requiring ControlMaster.
+The topology uses multiple SSH processes.
 
 ### 33.1 Current design: multiple SSH processes
 
@@ -848,7 +847,6 @@ Local Python proxies can then route service connections through that tunnel afte
 Advantages:
 
 - can reduce authentication/session count;
-- does not require ControlMaster.
 
 Disadvantages:
 
@@ -1129,8 +1127,8 @@ Selected for the current architecture:
 - default SSH command `ssh`;
 - SSH command may contain fixed arguments;
 - all SSH operations use the configured client abstraction;
-- correctness does not depend on ControlMaster;
-- connection multiplexing is optional;
+- client-supported connection sharing may be considered as a performance
+  optimization;
 - the SSH client continues to use its normal configuration;
 - unprivileged remote helper;
 - explicit path mappings with staging fallback;

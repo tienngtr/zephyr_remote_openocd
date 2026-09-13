@@ -107,7 +107,6 @@ class TestForwardingLifecycle:
         connect.assert_not_called()
         assert command.calls[0][1].startswith("python3 -c ")
         assert "-N" not in command.calls[0][2]
-        assert not any("ControlMaster" in item for item in command.calls[0][2])
         session._close_forwards()
         assert process.terminate_calls == 1
 

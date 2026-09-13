@@ -117,11 +117,10 @@ class TestSshTransportIntegration:
         self.ssh_settings = ssh_settings
         self.ssh = SshCommand(ssh_settings.ssh_command)
 
-    def test_forwarding_does_not_require_controlmaster(self):
-        ssh = SshCommand((*self.ssh.argv_prefix, "-o", "ControlMaster=no"))
+    def test_forwarding_and_session_lifecycle_use_configured_client(self):
         encoded = base64.b64encode(REMOTE_ECHO).decode("ascii")
         command = f"python3 -c \"import base64;exec(base64.b64decode('{encoded}'))\""
-        helper_process = ssh.popen(self.host, command)
+        helper_process = self.ssh.popen(self.host, command)
         tunnel = None
         try:
             assert helper_process.stdout is not None
@@ -132,7 +131,7 @@ class TestSshTransportIntegration:
                 pytest.fail(diagnostic.decode(errors="replace"))
             remote_port = int(line)
             local_port = free_loopback_port()
-            tunnel = ssh.popen(
+            tunnel = self.ssh.popen(
                 self.host,
                 None,
                 "-N",
