@@ -337,8 +337,11 @@ def _merge_settings(preset: Preset | None, remote: RemoteDefinition) -> Preset:
 
 
 def _selected_remote_name(config: RemoteOpenOcdConfig, remote_name: str | None) -> str:
-    selected_name = remote_name or os.environ.get("ZEPHYR_REMOTE_OPENOCD_REMOTE")
-    selected_name = selected_name or config.default_remote
+    selected_name: str | None
+    if remote_name is not None:
+        selected_name = remote_name
+    else:
+        selected_name = os.environ.get("ZEPHYR_REMOTE_OPENOCD_REMOTE") or config.default_remote
     if not selected_name:
         raise ConfigError(
             "no remote selected for remote_openocd; use --remote or set "

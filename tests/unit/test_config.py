@@ -294,6 +294,8 @@ remotes:
     monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_REMOTE", "env")
     assert resolve_remote(config).name == "env"
     assert resolve_remote(config, "cli").name == "cli"
+    with pytest.raises(ConfigError, match="no remote selected"):
+        resolve_remote(config, "")
     monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_REMOTE", "")
     assert resolve_remote(config).name == "default"
 
