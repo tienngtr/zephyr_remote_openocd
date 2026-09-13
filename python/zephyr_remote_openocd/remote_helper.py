@@ -573,13 +573,15 @@ def _fake_ready(child):
     return message.get("ready") is True
 
 
-def launch_fake(request):
+def launch_fake(request, adopt=None):
     ports = [service.remote_port for service in request.services]
     for _attempt in range(32):
         address = random_address()
         child = _spawn_child(
             [sys.executable, str(Path(__file__).resolve()), "fake-child", address, *map(str, ports)]
         )
+        if adopt is not None:
+            adopt(child)
         if _fake_ready(child):
             child.start_relays()
             emit(
@@ -591,6 +593,8 @@ def launch_fake(request):
             return child
         child.process.wait()
         child.dispose()
+        if adopt is not None:
+            adopt(None)
     raise RuntimeError("loopback allocation exhausted after 32 attempts")
 
 
@@ -676,7 +680,7 @@ class ControlSession:
     def _dispatch_start(self, request):
         if self.child is not None:
             raise ValueError("START is only valid once")
-        self.child = launch_fake(request)
+        self.child = launch_fake(request, adopt=self._adopt_child)
 
     def _dispatch_openocd(self, request):
         if self.child is not None:
