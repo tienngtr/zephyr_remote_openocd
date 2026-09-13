@@ -231,8 +231,15 @@
           "minItems": 1,
           "prefixItems": [
             {
-              "$ref": "#/$defs/remotePath",
-              "description": "Absolute path to the OpenOCD executable on the remote host."
+              "allOf": [
+                {
+                  "$ref": "#/$defs/remotePath"
+                },
+                {
+                  "$ref": "#/$defs/commandExecutable"
+                }
+              ],
+              "description": "Absolute normalized path to the OpenOCD executable on the remote host; '/' is not an executable."
             }
           ],
           "items": {
