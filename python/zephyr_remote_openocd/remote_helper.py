@@ -724,15 +724,17 @@ class ControlSession:
             return False
 
     def run(self):
-        self.announce()
-        selector = selectors.DefaultSelector()
         try:
-            selector.register(sys.stdin.buffer, selectors.EVENT_READ)
-            while not self._child_finished():
-                if selector.select(0.2) and not self._read_and_dispatch():
-                    return
+            self.announce()
+            selector = selectors.DefaultSelector()
+            try:
+                selector.register(sys.stdin.buffer, selectors.EVENT_READ)
+                while not self._child_finished():
+                    if selector.select(0.2) and not self._read_and_dispatch():
+                        return
+            finally:
+                selector.close()
         finally:
-            selector.close()
             self.cleanup()
 
     def handle_signal(self, *_):

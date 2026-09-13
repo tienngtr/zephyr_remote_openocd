@@ -81,6 +81,69 @@ def test_new_workspace_removes_partial_directory_on_initialization_failure(tmp_p
     assert tuple(tmp_path.iterdir()) == ()
 
 
+def test_control_session_cleans_up_when_announcement_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
+    session_id, workspace, lock = remote_helper.new_workspace()
+
+    def fail_announce(_session):
+        raise BrokenPipeError("injected announcement failure")
+
+    monkeypatch.setattr(remote_helper.ControlSession, "announce", fail_announce)
+    session = remote_helper.ControlSession(session_id, workspace, lock)
+
+    with pytest.raises(BrokenPipeError, match="injected announcement failure"):
+        session.run()
+
+    assert not workspace.exists()
+    assert lock.closed
+
+
+def test_control_session_cleans_up_when_selector_creation_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
+    session_id, workspace, lock = remote_helper.new_workspace()
+
+    def fail_selector():
+        raise OSError("injected selector creation failure")
+
+    monkeypatch.setattr(remote_helper.selectors, "DefaultSelector", fail_selector)
+    session = remote_helper.ControlSession(session_id, workspace, lock)
+
+    with pytest.raises(OSError, match="injected selector creation failure"):
+        session.run()
+
+    assert not workspace.exists()
+    assert lock.closed
+
+
+def test_control_session_closes_selector_and_cleans_up_on_registration_failure(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
+    session_id, workspace, lock = remote_helper.new_workspace()
+    selectors_created = []
+
+    class FailingSelector:
+        def __init__(self):
+            self.closed = False
+            selectors_created.append(self)
+
+        def register(self, *_args):
+            raise OSError("injected selector registration failure")
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(remote_helper.selectors, "DefaultSelector", FailingSelector)
+    session = remote_helper.ControlSession(session_id, workspace, lock)
+
+    with pytest.raises(OSError, match="injected selector registration failure"):
+        session.run()
+
+    assert selectors_created[0].closed
+    assert not workspace.exists()
+    assert lock.closed
+
+
 def test_decode_command_returns_immutable_typed_requests():
     request = remote_helper.decode_command(
         {
