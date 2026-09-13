@@ -1,0 +1,285 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zephyr-remote-openocd.invalid/schema/hardware-inventory.json",
+  "title": "zephyr_remote_openocd external hardware inventory",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["build_environments", "hosts", "targets"],
+  "properties": {
+    "build_environments": {"$ref": "#/$defs/buildEnvironments"},
+    "toolchains": {"$ref": "#/$defs/toolchains"},
+    "hosts": {"$ref": "#/$defs/hosts"},
+    "targets": {"$ref": "#/$defs/targets"}
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"
+    },
+    "nonemptyString": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": ".*\\S.*",
+      "not": {"pattern": "\\u0000"}
+    },
+    "stringArray": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/nonemptyString"}
+    },
+    "localPath": {
+      "type": "string",
+      "anyOf": [
+        {"pattern": "^/[^\\u0000]*$"},
+        {"pattern": "^~/[^\\u0000]*$"},
+        {"const": "~"}
+      ]
+    },
+    "remotePath": {
+      "type": "string",
+      "anyOf": [
+        {"const": "/"},
+        {"pattern": "^/(?!\\.{1,2}(?:/|$))[^/\\u0000]+(?:/(?!\\.{1,2}(?:/|$))[^/\\u0000]+)*$"}
+      ]
+    },
+    "positiveNumber": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "namedMap": {
+      "type": "object",
+      "propertyNames": {"$ref": "#/$defs/identifier"}
+    },
+    "buildEnvironments": {
+      "allOf": [
+        {"$ref": "#/$defs/namedMap"},
+        {"minProperties": 1, "additionalProperties": {"$ref": "#/$defs/buildEnvironment"}}
+      ]
+    },
+    "buildEnvironment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["zephyr_base", "west"],
+      "properties": {
+        "zephyr_base": {"$ref": "#/$defs/localPath"},
+        "west": {"$ref": "#/$defs/localPath"}
+      }
+    },
+    "toolchains": {
+      "allOf": [
+        {"$ref": "#/$defs/namedMap"},
+        {"additionalProperties": {"$ref": "#/$defs/toolchain"}}
+      ],
+      "default": {}
+    },
+    "toolchain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gdb"],
+      "properties": {"gdb": {"$ref": "#/$defs/localPath"}}
+    },
+    "hosts": {
+      "allOf": [
+        {"$ref": "#/$defs/namedMap"},
+        {"minProperties": 1, "additionalProperties": {"$ref": "#/$defs/host"}}
+      ]
+    },
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ssh_host", "openocd_command"],
+      "properties": {
+        "ssh_host": {"$ref": "#/$defs/nonemptyString"},
+        "openocd_command": {
+          "type": "array",
+          "minItems": 1,
+          "prefixItems": [{"$ref": "#/$defs/remotePath"}],
+          "items": {"type": "string", "not": {"pattern": "\\u0000"}}
+        },
+        "ssh_command": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "not": {"pattern": "\\u0000"}},
+          "default": ["ssh"]
+        },
+        "forward_env": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
+          "default": []
+        },
+        "path_mappings": {
+          "type": "object",
+          "propertyNames": {"$ref": "#/$defs/localPath"},
+          "additionalProperties": {"$ref": "#/$defs/remotePath"},
+          "default": {}
+        }
+      }
+    },
+    "targets": {
+      "allOf": [
+        {"$ref": "#/$defs/namedMap"},
+        {"minProperties": 1, "additionalProperties": {"$ref": "#/$defs/target"}}
+      ]
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host", "build_environment", "builds", "profiles"],
+      "properties": {
+        "host": {"$ref": "#/$defs/identifier"},
+        "build_environment": {"$ref": "#/$defs/identifier"},
+        "toolchain": {"$ref": "#/$defs/identifier"},
+        "board": {"$ref": "#/$defs/nonemptyString"},
+        "builds": {
+          "allOf": [
+            {"$ref": "#/$defs/namedMap"},
+            {"minProperties": 1, "additionalProperties": {"$ref": "#/$defs/build"}}
+          ]
+        },
+        "serial": {
+          "allOf": [
+            {"$ref": "#/$defs/namedMap"},
+            {"additionalProperties": {"$ref": "#/$defs/serialEndpoint"}}
+          ],
+          "default": {}
+        },
+        "profiles": {
+          "allOf": [
+            {"$ref": "#/$defs/namedMap"},
+            {"minProperties": 1, "additionalProperties": {"$ref": "#/$defs/profile"}}
+          ]
+        }
+      }
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["application"],
+      "properties": {
+        "application": {"$ref": "#/$defs/nonemptyString"},
+        "board": {"$ref": "#/$defs/nonemptyString"},
+        "west_args": {"$ref": "#/$defs/stringArray", "default": []},
+        "cmake_args": {"$ref": "#/$defs/stringArray", "default": []}
+      }
+    },
+    "serialEndpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["device", "baud"],
+      "properties": {
+        "device": {"$ref": "#/$defs/nonemptyString"},
+        "baud": {"type": "integer", "minimum": 1},
+        "data_bits": {"type": "integer", "enum": [5, 6, 7, 8], "default": 8},
+        "parity": {"type": "string", "enum": ["none", "even", "odd"], "default": "none"},
+        "stop_bits": {"type": "integer", "enum": [1, 2], "default": 1},
+        "flow_control": {
+          "type": "string",
+          "enum": ["none", "hardware", "software"],
+          "default": "none"
+        }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["build", "operations"],
+      "properties": {
+        "build": {"$ref": "#/$defs/identifier"},
+        "probe_serial": {"$ref": "#/$defs/nonemptyString"},
+        "runner_args": {"$ref": "#/$defs/stringArray", "default": []},
+        "environment": {
+          "type": "object",
+          "propertyNames": {"pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
+          "additionalProperties": {"type": "string", "not": {"pattern": "\\u0000"}},
+          "default": {}
+        },
+        "operations": {"$ref": "#/$defs/operations"}
+      }
+    },
+    "operations": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "flash": {"$ref": "#/$defs/flash"},
+        "debug": {"$ref": "#/$defs/debug"},
+        "attach": {"$ref": "#/$defs/attach"},
+        "debugserver": {"$ref": "#/$defs/debugserver"},
+        "thread_info": {"$ref": "#/$defs/threadInfo"},
+        "rtt": {"$ref": "#/$defs/rtt"},
+        "semihosting": {"$ref": "#/$defs/semihosting"}
+      }
+    },
+    "flash": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["precondition_build", "quiescence_timeout", "serial"],
+      "properties": {
+        "precondition_build": {"$ref": "#/$defs/identifier"},
+        "quiescence_timeout": {"$ref": "#/$defs/positiveNumber"},
+        "serial": {"$ref": "#/$defs/serialExpectation"},
+        "output_patterns": {"$ref": "#/$defs/stringArray", "default": []},
+        "assert_bindto": {"type": "boolean", "default": false}
+      }
+    },
+    "serialExpectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["endpoint", "pattern", "timeout"],
+      "properties": {
+        "endpoint": {"$ref": "#/$defs/identifier"},
+        "pattern": {"$ref": "#/$defs/nonemptyString"},
+        "timeout": {"$ref": "#/$defs/positiveNumber"}
+      }
+    },
+    "debug": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["breakpoint"],
+      "properties": {
+        "breakpoint": {"$ref": "#/$defs/identifier"},
+        "output_patterns": {"$ref": "#/$defs/stringArray", "default": []}
+      }
+    },
+    "attach": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["precondition_build"],
+      "properties": {"precondition_build": {"$ref": "#/$defs/identifier"}}
+    },
+    "debugserver": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "threadInfo": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pattern"],
+      "properties": {"pattern": {"$ref": "#/$defs/nonemptyString"}}
+    },
+    "rtt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["port", "response", "timeout", "program_survives_reset", "breakpoint"],
+      "properties": {
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "input": {"type": "string", "default": ""},
+        "response": {"$ref": "#/$defs/nonemptyString"},
+        "timeout": {"$ref": "#/$defs/positiveNumber"},
+        "program_survives_reset": {"const": true},
+        "breakpoint": {"$ref": "#/$defs/identifier"}
+      }
+    },
+    "semihosting": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commands", "output", "timeout"],
+      "properties": {
+        "commands": {"$ref": "#/$defs/stringArray"},
+        "gdb_commands": {"$ref": "#/$defs/stringArray", "default": []},
+        "output": {"$ref": "#/$defs/nonemptyString"},
+        "timeout": {"$ref": "#/$defs/positiveNumber"}
+      }
+    }
+  }
+}

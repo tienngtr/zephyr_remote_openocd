@@ -2,74 +2,93 @@
 
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 
 import pytest
+import yaml
 from zephyr_remote_openocd.config import load_config, resolve_remote
 
-from tests.inventory import InventoryError, load_inventory, render_product_config
+from tests.inventory import (
+    AttachOperation,
+    DebugOperation,
+    FlashOperation,
+    InventoryError,
+    RttOperation,
+    load_inventory,
+    render_product_config,
+)
 from tests.support import ROOT
 
-EXAMPLE = ROOT / "tests" / "fixtures" / "hardware.example.toml"
+EXAMPLE = ROOT / "tests/fixtures/hardware.example.yaml"
+DELETE = object()
 
 
-def write_inventory(tmp_path: Path, text: str) -> Path:
-    path = tmp_path / "hardware.toml"
+def example_document() -> dict:
+    document = yaml.safe_load(EXAMPLE.read_text(encoding="utf-8"))
+    assert isinstance(document, dict)
+    return document
+
+
+def write_inventory(tmp_path: Path, document: object) -> Path:
+    path = tmp_path / "hardware.yaml"
+    text = document if isinstance(document, str) else yaml.safe_dump(document, sort_keys=False)
     path.write_text(text, encoding="utf-8")
     return path
 
 
+def change(document: dict, path: tuple[str, ...], value: object) -> dict:
+    updated = copy.deepcopy(document)
+    table = updated
+    for key in path[:-1]:
+        table = table[key]
+    if value is DELETE:
+        del table[path[-1]]
+    else:
+        table[path[-1]] = value
+    return updated
+
+
 def test_example_is_complete_and_renderable(tmp_path: Path) -> None:
     inventory = load_inventory(EXAMPLE)
-    assert inventory.hosts[0].forward_env == ("FTDI_CHANNEL",)
+    assert inventory.build_environment("zephyr44").west == Path(
+        "/path/to/zephyrproject/.venv/bin/west"
+    )
+    assert inventory.toolchain("arm").gdb == Path("/path/to/toolchain/bin/arm-none-eabi-gdb")
+    host = inventory.host("lab")
+    assert host.forward_env == ("FTDI_CHANNEL",)
+    assert host.openocd_command == ("/absolute/path/to/openocd",)
     target = inventory.target("board")
     assert target.build("hello").application == "samples/hello_world"
-    assert target.build("minimal").application == "samples/basic/minimal"
     assert target.endpoint("console").baud == 115200
-    assert target.profile("flash").environment == (("FTDI_CHANNEL", "0"),)
-    debug = target.profile("debug")
-    assert debug.debug is not None
-    assert debug.debug.breakpoint == "main"
-    assert debug.attach is not None
-    assert debug.attach.precondition_build == "minimal"
     flash = target.profile("flash")
-    assert flash.flash is not None
-    assert flash.flash.precondition_build == "minimal"
-    rendered = render_product_config(inventory.host("lab"), default_runner="remote_openocd")
+    assert flash.environment == (("FTDI_CHANNEL", "0"),)
+    assert flash.operation_names == ("flash",)
+    assert isinstance(flash.operation("flash"), FlashOperation)
+    debug = target.profile("debug")
+    assert debug.operation_names == ("debug", "attach", "debugserver")
+    assert isinstance(debug.operation("debug"), DebugOperation)
+    assert isinstance(debug.operation("attach"), AttachOperation)
+    assert isinstance(target.profile("rtt").operation("rtt"), RttOperation)
+
     config_path = tmp_path / "config.yaml"
-    config_path.write_text(rendered, encoding="utf-8")
-    assert load_config(config_path).default_runner == "remote_openocd"
-
-
-@pytest.mark.parametrize(
-    ("fragment", "diagnostic"),
-    (
-        ("future = true\n", "unknown key"),
-        ("[[hosts]]\nid = \"lab\"\n", r"hosts\[0\]\.address"),
-        (
-            "[[hosts]]\nid=\"lab\"\naddress=\"x\"\nopenocd=\"openocd\"\n",
-            r"hosts\[0\]\.openocd",
-        ),
-    ),
-)
-def test_inventory_rejects_bad_top_level_and_host(
-    tmp_path: Path, fragment: str, diagnostic: str
-) -> None:
-    with pytest.raises(InventoryError, match=diagnostic):
-        load_inventory(write_inventory(tmp_path, fragment))
+    config_path.write_text(render_product_config(host), encoding="utf-8")
+    assert load_config(config_path).default_runner == "openocd"
 
 
 @pytest.mark.parametrize("name", ("lab", "on", "off", "true", "null"))
 def test_rendered_inventory_round_trips_through_product_schema(tmp_path, name):
-    text = EXAMPLE.read_text().replace('"lab"', f'"{name}"')
-    inventory = load_inventory(write_inventory(tmp_path, text))
+    document = example_document()
+    document["hosts"][name] = document["hosts"].pop("lab")
+    document["targets"]["board"]["host"] = name
+    inventory = load_inventory(write_inventory(tmp_path, document))
     host = inventory.host(name)
     path = tmp_path / "config.yaml"
-    path.write_text(render_product_config(host))
+    path.write_text(render_product_config(host, default_runner="remote_openocd"))
     selected = resolve_remote(load_config(path))
     assert selected.name == name
-    assert selected.ssh_host == host.address
-    assert selected.openocd_command == (host.openocd,)
+    assert selected.ssh_host == host.ssh_host
+    assert selected.openocd_command == host.openocd_command
     assert selected.ssh_command == host.ssh_command
     assert selected.forward_env == host.forward_env
     assert [(item.local, item.remote) for item in selected.path_mappings] == [
@@ -77,170 +96,140 @@ def test_rendered_inventory_round_trips_through_product_schema(tmp_path, name):
     ]
 
 
-def valid_prefix() -> str:
-    return (
-        '[[hosts]]\nid = "lab"\naddress = "host"\n'
-        'openocd = "/opt/openocd"\nforward_env = ["CHANNEL"]\n'
-        '[[targets]]\nid = "board"\nhost = "lab"\nzephyr_base = "/zephyr"\n'
-        'west = "/west"\nboard = "vendor/board"\n[targets.builds.hello]\n'
-        'application = "samples/hello_world"\n'
-        ''
-    )
-
-
 @pytest.mark.parametrize(
-    ("suffix", "diagnostic"),
+    ("path", "value", "diagnostic"),
     (
-        ("[targets.profiles.default]\nfuture = true\n", "unknown key"),
+        (("future",), True, "future"),
+        (("hosts", "lab", "ssh_host"), DELETE, "ssh_host"),
+        (("hosts", "lab", "openocd_command"), ["openocd"], "openocd_command"),
+        (("targets", "board", "profiles", "debug", "capabilities"), ["debug"], "capabilities"),
         (
-            "[targets.profiles.default]\ncapabilities = [\"rtt\"]\nbuild = \"hello\"\n",
-            "rtt capability",
-        ),
-        (
-            "[targets.profiles.default]\ncapabilities = [\"debug\"]\nbuild = \"hello\"\n",
-            "debug capability",
-        ),
-        (
-            "[targets.profiles.default]\ncapabilities = [\"attach\"]\nbuild = \"hello\"\n",
-            "attach capability",
-        ),
-        (
-            "[targets.profiles.default]\ncapabilities = [\"debug\"]\nbuild = \"hello\"\n"
-            "[targets.profiles.default.debug]\nbreakpoint = \"main + 4\"\n",
+            ("targets", "board", "profiles", "debug", "operations", "debug", "breakpoint"),
+            "main + 4",
             "breakpoint",
         ),
         (
-            "[targets.profiles.default]\ncapabilities = [\"debug\"]\nbuild = \"hello\"\n"
-            "[targets.profiles.default.debug]\nbreakpoint = \"main\"\nfuture = true\n",
-            "unknown key",
+            ("targets", "board", "profiles", "flash", "operations", "flash", "serial"),
+            DELETE,
+            "serial",
         ),
         (
-            "[targets.profiles.default]\ncapabilities = [\"flash\"]\nbuild = \"missing\"\n",
+            (
+                "targets",
+                "board",
+                "profiles",
+                "rtt",
+                "operations",
+                "rtt",
+                "program_survives_reset",
+            ),
+            False,
+            "program_survives_reset",
+        ),
+    ),
+)
+def test_schema_rejects_invalid_structure(tmp_path, path, value, diagnostic) -> None:
+    document = change(example_document(), path, value)
+    with pytest.raises(InventoryError, match=diagnostic):
+        load_inventory(write_inventory(tmp_path, document))
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "diagnostic"),
+    (
+        (("targets", "board", "host"), "missing", "unknown host"),
+        (("targets", "board", "build_environment"), "missing", "unknown build environment"),
+        (("targets", "board", "toolchain"), "missing", "unknown toolchain"),
+        (("targets", "board", "profiles", "debug", "build"), "missing", "unknown build"),
+        (
+            ("targets", "board", "profiles", "flash", "environment"),
+            {"OTHER": "1"},
+            "allow-list",
+        ),
+        (
+            (
+                "targets",
+                "board",
+                "profiles",
+                "flash",
+                "operations",
+                "flash",
+                "precondition_build",
+            ),
+            "hello",
+            "must differ",
+        ),
+        (
+            (
+                "targets",
+                "board",
+                "profiles",
+                "flash",
+                "operations",
+                "flash",
+                "precondition_build",
+            ),
+            "missing",
             "unknown build",
         ),
         (
-            "[targets.profiles.default]\ncapabilities = [\"flash\"]\nbuild = \"hello\"\n",
-            "flash capability",
+            (
+                "targets",
+                "board",
+                "profiles",
+                "flash",
+                "operations",
+                "flash",
+                "serial",
+                "endpoint",
+            ),
+            "missing",
+            "unknown serial",
         ),
-        (
-            "[targets.profiles.default]\ncapabilities = [\"flash\"]\n"
-            "build = \"hello\"\nenvironment = { OTHER = \"1\" }\n",
-            "allow-list",
-        ),
+        (("targets", "board", "builds", "hello", "application"), "../escape", "escape"),
     ),
 )
-def test_inventory_rejects_bad_references_and_profile_data(
-    tmp_path: Path, suffix: str, diagnostic: str
-) -> None:
+def test_semantic_references_are_validated(tmp_path, path, value, diagnostic) -> None:
+    document = change(example_document(), path, value)
     with pytest.raises(InventoryError, match=diagnostic):
-        load_inventory(
-            write_inventory(
-                tmp_path,
-                valid_prefix()
-                + suffix.replace("[targets.profiles.default]\n", "[targets.profiles.default]\n"),
-            )
-        )
+        load_inventory(write_inventory(tmp_path, document))
 
 
-def test_serial_framing_and_capabilities_are_independent(tmp_path: Path) -> None:
-    new = (
-        '[targets.serial.console]\ndevice = "/dev/tty"\nbaud = 921600\n'
-        'pattern = "ready"\ntimeout = 2\n[targets.profiles.default]\n'
-        'capabilities = ["flash", "debug", "attach", "debugserver"]\n'
-        'build = "hello"\nserial = "console"\nenvironment = {}\n'
-        '[targets.profiles.default.flash]\nprecondition_build = "minimal"\n'
-        'quiescence_timeout = 2\n'
-        '[targets.profiles.default.debug]\nbreakpoint = "main"\n'
-        '[targets.profiles.default.attach]\nprecondition_build = "minimal"\n'
-        '[targets.profiles.rtt]\ncapabilities = ["rtt"]\nbuild = "hello"\n'
-        'environment = {}\n[targets.profiles.rtt.rtt]\nport = 20000\n'
-        'response = "ok"\ntimeout = 1\nprogram_survives_reset = true\n'
-        '[targets.profiles.rtt.debug]\nbreakpoint = "main"\n'
-    )
-    prefix = valid_prefix() + '[targets.builds.minimal]\napplication = "samples/basic/minimal"\n'
-    inventory = load_inventory(write_inventory(tmp_path, prefix + new))
-    target = inventory.target("board")
-    assert target.endpoint("console").data_bits == 8
-    assert {profile.name for profile in target.profiles} == {"default", "rtt"}
-    default = target.profile("default")
-    assert default.capabilities == ("flash", "debug", "attach", "debugserver")
-    assert default.debug is not None
-    assert default.debug.breakpoint == "main"
+def test_direct_gdb_operations_require_a_toolchain(tmp_path: Path) -> None:
+    document = change(example_document(), ("targets", "board", "toolchain"), DELETE)
+    with pytest.raises(InventoryError, match="toolchain.*required"):
+        load_inventory(write_inventory(tmp_path, document))
 
 
 @pytest.mark.parametrize(
-    ("flash_table", "diagnostic"),
+    ("text", "diagnostic"),
     (
-        ('precondition_build = "hello"\nquiescence_timeout = 2\n', "must differ"),
-        ('precondition_build = "missing"\nquiescence_timeout = 2\n', "unknown build"),
-        ('precondition_build = "minimal"\n', "quiescence_timeout"),
-        (
-            'precondition_build = "minimal"\nquiescence_timeout = 0\n',
-            "positive number",
-        ),
+        ("", "one YAML document"),
+        ("null\n", "YAML mapping"),
+        ("{}\n---\n{}\n", "one YAML document"),
+        ("hosts:\n  lab: {}\n  lab: {}\n", "duplicate key"),
+        ("1: value\n", "mapping keys must be strings"),
     ),
 )
-def test_flash_precondition_contract(tmp_path: Path, flash_table: str, diagnostic: str) -> None:
-    text = (
-        valid_prefix()
-        + '[targets.builds.minimal]\napplication = "samples/basic/minimal"\n'
-        + '[targets.profiles.flash]\ncapabilities = ["flash"]\nbuild = "hello"\n'
-        + '[targets.profiles.flash.flash]\n'
-        + flash_table
-    )
+def test_strict_yaml_rejections(tmp_path: Path, text: str, diagnostic: str) -> None:
     with pytest.raises(InventoryError, match=diagnostic):
         load_inventory(write_inventory(tmp_path, text))
 
 
-@pytest.mark.parametrize(
-    ("precondition", "diagnostic"),
-    (("hello", "must differ"), ("missing", "unknown build")),
-)
-def test_attach_precondition_contract(tmp_path: Path, precondition: str, diagnostic: str) -> None:
-    text = (
-        valid_prefix()
-        + '[targets.builds.minimal]\napplication = "samples/basic/minimal"\n'
-        + '[targets.profiles.attach]\ncapabilities = ["attach"]\nbuild = "hello"\n'
-        + '[targets.profiles.attach.attach]\n'
-        + f'precondition_build = "{precondition}"\n'
-    )
-    with pytest.raises(InventoryError, match=diagnostic):
-        load_inventory(write_inventory(tmp_path, text))
-
-
-@pytest.mark.parametrize(
-    ("survival", "diagnostic"),
-    (("", "program_survives_reset"), ("false", "must be true")),
-)
-def test_rtt_requires_reset_persistence(tmp_path: Path, survival: str, diagnostic: str) -> None:
-    setting = f"program_survives_reset = {survival}\n" if survival else ""
-    text = (
-        valid_prefix()
-        + '[targets.profiles.rtt]\ncapabilities = ["rtt"]\nbuild = "hello"\n'
-        + '[targets.profiles.rtt.rtt]\nport = 19021\nresponse = "ok"\ntimeout = 2\n'
-        + setting
-        + '[targets.profiles.rtt.debug]\nbreakpoint = "main"\n'
-    )
-    with pytest.raises(InventoryError, match=diagnostic):
-        load_inventory(write_inventory(tmp_path, text))
-
-
-def test_duplicate_host_and_mapping_are_rejected(tmp_path: Path) -> None:
-    duplicate_hosts = (
-        '[[hosts]]\nid = "lab"\naddress = "one"\n'
-        'openocd = "/opt/openocd"\n[[hosts]]\nid = "lab"\naddress = "two"\n'
-        'openocd = "/opt/openocd"\n'
-    )
-    with pytest.raises(InventoryError, match="hosts.*names must be unique"):
-        load_inventory(write_inventory(tmp_path, duplicate_hosts))
-
-    text = valid_prefix().replace(
-        'forward_env = ["CHANNEL"]',
-        'forward_env = ["CHANNEL"]\n[[hosts.path_mappings]]\nlocal = "/same"\n'
-        'remote = "/one"\n[[hosts.path_mappings]]\nlocal = "/same"\nremote = "/two"',
-    )
+def test_normalized_mapping_collisions_are_rejected(tmp_path: Path) -> None:
+    document = example_document()
+    document["hosts"]["lab"]["path_mappings"] = {
+        "/same/path": "/one",
+        "/same/./path": "/two",
+    }
     with pytest.raises(InventoryError, match="conflicting mapping"):
-        load_inventory(write_inventory(tmp_path, text))
+        load_inventory(write_inventory(tmp_path, document))
+
+
+def test_target_or_recipe_must_supply_board(tmp_path: Path) -> None:
+    document = change(example_document(), ("targets", "board", "board"), DELETE)
+    with pytest.raises(InventoryError, match="board.*required"):
+        load_inventory(write_inventory(tmp_path, document))
 
 
 def test_render_rejects_invalid_default() -> None:

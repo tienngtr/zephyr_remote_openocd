@@ -59,12 +59,22 @@ def test_commands_cover_repository_static_checks():
     assert "--no-cache" in rumdl
 
     schema_checks = [command for command in commands if tool(command) == "check-jsonschema"]
-    assert any("--check-metaschema" in command for command in schema_checks)
-    example_check = next(command for command in schema_checks if "--schemafile" in command)
-    assert "python/zephyr_remote_openocd/resources/configuration.schema.json" in example_check
-    assert "resources/config.yaml.example" in example_check
-    assert ("--force-filetype", "yaml") in tuple(
-        zip(example_check, example_check[1:], strict=False)
+    assert len([command for command in schema_checks if "--check-metaschema" in command]) == 2
+    example_checks = [command for command in schema_checks if "--schemafile" in command]
+    assert len(example_checks) == 2
+    assert any(
+        "python/zephyr_remote_openocd/resources/configuration.schema.json" in command
+        and "resources/config.yaml.example" in command
+        for command in example_checks
+    )
+    assert any(
+        "tests/fixtures/hardware.schema.json" in command
+        and "tests/fixtures/hardware.example.yaml" in command
+        for command in example_checks
+    )
+    assert all(
+        ("--force-filetype", "yaml") in tuple(zip(command, command[1:], strict=False))
+        for command in example_checks
     )
 
     pylint = next(command for command in commands if tool(command) == "pylint")

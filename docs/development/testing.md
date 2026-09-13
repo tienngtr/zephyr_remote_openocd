@@ -22,8 +22,8 @@ contributor run never needs SSH, a Zephyr checkout, or lab hardware:
 ```sh
 pytest                         # unit + local integration
 pytest tests/zephyr_integration -m zephyr
-pytest tests/ssh_integration -m ssh --hardware-config /path/to/hardware.toml
-pytest tests/hardware -m hardware --hardware-config /path/to/hardware.toml
+pytest tests/ssh_integration -m ssh --hardware-config /path/to/hardware.yaml
+pytest tests/hardware -m hardware --hardware-config /path/to/hardware.yaml
 ```
 
 ## Common external-test setup
@@ -49,7 +49,7 @@ use the Zephyr source, `west`, toolchain, and external fixtures required by the
 selected layer. Running pytest from Zephyr's environment is also valid if that
 interpreter has every dependency in `requirements_dev.txt`.
 
-Copy [`tests/fixtures/hardware.example.toml`](../../tests/fixtures/hardware.example.toml)
+Copy [`tests/fixtures/hardware.example.yaml`](../../tests/fixtures/hardware.example.yaml)
 to an ignored location, then replace its host, target, and tool placeholders.
 The inventory must contain at least one host and one syntactically complete
 target record, even for SSH-only tests; target build fields are not executed by
@@ -61,7 +61,7 @@ Validate collection before execution:
 
 ```sh
 .venv/bin/python -m pytest --collect-only -q \
-  --hardware-config /path/to/hardware.toml
+  --hardware-config /path/to/hardware.yaml
 ```
 
 Use `ZRO_STRICT_EXTERNAL=1` when a missing prerequisite or unexpected skip
@@ -146,7 +146,7 @@ Run the desired layers explicitly:
 ```sh
 ZRO_STRICT_EXTERNAL=1 .venv/bin/python -m pytest \
   tests/ssh_integration -m ssh \
-  --hardware-config /path/to/hardware.toml
+  --hardware-config /path/to/hardware.yaml
 
 ZEPHYR_BASE=/path/to/zephyr \
 WEST=/path/to/west \
@@ -156,7 +156,7 @@ ZRO_STRICT_EXTERNAL=1 .venv/bin/python -m pytest \
 
 ZRO_STRICT_EXTERNAL=1 .venv/bin/python -m pytest \
   tests/hardware -m hardware \
-  --hardware-config /path/to/hardware.toml
+  --hardware-config /path/to/hardware.yaml
 ```
 
 Select one real debug profile without running other destructive nodes by using
@@ -165,7 +165,7 @@ its complete parametrized node ID:
 ```sh
 ZRO_STRICT_EXTERNAL=1 .venv/bin/python -m pytest \
   'tests/hardware/test_real_debug.py::TestRealOpenOcdDebug::test_debug[board:debug]' \
-  --hardware-config /path/to/hardware.toml
+  --hardware-config /path/to/hardware.yaml
 ```
 
 Run all configured static checks with:

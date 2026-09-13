@@ -13,51 +13,56 @@ import pytest
 from elftools.elf.elffile import ELFFile
 from zephyr_remote_openocd.config import load_config, resolve_remote
 
-from tests.hardware_support import HardwarePreparation, _record, elf_memory_witness, records_for
+from tests.hardware_support import (
+    DebugFixture,
+    FlashFixture,
+    HardwarePreparation,
+    elf_memory_witness,
+)
 from tests.inventory import load_inventory
 from tests.support import ROOT
 
 
-def test_inventory_profiles_become_independent_capability_records(tmp_path):
-    inventory = load_inventory(ROOT / "tests/fixtures/hardware.example.toml")
-    host = inventory.host("lab")
+def test_inventory_profiles_expose_operations_without_capability_records():
+    inventory = load_inventory(ROOT / "tests/fixtures/hardware.example.yaml")
     target = inventory.target("board")
     profile = target.profile("debug")
-    record = _record(target, host, profile, tmp_path / "build", tmp_path / "config.yaml")
-    assert {"debug", "attach", "debugserver"}.issubset(record["capabilities"])
-    assert records_for([record], "rtt") == []
-    assert records_for([record], "debug") == [record]
-    assert record["debug_breakpoint"] == "main"
-    assert record["attach_precondition_build_dir"] == str(tmp_path / "minimal")
-    assert "serial_device" not in record
-
-
-def test_probe_serial_is_translated_to_runner_argument(tmp_path):
-    inventory = load_inventory(ROOT / "tests/fixtures/hardware.example.toml")
-    host = inventory.host("lab")
-    target = inventory.target("board")
-    profile = replace(
-        target.profile("flash"),
-        probe_serial="example_probe",
-    )
-    record = _record(target, host, profile, tmp_path / "build", tmp_path / "config.yaml")
-    assert "--serial=example_probe" in record["runner_args"]
-    assert record["precondition_build_dir"] == str(tmp_path / "minimal")
-    assert record["quiescence_timeout"] == 2
+    assert profile.operation_names == ("debug", "attach", "debugserver")
+    assert "rtt" not in profile.operations
 
 
 def test_preparation_builds_only_requested_recipes_and_caches_success(tmp_path, monkeypatch):
-    inventory = load_inventory(ROOT / "tests/fixtures/hardware.example.toml")
+    inventory = load_inventory(ROOT / "tests/fixtures/hardware.example.yaml")
     original = inventory.target("board")
-    target = replace(original, zephyr_base=tmp_path, west=Path(sys.executable))
+    build_environment = replace(
+        inventory.build_environment("zephyr44"),
+        zephyr_base=tmp_path,
+        west=Path(sys.executable),
+    )
+    flash_profile = replace(original.profile("flash"), probe_serial="example_probe")
+    target = replace(
+        original,
+        profiles=tuple(
+            flash_profile if profile.name == "flash" else profile for profile in original.profiles
+        ),
+    )
     # An unavailable unrelated target and recipe must not affect selection.
-    unrelated = replace(original, id="unavailable")
+    unavailable_environment = replace(
+        build_environment,
+        name="unavailable",
+        zephyr_base=tmp_path / "unavailable",
+    )
+    unrelated = replace(original, name="unavailable", build_environment="unavailable")
     extra = replace(target.builds[0], name="unused", application="/unavailable/application")
     unused_profile = replace(target.profile("flash"), name="unused", build="unused")
     target = replace(
         target, builds=(*target.builds, extra), profiles=(*target.profiles, unused_profile)
     )
-    inventory = replace(inventory, targets=(unrelated, target))
+    inventory = replace(
+        inventory,
+        build_environments=(unavailable_environment, build_environment),
+        targets=(unrelated, target),
+    )
     build_root = tmp_path / "builds"
     config_root = tmp_path / "configs"
     build_root.mkdir()
@@ -68,20 +73,25 @@ def test_preparation_builds_only_requested_recipes_and_caches_success(tmp_path, 
     with patch("tests.hardware_support.subprocess.run") as run:
         run.return_value = SimpleNamespace(returncode=1, stdout="build failed")
         with pytest.raises(pytest.fail.Exception, match="build failed"):
-            preparation.prepare("board:flash")
+            preparation.prepare("board:flash", "flash")
         run.return_value = SimpleNamespace(returncode=0, stdout="")
-        flash = preparation.prepare("board:flash")
-        debug = preparation.prepare("board:debug")
+        flash = preparation.prepare("board:flash", "flash")
+        debug = preparation.prepare("board:debug", "debug")
     # Failed attempts are retried; the successful flash preparation builds both
     # the intended and precondition recipes, and debug reuses the intended one.
     assert run.call_count == 3
-    assert flash["build_dir"] == debug["build_dir"]
-    assert flash["id"] != debug["id"]
+    assert isinstance(flash, FlashFixture)
+    assert isinstance(debug, DebugFixture)
+    assert flash.target.build_dir == debug.target.build_dir
+    assert flash.target.id != debug.target.id
+    assert "--serial=example_probe" in flash.target.runner_args
+    assert flash.precondition_build_dir == build_root / "board" / "minimal"
+    assert flash.operation.quiescence_timeout == 2
     environment = run.call_args.kwargs["env"]
     assert "ZEPHYR_REMOTE_OPENOCD_REMOTE" not in environment
-    assert environment["ZEPHYR_REMOTE_OPENOCD_CONFIG"] == flash["config_path"]
-    selected = resolve_remote(load_config(Path(flash["config_path"])), remote_name="lab")
-    assert selected.ssh_host == inventory.host("lab").address
+    assert environment["ZEPHYR_REMOTE_OPENOCD_CONFIG"] == str(flash.target.config_path)
+    selected = resolve_remote(load_config(flash.target.config_path), remote_name="lab")
+    assert selected.ssh_host == inventory.host("lab").ssh_host
     assert not (build_root / "unavailable").exists()
     assert not (build_root / "board" / "unused").exists()
 

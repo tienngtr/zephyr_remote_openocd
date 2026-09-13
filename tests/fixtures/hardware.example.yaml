@@ -1,0 +1,93 @@
+# SPDX-License-Identifier: Apache-2.0
+
+# Copy this file outside the repository and replace placeholders with local
+# values. Do not commit host names, probe serials, device paths, or credentials.
+
+build_environments:
+  zephyr44:
+    zephyr_base: /path/to/zephyr
+    west: /path/to/zephyrproject/.venv/bin/west
+
+toolchains:
+  arm:
+    gdb: /path/to/toolchain/bin/arm-none-eabi-gdb
+
+hosts:
+  lab:
+    ssh_host: ssh_alias
+    ssh_command: [ssh]
+    openocd_command: [/absolute/path/to/openocd]
+    forward_env: [FTDI_CHANNEL]
+    path_mappings:
+      /path/to/openocd/scripts: /opt/openocd/share/openocd/scripts
+
+targets:
+  board:
+    host: lab
+    build_environment: zephyr44
+    toolchain: arm
+    board: vendor/board
+
+    builds:
+      hello:
+        application: samples/hello_world
+      minimal:
+        application: samples/basic/minimal
+
+    serial:
+      console:
+        device: /dev/serial/by-id/example
+        baud: 115200
+        data_bits: 8
+        parity: none
+        stop_bits: 1
+        flow_control: none
+
+    profiles:
+      flash:
+        build: hello
+        environment:
+          FTDI_CHANNEL: "0"
+        operations:
+          flash:
+            precondition_build: minimal
+            quiescence_timeout: 2
+            serial:
+              endpoint: console
+              pattern: hello
+              timeout: 30
+            output_patterns: [hello]
+            assert_bindto: false
+
+      debug:
+        build: hello
+        operations:
+          debug:
+            breakpoint: main
+            output_patterns: [hello]
+          attach:
+            precondition_build: minimal
+          debugserver: {}
+
+      rtt:
+        build: hello
+        operations:
+          rtt:
+            port: 19021
+            input: "help\n"
+            response: help
+            timeout: 30
+            program_survives_reset: true
+            breakpoint: main
+
+      semihosting:
+        build: hello
+        operations:
+          semihosting:
+            commands:
+              - lappend post_init_commands {arm semihosting enable}
+              - lappend post_init_commands {arm semihosting_fileio disable}
+              - lappend post_init_commands {arm semihosting_redirect disable}
+            gdb_commands: [continue, detach, quit]
+            output: hello
+            timeout: 30

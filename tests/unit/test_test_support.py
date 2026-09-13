@@ -19,13 +19,13 @@ class Config:
 
 
 def test_hardware_config_cli_option_has_precedence(monkeypatch):
-    monkeypatch.setenv("ZRO_HARDWARE_CONFIG", "/from/environment.toml")
-    assert hardware_config_path(Config("/from/cli.toml")) == Path("/from/cli.toml")
+    monkeypatch.setenv("ZRO_HARDWARE_CONFIG", "/from/environment.yaml")
+    assert hardware_config_path(Config("/from/cli.yaml")) == Path("/from/cli.yaml")
 
 
 def test_hardware_config_environment_fallback(monkeypatch):
-    monkeypatch.setenv("ZRO_HARDWARE_CONFIG", "/from/environment.toml")
-    assert hardware_config_path(Config(None)) == Path("/from/environment.toml")
+    monkeypatch.setenv("ZRO_HARDWARE_CONFIG", "/from/environment.yaml")
+    assert hardware_config_path(Config(None)) == Path("/from/environment.yaml")
 
 
 def test_hardware_config_is_optional_for_default_collection(monkeypatch):

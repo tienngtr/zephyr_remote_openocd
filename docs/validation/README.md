@@ -36,7 +36,7 @@ Use the Python environment containing the repository's developer dependencies:
 
 ```sh
 .venv/bin/python scripts/release_validate.py \
-  --hardware-config /path/to/hardware.toml \
+  --hardware-config /path/to/hardware.yaml \
   --zephyr-base /path/to/zephyr \
   --west /path/to/west \
   --board stm32f746g_disco \
