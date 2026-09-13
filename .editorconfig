@@ -16,6 +16,11 @@ max_line_length = 100
 indent_style = space
 indent_size = 4
 
+# JSON
+[*.json]
+indent_style = space
+indent_size = 2
+
 # Markdown and plain-text documentation
 [*.{md,txt}]
 indent_style = space

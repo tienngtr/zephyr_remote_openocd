@@ -90,6 +90,25 @@ def test_commands_cover_repository_static_checks():
     )
 
 
+def test_json_schema_files_are_checked_with_canonical_formatting(tmp_path, capsys):
+    assert static_check.json_schema_files() == (
+        "python/zephyr_remote_openocd/resources/configuration.schema.json",
+        "tests/fixtures/hardware.schema.json",
+    )
+    assert static_check.check_json_format(ROOT, static_check.json_schema_files())
+
+    path = tmp_path / "schema.json"
+    path.write_text('{"type": "object"}\n', encoding="utf-8")
+    assert not static_check.check_json_format(tmp_path, ("schema.json",))
+    assert (
+        "use this command template: python3 -m json.tool --indent 2 INPUT.json > "
+        "OUTPUT.json.tmp && mv OUTPUT.json.tmp OUTPUT.json"
+    ) in capsys.readouterr().err
+
+    path.write_text('{\n  "type": "object"\n}\n', encoding="utf-8")
+    assert static_check.check_json_format(tmp_path, ("schema.json",))
+
+
 def test_source_files_are_selected_from_git(monkeypatch):
     class Result:
         stdout = "one.py\ntwo.py\n"
