@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass
 
 from .model import RemoteProcess, Service
-from .openocd_plan import base_argv, plan_support_paths
+from .openocd_plan import plan_openocd_base
 from .paths import PathPlanner
 
 
@@ -90,6 +90,18 @@ class DebugPlan:
     launches_rtt_client: bool
 
 
+@dataclass(frozen=True)
+class DebugServicePlan:
+    """Validated OpenOCD and optional RTT service allocation."""
+
+    remote_gdb: int
+    local_gdb: int
+    remote_tcl: int | None
+    remote_telnet: int | None
+    services: tuple[Service, ...]
+    rtt_service: Service | None
+
+
 def _port(value: int | str, name: str, *, required: bool = False) -> int | None:
     if isinstance(value, str) and value.lower() == "disabled":
         if required:
@@ -108,16 +120,14 @@ def _commands(commands: tuple[str, ...]) -> list[str]:
     return [item for command in commands for item in ("-c", command)]
 
 
-def build_debug_plan(
-    inputs: DebugInputs,
-    planner: PathPlanner,
-    environment: tuple[tuple[str, str], ...] = (),
-) -> DebugPlan:
+def _validate_debug_inputs(inputs: DebugInputs) -> None:
     if inputs.command not in {"debug", "attach", "debugserver", "rtt"}:
         raise DebugPlanError(f"unsupported persistent debug command: {inputs.command}")
     if not inputs.readiness_marker or any(ch.isspace() for ch in inputs.readiness_marker):
         raise DebugPlanError("readiness marker must be a non-empty token")
 
+
+def _plan_debug_services(inputs: DebugInputs) -> DebugServicePlan:
     remote_gdb = _port(inputs.gdb_port, "gdb_port", required=True)
     local_gdb = _port(inputs.gdb_client_port, "gdb_client_port", required=True)
     remote_tcl = _port(inputs.tcl_port, "tcl_port")
@@ -141,103 +151,139 @@ def build_debug_plan(
         rtt_service = Service("rtt", rtt_port, rtt_port)
         if inputs.command != "rtt":
             services.append(rtt_service)
-
-    remote_search, remote_configs = plan_support_paths(
-        inputs.search_paths, inputs.config_files, planner
+    return DebugServicePlan(
+        remote_gdb,
+        local_gdb,
+        remote_tcl,
+        remote_telnet,
+        tuple(services),
+        rtt_service,
     )
 
-    rtos = thread_info_enabled(inputs.thread_info_requested, inputs.openocd_version)
-    executable = (inputs.executable,) if isinstance(inputs.executable, str) else inputs.executable
-    argv = base_argv(inputs.executable, inputs.serial, remote_search, remote_configs)
+
+def _server_commands(
+    inputs: DebugInputs, services: DebugServicePlan, rtos: bool
+) -> tuple[str, ...]:
+    commands: list[str] = []
     for name, port in (
-        ("tcl_port", remote_tcl),
-        ("telnet_port", remote_telnet),
-        ("gdb_port", remote_gdb),
+        ("tcl_port", services.remote_tcl),
+        ("telnet_port", services.remote_telnet),
+        ("gdb_port", services.remote_gdb),
     ):
-        argv.extend(("-c", f"{name} {port if port is not None else 'disabled'}"))
-    argv.extend(_commands(inputs.pre_init))
+        commands.extend(("-c", f"{name} {port if port is not None else 'disabled'}"))
+    commands.extend(_commands(inputs.pre_init))
     if rtos:
-        argv.extend(("-c", f"${inputs.target_handle} configure -rtos Zephyr"))
+        commands.extend(("-c", f"${inputs.target_handle} configure -rtos Zephyr"))
     if not inputs.no_init:
-        argv.extend(("-c", "init"))
+        commands.extend(("-c", "init"))
     if not inputs.no_targets:
-        argv.extend(("-c", "targets"))
+        commands.extend(("-c", "targets"))
     if inputs.command == "debugserver":
-        argv.extend(("-c", inputs.reset_halt))
+        commands.extend(("-c", inputs.reset_halt))
     elif not inputs.no_halt:
-        argv.extend(("-c", "halt"))
+        commands.extend(("-c", "halt"))
     if inputs.rtt_server and inputs.command != "rtt":
-        assert inputs.rtt_address is not None and rtt_service is not None
-        argv.extend(
+        assert inputs.rtt_address is not None and services.rtt_service is not None
+        commands.extend(
             (
                 "-c",
                 f'rtt setup 0x{inputs.rtt_address:x} 0x10 "SEGGER RTT"',
                 "-c",
                 "rtt start",
                 "-c",
-                f"rtt server start {rtt_service.remote_port} 0",
+                f"rtt server start {services.rtt_service.remote_port} 0",
             )
         )
-    argv.extend(("-c", f"echo {inputs.readiness_marker}"))
+    commands.extend(("-c", f"echo {inputs.readiness_marker}"))
+    return tuple(commands)
 
-    gdb_argv = None
-    if inputs.command != "debugserver":
-        if not inputs.gdb:
-            raise DebugPlanError(f"cannot {inputs.command}; no GDB executable specified")
-        if not inputs.elf_file:
-            raise DebugPlanError(f"cannot {inputs.command}; no ELF file specified")
-        client = [inputs.gdb]
-        if inputs.command == "rtt":
-            client.append("--batch")
-        if inputs.tui:
-            client.append("-tui")
-        client.extend(("-ex", f"target extended-remote 127.0.0.1:{local_gdb}", inputs.elf_file))
-        if inputs.command == "debug" and inputs.load:
-            client.extend(("-ex", "load"))
-        for command in inputs.gdb_init:
-            client.extend(("-ex", command))
-        if inputs.command == "rtt":
-            assert inputs.rtt_address is not None and rtt_service is not None
-            client.extend(
-                (
-                    "-ex",
-                    f'monitor rtt setup 0x{inputs.rtt_address:x} 0x10 "SEGGER RTT"',
-                    "-ex",
-                    "monitor reset run",
-                    "-ex",
-                    "monitor rtt start",
-                    "-ex",
-                    f"monitor rtt server start {rtt_service.remote_port} 0",
-                    "-ex",
-                    "detach",
-                    "-ex",
-                    "quit",
-                )
-            )
-        gdb_argv = tuple(client)
+
+def _rtt_client_commands(inputs: DebugInputs, services: DebugServicePlan) -> tuple[str, ...]:
+    assert inputs.rtt_address is not None and services.rtt_service is not None
+    return (
+        "-ex",
+        f'monitor rtt setup 0x{inputs.rtt_address:x} 0x10 "SEGGER RTT"',
+        "-ex",
+        "monitor reset run",
+        "-ex",
+        "monitor rtt start",
+        "-ex",
+        f"monitor rtt server start {services.rtt_service.remote_port} 0",
+        "-ex",
+        "detach",
+        "-ex",
+        "quit",
+    )
+
+
+def _client_argv(inputs: DebugInputs, services: DebugServicePlan) -> tuple[str, ...] | None:
+    if inputs.command == "debugserver":
+        return None
+    if not inputs.gdb:
+        raise DebugPlanError(f"cannot {inputs.command}; no GDB executable specified")
+    if not inputs.elf_file:
+        raise DebugPlanError(f"cannot {inputs.command}; no ELF file specified")
+    client = [inputs.gdb]
+    if inputs.command == "rtt":
+        client.append("--batch")
+    if inputs.tui:
+        client.append("-tui")
+    client.extend(
+        ("-ex", f"target extended-remote 127.0.0.1:{services.local_gdb}", inputs.elf_file)
+    )
+    if inputs.command == "debug" and inputs.load:
+        client.extend(("-ex", "load"))
+    for command in inputs.gdb_init:
+        client.extend(("-ex", command))
+    if inputs.command == "rtt":
+        client.extend(_rtt_client_commands(inputs, services))
+    return tuple(client)
+
+
+def _rtt_setup(inputs: DebugInputs) -> str | None:
+    if inputs.command == "rtt":
+        return "batch_gdb"
+    if inputs.rtt_server:
+        return "openocd_startup"
+    return None
+
+
+def build_debug_plan(
+    inputs: DebugInputs,
+    planner: PathPlanner,
+    environment: tuple[tuple[str, str], ...] = (),
+) -> DebugPlan:
+    _validate_debug_inputs(inputs)
+    services = _plan_debug_services(inputs)
+    base = plan_openocd_base(
+        inputs.executable,
+        inputs.serial,
+        inputs.search_paths,
+        inputs.config_files,
+        planner,
+    )
+    rtos = thread_info_enabled(inputs.thread_info_requested, inputs.openocd_version)
+    argv = base.argv + _server_commands(inputs, services, rtos)
+    gdb_argv = _client_argv(inputs, services)
 
     process = RemoteProcess(
         "openocd",
-        tuple(argv),
+        argv,
         environment,
         tuple(planner.remote_checks),
         inputs.readiness_marker,
         30.0,
-        len(executable),
+        base.literal_prefix,
     )
     return DebugPlan(
         process,
         tuple(planner.staged_files),
-        tuple(services),
+        services.services,
         gdb_argv,
         inputs.thread_info_requested,
         inputs.openocd_version,
         rtos,
-        rtt_service,
-        "batch_gdb"
-        if inputs.command == "rtt"
-        else "openocd_startup"
-        if inputs.rtt_server
-        else None,
+        services.rtt_service,
+        _rtt_setup(inputs),
         inputs.command == "rtt",
     )

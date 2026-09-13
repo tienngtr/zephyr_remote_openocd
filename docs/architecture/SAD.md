@@ -587,6 +587,10 @@ target
 
 There is no command-line re-parsing stage.
 
+Flash command construction is phase-oriented: a shared immutable OpenOCD
+prefix is combined with a resolved image plan and one concrete ELF, BIN, or
+HEX operation plan. The public flash-plan result remains the runner boundary.
+
 ---
 
 ## 22. Debug Flow
@@ -620,6 +624,10 @@ cleanup
 ```
 
 The runner controls client startup, eliminating the executable-facade startup race.
+
+Persistent debug construction similarly separates immutable service/RTT
+validation, OpenOCD server commands, and local GDB arguments before assembling
+the public debug-plan result.
 
 ---
 
@@ -951,6 +959,12 @@ Persistent fallback data older than 24 hours may be cleaned opportunistically.
 ## 38. Process Supervision
 
 OpenOCD executes in a helper-supervised process group.
+
+The helper's `ControlSession` owns the workspace, control selector, command
+dispatch, signal handlers, and final cleanup. A `SupervisedChild` owns each
+OpenOCD (or fake test child) process, output relays, readiness observation,
+termination, and stream closure. This keeps process resources attached to one
+owner across success, failure, EOF, and signal paths.
 
 Normal termination:
 
