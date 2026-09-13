@@ -8,6 +8,7 @@ jsonschema
 mypy
 pyelftools>=0.29
 pylint>=3
+radon>=6,<7
 pytest
 pytest-cov>=7
 pytest-timeout>=2

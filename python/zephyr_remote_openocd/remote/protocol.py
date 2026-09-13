@@ -90,23 +90,43 @@ def _sha256(value: Any) -> bool:
     )
 
 
-def validate_client_command(message: dict[str, Any]) -> None:
-    """Validate the required fields of a Protocol v1 client command."""
-
-    kind = message["type"]
-    if kind == "STOP":
-        return
-    if kind == "START":
-        services = message.get("services")
-        if (
-            isinstance(services, list)
-            and services
-            and all(_fake_service(item) for item in services)
-        ):
-            return
+def _validate_start_command(message: dict[str, Any]) -> None:
+    services = message.get("services")
+    valid = (
+        isinstance(services, list) and services and all(_fake_service(item) for item in services)
+    )
+    if not valid:
         raise ProtocolError("invalid START command")
-    if kind != "START_OPENOCD":
-        raise ProtocolError(f"unexpected client command type: {kind!r}")
+
+
+def _valid_environment(value: Any) -> bool:
+    return isinstance(value, dict) and all(
+        isinstance(key, str) and isinstance(item, str) for key, item in value.items()
+    )
+
+
+def _valid_path_checks(value: Any) -> bool:
+    return isinstance(value, list) and all(
+        isinstance(item, dict)
+        and item.get("kind") in {"file", "directory"}
+        and isinstance(item.get("path"), str)
+        for item in value
+    )
+
+
+def _valid_marker(value: Any) -> bool:
+    return value is None or (_non_empty_string(value) and not any(char.isspace() for char in value))
+
+
+def _valid_timeout(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+
+
+def _valid_literal_prefix(value: Any, argv_length: int) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= argv_length
+
+
+def _validate_start_openocd_command(message: dict[str, Any]) -> None:
     argv = message.get("argv")
     environment = message.get("environment", {})
     checks = message.get("required_paths", [])
@@ -119,32 +139,97 @@ def validate_client_command(message: dict[str, Any]) -> None:
         or not argv
         or not _non_empty_string(argv[0])
         or not all(isinstance(item, str) for item in argv[1:])
-        or not isinstance(environment, dict)
-        or not all(
-            isinstance(key, str) and isinstance(value, str) for key, value in environment.items()
-        )
-        or not isinstance(checks, list)
-        or not all(
-            isinstance(item, dict)
-            and item.get("kind") in {"file", "directory"}
-            and isinstance(item.get("path"), str)
-            for item in checks
-        )
+        or not _valid_environment(environment)
+        or not _valid_path_checks(checks)
         or not isinstance(services, list)
         or not all(_service(item) for item in services)
-        or (
-            marker is not None
-            and (not _non_empty_string(marker) or any(char.isspace() for char in marker))
-        )
-        or not isinstance(timeout, (int, float))
-        or isinstance(timeout, bool)
-        or timeout <= 0
-        or isinstance(literal_prefix, bool)
-        or not isinstance(literal_prefix, int)
-        or literal_prefix < 0
-        or literal_prefix > len(argv)
+        or not _valid_marker(marker)
+        or not _valid_timeout(timeout)
+        or not _valid_literal_prefix(literal_prefix, len(argv) if isinstance(argv, list) else 0)
     ):
         raise ProtocolError("invalid START_OPENOCD command")
+
+
+def validate_client_command(message: dict[str, Any]) -> None:
+    """Validate the required fields of a Protocol v1 client command."""
+
+    kind = message["type"]
+    if kind == "STOP":
+        return
+    validators = {
+        "START": _validate_start_command,
+        "START_OPENOCD": _validate_start_openocd_command,
+    }
+    validator = validators.get(kind)
+    if validator is None:
+        raise ProtocolError(f"unexpected client command type: {kind!r}")
+    validator(message)
+
+
+def _valid_hello(message: dict[str, Any]) -> bool:
+    return _non_empty_string(message.get("helper"))
+
+
+def _valid_session_created(message: dict[str, Any]) -> bool:
+    return _non_empty_string(message.get("session_id")) and _non_empty_string(
+        message.get("remote_workspace")
+    )
+
+
+def _valid_process_started(message: dict[str, Any]) -> bool:
+    child_pid = message.get("child_pid")
+    return (
+        _address(message.get("remote_address"))
+        and isinstance(child_pid, int)
+        and not isinstance(child_pid, bool)
+        and child_pid > 0
+    )
+
+
+def _valid_service_ready(message: dict[str, Any]) -> bool:
+    child_pid = message.get("child_pid")
+    fake_services = message.get("services")
+    return _address(message.get("remote_address")) and (
+        _service(message.get("service"))
+        or (
+            isinstance(fake_services, list)
+            and bool(fake_services)
+            and all(_fake_service(item) for item in fake_services)
+            and isinstance(child_pid, int)
+            and not isinstance(child_pid, bool)
+            and child_pid > 0
+        )
+    )
+
+
+def _valid_child_output(message: dict[str, Any]) -> bool:
+    return message.get("stream") in {"stdout", "stderr"} and isinstance(message.get("payload"), str)
+
+
+def _valid_process_exit(message: dict[str, Any]) -> bool:
+    return isinstance(message.get("returncode"), int) and not isinstance(
+        message.get("returncode"), bool
+    )
+
+
+def _valid_stopped(message: dict[str, Any]) -> bool:
+    return message.get("reason") in {"requested", "process_exit"}
+
+
+def _valid_error(message: dict[str, Any]) -> bool:
+    return _non_empty_string(message.get("code")) and isinstance(message.get("message"), str)
+
+
+_EVENT_VALIDATORS = {
+    "HELLO": _valid_hello,
+    "SESSION_CREATED": _valid_session_created,
+    "PROCESS_STARTED": _valid_process_started,
+    "SERVICE_READY": _valid_service_ready,
+    "CHILD_OUTPUT": _valid_child_output,
+    "PROCESS_EXIT": _valid_process_exit,
+    "STOPPED": _valid_stopped,
+    "ERROR": _valid_error,
+}
 
 
 def validate_helper_event(message: dict[str, Any]) -> None:
@@ -155,48 +240,10 @@ def validate_helper_event(message: dict[str, Any]) -> None:
     """
 
     kind = message["type"]
-    valid = {
-        "HELLO": lambda: _non_empty_string(message.get("helper")),
-        "SESSION_CREATED": lambda: (
-            _non_empty_string(message.get("session_id"))
-            and _non_empty_string(message.get("remote_workspace"))
-        ),
-        "PROCESS_STARTED": lambda: (
-            _address(message.get("remote_address"))
-            and isinstance(message.get("child_pid"), int)
-            and not isinstance(message.get("child_pid"), bool)
-            and message["child_pid"] > 0
-        ),
-        "SERVICE_READY": lambda: (
-            _address(message.get("remote_address"))
-            and (
-                _service(message.get("service"))
-                or (
-                    isinstance(message.get("services"), list)
-                    and bool(message["services"])
-                    and all(_fake_service(item) for item in message["services"])
-                    and isinstance(message.get("child_pid"), int)
-                    and not isinstance(message.get("child_pid"), bool)
-                    and message["child_pid"] > 0
-                )
-            )
-        ),
-        "CHILD_OUTPUT": lambda: (
-            message.get("stream") in {"stdout", "stderr"}
-            and isinstance(message.get("payload"), str)
-        ),
-        "PROCESS_EXIT": lambda: (
-            isinstance(message.get("returncode"), int)
-            and not isinstance(message.get("returncode"), bool)
-        ),
-        "STOPPED": lambda: message.get("reason") in {"requested", "process_exit"},
-        "ERROR": lambda: (
-            _non_empty_string(message.get("code")) and isinstance(message.get("message"), str)
-        ),
-    }
-    if kind not in valid:
+    validator = _EVENT_VALIDATORS.get(kind)
+    if validator is None:
         raise ProtocolError(f"unexpected helper event type: {kind!r}")
-    if not valid[kind]():
+    if not validator(message):
         raise ProtocolError(f"invalid required fields for {kind}")
 
 
@@ -237,40 +284,37 @@ class EventOrder:
     def accept(self, message: dict[str, Any]) -> None:
         validate_helper_event(message)
         kind = message["type"]
-        allowed = {
-            "new": {"HELLO"},
-            "hello": {"SESSION_CREATED", "ERROR"},
-            "created": {
-                "PROCESS_STARTED",
-                "CHILD_OUTPUT",
-                "ERROR",
-                "STOPPED",
-            },
-            "started": {"SERVICE_READY", "CHILD_OUTPUT", "PROCESS_EXIT", "ERROR", "STOPPED"},
-            "ready": {"SERVICE_READY", "CHILD_OUTPUT", "PROCESS_EXIT", "ERROR", "STOPPED"},
-            "exited": {"STOPPED"},
-            "stopped": set(),
-        }
+        allowed = _EVENT_TRANSITIONS[self._state]
         # The aggregate SERVICE_READY form belongs only to the test fake
         # service. A real service-ready event is valid only after the child
         # process has been announced with PROCESS_STARTED.
-        if (
+        aggregate_ready = (
             self._state == "created"
             and kind == "SERVICE_READY"
             and isinstance(message.get("services"), list)
-        ):
-            allowed["created"].add(kind)
-        if kind not in allowed[self._state]:
+        )
+        if kind not in allowed and not aggregate_ready:
             raise ProtocolError(f"unexpected {kind} event in {self._state} state")
-        if kind == "HELLO":
-            self._state = "hello"
-        elif kind == "SESSION_CREATED":
-            self._state = "created"
-        elif kind == "PROCESS_STARTED":
-            self._state = "started"
-        elif kind == "SERVICE_READY":
-            self._state = "ready"
-        elif kind == "PROCESS_EXIT":
-            self._state = "exited"
-        elif kind in {"STOPPED", "ERROR"}:
-            self._state = "stopped"
+        if kind != "CHILD_OUTPUT":
+            self._state = _EVENT_NEXT_STATE[kind]
+
+
+_EVENT_TRANSITIONS = {
+    "new": frozenset({"HELLO"}),
+    "hello": frozenset({"SESSION_CREATED", "ERROR"}),
+    "created": frozenset({"PROCESS_STARTED", "CHILD_OUTPUT", "ERROR", "STOPPED"}),
+    "started": frozenset({"SERVICE_READY", "CHILD_OUTPUT", "PROCESS_EXIT", "ERROR", "STOPPED"}),
+    "ready": frozenset({"SERVICE_READY", "CHILD_OUTPUT", "PROCESS_EXIT", "ERROR", "STOPPED"}),
+    "exited": frozenset({"STOPPED"}),
+    "stopped": frozenset(),
+}
+
+_EVENT_NEXT_STATE = {
+    "HELLO": "hello",
+    "SESSION_CREATED": "created",
+    "PROCESS_STARTED": "started",
+    "SERVICE_READY": "ready",
+    "PROCESS_EXIT": "exited",
+    "STOPPED": "stopped",
+    "ERROR": "stopped",
+}

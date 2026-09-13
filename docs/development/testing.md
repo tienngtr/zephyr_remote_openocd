@@ -182,6 +182,26 @@ Run all configured static checks with:
 python3 scripts/static_check.py
 ```
 
+## Complexity review
+
+Radon reports support refactoring review; they are advisory and are not a CI
+threshold. Measure production code normally and test code with assertions
+excluded from the control-flow count:
+
+```sh
+python3 -m radon cc -s -n C python runners scripts
+python3 -m radon cc -s -n C --no-assert tests
+python3 -m radon mi -s python runners scripts tests
+python3 -m radon hal python runners scripts tests
+```
+
+Review C-ranked callables and normally refactor D-F production or test-support
+callables. A coherent C-ranked test may remain. Any extracted helper must
+represent a meaningful domain operation or improve cohesion, reuse, ownership,
+testability, or diagnostics; do not add pass-through helpers only to improve a
+score. Compare aggregate and maximum complexity with maintainability and
+Halstead effort before accepting a change.
+
 ## Coverage
 
 The self-contained suite can collect branch coverage for the production

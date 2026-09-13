@@ -114,39 +114,61 @@ class RemoteProcess:
     literal_prefix: int = 0
 
     def __post_init__(self) -> None:
-        argv = tuple(self.argv)
-        environment = tuple(self.environment)
-        required_paths = tuple(self.required_paths)
-        if (
-            not argv
-            or not isinstance(argv[0], str)
-            or not argv[0]
-            or not all(isinstance(arg, str) for arg in argv[1:])
-        ):
-            raise ValueError("remote process argv must start with a non-empty string")
-        names = [name for name, _ in environment]
-        if len(names) != len(set(names)) or not all(
-            isinstance(name, str) and name and "=" not in name and "\0" not in name
-            for name in names
-        ):
-            raise ValueError("remote environment names must be unique and valid")
-        if not all(isinstance(value, str) and "\0" not in value for _, value in environment):
-            raise ValueError("remote environment values must be strings without NUL")
-        if not all(isinstance(check, RemotePathCheck) for check in required_paths):
-            raise ValueError("remote path checks must be RemotePathCheck values")
-        if self.readiness_marker is not None and (
-            not self.readiness_marker
-            or any(character.isspace() for character in self.readiness_marker)
-        ):
-            raise ValueError("readiness marker must be a non-empty token")
-        if self.readiness_timeout <= 0:
-            raise ValueError("readiness timeout must be positive")
-        if (
-            isinstance(self.literal_prefix, bool)
-            or not isinstance(self.literal_prefix, int)
-            or not 0 <= self.literal_prefix <= len(argv)
-        ):
-            raise ValueError("literal argv prefix is invalid")
+        argv, environment, required_paths = _normalized_process_fields(self)
+        _validate_process_argv(argv)
+        _validate_process_environment(environment)
+        _validate_process_paths(required_paths)
+        _validate_process_readiness(self.readiness_marker, self.readiness_timeout)
+        _validate_literal_prefix(self.literal_prefix, len(argv))
         object.__setattr__(self, "argv", argv)
         object.__setattr__(self, "environment", environment)
         object.__setattr__(self, "required_paths", required_paths)
+
+
+def _normalized_process_fields(
+    process: RemoteProcess,
+) -> tuple[tuple[str, ...], tuple[tuple[str, str], ...], tuple[RemotePathCheck, ...]]:
+    """Freeze collection-valued process fields before validating them."""
+
+    return tuple(process.argv), tuple(process.environment), tuple(process.required_paths)
+
+
+def _validate_process_argv(argv: tuple[str, ...]) -> None:
+    if (
+        not argv
+        or not isinstance(argv[0], str)
+        or not argv[0]
+        or not all(isinstance(arg, str) for arg in argv[1:])
+    ):
+        raise ValueError("remote process argv must start with a non-empty string")
+
+
+def _validate_process_environment(environment: tuple[tuple[str, str], ...]) -> None:
+    names = [name for name, _ in environment]
+    if len(names) != len(set(names)) or not all(
+        isinstance(name, str) and name and "=" not in name and "\0" not in name for name in names
+    ):
+        raise ValueError("remote environment names must be unique and valid")
+    if not all(isinstance(value, str) and "\0" not in value for _, value in environment):
+        raise ValueError("remote environment values must be strings without NUL")
+
+
+def _validate_process_paths(required_paths: tuple[RemotePathCheck, ...]) -> None:
+    if not all(isinstance(check, RemotePathCheck) for check in required_paths):
+        raise ValueError("remote path checks must be RemotePathCheck values")
+
+
+def _validate_process_readiness(marker: str | None, timeout: float) -> None:
+    if marker is not None and (not marker or any(character.isspace() for character in marker)):
+        raise ValueError("readiness marker must be a non-empty token")
+    if timeout <= 0:
+        raise ValueError("readiness timeout must be positive")
+
+
+def _validate_literal_prefix(literal_prefix: int, argv_length: int) -> None:
+    if (
+        isinstance(literal_prefix, bool)
+        or not isinstance(literal_prefix, int)
+        or not 0 <= literal_prefix <= argv_length
+    ):
+        raise ValueError("literal argv prefix is invalid")
