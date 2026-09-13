@@ -158,13 +158,18 @@ def default_config_path() -> Path:
 def _load_yaml(config_path: Path) -> dict[str, object]:
     _require_dependencies(config_path)
     assert yaml is not None
+    text = _read_config_text(config_path)
+    return _parse_yaml_document(text, config_path)
+
+
+def _read_config_text(config_path: Path) -> str:
     try:
         text = config_path.read_text(encoding="utf-8")
     except FileNotFoundError as error:
         try:
             config_path.lstat()
         except FileNotFoundError:
-            return {}
+            return ""
         except OSError as inspection_error:
             raise ConfigError(
                 f"cannot inspect configuration {config_path}: {inspection_error}"
@@ -175,13 +180,18 @@ def _load_yaml(config_path: Path) -> dict[str, object]:
     except OSError as error:
         raise ConfigError(f"cannot read configuration {config_path}: {error}") from error
     if not text.strip():
-        return {}
+        return ""
+    return text
+
+
+def _parse_yaml_document(text: str, config_path: Path) -> dict[str, object]:
+    assert yaml is not None
     try:
         nodes = list(yaml.compose_all(text, Loader=_StrictLoader))
         documents = list(yaml.load_all(text, Loader=_StrictLoader))
     except yaml.YAMLError as error:
         raise ConfigError(f"invalid YAML configuration {config_path}: {error}") from error
-    if not documents:
+    if not documents or not text:
         return {}
     if len(documents) != 1:
         raise ConfigError(f"invalid YAML configuration {config_path}: expected one document")
@@ -326,16 +336,9 @@ def _merge_settings(preset: Preset | None, remote: RemoteDefinition) -> Preset:
     )
 
 
-def resolve_remote(
-    config: RemoteOpenOcdConfig,
-    remote_name: str | None = None,
-    *,
-    require_openocd: bool = True,
-) -> ResolvedRemote:
-    if remote_name is not None:
-        selected_name: str | None = remote_name
-    else:
-        selected_name = os.environ.get("ZEPHYR_REMOTE_OPENOCD_REMOTE") or config.default_remote
+def _selected_remote_name(config: RemoteOpenOcdConfig, remote_name: str | None) -> str:
+    selected_name = remote_name or os.environ.get("ZEPHYR_REMOTE_OPENOCD_REMOTE")
+    selected_name = selected_name or config.default_remote
     if not selected_name:
         raise ConfigError(
             "no remote selected for remote_openocd; use --remote or set "
@@ -343,17 +346,45 @@ def resolve_remote(
         )
     if not _IDENTIFIER.fullmatch(selected_name):
         raise ConfigError(f"invalid remote name {selected_name!r} in {config.path}")
-    definition = config.remotes.get(selected_name)
+    return selected_name
+
+
+def _remote_definition(config: RemoteOpenOcdConfig, name: str) -> RemoteDefinition:
+    definition = config.remotes.get(name)
     if definition is None:
-        raise ConfigError(f"selected remote {selected_name!r} does not exist in {config.path}")
-    preset = None
-    if definition.preset is not None:
-        preset = config.presets.get(definition.preset)
-        if preset is None:
-            raise ConfigError(
-                f"remote {selected_name!r} references missing preset "
-                f"{definition.preset!r} in {config.path}"
-            )
+        raise ConfigError(f"selected remote {name!r} does not exist in {config.path}")
+    return definition
+
+
+def _remote_preset(
+    config: RemoteOpenOcdConfig, name: str, definition: RemoteDefinition
+) -> Preset | None:
+    if definition.preset is None:
+        return None
+    preset = config.presets.get(definition.preset)
+    if preset is None:
+        raise ConfigError(
+            f"remote {name!r} references missing preset {definition.preset!r} in {config.path}"
+        )
+    return preset
+
+
+def _normalized_ssh_command(command: tuple[str, ...] | None) -> tuple[str, ...]:
+    normalized = command or ("ssh",)
+    if normalized[0] == "~" or normalized[0].startswith("~/"):
+        return (str(Path(normalized[0]).expanduser()), *normalized[1:])
+    return normalized
+
+
+def resolve_remote(
+    config: RemoteOpenOcdConfig,
+    remote_name: str | None = None,
+    *,
+    require_openocd: bool = True,
+) -> ResolvedRemote:
+    selected_name = _selected_remote_name(config, remote_name)
+    definition = _remote_definition(config, selected_name)
+    preset = _remote_preset(config, selected_name, definition)
     values = _merge_settings(preset, definition)
     command = values.openocd_command
     if command is None and require_openocd:
@@ -362,9 +393,7 @@ def resolve_remote(
         )
     if command is None:
         command = ()
-    ssh_command = values.ssh_command or ("ssh",)
-    if ssh_command[0] == "~" or ssh_command[0].startswith("~/"):
-        ssh_command = (str(Path(ssh_command[0]).expanduser()), *ssh_command[1:])
+    ssh_command = _normalized_ssh_command(values.ssh_command)
     return ResolvedRemote(
         selected_name,
         config.path,
