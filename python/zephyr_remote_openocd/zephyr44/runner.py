@@ -92,42 +92,13 @@ class RemoteOpenOcdBinaryRunner(OpenOcdBinaryRunner):
         parser.add_argument("--remote", help="select a configured remote by name")
 
     def do_run(self, command, **kwargs):
-        try:
-            document = load_config()
-            recording = os.environ.get("ZRO_RECORD") == "1"
-            selected = resolve_remote(
-                document,
-                getattr(self.parsed_args, "remote", None),
-                require_openocd=not recording,
-            )
-        except ConfigError as error:
-            raise RuntimeError(str(error)) from error
-
+        recording = os.environ.get("ZRO_RECORD") == "1"
+        selected = _select_remote(self, recording)
         if recording:
             _record_runner(self, command, selected)
             return
         try:
-            if os.environ.get("ZRO_RECORD") != "1":
-                selected = _prepare_remote_paths(selected)
-            if command == "flash":
-                request = _flash_request(self, selected)
-                plan = None
-                backend = SshHelperBackend(output_handler=_write_output)
-            elif command in {"debug", "attach", "debugserver", "rtt"}:
-                backend = SshHelperBackend(output_handler=_write_output)
-                version = None
-                if self.thread_info_enabled:
-                    version = parse_openocd_version(
-                        backend.openocd_version(
-                            SshCommand(selected.ssh_command),
-                            selected.remote_host,
-                            _remote_openocd(selected, command),
-                        )
-                    )
-                plan = _debug_plan(self, command, selected, version)
-                request = _debug_request(self, selected, plan)
-            else:
-                raise RuntimeError(f"remote_openocd {command} is not implemented")
+            selected, request, plan, backend = _build_operation(self, command, selected)
         except (
             ConfigError,
             FlashPlanError,
@@ -136,73 +107,126 @@ class RemoteOpenOcdBinaryRunner(OpenOcdBinaryRunner):
             RttClientError,
         ) as error:
             raise RuntimeError(str(error)) from error
-        session = RemoteSession(request, backend)
-        try:
-            descriptor = session.start()
-            self.logger.info(
-                "Remote OpenOCD session %s workspace=%s bindto=%s",
-                descriptor.session_id,
-                descriptor.remote_workspace,
-                descriptor.remote_address,
+        _execute_operation(self, command, request, plan, backend)
+
+
+def _select_remote(runner, recording):
+    try:
+        document = load_config()
+        return resolve_remote(
+            document,
+            getattr(runner.parsed_args, "remote", None),
+            require_openocd=not recording,
+        )
+    except ConfigError as error:
+        raise RuntimeError(str(error)) from error
+
+
+def _build_operation(runner, command, selected):
+    selected = _prepare_remote_paths(selected)
+    backend = SshHelperBackend(output_handler=_write_output)
+    if command == "flash":
+        return selected, _flash_request(runner, selected), None, backend
+    if command not in {"debug", "attach", "debugserver", "rtt"}:
+        raise RuntimeError(f"remote_openocd {command} is not implemented")
+    version = None
+    if runner.thread_info_enabled:
+        version = parse_openocd_version(
+            backend.openocd_version(
+                SshCommand(selected.ssh_command),
+                selected.remote_host,
+                _remote_openocd(selected, command),
             )
-            if command != "rtt" and plan is not None and plan.rtt_service is not None:
-                self.logger.info(
+        )
+    plan = _debug_plan(runner, command, selected, version)
+    return selected, _debug_request(runner, selected, plan), plan, backend
+
+
+def _execute_operation(runner, command, request, plan, backend):
+    session = RemoteSession(request, backend)
+    try:
+        descriptor = session.start()
+        runner.logger.info(
+            "Remote OpenOCD session %s workspace=%s bindto=%s",
+            descriptor.session_id,
+            descriptor.remote_workspace,
+            descriptor.remote_address,
+        )
+        if command != "rtt" and plan is not None and plan.rtt_service is not None:
+            runner.logger.info(
+                "Remote OpenOCD RTT server available at 127.0.0.1:%s",
+                plan.rtt_service.local_port,
+            )
+        if command == "debugserver":
+            assert plan is not None
+            gdb = next(item for item in plan.services if item.name == "gdb")
+            runner.logger.info(
+                "Remote OpenOCD GDB server available at 127.0.0.1:%s",
+                gdb.local_port,
+            )
+        if command == "rtt":
+            assert plan is not None and plan.gdb_argv is not None
+            assert plan.rtt_service is not None
+            runner.require(plan.gdb_argv[0])
+            try:
+                runner.run_client(list(plan.gdb_argv))
+                session.forward((plan.rtt_service,))
+                runner.logger.info(
                     "Remote OpenOCD RTT server available at 127.0.0.1:%s",
                     plan.rtt_service.local_port,
                 )
-            if command == "debugserver":
-                assert plan is not None
-                gdb = next(item for item in plan.services if item.name == "gdb")
-                self.logger.info(
-                    "Remote OpenOCD GDB server available at 127.0.0.1:%s",
-                    gdb.local_port,
-                )
-            if command == "rtt":
-                assert plan is not None and plan.gdb_argv is not None
-                assert plan.rtt_service is not None
-                self.require(plan.gdb_argv[0])
-                try:
-                    self.run_client(list(plan.gdb_argv))
-                    session.forward((plan.rtt_service,))
-                    self.logger.info(
-                        "Remote OpenOCD RTT server available at 127.0.0.1:%s",
-                        plan.rtt_service.local_port,
-                    )
-                    returncode = run_rtt_client(
-                        plan.rtt_service.local_port,
-                        session.poll,
-                    )
-                finally:
-                    session.close()
-                if returncode:
-                    raise RuntimeError(f"remote OpenOCD failed with exit status {returncode}")
-                return
-            if command in {"debug", "attach"}:
-                assert plan is not None and plan.gdb_argv is not None
-                self.require(plan.gdb_argv[0])
-                try:
-                    self.run_client(list(plan.gdb_argv))
-                finally:
-                    returncode = session.poll()
-                    session.close()
-                if returncode:
-                    raise RuntimeError(f"remote OpenOCD failed with exit status {returncode}")
-                return
-            returncode = session.wait()
-        except KeyboardInterrupt:
-            session.close()
-            raise
-        if returncode:
-            raise RuntimeError(f"remote OpenOCD failed with exit status {returncode}")
+                returncode = run_rtt_client(plan.rtt_service.local_port, session.poll)
+            finally:
+                session.close()
+            if returncode:
+                raise RuntimeError(f"remote OpenOCD failed with exit status {returncode}")
+            return
+        if command in {"debug", "attach"}:
+            assert plan is not None and plan.gdb_argv is not None
+            runner.require(plan.gdb_argv[0])
+            try:
+                runner.run_client(list(plan.gdb_argv))
+            finally:
+                returncode = session.poll()
+                session.close()
+            if returncode:
+                raise RuntimeError(f"remote OpenOCD failed with exit status {returncode}")
+            return
+        returncode = session.wait()
+    except KeyboardInterrupt:
+        session.close()
+        raise
+    if returncode:
+        raise RuntimeError(f"remote OpenOCD failed with exit status {returncode}")
 
 
 def _record_runner(runner, command, selected):
-    runner_args = {
+    request, local_gdb, thread_info, rtt = _record_operation(runner, command, selected)
+    payload = {
+        "recording": True,
+        "runner": runner.name(),
+        "command": command,
+        "runner_args": _recorded_runner_args(runner),
+        "runner_config": _recorded_runner_config(runner),
+        "selected_config": selected.printable(),
+        "remote_session_request": _request_record(request) if request is not None else None,
+        "local_gdb_argv": local_gdb,
+        "thread_info": thread_info,
+        "rtt": rtt,
+    }
+    print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+
+
+def _recorded_runner_args(runner):
+    return {
         key: value
         for key, value in vars(runner.parsed_args).items()
         if value not in (None, False, "", [])
     }
-    common = {
+
+
+def _recorded_runner_config(runner):
+    return {
         key: _json_value(getattr(runner.remote_config, key, None))
         for key in (
             "board_dir",
@@ -216,60 +240,44 @@ def _record_runner(runner, command, selected):
             "openocd_search",
         )
     }
-    request = None
-    local_gdb = None
-    thread_info = None
-    rtt = None
-    if command == "flash" and selected.remote_host and selected.remote_openocd:
-        request = _flash_request(runner, selected)
-    elif (
-        command in {"debug", "attach", "debugserver", "rtt"}
-        and selected.remote_host
-        and selected.remote_openocd
-    ):
-        requested = runner.thread_info_enabled
-        supplied = os.environ.get("ZRO_RECORD_VERSION")
-        if requested and supplied is None:
-            raise RuntimeError(
-                "ZRO_RECORD_VERSION is required to record a thread-info-enabled build"
-            )
-        if requested:
-            assert supplied is not None
-            version = parse_openocd_version(supplied)
-        else:
-            version = None
-        plan = _debug_plan(runner, command, selected, version)
-        request = _debug_request(runner, selected, plan)
-        local_gdb = list(plan.gdb_argv) if plan.gdb_argv is not None else None
-        thread_info = {
-            "requested": requested,
-            "version": supplied if requested else None,
-            "version_source": "injected" if requested else None,
-            "rtos_awareness": plan.rtos_awareness,
-        }
-        rtt = {
-            "enabled": plan.rtt_service is not None,
-            "address": runner.get_rtt_address() if plan.rtt_service is not None else None,
-            "port": plan.rtt_service.local_port if plan.rtt_service is not None else None,
-            "setup": plan.rtt_setup,
-            "service_phase": ("deferred" if command == "rtt" else "initial")
-            if plan.rtt_service is not None
-            else None,
-            "launches_local_client": plan.launches_rtt_client,
-        }
-    payload = {
-        "recording": True,
-        "runner": runner.name(),
-        "command": command,
-        "runner_args": runner_args,
-        "runner_config": common,
-        "selected_config": selected.printable(),
-        "remote_session_request": _request_record(request) if request is not None else None,
-        "local_gdb_argv": local_gdb,
-        "thread_info": thread_info,
-        "rtt": rtt,
+
+
+def _record_operation(runner, command, selected):
+    if not selected.remote_host or not selected.remote_openocd:
+        return None, None, None, None
+    if command == "flash":
+        return _flash_request(runner, selected), None, None, None
+    if command not in {"debug", "attach", "debugserver", "rtt"}:
+        return None, None, None, None
+    requested = runner.thread_info_enabled
+    supplied = os.environ.get("ZRO_RECORD_VERSION")
+    if requested and supplied is None:
+        raise RuntimeError("ZRO_RECORD_VERSION is required to record a thread-info-enabled build")
+    version = parse_openocd_version(supplied) if requested and supplied is not None else None
+    plan = _debug_plan(runner, command, selected, version)
+    thread_info = {
+        "requested": requested,
+        "version": supplied if requested else None,
+        "version_source": "injected" if requested else None,
+        "rtos_awareness": plan.rtos_awareness,
     }
-    print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+    rtt = _recorded_rtt(runner, command, plan)
+    local_gdb = list(plan.gdb_argv) if plan.gdb_argv is not None else None
+    return _debug_request(runner, selected, plan), local_gdb, thread_info, rtt
+
+
+def _recorded_rtt(runner, command, plan):
+    service = plan.rtt_service
+    return {
+        "enabled": service is not None,
+        "address": runner.get_rtt_address() if service is not None else None,
+        "port": service.local_port if service is not None else None,
+        "setup": plan.rtt_setup,
+        "service_phase": ("deferred" if command == "rtt" else "initial")
+        if service is not None
+        else None,
+        "launches_local_client": plan.launches_rtt_client,
+    }
 
 
 def _flash_request(runner, selected):
