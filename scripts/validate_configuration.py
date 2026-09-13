@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from collections.abc import Iterable
 from pathlib import Path
@@ -73,13 +72,18 @@ def argument_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = argument_parser().parse_args(argv)
     path = (args.config or default_config_path()).expanduser()
-    if not os.path.lexists(path):
+    try:
+        path.lstat()
+    except FileNotFoundError:
         print(
             f"Configuration invalid: {path} does not exist; run "
             "python3 scripts/setup.py or provide CONFIG",
             file=sys.stderr,
         )
         return 1
+    except OSError:
+        # Let load_config preserve the actionable inspection or read failure.
+        pass
 
     try:
         config = load_config(path)

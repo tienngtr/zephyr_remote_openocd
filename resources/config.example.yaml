@@ -39,5 +39,6 @@ remotes:
     # Unmapped required files are staged automatically.
     path_mappings: {}
 
-    # To inherit the optional preset above, define it and uncomment this line.
+    # To inherit the optional preset above, define it, remove the direct fields
+    # that should come from the preset, and uncomment this line.
     # preset: common

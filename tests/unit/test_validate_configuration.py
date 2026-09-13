@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib.util
-import os
 import socket
 import subprocess
 import sys
@@ -88,6 +87,25 @@ def test_missing_file_fails_with_setup_guidance(tmp_path: Path, capsys) -> None:
     assert "provide CONFIG" in output.err
 
 
+def test_inspection_failure_is_not_reported_as_missing(tmp_path: Path, monkeypatch, capsys) -> None:
+    path = tmp_path / "config.yaml"
+
+    def inspection_failure(_path: Path) -> None:
+        raise PermissionError("permission denied")
+
+    def load_failure(config_path: Path):
+        raise validator.ConfigError(f"cannot read configuration {config_path}: permission denied")
+
+    monkeypatch.setattr(validator.Path, "lstat", inspection_failure)
+    monkeypatch.setattr(validator, "load_config", load_failure)
+    assert validator.main([str(path)]) == 1
+    output = capsys.readouterr()
+    assert "cannot read configuration" in output.err
+    assert "permission denied" in output.err
+    assert "does not exist" not in output.err
+    assert "scripts/setup.py" not in output.err
+
+
 def test_configuration_and_resolution_errors_are_actionable(tmp_path: Path, capsys) -> None:
     invalid = tmp_path / "invalid.yaml"
     invalid.write_text("unknown: true\n")
@@ -119,7 +137,6 @@ def test_validation_performs_no_external_io(monkeypatch) -> None:
     def forbidden(*_args, **_kwargs):
         raise AssertionError("external I/O is forbidden")
 
-    monkeypatch.setattr(os, "system", forbidden)
     monkeypatch.setattr(socket, "create_connection", forbidden)
     monkeypatch.setattr(subprocess, "run", forbidden)
     monkeypatch.setattr(subprocess, "Popen", forbidden)

@@ -29,9 +29,11 @@ python3 /path/to/zephyr_remote_openocd/scripts/validate_configuration.py \
   --remote lab
 ```
 
-Validation checks syntax, schema rules, preset references, defaults, and the
-selected remote's required settings. It does not verify connectivity or that
-the configured executable exists. Check those prerequisites separately:
+Validation always checks syntax and schema rules. When a remote is selected, it
+also checks that remote's preset reference, applies its defaults, and checks its
+required settings. Broken references or missing operational settings in
+unselected remotes remain allowed. Validation does not verify connectivity or
+that the configured executable exists. Check those prerequisites separately:
 
 ```sh
 ssh replace-with-ssh-host-or-alias python3 --version
