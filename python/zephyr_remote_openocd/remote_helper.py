@@ -23,6 +23,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path, PurePosixPath
+from typing import NamedTuple
 
 VERSION = 1
 RANGE = ipaddress.IPv4Network("127.64.0.0/10")
@@ -319,14 +320,7 @@ def _validate_fake_request(message):
     return services, _service_ports(services, "START")
 
 
-def _validate_openocd_request(message):
-    argv = message.get("argv")
-    environment = message.get("environment", {})
-    checks = message.get("required_paths", [])
-    services = message.get("services", [])
-    marker = message.get("readiness_marker")
-    timeout = message.get("readiness_timeout", 30.0)
-    literal_prefix = message.get("literal_prefix", 0)
+def _validate_openocd_argv(argv):
     if (
         not isinstance(argv, list)
         or not argv
@@ -335,10 +329,16 @@ def _validate_openocd_request(message):
         or not all(isinstance(arg, str) for arg in argv[1:])
     ):
         raise ValueError("START_OPENOCD requires a non-empty string argv")
+
+
+def _validate_openocd_environment(environment):
     if not isinstance(environment, dict) or not all(
         isinstance(key, str) and isinstance(value, str) for key, value in environment.items()
     ):
         raise ValueError("START_OPENOCD environment must contain string values")
+
+
+def _validate_openocd_options(marker, timeout, literal_prefix, argv_length):
     if marker is not None and (
         not isinstance(marker, str) or not marker or any(c.isspace() for c in marker)
     ):
@@ -349,9 +349,22 @@ def _validate_openocd_request(message):
         or timeout <= 0
         or isinstance(literal_prefix, bool)
         or not isinstance(literal_prefix, int)
-        or not 0 <= literal_prefix <= len(argv)
+        or not 0 <= literal_prefix <= argv_length
     ):
         raise ValueError("START_OPENOCD readiness timeout is invalid")
+
+
+def _validate_openocd_request(message):
+    argv = message.get("argv")
+    environment = message.get("environment", {})
+    checks = message.get("required_paths", [])
+    services = message.get("services", [])
+    marker = message.get("readiness_marker")
+    timeout = message.get("readiness_timeout", 30.0)
+    literal_prefix = message.get("literal_prefix", 0)
+    _validate_openocd_argv(argv)
+    _validate_openocd_environment(environment)
+    _validate_openocd_options(marker, timeout, literal_prefix, len(argv))
     _service_ports(services, "START_OPENOCD", require_name=True)
     return argv, environment, checks, services, marker, timeout, literal_prefix
 
@@ -376,206 +389,367 @@ def _validate_required_paths(checks, replacements):
             raise ValueError(f"required remote {check['kind']} is missing: {candidate}")
 
 
-def control():
-    session_id, work, workspace_lock = new_workspace()
-    child: subprocess.Popen[bytes] | None = None
-    relay_threads: list[threading.Thread] = []
-    stopping = False
+class ServiceRequest(NamedTuple):
+    """Validated service data, retaining extension fields for Protocol v1."""
 
-    def close_child_streams():
-        if child is not None:
-            for stream in (child.stdout, child.stderr):
-                if stream is not None and not stream.closed:
-                    stream.close()
+    fields: tuple[tuple[str, object], ...]
 
-    def cleanup(*_):
-        nonlocal stopping
-        if stopping:
-            return
-        stopping = True
-        if child is not None and child.poll() is None:
-            try:
-                os.killpg(child.pid, signal.SIGTERM)
-                child.wait(timeout=5)
-            except (ProcessLookupError, subprocess.TimeoutExpired):
-                if child.poll() is None:
-                    os.killpg(child.pid, signal.SIGKILL)
-                    child.wait()
-        for thread in relay_threads:
-            # A signal can arrive immediately after PROCESS_STARTED is
-            # emitted, before the relay-start loop below has run.  Joining an
-            # unstarted Thread raises and would skip workspace removal.
+    @classmethod
+    def from_wire(cls, value: dict) -> ServiceRequest:
+        return cls(tuple(value.items()))
+
+    @property
+    def name(self):
+        return dict(self.fields).get("name")
+
+    @property
+    def remote_port(self):
+        return dict(self.fields)["remote_port"]
+
+    def to_wire(self):
+        return dict(self.fields)
+
+
+class RequiredPath(NamedTuple):
+    kind: str
+    path: str
+
+
+class StartRequest(NamedTuple):
+    services: tuple[ServiceRequest, ...]
+
+
+class StartOpenOcdRequest(NamedTuple):
+    argv: tuple[str, ...]
+    environment: tuple[tuple[str, str], ...]
+    required_paths: tuple[RequiredPath, ...]
+    services: tuple[ServiceRequest, ...]
+    readiness_marker: str | None
+    readiness_timeout: float
+    literal_prefix: int
+
+
+class StopRequest:
+    """Marker for the parameterless STOP command."""
+
+
+def _validated_services(values, label, *, require_name=False):
+    ports = _service_ports(values, label, require_name=require_name)
+    return tuple(ServiceRequest.from_wire(item) for item in values), ports
+
+
+def _decode_start(message):
+    services, _ports = _validate_fake_request(message)
+    typed, _ = _validated_services(services, "START")
+    return StartRequest(typed)
+
+
+def _decode_start_openocd(message):
+    values = _validate_openocd_request(message)
+    argv, environment, checks, services, marker, timeout, literal_prefix = values
+    typed_services, _ = _validated_services(services, "START_OPENOCD", require_name=True)
+    if not isinstance(checks, list):
+        raise ValueError("invalid required-path assertion")
+    typed_checks = []
+    for item in checks:
+        if (
+            not isinstance(item, dict)
+            or item.get("kind") not in ("file", "directory")
+            or not isinstance(item.get("path"), str)
+        ):
+            raise ValueError("invalid required-path assertion")
+        typed_checks.append(RequiredPath(item["kind"], item["path"]))
+    return StartOpenOcdRequest(
+        tuple(argv),
+        tuple(environment.items()),
+        tuple(typed_checks),
+        typed_services,
+        marker,
+        float(timeout),
+        literal_prefix,
+    )
+
+
+def decode_command(message):
+    """Decode and validate one control command into an immutable request."""
+    kind = _protocol_kind(message)
+    if kind == "START":
+        return _decode_start(message)
+    if kind == "START_OPENOCD":
+        return _decode_start_openocd(message)
+    if kind == "STOP":
+        return StopRequest()
+    raise ValueError(f"unexpected command: {kind!r}")
+
+
+class SupervisedChild:
+    """Own one child process and all resources used to relay its output."""
+
+    def __init__(self, process, marker=None):
+        self.process = process
+        self.marker = marker
+        self.marker_seen = threading.Event()
+        self.startup_output: list[str] = []
+        self.relay_threads: list[threading.Thread] = []
+
+    @property
+    def pid(self):
+        return self.process.pid
+
+    @property
+    def returncode(self):
+        return self.process.returncode
+
+    def poll(self):
+        return self.process.poll()
+
+    def start_relays(self, capture_startup=False):
+        if self.process.stdout is None or self.process.stderr is None:
+            raise RuntimeError("child output was not captured")
+        captured = self.startup_output if capture_startup else None
+        self.relay_threads = [
+            threading.Thread(
+                target=relay,
+                args=(self.process.stdout, "stdout", self.marker, self.marker_seen, captured),
+                daemon=True,
+            ),
+            threading.Thread(
+                target=relay,
+                args=(self.process.stderr, "stderr", self.marker, self.marker_seen, captured),
+                daemon=True,
+            ),
+        ]
+        for thread in self.relay_threads:
+            thread.start()
+
+    def join_relays(self):
+        for thread in self.relay_threads:
+            # A signal may arrive before start_relays has started every thread.
             if thread.is_alive():
                 thread.join(timeout=2)
-        close_child_streams()
-        shutil.rmtree(work, ignore_errors=True)
-        workspace_lock.close()
 
-    def handle_signal(*_):
-        cleanup()
+    def close_streams(self):
+        for stream in (self.process.stdout, self.process.stderr):
+            if stream is not None and not stream.closed:
+                stream.close()
+
+    def dispose(self):
+        self.join_relays()
+        self.close_streams()
+
+    def terminate(self):
+        if self.poll() is None:
+            try:
+                os.killpg(self.pid, signal.SIGTERM)
+                self.process.wait(timeout=5)
+            except (ProcessLookupError, subprocess.TimeoutExpired):
+                if self.poll() is None:
+                    os.killpg(self.pid, signal.SIGKILL)
+                    self.process.wait()
+        self.dispose()
+
+
+def _spawn_child(argv, *, cwd=None, environment=None, marker=None):
+    process = subprocess.Popen(
+        argv,
+        cwd=cwd,
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    return SupervisedChild(process, marker)
+
+
+def _fake_ready(child):
+    if child.process.stdout is None:
+        raise RuntimeError("fake child stdout was not captured")
+    ready = child.process.stdout.readline()
+    try:
+        message = json.loads(ready) if ready else {}
+    except json.JSONDecodeError:
+        message = {}
+    return message.get("ready") is True
+
+
+def launch_fake(request):
+    ports = [service.remote_port for service in request.services]
+    for _attempt in range(32):
+        address = random_address()
+        child = _spawn_child(
+            [sys.executable, str(Path(__file__).resolve()), "fake-child", address, *map(str, ports)]
+        )
+        if _fake_ready(child):
+            child.start_relays()
+            emit(
+                "SERVICE_READY",
+                remote_address=address,
+                services=[service.to_wire() for service in request.services],
+                child_pid=child.pid,
+            )
+            return child
+        child.process.wait()
+        child.dispose()
+    raise RuntimeError("loopback allocation exhausted after 32 attempts")
+
+
+def _expanded_argv(request, work, address):
+    replacements = {"{workspace}": str(work), "{address}": address}
+    return [
+        arg if index < request.literal_prefix else _expand(arg, replacements)
+        for index, arg in enumerate(request.argv)
+    ], replacements
+
+
+def _child_environment(request):
+    environment = os.environ.copy()
+    environment.update(dict(request.environment))
+    return environment
+
+
+def _wait_for_openocd(child, address, request, attempt):
+    if request.readiness_marker is None:
+        emit("PROCESS_STARTED", remote_address=address, child_pid=child.pid)
+        return True
+    deadline = time.monotonic() + request.readiness_timeout
+    services = [service.to_wire() for service in request.services]
+    while time.monotonic() < deadline:
+        if child.poll() is not None:
+            child.dispose()
+            if is_bind_collision(child.startup_output) and attempt < 31:
+                return False
+            raise RuntimeError(f"OpenOCD exited before readiness with status {child.returncode}")
+        if child.marker_seen.is_set() and services_connectable(address, services):
+            emit("PROCESS_STARTED", remote_address=address, child_pid=child.pid)
+            for service in services:
+                emit("SERVICE_READY", remote_address=address, service=service)
+            return True
+        time.sleep(0.05)
+    raise RuntimeError("OpenOCD readiness timed out")
+
+
+def launch_openocd(request, work, adopt=None):
+    ports = [service.remote_port for service in request.services]
+    attempts = 32 if request.readiness_marker is not None else 1
+    for attempt in range(attempts):
+        address = allocate_service_address(ports) if ports else random_address()
+        argv, replacements = _expanded_argv(request, work, address)
+        _validate_required_paths(
+            [{"kind": check.kind, "path": check.path} for check in request.required_paths],
+            replacements,
+        )
+        child = _spawn_child(
+            argv,
+            cwd=work / "staged",
+            environment=_child_environment(request),
+            marker=request.readiness_marker,
+        )
+        if adopt is not None:
+            adopt(child)
+        child.start_relays(capture_startup=True)
+        if _wait_for_openocd(child, address, request, attempt):
+            return child
+        if adopt is not None:
+            adopt(None)
+    raise RuntimeError("OpenOCD address collision retry exhausted after 32 attempts")
+
+
+class ControlSession:
+    """Own the control connection, workspace, child, and lifecycle cleanup."""
+
+    def __init__(self, session_id, work, workspace_lock):
+        self.session_id = session_id
+        self.work = work
+        self.workspace_lock = workspace_lock
+        self.child: SupervisedChild | None = None
+        self.stopping = False
+
+    @classmethod
+    def create(cls):
+        return cls(*new_workspace())
+
+    def announce(self):
+        emit("HELLO", helper="zephyr_remote_openocd")
+        emit("SESSION_CREATED", session_id=self.session_id, remote_workspace=str(self.work))
+
+    def _dispatch_start(self, request):
+        if self.child is not None:
+            raise ValueError("START is only valid once")
+        self.child = launch_fake(request)
+
+    def _dispatch_openocd(self, request):
+        if self.child is not None:
+            raise ValueError("a child process is already running")
+        self.child = launch_openocd(request, self.work, adopt=self._adopt_child)
+
+    def _adopt_child(self, child):
+        self.child = child
+
+    def dispatch(self, message):
+        request = decode_command(message)
+        if isinstance(request, StartRequest):
+            self._dispatch_start(request)
+            return True
+        if isinstance(request, StartOpenOcdRequest):
+            self._dispatch_openocd(request)
+            return True
+        if isinstance(request, StopRequest):
+            self.cleanup()
+            emit("STOPPED", reason="requested")
+            return False
+        raise ValueError(f"unexpected request: {request!r}")
+
+    def _child_finished(self):
+        if self.child is None or self.child.poll() is None:
+            return False
+        self.child.dispose()
+        emit("PROCESS_EXIT", returncode=self.child.returncode)
+        emit("STOPPED", reason="process_exit")
+        return True
+
+    def _read_and_dispatch(self):
+        line = sys.stdin.buffer.readline()
+        if not line:
+            return False
+        try:
+            message = json.loads(line)
+            return self.dispatch(message)
+        except Exception as exc:
+            error(exc, "PROTOCOL_ERROR")
+            return False
+
+    def run(self):
+        self.announce()
+        selector = selectors.DefaultSelector()
+        try:
+            selector.register(sys.stdin.buffer, selectors.EVENT_READ)
+            while not self._child_finished():
+                if selector.select(0.2) and not self._read_and_dispatch():
+                    return
+        finally:
+            selector.close()
+            self.cleanup()
+
+    def handle_signal(self, *_):
+        self.cleanup()
         raise SystemExit(0)
 
-    signal.signal(signal.SIGTERM, handle_signal)
-    signal.signal(signal.SIGINT, handle_signal)
-    try:
-        emit("HELLO", helper="zephyr_remote_openocd")
-        emit("SESSION_CREATED", session_id=session_id, remote_workspace=str(work))
-        selector = selectors.DefaultSelector()
-        selector.register(sys.stdin.buffer, selectors.EVENT_READ)
-        while True:
-            if child is not None and child.poll() is not None:
-                for thread in relay_threads:
-                    thread.join(timeout=2)
-                close_child_streams()
-                emit("PROCESS_EXIT", returncode=child.returncode)
-                emit("STOPPED", reason="process_exit")
-                return
-            ready_inputs = selector.select(0.2)
-            if not ready_inputs:
-                continue
-            line = sys.stdin.buffer.readline()
-            if not line:
-                return
-            try:
-                message = json.loads(line)
-                kind = _protocol_kind(message)
-                if kind == "START":
-                    if child is not None:
-                        raise ValueError("START is only valid once")
-                    services, ports = _validate_fake_request(message)
-                    for _attempt in range(32):
-                        address = random_address()
-                        child = subprocess.Popen(
-                            [
-                                sys.executable,
-                                str(Path(__file__).resolve()),
-                                "fake-child",
-                                address,
-                                *map(str, ports),
-                            ],
-                            stdin=subprocess.DEVNULL,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
-                            start_new_session=True,
-                        )
-                        if child.stdout is None:
-                            raise RuntimeError("fake child stdout was not captured")
-                        ready = child.stdout.readline()
-                        try:
-                            ready_message = json.loads(ready) if ready else {}
-                        except json.JSONDecodeError:
-                            ready_message = {}
-                        if ready_message.get("ready") is True:
-                            break
-                        child.wait()
-                        child = None
-                    else:
-                        raise RuntimeError("loopback allocation exhausted after 32 attempts")
-                    threading.Thread(
-                        target=relay, args=(child.stdout, "stdout"), daemon=True
-                    ).start()
-                    threading.Thread(
-                        target=relay, args=(child.stderr, "stderr"), daemon=True
-                    ).start()
-                    emit(
-                        "SERVICE_READY",
-                        remote_address=address,
-                        services=services,
-                        child_pid=child.pid,
-                    )
-                elif kind == "START_OPENOCD":
-                    if child is not None:
-                        raise ValueError("a child process is already running")
-                    (
-                        argv,
-                        environment,
-                        checks,
-                        services,
-                        marker,
-                        readiness_timeout,
-                        literal_prefix,
-                    ) = _validate_openocd_request(message)
-                    ports = [item["remote_port"] for item in services]
+    def cleanup(self):
+        if self.stopping:
+            return
+        self.stopping = True
+        if self.child is not None:
+            self.child.terminate()
+        shutil.rmtree(self.work, ignore_errors=True)
+        self.workspace_lock.close()
 
-                    for attempt in range(32 if marker is not None else 1):
-                        address = allocate_service_address(ports) if ports else random_address()
-                        replacements = {"{workspace}": str(work), "{address}": address}
-                        expanded_argv = [
-                            arg if index < literal_prefix else _expand(arg, replacements)
-                            for index, arg in enumerate(argv)
-                        ]
-                        _validate_required_paths(checks, replacements)
-                        child_environment = os.environ.copy()
-                        child_environment.update(environment)
-                        child = subprocess.Popen(
-                            expanded_argv,
-                            cwd=work / "staged",
-                            env=child_environment,
-                            stdin=subprocess.DEVNULL,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
-                            start_new_session=True,
-                        )
-                        marker_seen = threading.Event()
-                        startup_output: list[bytes] = []
-                        relay_threads = [
-                            threading.Thread(
-                                target=relay,
-                                args=(child.stdout, "stdout", marker, marker_seen, startup_output),
-                                daemon=True,
-                            ),
-                            threading.Thread(
-                                target=relay,
-                                args=(child.stderr, "stderr", marker, marker_seen, startup_output),
-                                daemon=True,
-                            ),
-                        ]
-                        for thread in relay_threads:
-                            thread.start()
-                        if marker is None:
-                            emit("PROCESS_STARTED", remote_address=address, child_pid=child.pid)
-                            break
 
-                        deadline = time.monotonic() + readiness_timeout
-                        while time.monotonic() < deadline:
-                            if child.poll() is not None:
-                                for thread in relay_threads:
-                                    thread.join(timeout=2)
-                                close_child_streams()
-                                if is_bind_collision(startup_output) and attempt < 31:
-                                    child = None
-                                    relay_threads = []
-                                    break
-                                raise RuntimeError(
-                                    "OpenOCD exited before readiness with status "
-                                    f"{child.returncode}"
-                                )
-                            if marker_seen.is_set() and services_connectable(address, services):
-                                emit("PROCESS_STARTED", remote_address=address, child_pid=child.pid)
-                                for service in services:
-                                    emit("SERVICE_READY", remote_address=address, service=service)
-                                break
-                            time.sleep(0.05)
-                        else:
-                            raise RuntimeError("OpenOCD readiness timed out")
-
-                        if child is not None and child.poll() is None:
-                            break
-                    else:
-                        raise RuntimeError(
-                            "OpenOCD address collision retry exhausted after 32 attempts"
-                        )
-                elif kind == "STOP":
-                    cleanup()
-                    emit("STOPPED", reason="requested")
-                    return
-                else:
-                    raise ValueError(f"unexpected command: {kind!r}")
-            except Exception as exc:
-                error(exc, "PROTOCOL_ERROR")
-                return
-    finally:
-        cleanup()
+def control():
+    session = ControlSession.create()
+    signal.signal(signal.SIGTERM, session.handle_signal)
+    signal.signal(signal.SIGINT, session.handle_signal)
+    session.run()
 
 
 def main():

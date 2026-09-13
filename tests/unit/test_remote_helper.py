@@ -79,3 +79,37 @@ def test_new_workspace_removes_partial_directory_on_initialization_failure(tmp_p
         remote_helper.new_workspace()
 
     assert tuple(tmp_path.iterdir()) == ()
+
+
+def test_decode_command_returns_immutable_typed_requests():
+    request = remote_helper.decode_command(
+        {
+            "version": 1,
+            "type": "START_OPENOCD",
+            "argv": ["openocd", "{address}"],
+            "environment": {"ZRO_TEST": "value"},
+            "required_paths": [{"kind": "file", "path": "{workspace}/image"}],
+            "services": [{"name": "tcl", "remote_port": 6333, "extension": "kept"}],
+            "readiness_marker": "READY",
+            "literal_prefix": 1,
+        }
+    )
+
+    assert isinstance(request, remote_helper.StartOpenOcdRequest)
+    assert request.argv == ("openocd", "{address}")
+    assert request.environment == (("ZRO_TEST", "value"),)
+    assert request.services[0].to_wire()["extension"] == "kept"
+    with pytest.raises(AttributeError):
+        request.argv = ()
+
+
+def test_decode_command_rejects_malformed_required_path_before_launch():
+    with pytest.raises(ValueError, match="invalid required-path assertion"):
+        remote_helper.decode_command(
+            {
+                "version": 1,
+                "type": "START_OPENOCD",
+                "argv": ["openocd"],
+                "required_paths": [{"kind": "socket", "path": "not-valid"}],
+            }
+        )
