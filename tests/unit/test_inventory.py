@@ -135,6 +135,7 @@ def test_rendered_inventory_round_trips_through_product_schema(tmp_path, name):
         (("future",), True, "future"),
         (("hosts", "lab", "ssh_host"), DELETE, "ssh_host"),
         (("hosts", "lab", "openocd_command"), ["openocd"], "openocd_command"),
+        (("hosts", "lab", "ssh_command"), [""], "ssh_command"),
         (
             ("targets", "stm32f746g_disco", "profiles", "core", "capabilities"),
             ["debug"],

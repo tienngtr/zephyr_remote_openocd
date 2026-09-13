@@ -78,6 +78,35 @@
         }
       ]
     },
+    "commandArgument": {
+      "description": "One command argument passed without shell splitting; empty strings are allowed after the executable.",
+      "type": "string",
+      "not": {
+        "pattern": "\\u0000"
+      }
+    },
+    "commandExecutable": {
+      "title": "Command executable",
+      "description": "The first command item: a nonempty executable name or absolute/home-relative path.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/commandArgument"
+        },
+        {
+          "anyOf": [
+            {
+              "pattern": "^[^~/\\u0000][^/\\u0000]*$"
+            },
+            {
+              "pattern": "^/[^/\\u0000][^\\u0000]*$"
+            },
+            {
+              "pattern": "^~/[^/\\u0000][^\\u0000]*$"
+            }
+          ]
+        }
+      ]
+    },
     "positiveNumber": {
       "description": "A duration or interval greater than zero; fractional seconds are allowed.",
       "type": "number",
@@ -223,12 +252,15 @@
           "description": "Local SSH executable and fixed arguments used for every remote action.",
           "type": "array",
           "minItems": 1,
-          "items": {
-            "type": "string",
-            "description": "One SSH executable or fixed argument; values are passed without shell splitting.",
-            "not": {
-              "pattern": "\\u0000"
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/commandExecutable",
+              "description": "SSH executable name or path; it must not be empty."
             }
+          ],
+          "items": {
+            "$ref": "#/$defs/commandArgument",
+            "description": "One fixed SSH argument; empty strings are allowed after the executable."
           },
           "default": [
             "ssh"
