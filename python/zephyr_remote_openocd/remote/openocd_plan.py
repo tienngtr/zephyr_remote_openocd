@@ -4,9 +4,18 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from .paths import ADDRESS_TOKEN, PathPlanner
+
+
+@dataclass(frozen=True)
+class OpenOcdBasePlan:
+    """Immutable command prefix shared by flash and persistent debug plans."""
+
+    argv: tuple[str, ...]
+    literal_prefix: int
 
 
 def executable_argv(executable: str | tuple[str, ...]) -> list[str]:
@@ -50,3 +59,20 @@ def base_argv(
         argv.extend(("-f", path))
     argv.extend(("-c", f"bindto {ADDRESS_TOKEN}"))
     return argv
+
+
+def plan_openocd_base(
+    executable: str | tuple[str, ...],
+    serial: str | None,
+    search_paths: tuple[str, ...],
+    config_files: tuple[str, ...],
+    planner: PathPlanner,
+) -> OpenOcdBasePlan:
+    """Plan executable, support paths, serial setup, and loopback binding."""
+
+    executable_parts = tuple(executable_argv(executable))
+    remote_search, remote_configs = plan_support_paths(search_paths, config_files, planner)
+    return OpenOcdBasePlan(
+        tuple(base_argv(executable_parts, serial, remote_search, remote_configs)),
+        len(executable_parts),
+    )
