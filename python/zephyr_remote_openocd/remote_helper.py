@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import ipaddress
 import json
@@ -25,6 +26,8 @@ from pathlib import Path, PurePosixPath
 
 VERSION = 1
 RANGE = ipaddress.IPv4Network("127.64.0.0/10")
+SESSION_LOCK = ".session.lock"
+STALE_SESSION_AGE = 24 * 60 * 60
 _emit_lock = threading.Lock()
 
 
@@ -47,19 +50,54 @@ def workspace_root():
     return Path.home() / ".cache" / "zephyr_remote_openocd" / "sessions"
 
 
+def reclaim_stale_workspaces(root, now=None):
+    """Remove old workspaces whose owning helper no longer holds its lock."""
+    cutoff = (time.time() if now is None else now) - STALE_SESSION_AGE
+    try:
+        candidates = tuple(root.iterdir())
+    except FileNotFoundError:
+        return
+    for path in candidates:
+        lock_path = path / SESSION_LOCK
+        try:
+            if not path.is_dir() or path.stat().st_mtime > cutoff or not lock_path.is_file():
+                continue
+            lock = lock_path.open("r+b")
+        except OSError:
+            continue
+        try:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                continue
+            shutil.rmtree(path, ignore_errors=True)
+        finally:
+            lock.close()
+
+
 def new_workspace():
     root = workspace_root()
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(root, 0o700)
+    reclaim_stale_workspaces(root)
     for _ in range(32):
         session_id = secrets.token_urlsafe(18)
         path = root / session_id
         try:
             path.mkdir(mode=0o700)
-            (path / "staged").mkdir(mode=0o700)
-            return session_id, path
         except FileExistsError:
-            pass
+            continue
+        lock = None
+        try:
+            lock = (path / SESSION_LOCK).open("xb")
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            (path / "staged").mkdir(mode=0o700)
+            return session_id, path, lock
+        except BaseException:
+            if lock is not None:
+                lock.close()
+            shutil.rmtree(path, ignore_errors=True)
+            raise
     raise RuntimeError("could not allocate an unpredictable session directory")
 
 
@@ -245,7 +283,7 @@ def openocd_version(argv):
 
 
 def control():
-    session_id, work = new_workspace()
+    session_id, work, workspace_lock = new_workspace()
     child: subprocess.Popen[bytes] | None = None
     relay_threads: list[threading.Thread] = []
     stopping = False
@@ -277,6 +315,7 @@ def control():
                 thread.join(timeout=2)
         close_child_streams()
         shutil.rmtree(work, ignore_errors=True)
+        workspace_lock.close()
 
     def handle_signal(*_):
         cleanup()
