@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import ipaddress
-import os
 import shlex
 import shutil
 import socket
@@ -27,7 +26,6 @@ from zephyr_remote_openocd.remote.deploy import deploy_helper
 from zephyr_remote_openocd.remote.ssh import SshCommand
 
 from tests.process_support import read_line
-from tests.support import is_wsl2
 
 pytestmark = pytest.mark.ssh
 
@@ -89,70 +87,40 @@ def stop_and_close(process, timeout: float = 20):
             stream.close()
 
 
-class TestLinuxSshIntegration:
-    def setup_method(self):
-        if is_wsl2():
-            pytest.skip("native-Linux SSH test; WSL has dedicated coverage")
-        if shutil.which("ssh") is None:
-            pytest.skip("Linux ssh is not available on PATH")
-
+class TestConfiguredSshIntegration:
     @pytest.fixture(autouse=True)
     def inventory_setup(self, ssh_host, ssh_settings):
         self.host = ssh_host
-        self.ssh_settings = ssh_settings
         self.ssh = SshCommand(ssh_settings.ssh_command)
 
-    def test_configured_linux_ssh_and_fixed_arguments(self):
-        """Regression coverage for prototype gate PG-011."""
+    def test_configured_ssh_and_fixed_arguments(self):
         assert_remote_marker(self.ssh, self.host)
         assert_remote_marker(
             SshCommand((*self.ssh.argv_prefix, "-o", "ConnectTimeout=10")), self.host
         )
 
+    def test_explicit_path_with_nonstandard_executable_name(self, tmp_path):
+        configured = self.ssh.argv_prefix[0]
+        source = shutil.which(configured) if "/" not in configured else configured
+        assert source is not None, f"configured SSH executable not found: {configured}"
+        alternate = tmp_path / "custom-ssh"
+        alternate.symlink_to(Path(source).resolve())
+        command = SshCommand((str(alternate), *self.ssh.argv_prefix[1:]))
 
-class TestWslSshIntegration:
-    def setup_method(self):
-        if not is_wsl2():
-            pytest.skip("PG-012/PG-013 require WSL 2; current host is not WSL 2")
-
-    @pytest.fixture(autouse=True)
-    def inventory_setup(self, ssh_host, ssh_settings):
-        self.host = ssh_host
-        self.ssh_settings = ssh_settings
-        self.ssh = SshCommand(ssh_settings.ssh_command)
-
-    def test_wsl_linux_ssh(self):
-        """Deferred WSL regression coverage for prototype gate PG-012."""
-        executable = shutil.which("ssh")
-        if executable is None:
-            pytest.skip("WSL distribution ssh is not available on PATH")
-        assert_remote_marker(SshCommand((executable,)), self.host)
-
-    def test_windows_ssh_exe_from_wsl(self):
-        """Deferred WSL regression coverage for prototype gate PG-013."""
-        configured = os.environ.get("ZRO_WINDOWS_SSH", "/mnt/c/Windows/System32/OpenSSH/ssh.exe")
-        executable = Path(configured)
-        if not executable.is_file():
-            pytest.skip("Windows OpenSSH not found; set ZRO_WINDOWS_SSH to ssh.exe")
-        assert_remote_marker(SshCommand((str(executable), "-o", "ControlMaster=no")), self.host)
+        assert_remote_marker(command, self.host)
 
 
 class TestSshTransportIntegration:
-    def setup_method(self):
-        if shutil.which("ssh") is None:
-            pytest.skip("ssh is not available on PATH")
-
     @pytest.fixture(autouse=True)
     def inventory_setup(self, ssh_host, ssh_settings):
         self.host = ssh_host
         self.ssh_settings = ssh_settings
         self.ssh = SshCommand(ssh_settings.ssh_command)
 
-    def test_forwarding_does_not_require_controlmaster(self):
-        """Regression coverage for prototype gate PG-014."""
+    def test_forwarding_and_session_lifecycle_use_configured_client(self):
         encoded = base64.b64encode(REMOTE_ECHO).decode("ascii")
         command = f"python3 -c \"import base64;exec(base64.b64decode('{encoded}'))\""
-        helper_process = self.ssh.popen(self.host, command, "-o", "ControlMaster=no")
+        helper_process = self.ssh.popen(self.host, command)
         tunnel = None
         try:
             assert helper_process.stdout is not None
@@ -167,8 +135,6 @@ class TestSshTransportIntegration:
                 self.host,
                 None,
                 "-N",
-                "-o",
-                "ControlMaster=no",
                 "-o",
                 "ExitOnForwardFailure=yes",
                 "-L",
@@ -186,7 +152,6 @@ class TestSshTransportIntegration:
             stop_and_close(tunnel)
 
     def test_streaming_preserves_content_and_reports_remote_failure(self):
-        """Regression coverage for prototype gate PG-015."""
         payloads = (
             b"",
             b"small textual input\n",

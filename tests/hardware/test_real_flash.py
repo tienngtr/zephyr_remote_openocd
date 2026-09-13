@@ -49,8 +49,6 @@ class TestRealOpenOcdFlash:
         quiet_reader = ssh.popen(
             fixture["host"],
             self._reader_command(fixture, float(fixture["quiescence_timeout"])),
-            "-o",
-            "ControlMaster=no",
         )
         try:
             assert _read_event(quiet_reader, 15)["type"] == "READY"
@@ -77,7 +75,7 @@ class TestRealOpenOcdFlash:
             stop_bits=int(fixture.get("serial_stop_bits", 1)),
             flow_control=str(fixture.get("serial_flow_control", "none")),
         )
-        reader = ssh.popen(fixture["host"], remote_command, "-o", "ControlMaster=no")
+        reader = ssh.popen(fixture["host"], remote_command)
         try:
             assert _read_event(reader, 15)["type"] == "READY"
             assert reader.stdin is not None

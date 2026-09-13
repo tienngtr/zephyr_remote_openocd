@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Run the serial release validation layers on native Linux.
+"""Run the serial release validation layers on Linux.
 
 This driver is intentionally separate from pytest discovery.  It provides a
 repeatable, fail-fast command sequence and makes missing external evidence
@@ -21,7 +21,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-DEFERRED_GATES = ("PG-012", "PG-013")
 REQUIRED_CAPABILITIES = frozenset(
     {"flash", "debug", "attach", "debugserver", "thread_info", "rtt", "semihosting"}
 )
@@ -84,8 +83,6 @@ def build_steps(args: argparse.Namespace) -> list[Step]:
                     "tests/ssh_integration",
                     "-m",
                     "ssh",
-                    "-k",
-                    "not TestWslSshIntegration",
                     "--hardware-config",
                     inventory,
                 ),
@@ -278,7 +275,6 @@ def build_summary(
     capability_report: dict[str, object],
     performance: dict[str, object] | None,
     results: list[StepResult],
-    deferred_gates: tuple[str, ...],
     local_leaks: dict[str, object],
     remote_leaks: dict[str, object],
 ) -> dict[str, object]:
@@ -296,7 +292,6 @@ def build_summary(
             }
             for result in results
         ],
-        "deferred": list(deferred_gates),
         "local_leaks": local_leaks,
         "remote_leaks": remote_leaks,
     }
@@ -337,7 +332,6 @@ def main(argv: list[str] | None = None) -> int:
         capability_report,
         performance,
         results,
-        DEFERRED_GATES,
         local_leak_scan(),
         remote_leak_scan(args.hardware_config),
     )

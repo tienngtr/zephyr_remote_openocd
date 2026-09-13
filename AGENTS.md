@@ -76,8 +76,8 @@ Run validation appropriate to the change and use `python3
 scripts/static_check.py` for all repository static checks. The script uses
 single-process Pylint for restricted sandboxes.
 Inspect external nodes with `--collect-only`, and inspect cleanup output before
-reusing a target. `scripts/release_validate.py` is the separate serial
-native-Linux release driver described in `docs/development/testing.md`.
+reusing a target. `scripts/release_validate.py` is the separate serial Linux
+release driver described in `docs/validation/README.md`.
 
 ## Work and Git
 

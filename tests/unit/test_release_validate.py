@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import re
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -150,16 +151,28 @@ def test_remote_leak_scan_pattern_cannot_match_its_own_command(tmp_path):
     assert report["clean"] is True
 
 
-def test_summary_reports_supplied_deferred_gates():
+def test_summary_contains_only_observed_release_evidence():
     summary = release.build_summary(
         {"pass": True},
         None,
         [],
-        ("gate-a", "gate-b"),
         {"clean": True},
         {"clean": True},
     )
-    assert summary["deferred"] == ["gate-a", "gate-b"]
+    assert "deferred" not in summary
+
+
+def test_documented_script_entry_point_provides_help():
+    completed = subprocess.run(
+        [sys.executable, "scripts/release_validate.py", "--help"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "--hardware-config" in completed.stdout
 
 
 def test_strict_external_collection_rejects_skips(monkeypatch):

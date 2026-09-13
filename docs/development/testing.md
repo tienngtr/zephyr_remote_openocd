@@ -1,5 +1,20 @@
 # Testing layers
 
+Choose the smallest layer that covers the change:
+
+- Every change: `pytest` and `python3 scripts/static_check.py`.
+- Zephyr adapter or build integration: `tests/zephyr_integration/` with a
+  Zephyr 4.4 source tree and its configured Python environment.
+- SSH transport behavior: `tests/ssh_integration/` with an ignored inventory.
+- Real board behavior: `tests/hardware/` with a board, probe, serial endpoint,
+  and remote OpenOCD.
+- Release evidence: the serial procedure in
+  [`docs/validation/README.md`](../validation/README.md).
+
+Run external nodes only after `--collect-only` confirms the intended selection.
+Hardware and SSH tests can change external state; keep destructive profiles
+serial and inspect cleanup output before reusing a target.
+
 The maintained suite uses pytest. Plain `pytest` runs only hardware-free unit
 and local-process tests. External layers are selected explicitly so a normal
 contributor run never needs SSH, a Zephyr checkout, or lab hardware:
@@ -91,7 +106,7 @@ The injected version lets the runner construct its thread-awareness plan
 without querying remote OpenOCD. It is ignored when thread information is not
 requested and is not a substitute for testing the configured remote executable.
 
-## Native Linux
+## Linux
 
 The focused adapter contract tests need only the Zephyr source and its Python
 runner dependencies, not a board, SDK, or firmware build:
@@ -130,7 +145,7 @@ Run the desired layers explicitly:
 
 ```sh
 ZRO_STRICT_EXTERNAL=1 .venv/bin/python -m pytest \
-  tests/ssh_integration -m ssh -k 'not wsl' \
+  tests/ssh_integration -m ssh \
   --hardware-config /path/to/hardware.toml
 
 ZEPHYR_BASE=/path/to/zephyr \
@@ -152,52 +167,6 @@ ZRO_STRICT_EXTERNAL=1 .venv/bin/python -m pytest \
   'tests/hardware/test_real_debug.py::TestRealOpenOcdDebug::test_debug[board:debug]' \
   --hardware-config /path/to/hardware.toml
 ```
-
-## WSL 2
-
-WSL cases use the same repository, test environment, and inventory setup. They
-require an actual WSL 2 distribution and a reachable inventory host, but do
-not require OpenOCD, a Zephyr checkout, or physical hardware. PG-012 tests the
-WSL Linux `ssh` found on `PATH`; PG-013 tests Windows OpenSSH invoked from WSL.
-These two tests use the inventory host address but select their SSH executables
-themselves; the host's configured `ssh_command` is used by native-Linux SSH
-tests.
-Run the two cases independently:
-
-```sh
-# PG-012: WSL Linux OpenSSH (the normal WSL-side choice)
-ZRO_STRICT_EXTERNAL=1 .venv/bin/python -m pytest \
-  tests/ssh_integration -m ssh -k 'test_wsl_linux_ssh' \
-  --hardware-config /path/to/hardware.toml
-
-# PG-013: optional Windows OpenSSH from WSL 2. Set ZRO_WINDOWS_SSH if needed.
-export ZRO_WINDOWS_SSH=/mnt/c/Windows/System32/OpenSSH/ssh.exe
-ZRO_STRICT_EXTERNAL=1 .venv/bin/python -m pytest \
-  tests/ssh_integration -m ssh -k 'test_windows_ssh_exe_from_wsl' \
-  --hardware-config /path/to/hardware.toml
-```
-
-The tests detect WSL 2 from the kernel identity. On native Linux, the same
-nodes skip by design; PG-012 and PG-013 remain deferred until this procedure
-is run in WSL 2.
-
-The strict release driver runs applicable layers serially and additionally
-requires benchmark inputs:
-
-```sh
-python3 scripts/release_validate.py \
-  --hardware-config /path/to/hardware.toml \
-  --zephyr-base /path/to/zephyr \
-  --west /path/to/west \
-  --board stm32f746g_disco \
-  --benchmark-build-dir /path/to/build \
-  --benchmark-config /path/to/remote_openocd.yaml \
-  --benchmark-cwd /path/to/zephyr-workspace
-```
-
-PG-012 and PG-013 remain explicitly reported as deferred until a real WSL2
-environment is available. The benchmark remains a manual timing check outside
-CI.
 
 Run all configured static checks with:
 
