@@ -161,6 +161,9 @@ def test_decode_command_returns_immutable_typed_requests():
     assert isinstance(request, remote_helper.StartOpenOcdRequest)
     assert request.argv == ("openocd", "{address}")
     assert request.environment == (("ZRO_TEST", "value"),)
+    assert request.required_paths == (remote_helper.RequiredPath("file", "{workspace}/image"),)
+    assert request.services[0].name == "tcl"
+    assert request.services[0].remote_port == 6333
     assert request.services[0].to_wire()["extension"] == "kept"
     with pytest.raises(AttributeError):
         request.argv = ()

@@ -254,11 +254,10 @@ def services_connectable(address, services):
     that service; Tcl and telnet remain safe to probe here.
     """
     for service in services:
-        if service.get("name") == "gdb":
+        if service.name == "gdb":
             continue
-        port = service["remote_port"]
         try:
-            with socket.create_connection((address, port), timeout=0.2):
+            with socket.create_connection((address, service.remote_port), timeout=0.2):
                 pass
         except OSError:
             return False
@@ -297,7 +296,7 @@ def _protocol_kind(message):
     return message.get("type")
 
 
-def _service_ports(services, label, *, require_name=False):
+def _parse_services(services, label, *, require_name=False):
     if not isinstance(services, list) or not all(
         isinstance(item, dict)
         and (not require_name or isinstance(item.get("name"), str))
@@ -310,14 +309,7 @@ def _service_ports(services, label, *, require_name=False):
     ports = [item["remote_port"] for item in services]
     if len(ports) != len(set(ports)):
         raise ValueError(f"{label} services must use unique remote ports")
-    return ports
-
-
-def _validate_fake_request(message):
-    services = message.get("services")
-    if not isinstance(services, list) or not services:
-        raise ValueError("START requires services")
-    return services, _service_ports(services, "START")
+    return tuple(ServiceRequest.from_wire(item) for item in services)
 
 
 def _validate_openocd_argv(argv):
@@ -354,57 +346,30 @@ def _validate_openocd_options(marker, timeout, literal_prefix, argv_length):
         raise ValueError("START_OPENOCD readiness timeout is invalid")
 
 
-def _validate_openocd_request(message):
-    argv = message.get("argv")
-    environment = message.get("environment", {})
-    checks = message.get("required_paths", [])
-    services = message.get("services", [])
-    marker = message.get("readiness_marker")
-    timeout = message.get("readiness_timeout", 30.0)
-    literal_prefix = message.get("literal_prefix", 0)
-    _validate_openocd_argv(argv)
-    _validate_openocd_environment(environment)
-    _validate_openocd_options(marker, timeout, literal_prefix, len(argv))
-    _service_ports(services, "START_OPENOCD", require_name=True)
-    return argv, environment, checks, services, marker, timeout, literal_prefix
-
-
 def _expand(value, replacements):
     for token, replacement in replacements.items():
         value = value.replace(token, replacement)
     return value
 
 
-def _validate_required_paths(checks, replacements):
+def _check_required_paths(checks, replacements):
     for check in checks:
-        if (
-            not isinstance(check, dict)
-            or check.get("kind") not in ("file", "directory")
-            or not isinstance(check.get("path"), str)
-        ):
-            raise ValueError("invalid required-path assertion")
-        candidate = Path(_expand(check["path"], replacements))
-        valid = candidate.is_file() if check["kind"] == "file" else candidate.is_dir()
+        candidate = Path(_expand(check.path, replacements))
+        valid = candidate.is_file() if check.kind == "file" else candidate.is_dir()
         if not valid:
-            raise ValueError(f"required remote {check['kind']} is missing: {candidate}")
+            raise ValueError(f"required remote {check.kind} is missing: {candidate}")
 
 
 class ServiceRequest(NamedTuple):
     """Validated service data, retaining extension fields for Protocol v1."""
 
+    name: object
+    remote_port: int
     fields: tuple[tuple[str, object], ...]
 
     @classmethod
     def from_wire(cls, value: dict) -> ServiceRequest:
-        return cls(tuple(value.items()))
-
-    @property
-    def name(self):
-        return dict(self.fields).get("name")
-
-    @property
-    def remote_port(self):
-        return dict(self.fields)["remote_port"]
+        return cls(value.get("name"), value["remote_port"], tuple(value.items()))
 
     def to_wire(self):
         return dict(self.fields)
@@ -433,37 +398,44 @@ class StopRequest:
     """Marker for the parameterless STOP command."""
 
 
-def _validated_services(values, label, *, require_name=False):
-    ports = _service_ports(values, label, require_name=require_name)
-    return tuple(ServiceRequest.from_wire(item) for item in values), ports
-
-
-def _decode_start(message):
-    services, _ports = _validate_fake_request(message)
-    typed, _ = _validated_services(services, "START")
-    return StartRequest(typed)
-
-
-def _decode_start_openocd(message):
-    values = _validate_openocd_request(message)
-    argv, environment, checks, services, marker, timeout, literal_prefix = values
-    typed_services, _ = _validated_services(services, "START_OPENOCD", require_name=True)
-    if not isinstance(checks, list):
+def _parse_required_paths(values):
+    if not isinstance(values, list):
         raise ValueError("invalid required-path assertion")
-    typed_checks = []
-    for item in checks:
+    checks = []
+    for item in values:
         if (
             not isinstance(item, dict)
             or item.get("kind") not in ("file", "directory")
             or not isinstance(item.get("path"), str)
         ):
             raise ValueError("invalid required-path assertion")
-        typed_checks.append(RequiredPath(item["kind"], item["path"]))
+        checks.append(RequiredPath(item["kind"], item["path"]))
+    return tuple(checks)
+
+
+def _decode_start(message):
+    services = message.get("services")
+    if not isinstance(services, list) or not services:
+        raise ValueError("START requires services")
+    return StartRequest(_parse_services(services, "START"))
+
+
+def _decode_start_openocd(message):
+    argv = message.get("argv")
+    environment = message.get("environment", {})
+    marker = message.get("readiness_marker")
+    timeout = message.get("readiness_timeout", 30.0)
+    literal_prefix = message.get("literal_prefix", 0)
+    _validate_openocd_argv(argv)
+    _validate_openocd_environment(environment)
+    _validate_openocd_options(marker, timeout, literal_prefix, len(argv))
+    services = _parse_services(message.get("services", []), "START_OPENOCD", require_name=True)
+    checks = _parse_required_paths(message.get("required_paths", []))
     return StartOpenOcdRequest(
         tuple(argv),
         tuple(environment.items()),
-        tuple(typed_checks),
-        typed_services,
+        checks,
+        services,
         marker,
         float(timeout),
         literal_prefix,
@@ -573,31 +545,6 @@ def _fake_ready(child):
     return message.get("ready") is True
 
 
-def launch_fake(request, adopt=None):
-    ports = [service.remote_port for service in request.services]
-    for _attempt in range(32):
-        address = random_address()
-        child = _spawn_child(
-            [sys.executable, str(Path(__file__).resolve()), "fake-child", address, *map(str, ports)]
-        )
-        if adopt is not None:
-            adopt(child)
-        if _fake_ready(child):
-            child.start_relays()
-            emit(
-                "SERVICE_READY",
-                remote_address=address,
-                services=[service.to_wire() for service in request.services],
-                child_pid=child.pid,
-            )
-            return child
-        child.process.wait()
-        child.dispose()
-        if adopt is not None:
-            adopt(None)
-    raise RuntimeError("loopback allocation exhausted after 32 attempts")
-
-
 def _expanded_argv(request, work, address):
     replacements = {"{workspace}": str(work), "{address}": address}
     return [
@@ -617,46 +564,19 @@ def _wait_for_openocd(child, address, request, attempt):
         emit("PROCESS_STARTED", remote_address=address, child_pid=child.pid)
         return True
     deadline = time.monotonic() + request.readiness_timeout
-    services = [service.to_wire() for service in request.services]
     while time.monotonic() < deadline:
         if child.poll() is not None:
             child.dispose()
             if is_bind_collision(child.startup_output) and attempt < 31:
                 return False
             raise RuntimeError(f"OpenOCD exited before readiness with status {child.returncode}")
-        if child.marker_seen.is_set() and services_connectable(address, services):
+        if child.marker_seen.is_set() and services_connectable(address, request.services):
             emit("PROCESS_STARTED", remote_address=address, child_pid=child.pid)
-            for service in services:
-                emit("SERVICE_READY", remote_address=address, service=service)
+            for service in request.services:
+                emit("SERVICE_READY", remote_address=address, service=service.to_wire())
             return True
         time.sleep(0.05)
     raise RuntimeError("OpenOCD readiness timed out")
-
-
-def launch_openocd(request, work, adopt=None):
-    ports = [service.remote_port for service in request.services]
-    attempts = 32 if request.readiness_marker is not None else 1
-    for attempt in range(attempts):
-        address = allocate_service_address(ports) if ports else random_address()
-        argv, replacements = _expanded_argv(request, work, address)
-        _validate_required_paths(
-            [{"kind": check.kind, "path": check.path} for check in request.required_paths],
-            replacements,
-        )
-        child = _spawn_child(
-            argv,
-            cwd=work / "staged",
-            environment=_child_environment(request),
-            marker=request.readiness_marker,
-        )
-        if adopt is not None:
-            adopt(child)
-        child.start_relays(capture_startup=True)
-        if _wait_for_openocd(child, address, request, attempt):
-            return child
-        if adopt is not None:
-            adopt(None)
-    raise RuntimeError("OpenOCD address collision retry exhausted after 32 attempts")
 
 
 class ControlSession:
@@ -680,15 +600,52 @@ class ControlSession:
     def _dispatch_start(self, request):
         if self.child is not None:
             raise ValueError("START is only valid once")
-        self.child = launch_fake(request, adopt=self._adopt_child)
+        ports = [service.remote_port for service in request.services]
+        for _attempt in range(32):
+            address = random_address()
+            self.child = _spawn_child(
+                [
+                    sys.executable,
+                    str(Path(__file__).resolve()),
+                    "fake-child",
+                    address,
+                    *map(str, ports),
+                ]
+            )
+            if _fake_ready(self.child):
+                self.child.start_relays()
+                emit(
+                    "SERVICE_READY",
+                    remote_address=address,
+                    services=[service.to_wire() for service in request.services],
+                    child_pid=self.child.pid,
+                )
+                return
+            self.child.process.wait()
+            self.child.dispose()
+            self.child = None
+        raise RuntimeError("loopback allocation exhausted after 32 attempts")
 
     def _dispatch_openocd(self, request):
         if self.child is not None:
             raise ValueError("a child process is already running")
-        self.child = launch_openocd(request, self.work, adopt=self._adopt_child)
-
-    def _adopt_child(self, child):
-        self.child = child
+        ports = [service.remote_port for service in request.services]
+        attempts = 32 if request.readiness_marker is not None else 1
+        for attempt in range(attempts):
+            address = allocate_service_address(ports) if ports else random_address()
+            argv, replacements = _expanded_argv(request, self.work, address)
+            _check_required_paths(request.required_paths, replacements)
+            self.child = _spawn_child(
+                argv,
+                cwd=self.work / "staged",
+                environment=_child_environment(request),
+                marker=request.readiness_marker,
+            )
+            self.child.start_relays(capture_startup=True)
+            if _wait_for_openocd(self.child, address, request, attempt):
+                return
+            self.child = None
+        raise RuntimeError("OpenOCD address collision retry exhausted after 32 attempts")
 
     def dispatch(self, message):
         request = decode_command(message)
