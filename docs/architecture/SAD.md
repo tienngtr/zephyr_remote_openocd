@@ -128,7 +128,7 @@ zephyr_remote_openocd/
             remote_helper.py
 
     resources/
-        config.yaml.example
+        config.example.yaml
 
     scripts/
         config_default.py
@@ -195,7 +195,7 @@ User setup is a separate, non-invasive operation:
 python3 scripts/setup.py
 ```
 
-The setup script copies `resources/config.yaml.example` only when the canonical
+The setup script copies `resources/config.example.yaml` only when the canonical
 per-user configuration is absent, reports the created/reused status and both
 absolute paths, and prints guidance for `EXTRA_ZEPHYR_MODULES`. It creates the
 `zephyr_remote_openocd` configuration directory with mode `0700` and the file
@@ -206,7 +206,7 @@ It does not edit shell startup files, repositories, or `.zephyrrc`.
 
 ## 8. Configuration Template
 
-The canonical template is `resources/config.yaml.example`:
+The canonical template is `resources/config.example.yaml`:
 
 ```yaml
 default_runner: openocd

@@ -7,7 +7,7 @@ different file; its contents are YAML regardless of its filename extension.
 
 The complete machine-readable contract is
 [`configuration.schema.json`](../../python/zephyr_remote_openocd/resources/configuration.schema.json), and
-the commented template is [`config.yaml.example`](../../resources/config.yaml.example).
+the commented template is [`config.example.yaml`](../../resources/config.example.yaml).
 An empty YAML document is equivalent to `{}`. Unknown keys, duplicate YAML
 mapping keys, null values, and type mismatches are errors.
 A genuinely absent configuration file uses the defaults. A dangling symbolic

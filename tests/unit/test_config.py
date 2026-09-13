@@ -69,7 +69,7 @@ def test_explicit_root_null_is_rejected(tmp_path: Path, text: str):
 
 
 def test_canonical_template_loads():
-    config = load_config(ROOT / "resources" / "config.yaml.example")
+    config = load_config(ROOT / "resources" / "config.example.yaml")
     assert config.default_runner == "openocd"
     assert "default" in config.presets
 

@@ -26,11 +26,6 @@ indent_size = 2
 indent_style = space
 indent_size = 2
 
-# TOML and example configuration
-[*.{toml,example}]
-indent_style = space
-indent_size = 2
-
 # YAML
 [*.{yml,yaml}]
 indent_style = space

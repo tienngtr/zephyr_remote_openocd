@@ -52,7 +52,6 @@ def yaml_files(root: Path) -> tuple[str, ...]:
             "--",
             "*.yaml",
             "*.yml",
-            "*.yaml.example",
         ),
         cwd=root,
         check=True,
@@ -114,7 +113,7 @@ def commands(
     """Build the ordered static-check commands."""
     python = sys.executable
     schema, hardware_schema = json_schema_files()
-    example = "resources/config.yaml.example"
+    example = "resources/config.example.yaml"
     hardware_example = "tests/fixtures/hardware.example.yaml"
     hardware_complete_example = "tests/fixtures/hardware.complete.example.yaml"
     workflow_paths = tuple(

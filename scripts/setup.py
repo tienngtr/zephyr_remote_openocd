@@ -74,7 +74,7 @@ def _ensure_config_directory(path: Path) -> None:
 
 def initialize_config(root: Path, destination: Path) -> bool:
     """Create ``destination`` from the shipped template when absent."""
-    template = root / "resources" / "config.yaml.example"
+    template = root / "resources" / "config.example.yaml"
     try:
         contents = template.read_bytes()
     except OSError as error:

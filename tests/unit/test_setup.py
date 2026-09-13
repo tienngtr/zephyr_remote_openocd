@@ -17,7 +17,7 @@ from tests.support import ROOT
 
 SETUP = ROOT / "scripts" / "setup.py"
 CONFIG_DEFAULT = ROOT / "scripts" / "config_default.py"
-TEMPLATE = ROOT / "resources" / "config.yaml.example"
+TEMPLATE = ROOT / "resources" / "config.example.yaml"
 
 
 def run_setup(home: Path, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
