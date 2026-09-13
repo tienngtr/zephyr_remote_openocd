@@ -966,9 +966,10 @@ cleanup
 
 Unexpected controlling-session loss follows the same cleanup path.
 Each session holds an advisory lock in its workspace. When allocating a new
-session, the helper opportunistically removes persistent fallback workspaces
-older than 24 hours only when their lock is no longer held. This reclaims state
-left by uncatchable termination without disturbing concurrent active sessions.
+session, the helper opportunistically removes session workspaces older than 24
+hours when their lock is no longer held or lock creation never completed. This
+reclaims state left by uncatchable termination without disturbing concurrent
+active sessions.
 
 ---
 

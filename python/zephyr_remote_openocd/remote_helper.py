@@ -60,7 +60,10 @@ def reclaim_stale_workspaces(root, now=None):
     for path in candidates:
         lock_path = path / SESSION_LOCK
         try:
-            if not path.is_dir() or path.stat().st_mtime > cutoff or not lock_path.is_file():
+            if not path.is_dir() or path.stat().st_mtime > cutoff:
+                continue
+            if not lock_path.is_file():
+                shutil.rmtree(path, ignore_errors=True)
                 continue
             lock = lock_path.open("r+b")
         except OSError:

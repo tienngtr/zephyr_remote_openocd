@@ -37,14 +37,14 @@ def test_new_workspace_reclaims_only_unlocked_stale_sessions(tmp_path, monkeypat
         new_lock.close()
 
 
-def test_reclaimer_ignores_legacy_directory_without_lock(tmp_path):
-    legacy = tmp_path / "legacy"
-    legacy.mkdir()
-    os.utime(legacy, (1.0, 1.0))
+def test_reclaimer_removes_stale_directory_without_lock(tmp_path):
+    abandoned = tmp_path / "abandoned"
+    abandoned.mkdir()
+    os.utime(abandoned, (1.0, 1.0))
 
     remote_helper.reclaim_stale_workspaces(tmp_path, now=remote_helper.STALE_SESSION_AGE + 2)
 
-    assert legacy.exists()
+    assert not abandoned.exists()
 
 
 def test_new_workspace_holds_exclusive_lock(tmp_path, monkeypatch):
