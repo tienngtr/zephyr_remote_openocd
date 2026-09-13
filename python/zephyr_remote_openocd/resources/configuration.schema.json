@@ -85,7 +85,7 @@
     },
     "commandExecutable": {
       "title": "Command executable",
-      "description": "The first command item: a bare executable name, an absolute path, or a path relative to the SSH user's home directory.",
+      "description": "The first command item: a bare executable name, an absolute path, or a ~/... home-relative path; home interpretation depends on the command.",
       "allOf": [
         {
           "$ref": "#/$defs/commandArgument"
