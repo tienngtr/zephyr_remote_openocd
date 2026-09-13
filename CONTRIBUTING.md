@@ -15,6 +15,17 @@ python3 -m venv .venv
 .venv/bin/python scripts/static_check.py
 ```
 
+Collect branch coverage for production code, runner entry points, maintained
+scripts, and local Python helper subprocesses with:
+
+```sh
+.venv/bin/python -m pytest --cov --cov-config=.coveragerc \
+  --cov-report=term-missing
+```
+
+CI additionally publishes a Markdown job summary and a machine-readable
+`coverage.xml` artifact. Coverage is informational and has no minimum threshold.
+
 The repository map is small: `python/zephyr_remote_openocd/remote/` contains
 generic transport and session logic, `zephyr44/runner.py` contains Zephyr 4.4
 integration, `runners/remote_openocd.py` registers the west runner,

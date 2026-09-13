@@ -173,3 +173,19 @@ Run all configured static checks with:
 ```sh
 python3 scripts/static_check.py
 ```
+
+## Coverage
+
+The self-contained suite can collect branch coverage for the production
+package, west runner entry point, maintained scripts, and locally launched
+Python helper processes:
+
+```sh
+.venv/bin/python -m pytest --cov --cov-config=.coveragerc \
+  --cov-report=term-missing
+```
+
+GitHub Actions also writes the report to its job summary and uploads
+`coverage.xml`. Coverage is currently informational; no percentage threshold
+is enforced. Remote SSH and hardware processes are outside the self-contained
+CI coverage measurement.
