@@ -11,6 +11,7 @@ import os
 import socket
 import subprocess
 from pathlib import PurePosixPath
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -86,6 +87,56 @@ def test_remote_home_json_rejects_invalid_paths(runner_module, monkeypatch, tmp_
     )
     with pytest.raises(ConfigError, match="remote home query returned an invalid path"):
         runner_module._prepare_remote_paths(selected)
+
+
+def test_gdb_execution_owns_client_and_session_lifecycle(runner_module):
+    runner = Mock()
+    session = Mock()
+    session.poll.return_value = 7
+    plan = SimpleNamespace(gdb_argv=("gdb", "zephyr.elf"))
+
+    returncode = runner_module._execute_gdb_client(runner, plan, session)
+
+    runner.require.assert_called_once_with("gdb")
+    runner.run_client.assert_called_once_with(["gdb", "zephyr.elf"])
+    session.poll.assert_called_once_with()
+    session.close.assert_called_once_with()
+    assert returncode == 7
+
+
+def test_rtt_execution_defers_forward_until_after_gdb(runner_module, monkeypatch):
+    calls = []
+    runner = Mock()
+    runner.run_client.side_effect = lambda _argv: calls.append("gdb")
+    session = Mock()
+    session.forward.side_effect = lambda _services: calls.append("forward")
+    rtt_service = SimpleNamespace(local_port=19021)
+    plan = SimpleNamespace(gdb_argv=("gdb", "--batch"), rtt_service=rtt_service)
+    client = Mock(side_effect=lambda _port, _poll: calls.append("rtt") or 3)
+    monkeypatch.setattr(runner_module, "run_rtt_client", client)
+
+    returncode = runner_module._execute_rtt(runner, plan, session)
+
+    assert calls == ["gdb", "forward", "rtt"]
+    session.forward.assert_called_once_with((rtt_service,))
+    session.close.assert_called_once_with()
+    assert returncode == 3
+
+
+def test_debugserver_execution_reports_gdb_service_and_waits(runner_module):
+    runner = Mock()
+    session = Mock()
+    session.wait.return_value = 5
+    gdb_service = SimpleNamespace(name="gdb", local_port=3333)
+    plan = SimpleNamespace(services=(gdb_service,))
+
+    returncode = runner_module._execute_server(runner, "debugserver", plan, session)
+
+    runner.logger.info.assert_called_once_with(
+        "Remote OpenOCD GDB server available at 127.0.0.1:%s", 3333
+    )
+    session.wait.assert_called_once_with()
+    assert returncode == 5
 
 
 def parser_for(runner):

@@ -152,52 +152,64 @@ def _execute_operation(runner, command, request, plan, backend):
             descriptor.remote_workspace,
             descriptor.remote_address,
         )
-        if command != "rtt" and plan is not None and plan.rtt_service is not None:
-            runner.logger.info(
-                "Remote OpenOCD RTT server available at 127.0.0.1:%s",
-                plan.rtt_service.local_port,
-            )
-        if command == "debugserver":
-            assert plan is not None
-            gdb = next(item for item in plan.services if item.name == "gdb")
-            runner.logger.info(
-                "Remote OpenOCD GDB server available at 127.0.0.1:%s",
-                gdb.local_port,
-            )
-        if command == "rtt":
-            assert plan is not None and plan.gdb_argv is not None
-            assert plan.rtt_service is not None
-            runner.require(plan.gdb_argv[0])
-            try:
-                runner.run_client(list(plan.gdb_argv))
-                session.forward((plan.rtt_service,))
-                runner.logger.info(
-                    "Remote OpenOCD RTT server available at 127.0.0.1:%s",
-                    plan.rtt_service.local_port,
-                )
-                returncode = run_rtt_client(plan.rtt_service.local_port, session.poll)
-            finally:
-                session.close()
-            if returncode:
-                raise RuntimeError(f"remote OpenOCD failed with exit status {returncode}")
-            return
-        if command in {"debug", "attach"}:
-            assert plan is not None and plan.gdb_argv is not None
-            runner.require(plan.gdb_argv[0])
-            try:
-                runner.run_client(list(plan.gdb_argv))
-            finally:
-                returncode = session.poll()
-                session.close()
-            if returncode:
-                raise RuntimeError(f"remote OpenOCD failed with exit status {returncode}")
-            return
-        returncode = session.wait()
+        returncode = _execute_started_operation(runner, command, plan, session)
     except KeyboardInterrupt:
         session.close()
         raise
     if returncode:
         raise RuntimeError(f"remote OpenOCD failed with exit status {returncode}")
+
+
+def _execute_started_operation(runner, command, plan, session):
+    if command == "rtt":
+        return _execute_rtt(runner, plan, session)
+    _report_rtt_service(runner, plan)
+    if command in {"debug", "attach"}:
+        return _execute_gdb_client(runner, plan, session)
+    return _execute_server(runner, command, plan, session)
+
+
+def _execute_gdb_client(runner, plan, session):
+    assert plan is not None and plan.gdb_argv is not None
+    runner.require(plan.gdb_argv[0])
+    try:
+        runner.run_client(list(plan.gdb_argv))
+    finally:
+        returncode = session.poll()
+        session.close()
+    return returncode
+
+
+def _execute_rtt(runner, plan, session):
+    assert plan is not None and plan.gdb_argv is not None
+    assert plan.rtt_service is not None
+    runner.require(plan.gdb_argv[0])
+    try:
+        runner.run_client(list(plan.gdb_argv))
+        session.forward((plan.rtt_service,))
+        _report_rtt_service(runner, plan)
+        return run_rtt_client(plan.rtt_service.local_port, session.poll)
+    finally:
+        session.close()
+
+
+def _execute_server(runner, command, plan, session):
+    if command == "debugserver":
+        assert plan is not None
+        gdb = next(item for item in plan.services if item.name == "gdb")
+        runner.logger.info(
+            "Remote OpenOCD GDB server available at 127.0.0.1:%s",
+            gdb.local_port,
+        )
+    return session.wait()
+
+
+def _report_rtt_service(runner, plan):
+    if plan is not None and plan.rtt_service is not None:
+        runner.logger.info(
+            "Remote OpenOCD RTT server available at 127.0.0.1:%s",
+            plan.rtt_service.local_port,
+        )
 
 
 def _record_runner(runner, command, selected):
