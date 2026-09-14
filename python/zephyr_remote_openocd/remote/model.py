@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path, PurePosixPath
@@ -69,12 +70,9 @@ class RemoteSessionRequest:
             raise ValueError("remote host must not be empty")
         object.__setattr__(self, "staged_files", tuple(self.staged_files))
         object.__setattr__(self, "services", tuple(self.services))
-        names = [item.name for item in self.services]
-        if len(names) != len(set(names)):
-            raise ValueError("service names must be unique")
-        local = [item.local_port for item in self.services]
-        if len(local) != len(set(local)):
-            raise ValueError("local service ports must be unique")
+        _ensure_unique((item.name for item in self.services), "service names")
+        _ensure_unique((item.local_port for item in self.services), "local service ports")
+        _ensure_unique((item.remote_port for item in self.services), "remote service ports")
 
 
 @dataclass(frozen=True)
@@ -102,10 +100,15 @@ class RemotePathCheck:
     path: str
     kind: Literal["file", "directory"]
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.path, str) or not self.path or "\0" in self.path:
+            raise ValueError("remote path check must have a non-empty path")
+        if self.kind not in {"file", "directory"}:
+            raise ValueError("remote path check kind is invalid")
+
 
 @dataclass(frozen=True)
 class RemoteProcess:
-    kind: Literal["openocd"]
     argv: tuple[str, ...]
     environment: tuple[tuple[str, str], ...] = field(default_factory=tuple)
     required_paths: tuple[RemotePathCheck, ...] = field(default_factory=tuple)
@@ -145,23 +148,38 @@ def _validate_process_argv(argv: tuple[str, ...]) -> None:
 
 def _validate_process_environment(environment: tuple[tuple[str, str], ...]) -> None:
     names = [name for name, _ in environment]
-    if len(names) != len(set(names)) or not all(
-        isinstance(name, str) and name and "=" not in name and "\0" not in name for name in names
-    ):
+    if len(names) != len(set(names)):
         raise ValueError("remote environment names must be unique and valid")
-    if not all(isinstance(value, str) and "\0" not in value for _, value in environment):
-        raise ValueError("remote environment values must be strings without NUL")
+    for name in names:
+        if not isinstance(name, str) or not name or "=" in name or "\0" in name:
+            raise ValueError("remote environment names must be unique and valid")
+    for _, value in environment:
+        if not isinstance(value, str) or "\0" in value:
+            raise ValueError("remote environment values must be strings without NUL")
 
 
 def _validate_process_paths(required_paths: tuple[RemotePathCheck, ...]) -> None:
-    if not all(isinstance(check, RemotePathCheck) for check in required_paths):
+    if not all(
+        isinstance(check, RemotePathCheck)
+        and check.path
+        and "\0" not in check.path
+        and check.kind in {"file", "directory"}
+        for check in required_paths
+    ):
         raise ValueError("remote path checks must be RemotePathCheck values")
 
 
 def _validate_process_readiness(marker: str | None, timeout: float) -> None:
+    if marker is not None and not isinstance(marker, str):
+        raise ValueError("readiness marker must be a non-empty token")
     if marker is not None and (not marker or any(character.isspace() for character in marker)):
         raise ValueError("readiness marker must be a non-empty token")
-    if timeout <= 0:
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or not math.isfinite(timeout)
+        or timeout <= 0
+    ):
         raise ValueError("readiness timeout must be positive")
 
 
@@ -172,3 +190,9 @@ def _validate_literal_prefix(literal_prefix: int, argv_length: int) -> None:
         or not 0 <= literal_prefix <= argv_length
     ):
         raise ValueError("literal argv prefix is invalid")
+
+
+def _ensure_unique(values, label: str) -> None:
+    values = tuple(values)
+    if len(values) != len(set(values)):
+        raise ValueError(f"{label} must be unique")

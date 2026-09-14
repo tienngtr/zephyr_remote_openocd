@@ -148,23 +148,23 @@ def test_decode_command_returns_immutable_typed_requests():
     request = remote_helper.decode_command(
         {
             "version": 1,
-            "type": "START_OPENOCD",
+            "type": "START",
             "argv": ["openocd", "{address}"],
             "environment": {"ZRO_TEST": "value"},
             "required_paths": [{"kind": "file", "path": "{workspace}/image"}],
-            "services": [{"name": "tcl", "remote_port": 6333, "extension": "kept"}],
+            "services": [{"name": "tcl", "remote_port": 6333}],
             "readiness_marker": "READY",
+            "readiness_timeout": 30.0,
             "literal_prefix": 1,
         }
     )
 
-    assert isinstance(request, remote_helper.StartOpenOcdRequest)
+    assert isinstance(request, remote_helper.StartRequest)
     assert request.argv == ("openocd", "{address}")
     assert request.environment == (("ZRO_TEST", "value"),)
     assert request.required_paths == (remote_helper.RequiredPath("file", "{workspace}/image"),)
     assert request.services[0].name == "tcl"
     assert request.services[0].remote_port == 6333
-    assert request.services[0].to_wire()["extension"] == "kept"
     with pytest.raises(AttributeError):
         request.argv = ()
 
@@ -174,8 +174,32 @@ def test_decode_command_rejects_malformed_required_path_before_launch():
         remote_helper.decode_command(
             {
                 "version": 1,
-                "type": "START_OPENOCD",
+                "type": "START",
                 "argv": ["openocd"],
+                "environment": {},
                 "required_paths": [{"kind": "socket", "path": "not-valid"}],
+                "services": [],
+                "readiness_marker": None,
+                "readiness_timeout": 30.0,
+                "literal_prefix": 0,
             }
         )
+
+
+def test_decode_command_rejects_unknown_start_and_stop_fields():
+    start = {
+        "version": 1,
+        "type": "START",
+        "argv": ["openocd"],
+        "environment": {},
+        "required_paths": [],
+        "services": [],
+        "readiness_marker": None,
+        "readiness_timeout": 30.0,
+        "literal_prefix": 0,
+        "future": True,
+    }
+    with pytest.raises(ValueError, match="START fields"):
+        remote_helper.decode_command(start)
+    with pytest.raises(ValueError, match="STOP fields"):
+        remote_helper.decode_command({"version": 1, "type": "STOP", "future": True})

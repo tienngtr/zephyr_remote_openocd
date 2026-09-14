@@ -16,7 +16,14 @@ from collections.abc import Callable, Iterable
 from typing import BinaryIO, cast
 
 from .deploy import DeploymentResult, deploy_helper
-from .model import RemoteSessionRequest, Service, SessionAllocation, SessionDescriptor, StagedFile
+from .model import (
+    RemoteProcess,
+    RemoteSessionRequest,
+    Service,
+    SessionAllocation,
+    SessionDescriptor,
+    StagedFile,
+)
 from .protocol import (
     EventOrder,
     ProtocolError,
@@ -24,7 +31,8 @@ from .protocol import (
     read_message,
     validate_openocd_version_response,
     validate_staged_response,
-    write_message,
+    write_start,
+    write_stop,
 )
 from .session import BackendSession, SessionBackend, SessionError
 from .staging import build_archive
@@ -94,12 +102,9 @@ class SshHelperSession(BackendSession):
             if self.helper_process.stdout is None:
                 raise SessionError("helper stdout was not captured")
             self._order = EventOrder()
-            hello = self._read_event()
-            if hello["type"] != "HELLO":
-                raise ProtocolError("helper did not begin with HELLO")
             created = self._read_event()
             if created["type"] != "SESSION_CREATED":
-                raise ProtocolError("helper did not create a session")
+                raise ProtocolError("helper did not begin with SESSION_CREATED")
             self.allocation = SessionAllocation(created["session_id"], created["remote_workspace"])
         except BaseException:
             self._stop_process(self.helper_process)
@@ -199,34 +204,27 @@ class SshHelperSession(BackendSession):
 
     def start(self, services: Iterable[Service]) -> SessionDescriptor:
         service_list = tuple(services)
-        if self.request.process is not None:
-            return self._start_openocd(service_list)
-        return self._start_fake(service_list)
-
-    def _start_openocd(self, service_list: tuple[Service, ...]) -> SessionDescriptor:
-        process = self.request.process
-        assert process is not None
+        if self.request.process is None and not service_list:
+            raise SessionError("at least one service is required for a fake session")
+        process = self.request.process or self._fake_process(service_list)
         if self.helper_process.stdin is None:
             raise SessionError("helper stdin was not captured")
-        write_message(
+        write_start(
             cast(BinaryIO, self.helper_process.stdin),
-            "START_OPENOCD",
-            argv=list(process.argv),
-            environment=dict(process.environment),
-            required_paths=[
-                {"path": check.path, "kind": check.kind} for check in process.required_paths
-            ],
-            services=[
-                {"name": item.name, "remote_port": item.remote_port} for item in service_list
-            ],
-            readiness_marker=process.readiness_marker,
-            readiness_timeout=process.readiness_timeout,
-            literal_prefix=process.literal_prefix,
+            process,
+            service_list,
         )
-        address = self._await_openocd_ready(service_list)
+        address = self._await_process_ready()
         if service_list:
             try:
-                self._start_forwards(service_list, address)
+                advisories = None
+                if self.request.process is None:
+                    advisories = [
+                        message
+                        for item in service_list
+                        if (message := self._preflight(item.local_port))
+                    ]
+                self._start_forwards(service_list, address, advisories)
             except BaseException:
                 self._close_forwards()
                 raise
@@ -234,53 +232,29 @@ class SshHelperSession(BackendSession):
         self.descriptor = SessionDescriptor(self.allocation, address)
         return self.descriptor
 
-    def _await_openocd_ready(self, service_list: tuple[Service, ...]) -> str:
-        ready: set[object] = set()
+    def _fake_process(self, services: tuple[Service, ...]):
+        return RemoteProcess(
+            (
+                "python3",
+                self.deployment.path,
+                "fake-child",
+                "{address}",
+                *(str(service.remote_port) for service in services),
+            ),
+            readiness_marker="ZRO_FAKE_READY",
+            literal_prefix=3,
+        )
+
+    def _await_process_ready(self) -> str:
         while True:
             event = self._read_event()
             self._dispatch(event)
-            if event["type"] == "PROCESS_STARTED":
-                address = event["remote_address"]
-                if not service_list:
-                    return address
-            elif event["type"] == "SERVICE_READY":
-                service = event.get("service", {})
-                ready.add(service.get("name"))
-                address = event["remote_address"]
-                if ready == {item.name for item in service_list}:
-                    return address
-            elif event["type"] == "PROCESS_EXIT":
+            if event["type"] == "PROCESS_READY":
+                return event["remote_address"]
+            if event["type"] == "SESSION_CLOSED":
                 raise SessionError(
-                    f"remote OpenOCD exited before services were ready ({event['returncode']})"
+                    f"remote process closed before becoming ready ({event.get('returncode')})"
                 )
-
-    def _start_fake(self, service_list: tuple[Service, ...]) -> SessionDescriptor:
-        if not service_list:
-            raise SessionError("at least one service is required")
-        advisories = [
-            message for item in service_list if (message := self._preflight(item.local_port))
-        ]
-        if self.helper_process.stdin is None:
-            raise SessionError("helper stdin was not captured")
-        write_message(
-            cast(BinaryIO, self.helper_process.stdin),
-            "START",
-            services=[
-                {"name": item.name, "remote_port": item.remote_port} for item in service_list
-            ],
-        )
-        while True:
-            event = self._read_event()
-            if event["type"] == "SERVICE_READY":
-                address = event["remote_address"]
-                break
-        try:
-            self._start_forwards(service_list, address, advisories)
-            self.descriptor = SessionDescriptor(self.allocation, address)
-            return self.descriptor
-        except BaseException:
-            self._close_forwards()
-            raise
 
     def _start_event_drain(self) -> None:
         self.reader_thread = threading.Thread(target=self._drain_events, daemon=True)
@@ -301,15 +275,15 @@ class SshHelperSession(BackendSession):
             raise
 
     def poll(self) -> int | None:
-        if self.reader_error is not None:
-            raise SessionError(
-                f"helper event stream failed: {self.reader_error}"
-            ) from self.reader_error
         if self.process_returncode is not None:
             return self.process_returncode
         helper_status = self.helper_process.poll()
         if helper_status is not None:
             return helper_status or 1
+        if self.reader_error is not None:
+            raise SessionError(
+                f"helper event stream failed: {self.reader_error}"
+            ) from self.reader_error
         if any(process.poll() is not None for process in self.forwards):
             return 1
         return None
@@ -376,7 +350,7 @@ class SshHelperSession(BackendSession):
     def _dispatch(self, event: dict) -> None:
         if event["type"] == "CHILD_OUTPUT" and self.output_handler is not None:
             self.output_handler(event["stream"], event.get("payload", ""))
-        elif event["type"] == "PROCESS_EXIT":
+        elif event["type"] == "SESSION_CLOSED" and event["reason"] == "process_exit":
             self.process_returncode = int(event["returncode"])
 
     def _drain_events(self) -> None:
@@ -384,7 +358,7 @@ class SshHelperSession(BackendSession):
             while True:
                 event = self._read_event()
                 self._dispatch(event)
-                if event["type"] == "STOPPED":
+                if event["type"] == "SESSION_CLOSED":
                     return
         except EOFError:
             return
@@ -416,7 +390,7 @@ class SshHelperSession(BackendSession):
         self._close_forwards()
         if self.helper_process.poll() is None and self.helper_process.stdin is not None:
             try:
-                write_message(cast(BinaryIO, self.helper_process.stdin), "STOP")
+                write_stop(cast(BinaryIO, self.helper_process.stdin))
                 self.helper_process.stdin.close()
                 self.helper_process.wait(timeout=5)
             except (BrokenPipeError, OSError, subprocess.TimeoutExpired):

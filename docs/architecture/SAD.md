@@ -930,11 +930,11 @@ No assumption is made that the local SSH executable comes from the local Linux d
 
 ## 36. Remote Helper Protocol
 
-The exact Protocol v1 wire format and behavior are specified in
-[protocol.md](protocol.md). Changes require explicit authorization. Helper
-stdout contains only JSON protocol frames. Each authorized client/helper
-protocol change must explicitly decide whether compatibility or the numeric
-version changes.
+The current internal helper wire format and behavior are specified in
+[protocol.md](protocol.md). Helper stdout contains only JSON protocol frames.
+The deployed client and helper implement one strict contract; the numeric wire
+value remains `1` as its identifier and is not an external compatibility
+guarantee.
 
 ## 37. Remote Session Storage
 

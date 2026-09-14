@@ -42,6 +42,28 @@ from tests.process_support import read_line, read_lines
 from tests.support import ROOT
 
 
+def start_frame(
+    argv,
+    *,
+    environment=None,
+    required_paths=None,
+    services=(),
+    readiness_marker=None,
+    readiness_timeout=30.0,
+    literal_prefix=0,
+):
+    return encode_message(
+        "START",
+        argv=list(argv),
+        environment={} if environment is None else environment,
+        required_paths=[] if required_paths is None else required_paths,
+        services=list(services),
+        readiness_marker=readiness_marker,
+        readiness_timeout=readiness_timeout,
+        literal_prefix=literal_prefix,
+    )
+
+
 class TestForwardingLifecycle:
     class Process:
         def __init__(self, returncode=None):
@@ -115,9 +137,9 @@ class TestForwardingLifecycle:
         process.stdout = io.BytesIO()
         command = self.Command(process)
         events = (
-            {"type": "HELLO"},
             {
                 "type": "SESSION_CREATED",
+                "helper": "zephyr_remote_openocd",
                 "session_id": "session",
                 "remote_workspace": "/workspace",
             },
@@ -302,15 +324,9 @@ class TestRealProcessHelper:
             try:
                 assert process.stdin is not None and process.stdout is not None
                 read_line(process.stdout)
-                read_line(process.stdout)
                 process.stdin.write(
-                    encode_message(
-                        "START_OPENOCD",
-                        argv=[
-                            sys.executable,
-                            "-c",
-                            "import os; print(os.environ['ZRO_TEST_FORWARD'])",
-                        ],
+                    start_frame(
+                        [sys.executable, "-c", "import os; print(os.environ['ZRO_TEST_FORWARD'])"],
                         environment={"ZRO_TEST_FORWARD": "before_config"},
                     )
                 )
@@ -356,11 +372,9 @@ class TestRealProcessHelper:
             try:
                 assert process.stdin is not None and process.stdout is not None
                 read_line(process.stdout)
-                read_line(process.stdout)
                 process.stdin.write(
-                    encode_message(
-                        "START_OPENOCD",
-                        argv=[executable, "-f", str(config)],
+                    start_frame(
+                        [executable, "-f", str(config)],
                         environment={"ZRO_CONFIG_VALUE": "channel_1"},
                     )
                 )
@@ -398,7 +412,6 @@ class TestRealProcessHelper:
                 try:
                     assert process.stdin is not None and process.stdout is not None
                     read_line(process.stdout)
-                    read_line(process.stdout)
                     process.stdin.write(frame)
                     process.stdin.flush()
                     error = json.loads(read_line(process.stdout))
@@ -434,8 +447,7 @@ class TestRealProcessHelper:
             )
             try:
                 assert process.stdout is not None and process.stdin is not None
-                assert json.loads(read_line(process.stdout))["type"] == "HELLO"
-                json.loads(read_line(process.stdout))
+                assert json.loads(read_line(process.stdout))["type"] == "SESSION_CREATED"
                 marker = "ZRO_READY_unit"
                 child_code = (
                     "import socket,sys,time;"
@@ -443,9 +455,8 @@ class TestRealProcessHelper:
                     "print(sys.argv[3],flush=True);time.sleep(30)"
                 )
                 process.stdin.write(
-                    encode_message(
-                        "START_OPENOCD",
-                        argv=[
+                    start_frame(
+                        [
                             sys.executable,
                             "-c",
                             child_code,
@@ -453,8 +464,6 @@ class TestRealProcessHelper:
                             str(remote_port),
                             marker,
                         ],
-                        environment={},
-                        required_paths=[],
                         services=[{"name": "tcl", "remote_port": remote_port}],
                         readiness_marker=marker,
                         readiness_timeout=5,
@@ -462,9 +471,9 @@ class TestRealProcessHelper:
                 )
                 process.stdin.flush()
                 events = []
-                while not any(event["type"] == "SERVICE_READY" for event in events):
+                while not any(event["type"] == "PROCESS_READY" for event in events):
                     events.append(json.loads(read_line(process.stdout)))
-                assert any(event["type"] == "PROCESS_STARTED" for event in events)
+                assert any(event["type"] == "PROCESS_READY" for event in events)
                 assert any(
                     event["type"] == "CHILD_OUTPUT" and event["payload"] == marker
                     for event in events
@@ -507,8 +516,7 @@ class TestRealProcessHelper:
             )
             try:
                 assert process.stdout is not None and process.stdin is not None
-                assert json.loads(read_line(process.stdout))["type"] == "HELLO"
-                json.loads(read_line(process.stdout))
+                assert json.loads(read_line(process.stdout))["type"] == "SESSION_CREATED"
                 try:
                     port_socket = socket.socket()
                 except PermissionError:
@@ -535,31 +543,30 @@ class TestRealProcessHelper:
                     "time.sleep(30)\n"
                 )
                 process.stdin.write(
-                    encode_message(
-                        "START_OPENOCD",
-                        argv=[
+                    start_frame(
+                        [
                             sys.executable,
                             str(child),
                             ADDRESS_TOKEN,
                             str(remote_port),
                             marker,
                         ],
-                        environment={"ZRO_COLLISION_STATE": str(state)},
                         services=[{"name": "tcl", "remote_port": remote_port}],
+                        environment={"ZRO_COLLISION_STATE": str(state)},
                         readiness_marker=marker,
                         readiness_timeout=5,
                     )
                 )
                 process.stdin.flush()
                 events = []
-                while not any(event["type"] == "SERVICE_READY" for event in events):
+                while not any(event["type"] == "PROCESS_READY" for event in events):
                     events.append(json.loads(read_line(process.stdout)))
                 assert any(
                     event["type"] == "CHILD_OUTPUT"
                     and "address already in use" in event["payload"].casefold()
                     for event in events
                 )
-                assert any(event["type"] == "PROCESS_STARTED" for event in events)
+                assert any(event["type"] == "PROCESS_READY" for event in events)
                 process.stdin.write(encode_message("STOP"))
                 process.stdin.flush()
                 assert process.wait(timeout=8) == 0
@@ -585,28 +592,27 @@ class TestRealProcessHelper:
             )
             try:
                 assert process.stdout is not None and process.stdin is not None
-                assert json.loads(read_line(process.stdout))["type"] == "HELLO"
                 created = json.loads(read_line(process.stdout))
+                assert created["type"] == "SESSION_CREATED"
                 command = [
                     sys.executable,
                     "-c",
                     'import sys;print("out");print("err",file=sys.stderr);sys.exit(7)',
                 ]
-                process.stdin.write(
-                    encode_message("START_OPENOCD", argv=command, environment={}, required_paths=[])
-                )
+                process.stdin.write(start_frame(command))
                 process.stdin.flush()
                 events = [json.loads(line) for line in read_lines(process.stdout)]
                 assert process.wait(timeout=5) == 0
-                assert events[0]["type"] == "PROCESS_STARTED"
+                assert events[0]["type"] == "PROCESS_READY"
                 outputs = {
                     (event["stream"], event["payload"])
                     for event in events
                     if event["type"] == "CHILD_OUTPUT"
                 }
                 assert outputs == {("stdout", "out"), ("stderr", "err")}
-                exit_event = next(event for event in events if event["type"] == "PROCESS_EXIT")
+                exit_event = next(event for event in events if event["type"] == "SESSION_CLOSED")
                 assert exit_event["returncode"] == 7
+                assert exit_event["reason"] == "process_exit"
                 assert not Path(created["remote_workspace"]).exists()
                 assert process.stderr.read() == b""
             finally:
@@ -633,16 +639,14 @@ class TestRealProcessHelper:
             workspace = None
             try:
                 assert process.stdout is not None and process.stdin is not None
-                assert json.loads(read_line(process.stdout))["type"] == "HELLO"
                 created = json.loads(read_line(process.stdout))
+                assert created["type"] == "SESSION_CREATED"
                 workspace = Path(created["remote_workspace"])
                 command = [sys.executable, "-c", "import time; time.sleep(30)"]
-                process.stdin.write(
-                    encode_message("START_OPENOCD", argv=command, environment={}, required_paths=[])
-                )
+                process.stdin.write(start_frame(command))
                 process.stdin.flush()
                 started = json.loads(read_line(process.stdout))
-                assert started["type"] == "PROCESS_STARTED"
+                assert started["type"] == "PROCESS_READY"
                 child_pid = started["child_pid"]
                 process.terminate()
                 assert process.wait(timeout=8) == 0
@@ -671,18 +675,15 @@ class TestRealProcessHelper:
             )
             try:
                 assert process.stdout is not None and process.stdin is not None
-                read_line(process.stdout)
                 created = json.loads(read_line(process.stdout))
+                assert created["type"] == "SESSION_CREATED"
                 workspace = Path(created["remote_workspace"])
                 process.stdin.write(
-                    encode_message(
-                        "START_OPENOCD",
-                        argv=[sys.executable, "-c", "import time; time.sleep(30)"],
-                    )
+                    start_frame([sys.executable, "-c", "import time; time.sleep(30)"])
                 )
                 process.stdin.flush()
                 started = json.loads(read_line(process.stdout))
-                assert started["type"] == "PROCESS_STARTED"
+                assert started["type"] == "PROCESS_READY"
                 child_pid = started["child_pid"]
                 process.stdin.close()
                 assert process.wait(timeout=8) == 0
@@ -711,8 +712,8 @@ class TestRealProcessHelper:
             )
             try:
                 assert process.stdout is not None and process.stdin is not None
-                assert json.loads(read_line(process.stdout))["type"] == "HELLO"
                 created = json.loads(read_line(process.stdout))
+                assert created["type"] == "SESSION_CREATED"
                 workspace = Path(created["remote_workspace"])
                 try:
                     listener = socket.socket()
@@ -729,11 +730,8 @@ class TestRealProcessHelper:
                     marker,
                 ]
                 process.stdin.write(
-                    encode_message(
-                        "START_OPENOCD",
-                        argv=command,
-                        environment={},
-                        required_paths=[],
+                    start_frame(
+                        command,
                         services=[{"name": "tcl", "remote_port": remote_port}],
                         readiness_marker=marker,
                         readiness_timeout=0.5,
@@ -784,7 +782,6 @@ class TestRealProcessHelper:
 
             output = []
             remote_process = RemoteProcess(
-                "openocd",
                 (sys.executable, "-c", 'import sys;print("hello");sys.exit(6)'),
             )
             request = RemoteSessionRequest("local", LocalCommand(), process=remote_process)
@@ -831,7 +828,6 @@ class TestRealProcessHelper:
                     )
 
             remote_process = RemoteProcess(
-                "openocd",
                 (
                     sys.executable,
                     "-c",

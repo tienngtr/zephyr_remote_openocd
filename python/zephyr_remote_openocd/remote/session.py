@@ -80,11 +80,14 @@ class RemoteSession:
             return
         combined = (*self._services, *additions)
         names = [item.name for item in combined]
-        ports = [item.local_port for item in combined]
+        local_ports = [item.local_port for item in combined]
+        remote_ports = [item.remote_port for item in combined]
         if len(names) != len(set(names)):
             raise SessionError("service names must remain unique")
-        if len(ports) != len(set(ports)):
+        if len(local_ports) != len(set(local_ports)):
             raise SessionError("local service ports must remain unique")
+        if len(remote_ports) != len(set(remote_ports)):
+            raise SessionError("remote service ports must remain unique")
         try:
             self._session.forward(additions)
             self._services.extend(additions)

@@ -31,6 +31,7 @@ from zephyr_remote_openocd.remote.flash import (
     build_flash_plan,
 )
 from zephyr_remote_openocd.remote.model import (
+    RemoteProcess,
     RemoteSessionRequest,
     Service,
     SessionAllocation,
@@ -49,6 +50,8 @@ from zephyr_remote_openocd.remote.protocol import (
     validate_helper_event,
     validate_openocd_version_response,
     validate_staged_response,
+    write_start,
+    write_stop,
 )
 from zephyr_remote_openocd.remote.services import (
     LOOPBACK_RANGE,
@@ -85,28 +88,38 @@ class TestProtocol:
     def test_event_order_is_enforced(self):
         order = EventOrder()
         with pytest.raises(ProtocolError):
-            order.accept(decode_message(encode_message("SERVICE_READY")))
-        order.accept(decode_message(encode_message("HELLO", helper="helper")))
+            order.accept(
+                decode_message(
+                    encode_message("PROCESS_READY", remote_address="127.64.1.1", child_pid=1)
+                )
+            )
         order.accept(
             decode_message(
                 encode_message(
-                    "SESSION_CREATED", session_id="session", remote_workspace="/workspace"
+                    "SESSION_CREATED",
+                    helper="helper",
+                    session_id="session",
+                    remote_workspace="/workspace",
                 )
             )
         )
         order.accept(
+            decode_message(encode_message("CHILD_OUTPUT", stream="stdout", payload="before-ready"))
+        )
+        order.accept(
             decode_message(
-                encode_message(
-                    "SERVICE_READY",
-                    remote_address="127.64.1.1",
-                    services=[{"remote_port": 3333}],
-                    child_pid=1,
-                )
+                encode_message("PROCESS_READY", remote_address="127.64.1.1", child_pid=1)
             )
         )
+        order.accept(
+            decode_message(encode_message("SESSION_CLOSED", reason="process_exit", returncode=0))
+        )
+        with pytest.raises(ProtocolError):
+            order.accept(
+                decode_message(encode_message("CHILD_OUTPUT", stream="stdout", payload="late"))
+            )
 
-    def test_fixed_protocol_v1_helper_fixture_remains_compatible(self):
-        """A recorded Protocol v1 sequence protects required fields and ordering."""
+    def test_current_helper_fixture_has_valid_order(self):
         fixture = ROOT / "tests/fixtures/protocol_v1/helper_openocd_events.jsonl"
         order = EventOrder()
         for line in fixture.read_bytes().splitlines():
@@ -117,12 +130,12 @@ class TestProtocol:
         for line in fake_fixture.read_bytes().splitlines():
             fake_order.accept(decode_message(line))
 
-    def test_fixed_protocol_v1_client_commands_remain_compatible(self):
+    def test_current_client_fixture_has_valid_schema(self):
         fixture = ROOT / "tests/fixtures/protocol_v1/client_commands.jsonl"
         for line in fixture.read_bytes().splitlines():
             validate_client_command(decode_message(line))
 
-    def test_fixed_protocol_v1_one_shot_responses_remain_compatible(self):
+    def test_one_shot_responses_keep_their_schema(self):
         fixture = ROOT / "tests/fixtures/protocol_v1/one_shot_responses.jsonl"
         staged, version, deployed = [
             decode_message(line) for line in fixture.read_bytes().splitlines()
@@ -131,89 +144,96 @@ class TestProtocol:
         validate_openocd_version_response(version)
         validate_deployment_response(deployed)
 
-    def test_fixed_protocol_v1_start_openocd_frame_has_no_reserved_overrides(self):
+    def test_current_start_frame_has_exact_schema(self):
         fixture = ROOT / "tests/fixtures/protocol_v1/client_start_openocd.json"
         command = decode_message(fixture.read_bytes())
-        assert command["type"] == "START_OPENOCD"
+        assert command["type"] == "START"
         assert command["version"] == 1
         assert command["services"][0]["remote_port"] == 3333
 
-    def test_start_openocd_allows_literal_empty_arguments(self):
-        validate_client_command(
-            decode_message(
-                encode_message(
-                    "START_OPENOCD",
-                    argv=["openocd", "--fixed", ""],
-                    literal_prefix=2,
-                )
-            )
+    def test_start_serializers_use_validated_domain_models(self):
+        stream = io.BytesIO()
+        process = RemoteProcess(
+            ("openocd", "--fixed", ""),
+            environment=(("ZRO_TEST", "value"),),
+            readiness_marker="READY",
+            literal_prefix=2,
         )
+        write_start(stream, process, (Service("gdb", 3333, 3333),))
+        write_stop(stream)
+        frames = [decode_message(line) for line in stream.getvalue().splitlines()]
+        validate_client_command(frames[0])
+        assert frames[0]["type"] == "START"
+        assert frames[0]["argv"][-1] == ""
+        assert frames[1] == {"version": 1, "type": "STOP"}
 
-    @pytest.mark.parametrize("command_type", ("START", "START_OPENOCD"))
-    def test_start_commands_reject_duplicate_service_ports(self, command_type):
-        services = [{"remote_port": 3333}, {"remote_port": 3333}]
-        fields = {"services": services}
-        if command_type == "START_OPENOCD":
-            fields["services"] = [
+    def test_start_rejects_duplicate_service_ports(self):
+        fields = {
+            "argv": ["openocd"],
+            "environment": {},
+            "required_paths": [],
+            "services": [
                 {"name": "gdb", "remote_port": 3333},
                 {"name": "tcl", "remote_port": 3333},
-            ]
-            fields["argv"] = ["openocd"]
-        with pytest.raises(ProtocolError, match=f"invalid {command_type} command"):
-            validate_client_command(decode_message(encode_message(command_type, **fields)))
+            ],
+            "readiness_marker": None,
+            "readiness_timeout": 30.0,
+            "literal_prefix": 0,
+        }
+        with pytest.raises(ProtocolError):
+            validate_client_command(decode_message(encode_message("START", **fields)))
 
-    @pytest.mark.parametrize("command_type", ("START", "START_OPENOCD"))
-    def test_start_commands_accept_distinct_service_ports(self, command_type):
-        services = [{"remote_port": 3333}, {"remote_port": 6333}]
-        fields = {"services": services}
-        if command_type == "START_OPENOCD":
-            fields["services"] = [
+    def test_start_accepts_distinct_service_ports(self):
+        fields = {
+            "argv": ["openocd"],
+            "environment": {},
+            "required_paths": [],
+            "services": [
                 {"name": "gdb", "remote_port": 3333},
                 {"name": "tcl", "remote_port": 6333},
-            ]
-            fields["argv"] = ["openocd"]
-        validate_client_command(decode_message(encode_message(command_type, **fields)))
+            ],
+            "readiness_marker": None,
+            "readiness_timeout": 30.0,
+            "literal_prefix": 0,
+        }
+        validate_client_command(decode_message(encode_message("START", **fields)))
 
-    def test_process_exit_allows_only_terminal_stop(self):
-        order = EventOrder()
-        frames = (
-            ("HELLO", {"helper": "helper"}),
-            ("SESSION_CREATED", {"session_id": "id", "remote_workspace": "/work"}),
-            ("PROCESS_STARTED", {"remote_address": "127.64.1.1", "child_pid": 1}),
-            ("PROCESS_EXIT", {"returncode": 0}),
-        )
-        for message_type, fields in frames:
-            order.accept(decode_message(encode_message(message_type, **fields)))
+    def test_persistent_unknown_fields_are_rejected(self):
+        fields = {
+            "argv": ["openocd"],
+            "environment": {},
+            "required_paths": [],
+            "services": [],
+            "readiness_marker": None,
+            "readiness_timeout": 30.0,
+            "literal_prefix": 0,
+            "future": True,
+        }
         with pytest.raises(ProtocolError):
-            order.accept(
-                decode_message(
-                    encode_message("CHILD_OUTPUT", stream="stdout", payload="late output")
-                )
-            )
-        order.accept(decode_message(encode_message("STOPPED", reason="process_exit")))
-
-    def test_stopped_reason_uses_protocol_values(self):
-        validate_helper_event(decode_message(encode_message("STOPPED", reason="process_exit")))
+            validate_client_command(decode_message(encode_message("START", **fields)))
         with pytest.raises(ProtocolError):
-            validate_helper_event(decode_message(encode_message("STOPPED", reason="process-exit")))
-
-    def test_real_service_ready_requires_process_started(self):
-        order = EventOrder()
-        order.accept(decode_message(encode_message("HELLO", helper="helper")))
-        order.accept(
-            decode_message(
-                encode_message("SESSION_CREATED", session_id="id", remote_workspace="/work")
-            )
-        )
-        with pytest.raises(ProtocolError):
-            order.accept(
+            validate_helper_event(
                 decode_message(
                     encode_message(
-                        "SERVICE_READY",
-                        remote_address="127.64.1.1",
-                        service={"name": "gdb", "remote_port": 3333},
+                        "SESSION_CREATED",
+                        helper="helper",
+                        session_id="id",
+                        remote_workspace="/work",
+                        future=True,
                     )
                 )
+            )
+
+    def test_session_closed_reason_requires_matching_returncode(self):
+        validate_helper_event(
+            decode_message(encode_message("SESSION_CLOSED", reason="process_exit", returncode=0))
+        )
+        validate_helper_event(
+            decode_message(encode_message("SESSION_CLOSED", reason="requested", returncode=None))
+        )
+        with pytest.raises(ProtocolError):
+            validate_helper_event(
+                decode_message(encode_message("SESSION_CLOSED", reason="requested", returncode=0))
             )
 
 
@@ -400,6 +420,14 @@ class TestSession:
         with pytest.raises(SessionError, match="service names must remain unique"):
             session.forward((rtt,))
         session.close()
+
+    def test_request_rejects_duplicate_remote_service_ports(self):
+        with pytest.raises(ValueError, match="remote service ports must be unique"):
+            RemoteSessionRequest(
+                "host",
+                SshCommand(),
+                services=(Service("gdb", 1234, 3333), Service("tcl", 1235, 3333)),
+            )
 
     def test_dynamic_forward_failure_closes_session(self):
         backend = _FakeBackend()

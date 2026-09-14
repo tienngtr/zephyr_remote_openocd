@@ -267,7 +267,6 @@ def build_debug_plan(
     gdb_argv = _client_argv(inputs, services)
 
     process = RemoteProcess(
-        "openocd",
         argv,
         environment,
         tuple(planner.remote_checks),

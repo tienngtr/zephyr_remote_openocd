@@ -307,7 +307,6 @@ class TestSshTransportIntegration:
             )
             output = []
             process = RemoteProcess(
-                "openocd",
                 (*openocd_command, "-f", "{workspace}/staged/environment.cfg"),
                 (("ZRO_CONFIG_VALUE", "channel_1"),),
             )

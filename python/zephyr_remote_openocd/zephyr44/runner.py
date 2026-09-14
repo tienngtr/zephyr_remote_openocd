@@ -470,7 +470,9 @@ def _request_record(request):
     }
     if request.process is not None:
         result["process"] = {
-            "kind": request.process.kind,
+            # The current session model has one generic remote process path;
+            # retain the historical recording label at this output boundary.
+            "kind": "openocd",
             "argv": list(request.process.argv),
             "environment": [name for name, _ in request.process.environment],
             "required_paths": [

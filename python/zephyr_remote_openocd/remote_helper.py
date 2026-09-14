@@ -10,6 +10,7 @@ import fcntl
 import hashlib
 import ipaddress
 import json
+import math
 import os
 import secrets
 import selectors
@@ -183,7 +184,7 @@ def fake_child(address, ports):
             listener.bind((address, port))
             listener.listen()
             listeners.append(listener)
-        print(json.dumps({"ready": True}), flush=True)
+        print("ZRO_FAKE_READY", flush=True)
         print("fake service ready", file=sys.stderr, flush=True)
         selector = selectors.DefaultSelector()
         for listener in listeners:
@@ -293,57 +294,92 @@ def _protocol_kind(message):
         or message["version"] != VERSION
     ):
         raise ValueError("incompatible or missing protocol version")
-    return message.get("type")
+    kind = message.get("type")
+    if not isinstance(kind, str) or not kind:
+        raise ValueError("missing protocol command type")
+    return kind
 
 
-def _parse_services(services, label, *, require_name=False):
-    if not isinstance(services, list) or not all(
+def _valid_service(item):
+    return (
         isinstance(item, dict)
-        and (not require_name or isinstance(item.get("name"), str))
+        and set(item) == {"name", "remote_port"}
+        and isinstance(item.get("name"), str)
+        and bool(item.get("name"))
         and isinstance(item.get("remote_port"), int)
         and not isinstance(item.get("remote_port"), bool)
         and 1 <= item["remote_port"] <= 65535
-        for item in services
-    ):
+    )
+
+
+def _parse_services(services, label):
+    if not isinstance(services, list):
+        raise ValueError(f"{label} services are invalid")
+    if not all(_valid_service(item) for item in services):
         raise ValueError(f"{label} services are invalid")
     ports = [item["remote_port"] for item in services]
+    names = [item["name"] for item in services]
     if len(ports) != len(set(ports)):
         raise ValueError(f"{label} services must use unique remote ports")
-    return tuple(ServiceRequest.from_wire(item) for item in services)
+    if len(names) != len(set(names)):
+        raise ValueError(f"{label} services must use unique names")
+    return tuple(ServiceRequest(item["name"], item["remote_port"]) for item in services)
 
 
-def _validate_openocd_argv(argv):
-    if (
-        not isinstance(argv, list)
-        or not argv
-        or not isinstance(argv[0], str)
-        or not argv[0]
-        or not all(isinstance(arg, str) for arg in argv[1:])
-    ):
-        raise ValueError("START_OPENOCD requires a non-empty string argv")
+def _validate_argv(argv):
+    if not isinstance(argv, list) or not argv:
+        raise ValueError("START requires a non-empty string argv")
+    if not isinstance(argv[0], str) or not argv[0]:
+        raise ValueError("START requires a non-empty string argv")
+    if not all(isinstance(arg, str) for arg in argv[1:]):
+        raise ValueError("START requires a non-empty string argv")
 
 
-def _validate_openocd_environment(environment):
-    if not isinstance(environment, dict) or not all(
-        isinstance(key, str) and isinstance(value, str) for key, value in environment.items()
-    ):
-        raise ValueError("START_OPENOCD environment must contain string values")
+def _validate_environment(environment):
+    if not isinstance(environment, dict):
+        raise ValueError("START environment must contain valid string values")
+    for key, value in environment.items():
+        if (
+            not isinstance(key, str)
+            or not key
+            or "=" in key
+            or "\0" in key
+            or not isinstance(value, str)
+            or "\0" in value
+        ):
+            raise ValueError("START environment must contain valid string values")
 
 
-def _validate_openocd_options(marker, timeout, literal_prefix, argv_length):
+def _validate_marker(marker):
     if marker is not None and (
         not isinstance(marker, str) or not marker or any(c.isspace() for c in marker)
     ):
-        raise ValueError("START_OPENOCD readiness marker is invalid")
+        raise ValueError("START readiness marker is invalid")
+
+
+def _validate_timeout(timeout):
     if (
         not isinstance(timeout, (int, float))
         or isinstance(timeout, bool)
+        or not math.isfinite(timeout)
         or timeout <= 0
-        or isinstance(literal_prefix, bool)
+    ):
+        raise ValueError("START readiness options are invalid")
+
+
+def _validate_literal_prefix(literal_prefix, argv_length):
+    if (
+        isinstance(literal_prefix, bool)
         or not isinstance(literal_prefix, int)
         or not 0 <= literal_prefix <= argv_length
     ):
-        raise ValueError("START_OPENOCD readiness timeout is invalid")
+        raise ValueError("START readiness options are invalid")
+
+
+def _validate_options(marker, timeout, literal_prefix, argv_length):
+    _validate_marker(marker)
+    _validate_timeout(timeout)
+    _validate_literal_prefix(literal_prefix, argv_length)
 
 
 def _expand(value, replacements):
@@ -361,18 +397,10 @@ def _check_required_paths(checks, replacements):
 
 
 class ServiceRequest(NamedTuple):
-    """Validated service data, retaining extension fields for Protocol v1."""
+    """Validated service data from one START request."""
 
-    name: object
+    name: str
     remote_port: int
-    fields: tuple[tuple[str, object], ...]
-
-    @classmethod
-    def from_wire(cls, value: dict) -> ServiceRequest:
-        return cls(value.get("name"), value["remote_port"], tuple(value.items()))
-
-    def to_wire(self):
-        return dict(self.fields)
 
 
 class RequiredPath(NamedTuple):
@@ -381,10 +409,6 @@ class RequiredPath(NamedTuple):
 
 
 class StartRequest(NamedTuple):
-    services: tuple[ServiceRequest, ...]
-
-
-class StartOpenOcdRequest(NamedTuple):
     argv: tuple[str, ...]
     environment: tuple[tuple[str, str], ...]
     required_paths: tuple[RequiredPath, ...]
@@ -401,37 +425,47 @@ class StopRequest:
 def _parse_required_paths(values):
     if not isinstance(values, list):
         raise ValueError("invalid required-path assertion")
-    checks = []
-    for item in values:
-        if (
-            not isinstance(item, dict)
-            or item.get("kind") not in ("file", "directory")
-            or not isinstance(item.get("path"), str)
-        ):
-            raise ValueError("invalid required-path assertion")
-        checks.append(RequiredPath(item["kind"], item["path"]))
-    return tuple(checks)
+    return tuple(_parse_required_path(item) for item in values)
+
+
+def _parse_required_path(item):
+    if (
+        not isinstance(item, dict)
+        or set(item) != {"kind", "path"}
+        or item.get("kind") not in ("file", "directory")
+        or not isinstance(item.get("path"), str)
+        or not item["path"]
+        or "\0" in item["path"]
+    ):
+        raise ValueError("invalid required-path assertion")
+    return RequiredPath(item["kind"], item["path"])
 
 
 def _decode_start(message):
-    services = message.get("services")
-    if not isinstance(services, list) or not services:
-        raise ValueError("START requires services")
-    return StartRequest(_parse_services(services, "START"))
-
-
-def _decode_start_openocd(message):
-    argv = message.get("argv")
-    environment = message.get("environment", {})
-    marker = message.get("readiness_marker")
-    timeout = message.get("readiness_timeout", 30.0)
-    literal_prefix = message.get("literal_prefix", 0)
-    _validate_openocd_argv(argv)
-    _validate_openocd_environment(environment)
-    _validate_openocd_options(marker, timeout, literal_prefix, len(argv))
-    services = _parse_services(message.get("services", []), "START_OPENOCD", require_name=True)
-    checks = _parse_required_paths(message.get("required_paths", []))
-    return StartOpenOcdRequest(
+    fields = {
+        "version",
+        "type",
+        "argv",
+        "environment",
+        "required_paths",
+        "services",
+        "readiness_marker",
+        "readiness_timeout",
+        "literal_prefix",
+    }
+    if set(message) != fields:
+        raise ValueError("START fields are invalid")
+    argv = message["argv"]
+    environment = message["environment"]
+    marker = message["readiness_marker"]
+    timeout = message["readiness_timeout"]
+    literal_prefix = message["literal_prefix"]
+    _validate_argv(argv)
+    _validate_environment(environment)
+    _validate_options(marker, timeout, literal_prefix, len(argv))
+    services = _parse_services(message["services"], "START")
+    checks = _parse_required_paths(message["required_paths"])
+    return StartRequest(
         tuple(argv),
         tuple(environment.items()),
         checks,
@@ -447,9 +481,9 @@ def decode_command(message):
     kind = _protocol_kind(message)
     if kind == "START":
         return _decode_start(message)
-    if kind == "START_OPENOCD":
-        return _decode_start_openocd(message)
     if kind == "STOP":
+        if set(message) != {"version", "type"}:
+            raise ValueError("STOP fields are invalid")
         return StopRequest()
     raise ValueError(f"unexpected command: {kind!r}")
 
@@ -534,17 +568,6 @@ def _spawn_child(argv, *, cwd=None, environment=None, marker=None):
     return SupervisedChild(process, marker)
 
 
-def _fake_ready(child):
-    if child.process.stdout is None:
-        raise RuntimeError("fake child stdout was not captured")
-    ready = child.process.stdout.readline()
-    try:
-        message = json.loads(ready) if ready else {}
-    except json.JSONDecodeError:
-        message = {}
-    return message.get("ready") is True
-
-
 def _expanded_argv(request, work, address):
     replacements = {"{workspace}": str(work), "{address}": address}
     return [
@@ -559,9 +582,9 @@ def _child_environment(request):
     return environment
 
 
-def _wait_for_openocd(child, address, request, attempt):
+def _wait_for_process(child, address, request, attempt):
     if request.readiness_marker is None:
-        emit("PROCESS_STARTED", remote_address=address, child_pid=child.pid)
+        emit("PROCESS_READY", remote_address=address, child_pid=child.pid)
         return True
     deadline = time.monotonic() + request.readiness_timeout
     while time.monotonic() < deadline:
@@ -569,14 +592,12 @@ def _wait_for_openocd(child, address, request, attempt):
             child.dispose()
             if is_bind_collision(child.startup_output) and attempt < 31:
                 return False
-            raise RuntimeError(f"OpenOCD exited before readiness with status {child.returncode}")
+            raise RuntimeError(f"process exited before readiness with status {child.returncode}")
         if child.marker_seen.is_set() and services_connectable(address, request.services):
-            emit("PROCESS_STARTED", remote_address=address, child_pid=child.pid)
-            for service in request.services:
-                emit("SERVICE_READY", remote_address=address, service=service.to_wire())
+            emit("PROCESS_READY", remote_address=address, child_pid=child.pid)
             return True
         time.sleep(0.05)
-    raise RuntimeError("OpenOCD readiness timed out")
+    raise RuntimeError("process readiness timed out")
 
 
 class ControlSession:
@@ -594,41 +615,16 @@ class ControlSession:
         return cls(*new_workspace())
 
     def announce(self):
-        emit("HELLO", helper="zephyr_remote_openocd")
-        emit("SESSION_CREATED", session_id=self.session_id, remote_workspace=str(self.work))
+        emit(
+            "SESSION_CREATED",
+            helper="zephyr_remote_openocd",
+            session_id=self.session_id,
+            remote_workspace=str(self.work),
+        )
 
-    def _dispatch_start(self, request):
+    def _start_process(self, request):
         if self.child is not None:
             raise ValueError("START is only valid once")
-        ports = [service.remote_port for service in request.services]
-        for _attempt in range(32):
-            address = random_address()
-            self.child = _spawn_child(
-                [
-                    sys.executable,
-                    str(Path(__file__).resolve()),
-                    "fake-child",
-                    address,
-                    *map(str, ports),
-                ]
-            )
-            if _fake_ready(self.child):
-                self.child.start_relays()
-                emit(
-                    "SERVICE_READY",
-                    remote_address=address,
-                    services=[service.to_wire() for service in request.services],
-                    child_pid=self.child.pid,
-                )
-                return
-            self.child.process.wait()
-            self.child.dispose()
-            self.child = None
-        raise RuntimeError("loopback allocation exhausted after 32 attempts")
-
-    def _dispatch_openocd(self, request):
-        if self.child is not None:
-            raise ValueError("a child process is already running")
         ports = [service.remote_port for service in request.services]
         attempts = 32 if request.readiness_marker is not None else 1
         for attempt in range(attempts):
@@ -642,22 +638,19 @@ class ControlSession:
                 marker=request.readiness_marker,
             )
             self.child.start_relays(capture_startup=True)
-            if _wait_for_openocd(self.child, address, request, attempt):
+            if _wait_for_process(self.child, address, request, attempt):
                 return
             self.child = None
-        raise RuntimeError("OpenOCD address collision retry exhausted after 32 attempts")
+        raise RuntimeError("process address collision retry exhausted after 32 attempts")
 
     def dispatch(self, message):
         request = decode_command(message)
         if isinstance(request, StartRequest):
-            self._dispatch_start(request)
-            return True
-        if isinstance(request, StartOpenOcdRequest):
-            self._dispatch_openocd(request)
+            self._start_process(request)
             return True
         if isinstance(request, StopRequest):
             self.cleanup()
-            emit("STOPPED", reason="requested")
+            emit("SESSION_CLOSED", reason="requested", returncode=None)
             return False
         raise ValueError(f"unexpected request: {request!r}")
 
@@ -665,8 +658,7 @@ class ControlSession:
         if self.child is None or self.child.poll() is None:
             return False
         self.child.dispose()
-        emit("PROCESS_EXIT", returncode=self.child.returncode)
-        emit("STOPPED", reason="process_exit")
+        emit("SESSION_CLOSED", reason="process_exit", returncode=self.child.returncode)
         return True
 
     def _read_and_dispatch(self):

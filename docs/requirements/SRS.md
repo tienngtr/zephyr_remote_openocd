@@ -958,7 +958,8 @@ Routine helper installation and execution SHALL NOT require root privileges.
 
 ### REQ-FUNC-HELP-002
 
-A compatible helper SHALL be automatically deployable to the remote user's account.
+The current remote helper SHALL be automatically deployable to the remote user's
+account as part of the client/helper deployment.
 
 ### REQ-FUNC-HELP-003
 
@@ -975,23 +976,24 @@ OpenOCD process.
 
 ### REQ-FUNC-HELP-006
 
-Helper protocol compatibility SHALL use the version field defined by the current
-Protocol v1 contract. A protocol change requires explicit authorization and
-coordinated updates to the protocol specification, client, helper, fixtures,
-and compatibility tests. The compatibility analysis for an authorized change
-SHALL explicitly decide whether its numeric protocol version must change;
-development history alone SHALL NOT cause a new version.
+The persistent helper contract SHALL use version value `1` and one strict
+`START` command. Its required process, readiness, path, environment, and
+service fields SHALL be validated before startup; unknown fields SHALL be
+rejected. The contract SHALL define `SESSION_CREATED`, `PROCESS_READY`,
+`CHILD_OUTPUT`, `SESSION_CLOSED`, and `ERROR` events with one terminal close
+event per session.
 
 ### REQ-FUNC-HELP-007
 
-Obsolete helper versions SHALL NOT accumulate indefinitely. Deployment SHALL
-replace the helper for its selected protocol path atomically.
+Helper revisions SHALL be installed atomically at a content-addressed path,
+reusing identical content and pruning stale digest-named revisions without
+removing the selected revision.
 
 ### REQ-FUNC-HELP-008
 
-Protocol v1 `START` and `START_OPENOCD` service lists SHALL contain unique
-`remote_port` values within each request. Client and helper protocol validation
-SHALL reject duplicate ports before service startup.
+Each persistent `START` service list SHALL contain unique service names and
+unique `remote_port` values within that request. Client and helper validation
+SHALL reject duplicate values before process startup.
 
 ---
 

@@ -206,7 +206,6 @@ def build_flash_plan(
     image = _plan_image(inputs, planner)
 
     process = RemoteProcess(
-        "openocd",
         _flash_argv(inputs, base, image),
         environment,
         tuple(planner.remote_checks),
