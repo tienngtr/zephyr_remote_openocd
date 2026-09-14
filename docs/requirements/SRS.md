@@ -987,6 +987,12 @@ development history alone SHALL NOT cause a new version.
 Obsolete helper versions SHALL NOT accumulate indefinitely. Deployment SHALL
 replace the helper for its selected protocol path atomically.
 
+### REQ-FUNC-HELP-008
+
+Protocol v1 `START` and `START_OPENOCD` service lists SHALL contain unique
+`remote_port` values within each request. Client and helper protocol validation
+SHALL reject duplicate ports before service startup.
+
 ---
 
 ## 24. Session Data

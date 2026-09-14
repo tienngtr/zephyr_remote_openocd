@@ -78,6 +78,11 @@ def _fake_service(value: Any) -> bool:
     return isinstance(value, dict) and _port(value.get("remote_port"))
 
 
+def _unique_service_ports(services: list[dict[str, Any]]) -> bool:
+    ports = [service["remote_port"] for service in services]
+    return len(ports) == len(set(ports))
+
+
 def _address(value: Any) -> bool:
     return _non_empty_string(value)
 
@@ -93,7 +98,10 @@ def _sha256(value: Any) -> bool:
 def _validate_start_command(message: dict[str, Any]) -> None:
     services = message.get("services")
     valid = (
-        isinstance(services, list) and services and all(_fake_service(item) for item in services)
+        isinstance(services, list)
+        and services
+        and all(_fake_service(item) for item in services)
+        and _unique_service_ports(services)
     )
     if not valid:
         raise ProtocolError("invalid START command")
@@ -143,6 +151,7 @@ def _validate_start_openocd_command(message: dict[str, Any]) -> None:
         or not _valid_path_checks(checks)
         or not isinstance(services, list)
         or not all(_service(item) for item in services)
+        or not _unique_service_ports(services)
         or not _valid_marker(marker)
         or not _valid_timeout(timeout)
         or not _valid_literal_prefix(literal_prefix, len(argv) if isinstance(argv, list) else 0)

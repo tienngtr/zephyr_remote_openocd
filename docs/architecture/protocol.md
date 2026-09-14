@@ -22,7 +22,7 @@ to stdout. There is no feature negotiation beyond the required version.
 
 | Client command | Required fields | Optional fields and behavior |
 | --- | --- | --- |
-| `START` | non-empty `services` list; each item has integer, non-Boolean `remote_port` in 1..65535 | Starts the test-only fake service once. Other service-object fields are returned unchanged. |
+| `START` | non-empty `services` list; each item has integer, non-Boolean `remote_port` in 1..65535; service ports are unique within the request | Starts the test-only fake service once. Other service-object fields are returned unchanged. |
 | `START_OPENOCD` | non-empty `argv`; `argv[0]` is non-empty and later arguments are strings, including empty strings | Starts OpenOCD once. Optional fields are defined below. |
 | `STOP` | none | Terminates the child process group, removes the workspace, emits `STOPPED {reason: "requested"}`, then exits. |
 
@@ -32,7 +32,8 @@ to stdout. There is no feature negotiation beyond the required version.
 - `required_paths` defaults to `[]`. Each item has a `kind` of `file` or
   `directory` and a string `path`.
 - `services` defaults to `[]`. Each item has a string `name` and an integer,
-  non-Boolean `remote_port` from 1 through 65535.
+  non-Boolean `remote_port` from 1 through 65535; service ports are unique
+  within the request.
 - `readiness_marker` is absent, null, or a non-empty string without whitespace.
 - `readiness_timeout` is a positive, non-Boolean number and defaults to `30.0`.
 - `literal_prefix` is a non-negative integer no greater than the length of
@@ -48,6 +49,9 @@ either child stream and TCP-connectability of every requested non-GDB service.
 GDB is not probed because OpenOCD can consume its only debugger connection. The
 helper then emits one `SERVICE_READY` per service. Without a marker, it emits no
 `SERVICE_READY`; an actual GDB connection establishes GDB readiness.
+
+For both `START` and `START_OPENOCD`, the client and helper reject duplicate
+`remote_port` values during protocol validation, before service startup.
 
 | Helper event | Required fields | Meaning |
 | --- | --- | --- |

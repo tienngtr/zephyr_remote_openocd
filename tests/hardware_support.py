@@ -247,7 +247,7 @@ class HardwarePreparation:
             return RttFixture(prepared, operation)
         if isinstance(operation, SemihostingOperation):
             return SemihostingFixture(prepared, operation)
-        raise AssertionError(f"unsupported operation {profile.name!r}")
+        raise AssertionError(f"unsupported operation {type(operation).__name__}: {operation!r}")
 
     @staticmethod
     def _prepared_target(

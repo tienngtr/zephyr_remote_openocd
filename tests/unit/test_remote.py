@@ -144,6 +144,31 @@ class TestProtocol:
             )
         )
 
+    @pytest.mark.parametrize("command_type", ("START", "START_OPENOCD"))
+    def test_start_commands_reject_duplicate_service_ports(self, command_type):
+        services = [{"remote_port": 3333}, {"remote_port": 3333}]
+        fields = {"services": services}
+        if command_type == "START_OPENOCD":
+            fields["services"] = [
+                {"name": "gdb", "remote_port": 3333},
+                {"name": "tcl", "remote_port": 3333},
+            ]
+            fields["argv"] = ["openocd"]
+        with pytest.raises(ProtocolError, match=f"invalid {command_type} command"):
+            validate_client_command(decode_message(encode_message(command_type, **fields)))
+
+    @pytest.mark.parametrize("command_type", ("START", "START_OPENOCD"))
+    def test_start_commands_accept_distinct_service_ports(self, command_type):
+        services = [{"remote_port": 3333}, {"remote_port": 6333}]
+        fields = {"services": services}
+        if command_type == "START_OPENOCD":
+            fields["services"] = [
+                {"name": "gdb", "remote_port": 3333},
+                {"name": "tcl", "remote_port": 6333},
+            ]
+            fields["argv"] = ["openocd"]
+        validate_client_command(decode_message(encode_message(command_type, **fields)))
+
     def test_process_exit_allows_only_terminal_stop(self):
         order = EventOrder()
         frames = (
