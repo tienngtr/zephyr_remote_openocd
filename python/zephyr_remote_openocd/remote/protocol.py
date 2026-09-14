@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import json
-import math
 from collections.abc import Iterable
 from typing import Any, BinaryIO
 
@@ -13,17 +12,6 @@ from .model import RemoteProcess, Service
 
 PROTOCOL_VERSION = 1
 _ENVELOPE_FIELDS = frozenset(("version", "type"))
-_START_FIELDS = frozenset(
-    (
-        "argv",
-        "environment",
-        "required_paths",
-        "services",
-        "readiness_marker",
-        "readiness_timeout",
-        "literal_prefix",
-    )
-)
 
 
 class ProtocolError(RuntimeError):
@@ -102,129 +90,8 @@ def _non_empty_string(value: Any) -> bool:
     return isinstance(value, str) and bool(value)
 
 
-def _port(value: Any) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 65535
-
-
-def _service(value: Any) -> bool:
-    return (
-        isinstance(value, dict)
-        and set(value) == {"name", "remote_port"}
-        and _non_empty_string(value.get("name"))
-        and _port(value.get("remote_port"))
-    )
-
-
-def _valid_argv(value: Any) -> bool:
-    return (
-        isinstance(value, list)
-        and bool(value)
-        and _non_empty_string(value[0])
-        and all(isinstance(item, str) for item in value[1:])
-    )
-
-
-def _valid_services(value: Any) -> bool:
-    return (
-        isinstance(value, list)
-        and all(_service(item) for item in value)
-        and _unique_service_values(value)
-    )
-
-
-def _unique_service_values(services: list[dict[str, Any]]) -> bool:
-    names = [service["name"] for service in services]
-    ports = [service["remote_port"] for service in services]
-    return len(names) == len(set(names)) and len(ports) == len(set(ports))
-
-
-def _valid_environment_item(key: Any, value: Any) -> bool:
-    return (
-        isinstance(key, str)
-        and bool(key)
-        and "=" not in key
-        and "\0" not in key
-        and isinstance(value, str)
-        and "\0" not in value
-    )
-
-
-def _valid_environment(value: Any) -> bool:
-    return isinstance(value, dict) and all(
-        _valid_environment_item(key, item) for key, item in value.items()
-    )
-
-
-def _valid_path_check(value: Any) -> bool:
-    return (
-        isinstance(value, dict)
-        and set(value) == {"kind", "path"}
-        and value.get("kind") in {"file", "directory"}
-        and _non_empty_string(value.get("path"))
-        and "\0" not in value["path"]
-    )
-
-
-def _valid_path_checks(value: Any) -> bool:
-    return isinstance(value, list) and all(_valid_path_check(item) for item in value)
-
-
-def _valid_marker(value: Any) -> bool:
-    return value is None or (_non_empty_string(value) and not any(char.isspace() for char in value))
-
-
-def _valid_timeout(value: Any) -> bool:
-    return (
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and math.isfinite(value)
-        and value > 0
-    )
-
-
-def _valid_literal_prefix(value: Any, argv_length: int) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= argv_length
-
-
 def _has_exact_fields(message: dict[str, Any], fields: frozenset[str]) -> bool:
     return set(message) == _ENVELOPE_FIELDS | fields
-
-
-def _validate_start_command(message: dict[str, Any]) -> None:
-    if not _has_exact_fields(message, _START_FIELDS):
-        raise ProtocolError("invalid START command fields")
-    argv = message["argv"]
-    if not (
-        _valid_argv(argv)
-        and _valid_environment(message["environment"])
-        and _valid_path_checks(message["required_paths"])
-        and _valid_services(message["services"])
-        and _valid_marker(message["readiness_marker"])
-        and _valid_timeout(message["readiness_timeout"])
-        and _valid_literal_prefix(message["literal_prefix"], len(argv))
-    ):
-        raise ProtocolError("invalid START command")
-
-
-def validate_client_command(message: dict[str, Any]) -> None:
-    """Validate a persistent command against the current internal contract."""
-
-    if (
-        not isinstance(message, dict)
-        or not set(message) >= _ENVELOPE_FIELDS
-        or not is_protocol_version(message.get("version"))
-        or not isinstance(message.get("type"), str)
-    ):
-        raise ProtocolError("invalid protocol command envelope")
-    kind = message["type"]
-    if kind == "STOP":
-        if not _has_exact_fields(message, frozenset()):
-            raise ProtocolError("invalid STOP command fields")
-        return
-    if kind == "START":
-        _validate_start_command(message)
-        return
-    raise ProtocolError(f"unexpected client command type: {kind!r}")
 
 
 def _valid_session_created(message: dict[str, Any]) -> bool:

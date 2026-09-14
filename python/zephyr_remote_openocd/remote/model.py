@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path, PurePosixPath
@@ -22,6 +23,14 @@ class SessionState(Enum):
     STOPPING = auto()
     CLOSED = auto()
     FAILED = auto()
+
+
+class DuplicateServiceError(ValueError):
+    """Identify the duplicated service attribute for boundary diagnostics."""
+
+    def __init__(self, subject: str):
+        self.subject = subject
+        super().__init__(f"{subject} must be unique")
 
 
 def validated_destination(value: str | PurePosixPath) -> PurePosixPath:
@@ -69,10 +78,7 @@ class RemoteSessionRequest:
         if not self.host:
             raise ValueError("remote host must not be empty")
         object.__setattr__(self, "staged_files", tuple(self.staged_files))
-        object.__setattr__(self, "services", tuple(self.services))
-        _ensure_unique((item.name for item in self.services), "service names")
-        _ensure_unique((item.local_port for item in self.services), "local service ports")
-        _ensure_unique((item.remote_port for item in self.services), "remote service ports")
+        object.__setattr__(self, "services", validated_services(self.services))
 
 
 @dataclass(frozen=True)
@@ -195,4 +201,14 @@ def _validate_literal_prefix(literal_prefix: int, argv_length: int) -> None:
 def _ensure_unique(values, label: str) -> None:
     values = tuple(values)
     if len(values) != len(set(values)):
-        raise ValueError(f"{label} must be unique")
+        raise DuplicateServiceError(label)
+
+
+def validated_services(services: Iterable[Service]) -> tuple[Service, ...]:
+    """Freeze a service collection after validating its set-wide invariants."""
+
+    values = tuple(services)
+    _ensure_unique((item.name for item in values), "service names")
+    _ensure_unique((item.local_port for item in values), "local service ports")
+    _ensure_unique((item.remote_port for item in values), "remote service ports")
+    return values

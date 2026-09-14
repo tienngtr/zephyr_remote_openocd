@@ -7,7 +7,15 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 
-from .model import RemoteSessionRequest, Service, SessionDescriptor, SessionState, StagedFile
+from .model import (
+    DuplicateServiceError,
+    RemoteSessionRequest,
+    Service,
+    SessionDescriptor,
+    SessionState,
+    StagedFile,
+    validated_services,
+)
 
 
 class SessionError(RuntimeError):
@@ -79,15 +87,10 @@ class RemoteSession:
         if not additions:
             return
         combined = (*self._services, *additions)
-        names = [item.name for item in combined]
-        local_ports = [item.local_port for item in combined]
-        remote_ports = [item.remote_port for item in combined]
-        if len(names) != len(set(names)):
-            raise SessionError("service names must remain unique")
-        if len(local_ports) != len(set(local_ports)):
-            raise SessionError("local service ports must remain unique")
-        if len(remote_ports) != len(set(remote_ports)):
-            raise SessionError("remote service ports must remain unique")
+        try:
+            validated_services(combined)
+        except DuplicateServiceError as error:
+            raise SessionError(f"{error.subject} must remain unique") from error
         try:
             self._session.forward(additions)
             self._services.extend(additions)

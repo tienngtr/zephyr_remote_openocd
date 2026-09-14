@@ -978,10 +978,11 @@ OpenOCD process.
 
 The persistent helper contract SHALL use version value `1` and one strict
 `START` command. Its required process, readiness, path, environment, and
-service fields SHALL be validated before startup; unknown fields SHALL be
-rejected. The contract SHALL define `SESSION_CREATED`, `PROCESS_READY`,
-`CHILD_OUTPUT`, `SESSION_CLOSED`, and `ERROR` events with one terminal close
-event per session.
+service fields SHALL be validated in the client domain model before
+serialization and independently by the helper after receipt; unknown wire
+fields SHALL be rejected. The contract SHALL define `SESSION_CREATED`,
+`PROCESS_READY`, `CHILD_OUTPUT`, `SESSION_CLOSED`, and `ERROR` events with one
+terminal close event per session.
 
 ### REQ-FUNC-HELP-007
 
@@ -993,8 +994,8 @@ be serialized for concurrent deployments.
 ### REQ-FUNC-HELP-008
 
 Each persistent `START` service list SHALL contain unique service names and
-unique `remote_port` values within that request. Client and helper validation
-SHALL reject duplicate values before process startup.
+unique `remote_port` values within that request. Client domain validation and
+helper wire validation SHALL reject duplicate values before process startup.
 
 ---
 

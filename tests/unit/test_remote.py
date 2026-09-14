@@ -32,6 +32,7 @@ from zephyr_remote_openocd.remote.flash import (
     build_flash_plan,
 )
 from zephyr_remote_openocd.remote.model import (
+    RemotePathCheck,
     RemoteProcess,
     RemoteSessionRequest,
     Service,
@@ -46,7 +47,6 @@ from zephyr_remote_openocd.remote.protocol import (
     ProtocolError,
     decode_message,
     encode_message,
-    validate_client_command,
     validate_deployment_response,
     validate_helper_event,
     validate_openocd_version_response,
@@ -131,10 +131,30 @@ class TestProtocol:
         for line in fake_fixture.read_bytes().splitlines():
             fake_order.accept(decode_message(line))
 
-    def test_current_client_fixture_has_valid_schema(self):
+    def test_current_client_fixture_matches_typed_serializers(self):
         fixture = ROOT / "tests/fixtures/protocol_v1/client_commands.jsonl"
-        for line in fixture.read_bytes().splitlines():
-            validate_client_command(decode_message(line))
+        stream = io.BytesIO()
+        process = RemoteProcess(
+            (
+                "/opt/openocd/bin/openocd",
+                "-c",
+                "gdb_port 3333",
+                "-c",
+                "echo ZRO_READY_fixed",
+            ),
+            environment=(("FTDI_CHANNEL", "1"),),
+            required_paths=(
+                RemotePathCheck("{workspace}/staged/zephyr.elf", "file"),
+                RemotePathCheck("/opt/openocd/scripts", "directory"),
+            ),
+            readiness_marker="ZRO_READY_fixed",
+            readiness_timeout=30.0,
+            literal_prefix=1,
+        )
+        write_start(stream, process, (Service("gdb", 3333, 3333),))
+        write_stop(stream)
+
+        assert stream.getvalue() == fixture.read_bytes()
 
     def test_one_shot_responses_keep_their_schema(self):
         fixture = ROOT / "tests/fixtures/protocol_v1/one_shot_responses.jsonl"
@@ -144,13 +164,6 @@ class TestProtocol:
         validate_staged_response(staged)
         validate_openocd_version_response(version)
         validate_deployment_response(deployed)
-
-    def test_current_start_frame_has_exact_schema(self):
-        fixture = ROOT / "tests/fixtures/protocol_v1/client_start_openocd.json"
-        command = decode_message(fixture.read_bytes())
-        assert command["type"] == "START"
-        assert command["version"] == 1
-        assert command["services"][0]["remote_port"] == 3333
 
     def test_start_serializers_use_validated_domain_models(self):
         stream = io.BytesIO()
@@ -163,55 +176,11 @@ class TestProtocol:
         write_start(stream, process, (Service("gdb", 3333, 3333),))
         write_stop(stream)
         frames = [decode_message(line) for line in stream.getvalue().splitlines()]
-        validate_client_command(frames[0])
         assert frames[0]["type"] == "START"
         assert frames[0]["argv"][-1] == ""
         assert frames[1] == {"version": 1, "type": "STOP"}
 
-    def test_start_rejects_duplicate_service_ports(self):
-        fields = {
-            "argv": ["openocd"],
-            "environment": {},
-            "required_paths": [],
-            "services": [
-                {"name": "gdb", "remote_port": 3333},
-                {"name": "tcl", "remote_port": 3333},
-            ],
-            "readiness_marker": None,
-            "readiness_timeout": 30.0,
-            "literal_prefix": 0,
-        }
-        with pytest.raises(ProtocolError):
-            validate_client_command(decode_message(encode_message("START", **fields)))
-
-    def test_start_accepts_distinct_service_ports(self):
-        fields = {
-            "argv": ["openocd"],
-            "environment": {},
-            "required_paths": [],
-            "services": [
-                {"name": "gdb", "remote_port": 3333},
-                {"name": "tcl", "remote_port": 6333},
-            ],
-            "readiness_marker": None,
-            "readiness_timeout": 30.0,
-            "literal_prefix": 0,
-        }
-        validate_client_command(decode_message(encode_message("START", **fields)))
-
-    def test_persistent_unknown_fields_are_rejected(self):
-        fields = {
-            "argv": ["openocd"],
-            "environment": {},
-            "required_paths": [],
-            "services": [],
-            "readiness_marker": None,
-            "readiness_timeout": 30.0,
-            "literal_prefix": 0,
-            "future": True,
-        }
-        with pytest.raises(ProtocolError):
-            validate_client_command(decode_message(encode_message("START", **fields)))
+    def test_helper_event_unknown_fields_are_rejected(self):
         with pytest.raises(ProtocolError):
             validate_helper_event(
                 decode_message(
@@ -378,6 +347,58 @@ class TestStaging:
                     extract_archive(stream, Path(directory))
 
 
+class TestRemoteModels:
+    @pytest.mark.parametrize(
+        ("changes", "message"),
+        (
+            ({"argv": ()}, "argv"),
+            ({"argv": ("",)}, "argv"),
+            ({"argv": ("openocd", 1)}, "argv"),
+            ({"environment": (("NAME", "1"), ("NAME", "2"))}, "environment names"),
+            ({"environment": (("BAD=NAME", "value"),)}, "environment names"),
+            ({"environment": (("NAME", "bad\0value"),)}, "environment values"),
+            ({"required_paths": (object(),)}, "path checks"),
+            ({"readiness_marker": ""}, "readiness marker"),
+            ({"readiness_marker": "not a token"}, "readiness marker"),
+            ({"readiness_timeout": True}, "readiness timeout"),
+            ({"readiness_timeout": float("inf")}, "readiness timeout"),
+            ({"readiness_timeout": 0}, "readiness timeout"),
+            ({"literal_prefix": True}, "literal argv prefix"),
+            ({"literal_prefix": -1}, "literal argv prefix"),
+            ({"literal_prefix": 2}, "literal argv prefix"),
+        ),
+    )
+    def test_remote_process_rejects_invalid_domain_values(self, changes, message):
+        fields = {"argv": ("openocd",), **changes}
+        with pytest.raises(ValueError, match=message):
+            RemoteProcess(**fields)
+
+    @pytest.mark.parametrize(
+        ("path", "kind", "message"),
+        (
+            ("", "file", "non-empty path"),
+            ("bad\0path", "file", "non-empty path"),
+            ("path", "socket", "kind is invalid"),
+        ),
+    )
+    def test_remote_path_check_rejects_invalid_values(self, path, kind, message):
+        with pytest.raises(ValueError, match=message):
+            RemotePathCheck(path, kind)
+
+    @pytest.mark.parametrize(
+        ("arguments", "message"),
+        (
+            (("", 1234, 3333), "name"),
+            (("gdb", True, 3333), "local port"),
+            (("gdb", 0, 3333), "local port"),
+            (("gdb", 1234, 65536), "remote port"),
+        ),
+    )
+    def test_service_rejects_invalid_values(self, arguments, message):
+        with pytest.raises(ValueError, match=message):
+            Service(*arguments)
+
+
 class _FakeSession(BackendSession):
     def __init__(self):
         self.actions = []
@@ -437,23 +458,53 @@ class TestSession:
         assert session.termination_returncode == 7
         assert session.state == SessionState.FAILED
 
-    def test_dynamic_forward_and_duplicate_rejection(self):
+    def test_dynamic_forward_accepts_distinct_services(self):
         backend = _FakeBackend()
         session = RemoteSession(self.request(), backend)
         session.start()
         rtt = Service("rtt", 5555, 5555)
         session.forward((rtt,))
         assert ("forward", (rtt,)) in backend.session.actions
-        with pytest.raises(SessionError, match="service names must remain unique"):
-            session.forward((rtt,))
         session.close()
 
-    def test_request_rejects_duplicate_remote_service_ports(self):
-        with pytest.raises(ValueError, match="remote service ports must be unique"):
+    @pytest.mark.parametrize(
+        ("addition", "message"),
+        (
+            (Service("gdb", 5555, 5555), "service names must remain unique"),
+            (Service("rtt", 1234, 5555), "local service ports must remain unique"),
+            (Service("rtt", 5555, 3333), "remote service ports must remain unique"),
+        ),
+    )
+    def test_dynamic_forward_rejects_duplicate_service_attributes(self, addition, message):
+        session = RemoteSession(self.request(), _FakeBackend())
+        session.start()
+        with pytest.raises(SessionError, match=message):
+            session.forward((addition,))
+        session.close()
+
+    @pytest.mark.parametrize(
+        ("services", "message"),
+        (
+            (
+                (Service("gdb", 1234, 3333), Service("gdb", 1235, 6333)),
+                "service names must be unique",
+            ),
+            (
+                (Service("gdb", 1234, 3333), Service("tcl", 1234, 6333)),
+                "local service ports must be unique",
+            ),
+            (
+                (Service("gdb", 1234, 3333), Service("tcl", 1235, 3333)),
+                "remote service ports must be unique",
+            ),
+        ),
+    )
+    def test_request_rejects_duplicate_service_attributes(self, services, message):
+        with pytest.raises(ValueError, match=message):
             RemoteSessionRequest(
                 "host",
                 SshCommand(),
-                services=(Service("gdb", 1234, 3333), Service("tcl", 1235, 3333)),
+                services=services,
             )
 
     def test_dynamic_forward_failure_closes_session(self):

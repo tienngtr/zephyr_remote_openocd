@@ -5,6 +5,11 @@ client and remote helper. It retains the numeric wire value `version: 1`; that
 value identifies this contract and does not promise compatibility with an
 earlier schema. The client and helper are deployed as one revision.
 
+The client validates locally constructed domain models before serializing
+commands. Serialization does not re-parse its own output. The helper strictly
+validates every command received from the wire, while the client strictly
+validates helper events and one-shot responses.
+
 The contract uses UTF-8 JSON lines: one JSON object followed by one `LF` per
 frame. Every frame has integer, non-Boolean `version: 1` and a non-empty string
 `type`. Persistent command and event objects reject unknown fields. Helper

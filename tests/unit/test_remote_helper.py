@@ -18,6 +18,24 @@ remote_helper = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(remote_helper)
 
 
+@pytest.fixture
+def start_command():
+    return {
+        "version": 1,
+        "type": "START",
+        "argv": ["openocd", "{address}"],
+        "environment": {"ZRO_TEST": "value"},
+        "required_paths": [{"kind": "file", "path": "{workspace}/image"}],
+        "services": [
+            {"name": "gdb", "remote_port": 3333},
+            {"name": "tcl", "remote_port": 6333},
+        ],
+        "readiness_marker": "READY",
+        "readiness_timeout": 30.0,
+        "literal_prefix": 1,
+    }
+
+
 def test_new_workspace_reclaims_only_unlocked_stale_sessions(tmp_path, monkeypatch):
     monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
     _stale_id, stale, stale_lock = remote_helper.new_workspace()
@@ -144,62 +162,71 @@ def test_control_session_closes_selector_and_cleans_up_on_registration_failure(
     assert lock.closed
 
 
-def test_decode_command_returns_immutable_typed_requests():
-    request = remote_helper.decode_command(
-        {
-            "version": 1,
-            "type": "START",
-            "argv": ["openocd", "{address}"],
-            "environment": {"ZRO_TEST": "value"},
-            "required_paths": [{"kind": "file", "path": "{workspace}/image"}],
-            "services": [{"name": "tcl", "remote_port": 6333}],
-            "readiness_marker": "READY",
-            "readiness_timeout": 30.0,
-            "literal_prefix": 1,
-        }
-    )
+def test_decode_command_returns_immutable_typed_requests(start_command):
+    request = remote_helper.decode_command(start_command)
 
     assert isinstance(request, remote_helper.StartRequest)
     assert request.argv == ("openocd", "{address}")
     assert request.environment == (("ZRO_TEST", "value"),)
     assert request.required_paths == (remote_helper.RequiredPath("file", "{workspace}/image"),)
-    assert request.services[0].name == "tcl"
-    assert request.services[0].remote_port == 6333
+    assert request.services == (
+        remote_helper.ServiceRequest("gdb", 3333),
+        remote_helper.ServiceRequest("tcl", 6333),
+    )
     with pytest.raises(AttributeError):
         request.argv = ()
 
 
-def test_decode_command_rejects_malformed_required_path_before_launch():
+def test_decode_command_rejects_malformed_required_path_before_launch(start_command):
+    start_command["required_paths"] = [{"kind": "socket", "path": "not-valid"}]
     with pytest.raises(ValueError, match="invalid required-path assertion"):
-        remote_helper.decode_command(
-            {
-                "version": 1,
-                "type": "START",
-                "argv": ["openocd"],
-                "environment": {},
-                "required_paths": [{"kind": "socket", "path": "not-valid"}],
-                "services": [],
-                "readiness_marker": None,
-                "readiness_timeout": 30.0,
-                "literal_prefix": 0,
-            }
-        )
+        remote_helper.decode_command(start_command)
 
 
-def test_decode_command_rejects_unknown_start_and_stop_fields():
-    start = {
-        "version": 1,
-        "type": "START",
-        "argv": ["openocd"],
-        "environment": {},
-        "required_paths": [],
-        "services": [],
-        "readiness_marker": None,
-        "readiness_timeout": 30.0,
-        "literal_prefix": 0,
-        "future": True,
-    }
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("argv", [], "argv"),
+        ("environment", {"BAD=NAME": "value"}, "environment"),
+        ("readiness_marker", "not a token", "marker"),
+        ("readiness_timeout", 0, "readiness options"),
+        ("literal_prefix", 3, "readiness options"),
+    ),
+)
+def test_decode_command_rejects_invalid_start_values(start_command, field, value, message):
+    start_command[field] = value
+    with pytest.raises(ValueError, match=message):
+        remote_helper.decode_command(start_command)
+
+
+@pytest.mark.parametrize(
+    ("services", "message"),
+    (
+        (
+            [
+                {"name": "gdb", "remote_port": 3333},
+                {"name": "gdb", "remote_port": 6333},
+            ],
+            "unique names",
+        ),
+        (
+            [
+                {"name": "gdb", "remote_port": 3333},
+                {"name": "tcl", "remote_port": 3333},
+            ],
+            "unique remote ports",
+        ),
+    ),
+)
+def test_decode_command_rejects_duplicate_services(start_command, services, message):
+    start_command["services"] = services
+    with pytest.raises(ValueError, match=message):
+        remote_helper.decode_command(start_command)
+
+
+def test_decode_command_rejects_unknown_start_and_stop_fields(start_command):
+    start_command["future"] = True
     with pytest.raises(ValueError, match="START fields"):
-        remote_helper.decode_command(start)
+        remote_helper.decode_command(start_command)
     with pytest.raises(ValueError, match="STOP fields"):
         remote_helper.decode_command({"version": 1, "type": "STOP", "future": True})
