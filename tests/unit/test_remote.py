@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import io
 import ipaddress
@@ -269,6 +270,7 @@ def test_helper_deployment_is_content_addressed_and_prunes_stale_revisions(tmp_p
     assert first_path.read_bytes() == first_source
     assert first_path.stat().st_mode & 0o777 == 0o600
     assert helper_directory.stat().st_mode & 0o777 == 0o700
+    assert (helper_directory / ".deploy.lock").stat().st_mode & 0o777 == 0o600
     assert not list(helper_directory.glob(".helper_*"))
 
     reused = _run_bootstrap(tmp_path, first_source)
@@ -288,6 +290,31 @@ def test_helper_deployment_is_content_addressed_and_prunes_stale_revisions(tmp_p
     assert second_path.read_bytes() == second_source
     assert not stale_path.exists()
     assert not list(helper_directory.glob(".helper_*"))
+
+
+def test_helper_deployment_serializes_refresh_and_pruning(tmp_path):
+    helper_directory = tmp_path / ".local/libexec/zephyr_remote_openocd/protocol_v1"
+    helper_directory.mkdir(parents=True)
+    lock_path = helper_directory / ".deploy.lock"
+    environment = os.environ.copy()
+    environment["HOME"] = str(tmp_path)
+
+    with lock_path.open("a+b") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        process = subprocess.Popen(
+            [sys.executable, "-c", deploy_module.BOOTSTRAP],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=environment,
+        )
+        with pytest.raises(subprocess.TimeoutExpired):
+            process.communicate(b"concurrent helper revision", timeout=0.5)
+
+    stdout, stderr = process.communicate(timeout=5)
+    assert process.returncode == 0, stderr.decode("utf-8", "replace")
+    response = json.loads(stdout)
+    assert Path(response["path"]).read_bytes() == b"concurrent helper revision"
 
 
 def test_packaged_remote_helper_is_available_and_valid_python():

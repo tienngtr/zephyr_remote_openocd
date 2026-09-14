@@ -83,7 +83,9 @@ tar stdin and emits `STAGED {byte_count, sha256, files}` on success.
 --version` and emits `OPENOCD_VERSION {output}` on success. Deployment emits
 `DEPLOYED {status, path, sha256}`; helpers are installed atomically at
 `protocol_v1/helper-<sha256>.py`, matching content is reused, and stale digest
-revisions are pruned.
+revisions are pruned. Deployment serializes installation, reuse refresh, and
+pruning with a per-protocol lock so a concurrently selected revision cannot be
+removed from a stale observation.
 
 Bulk binary content remains stream-oriented instead of JSON/base64. The
 configured SSH command prefix is passed as argv, separate from runner-generated

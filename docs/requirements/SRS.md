@@ -987,7 +987,8 @@ event per session.
 
 Helper revisions SHALL be installed atomically at a content-addressed path,
 reusing identical content and pruning stale digest-named revisions without
-removing the selected revision.
+removing the selected revision. Installation, reuse refresh, and pruning SHALL
+be serialized for concurrent deployments.
 
 ### REQ-FUNC-HELP-008
 
