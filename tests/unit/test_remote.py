@@ -5,8 +5,13 @@ from __future__ import annotations
 import hashlib
 import io
 import ipaddress
+import json
+import os
+import subprocess
+import sys
 import tarfile
 import tempfile
+import time
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -216,6 +221,53 @@ def test_missing_packaged_remote_helper_is_actionable(monkeypatch, tmp_path):
     monkeypatch.setattr(deploy_module, "files", lambda _package: tmp_path)
     with pytest.raises(deploy_module.DeploymentError, match="packaged remote helper"):
         _helper_source()
+
+
+def _run_bootstrap(home: Path, source: bytes) -> dict[str, object]:
+    environment = os.environ.copy()
+    environment["HOME"] = str(home)
+    result = subprocess.run(
+        [sys.executable, "-c", deploy_module.BOOTSTRAP],
+        input=source,
+        capture_output=True,
+        check=False,
+        env=environment,
+    )
+    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+    return json.loads(result.stdout)
+
+
+def test_helper_deployment_is_content_addressed_and_prunes_stale_revisions(tmp_path):
+    first_source = b"first helper revision"
+    second_source = b"second helper revision"
+    first = _run_bootstrap(tmp_path, first_source)
+    first_path = Path(first["path"])
+    helper_directory = first_path.parent
+
+    assert first["status"] == "deployed"
+    assert first_path.name == f"helper-{hashlib.sha256(first_source).hexdigest()}.py"
+    assert first_path.read_bytes() == first_source
+    assert first_path.stat().st_mode & 0o777 == 0o600
+    assert helper_directory.stat().st_mode & 0o777 == 0o700
+    assert not list(helper_directory.glob(".helper_*"))
+
+    reused = _run_bootstrap(tmp_path, first_source)
+    assert reused["status"] == "reused"
+    assert reused["path"] == str(first_path)
+
+    stale_path = helper_directory / ("helper-" + "f" * 64 + ".py")
+    stale_path.write_bytes(b"stale helper revision")
+    stale_time = time.time() - 25 * 60 * 60
+    os.utime(stale_path, (stale_time, stale_time))
+
+    second = _run_bootstrap(tmp_path, second_source)
+    second_path = Path(second["path"])
+    assert second["status"] == "deployed"
+    assert second_path != first_path
+    assert first_path.exists()
+    assert second_path.read_bytes() == second_source
+    assert not stale_path.exists()
+    assert not list(helper_directory.glob(".helper_*"))
 
 
 def test_packaged_remote_helper_is_available_and_valid_python():

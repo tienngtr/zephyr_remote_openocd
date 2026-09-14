@@ -15,13 +15,13 @@ from .ssh import SshCommand
 
 PROTOCOL_VERSION = 1
 
-BOOTSTRAP = r'''import hashlib,json,os,pathlib,sys,tempfile
+BOOTSTRAP = r'''import hashlib,json,os,pathlib,sys,tempfile,time
 data=sys.stdin.buffer.read()
 digest=hashlib.sha256(data).hexdigest()
 base=pathlib.Path.home()/'.local/libexec/zephyr_remote_openocd/protocol_v1'
 base.mkdir(mode=0o700,parents=True,exist_ok=True)
 os.chmod(base,0o700)
-target=base/'helper.py'
+target=base/('helper-'+digest+'.py')
 reused=False
 try:
     reused=target.is_file() and hashlib.sha256(target.read_bytes()).hexdigest()==digest
@@ -38,6 +38,16 @@ if not reused:
         try: os.unlink(tmp)
         except FileNotFoundError: pass
 os.chmod(target,0o600)
+os.utime(target,None)
+cutoff=time.time()-24*60*60
+for candidate in base.glob('helper-*.py'):
+    if candidate==target:
+        continue
+    try:
+        if candidate.stat().st_mtime < cutoff:
+            candidate.unlink()
+    except OSError:
+        pass
 print(json.dumps({'version':1,'type':'DEPLOYED','status':'reused' if reused else 'deployed',
                   'path':str(target.resolve()),'sha256':digest}))
 '''
