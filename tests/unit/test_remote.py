@@ -389,6 +389,8 @@ class TestRemoteModels:
         ("arguments", "message"),
         (
             (("", 1234, 3333), "name"),
+            ((1, 1234, 3333), "name"),
+            ((True, 1234, 3333), "name"),
             (("gdb", True, 3333), "local port"),
             (("gdb", 0, 3333), "local port"),
             (("gdb", 1234, 65536), "remote port"),

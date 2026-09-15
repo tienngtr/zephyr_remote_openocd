@@ -59,8 +59,8 @@ class Service:
     remote_port: int
 
     def __post_init__(self) -> None:
-        if not self.name:
-            raise ValueError("service name must not be empty")
+        if not isinstance(self.name, str) or not self.name:
+            raise ValueError("service name must be a non-empty string")
         for label, port in (("local", self.local_port), ("remote", self.remote_port)):
             if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
                 raise ValueError(f"{label} port must be in 1..65535")
