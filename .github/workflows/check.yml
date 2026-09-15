@@ -63,12 +63,14 @@ jobs:
       - name: Run Zephyr adapter tests
         env:
           ZEPHYR_BASE: ${{ github.workspace }}/.scratch/zephyr
-        run: |
-          echo "## Coverage" >> "${GITHUB_STEP_SUMMARY}"
-          pytest tests/zephyr_integration/test_adapter.py -m zephyr \
-            --cov --cov-config=.coveragerc --cov-append \
-            --cov-report=term-missing --cov-report=xml:coverage.xml \
-            --cov-report="markdown-append:${GITHUB_STEP_SUMMARY}"
+        run: >-
+          pytest tests/zephyr_integration/test_adapter.py -m zephyr
+          --cov --cov-config=.coveragerc --cov-append
+          --cov-report=term-missing --cov-report=xml:coverage.xml
+      - name: Write coverage summary
+        run: >-
+          python scripts/coverage_summary.py --revision "${{ github.sha }}"
+          --output "${GITHUB_STEP_SUMMARY}"
       - name: Upload coverage report
         if: always()
         uses: actions/upload-artifact@v7
