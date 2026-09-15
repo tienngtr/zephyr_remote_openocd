@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import subprocess
 import sys
@@ -29,7 +30,7 @@ def tool_executable(name: str) -> str:
 
 
 def source_files(root: Path) -> tuple[str, ...]:
-    """Return tracked Python files relative to the repository root."""
+    """Return existing tracked or untracked Python files."""
     result = subprocess.run(
         ("git", "ls-files", "--cached", "--others", "--exclude-standard", "--", "*.py"),
         cwd=root,
@@ -37,11 +38,11 @@ def source_files(root: Path) -> tuple[str, ...]:
         capture_output=True,
         text=True,
     )
-    return tuple(result.stdout.splitlines())
+    return tuple(path for path in result.stdout.splitlines() if (root / path).is_file())
 
 
 def yaml_files(root: Path) -> tuple[str, ...]:
-    """Return tracked YAML files, including the canonical example."""
+    """Return existing tracked or untracked YAML files."""
     result = subprocess.run(
         (
             "git",
@@ -58,11 +59,11 @@ def yaml_files(root: Path) -> tuple[str, ...]:
         capture_output=True,
         text=True,
     )
-    return tuple(result.stdout.splitlines())
+    return tuple(path for path in result.stdout.splitlines() if (root / path).is_file())
 
 
 def markdown_files(root: Path) -> tuple[str, ...]:
-    """Return tracked and non-ignored Markdown files."""
+    """Return existing tracked or untracked Markdown files."""
     result = subprocess.run(
         ("git", "ls-files", "--cached", "--others", "--exclude-standard", "--", "*.md"),
         cwd=root,
@@ -70,7 +71,7 @@ def markdown_files(root: Path) -> tuple[str, ...]:
         capture_output=True,
         text=True,
     )
-    return tuple(result.stdout.splitlines())
+    return tuple(path for path in result.stdout.splitlines() if (root / path).is_file())
 
 
 def json_schema_files() -> tuple[str, ...]:
@@ -102,6 +103,40 @@ def check_json_format(root: Path, paths: tuple[str, ...]) -> bool:
                 file=sys.stderr,
             )
             valid = False
+    return valid
+
+
+def check_zephyr_import_boundary(root: Path, paths: tuple[str, ...]) -> bool:
+    """Keep upstream OpenOCD runner imports in the Zephyr compatibility layer."""
+    package = Path("python/zephyr_remote_openocd")
+    compatibility_layer = package / "zephyr44"
+    valid = True
+    for relative_path in paths:
+        path = Path(relative_path)
+        if package not in path.parents or compatibility_layer in path.parents:
+            continue
+        tree = ast.parse((root / path).read_text(encoding="utf-8"), filename=relative_path)
+        for node in ast.walk(tree):
+            modules: list[str] = []
+            if isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                modules = [module, *(f"{module}.{alias.name}" for alias in node.names)]
+                lineno = node.lineno
+            elif isinstance(node, ast.Import):
+                modules = [alias.name for alias in node.names]
+                lineno = node.lineno
+            else:
+                continue
+            if any(
+                module == "runners.openocd" or module.startswith("runners.openocd.")
+                for module in modules
+            ):
+                print(
+                    "Zephyr OpenOCD coupling outside compatibility layer: "
+                    f"{relative_path}:{lineno}",
+                    file=sys.stderr,
+                )
+                valid = False
     return valid
 
 
@@ -182,9 +217,12 @@ def commands(
 def main() -> int:
     """Run checks in order and stop after the first failure."""
     root = repository_root()
+    python_files = source_files(root)
     if not check_json_format(root, json_schema_files()):
         return 1
-    for command in commands(source_files(root), yaml_files(root), markdown_files(root)):
+    if not check_zephyr_import_boundary(root, python_files):
+        return 1
+    for command in commands(python_files, yaml_files(root), markdown_files(root)):
         result = subprocess.run(command, cwd=root, check=False)
         if result.returncode:
             return result.returncode

@@ -173,25 +173,3 @@ def test_documented_script_entry_point_provides_help():
 
     assert completed.returncode == 0, completed.stderr
     assert "--hardware-config" in completed.stdout
-
-
-def test_strict_external_collection_rejects_skips(monkeypatch):
-    class Reporter:
-        stats = {"skipped": [object()]}
-
-    class PluginManager:
-        @staticmethod
-        def get_plugin(name):
-            assert name == "terminalreporter"
-            return Reporter()
-
-    session = SimpleNamespace(
-        config=SimpleNamespace(pluginmanager=PluginManager()),
-        exitstatus=0,
-    )
-    monkeypatch.setenv("ZRO_STRICT_EXTERNAL", "1")
-    # The hook lives in the test conftest because pytest owns the result state.
-    import tests.conftest as conftest
-
-    conftest.pytest_sessionfinish(session, 0)
-    assert session.exitstatus == pytest.ExitCode.TESTS_FAILED

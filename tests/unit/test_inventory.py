@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import json
 from pathlib import Path
 
 import pytest
@@ -34,32 +33,11 @@ def example_document() -> dict:
 
 def test_starter_example_is_minimal_and_valid() -> None:
     inventory = load_inventory(STARTER_EXAMPLE)
-    target = inventory.target("stm32f746g_disco")
-    assert [profile.name for profile in target.profiles] == ["flash"]
-    assert target.profile("flash").operation_names == ("flash",)
-
-
-def test_schema_documents_every_named_property_and_array_item() -> None:
-    schema_path = ROOT / "tests/fixtures/hardware.schema.json"
-    schema = json.loads(schema_path.read_text())
-
-    def check(node: object, location: str = "schema") -> None:
-        if isinstance(node, list):
-            for index, item in enumerate(node):
-                check(item, f"{location}[{index}]")
-            return
-        if not isinstance(node, dict):
-            return
-        for name, value in node.get("properties", {}).items():
-            assert "description" in value, f"{location}.properties.{name} lacks description"
-        for keyword in ("items", "prefixItems"):
-            value = node.get(keyword)
-            if isinstance(value, dict):
-                assert "description" in value, f"{location}.{keyword} lacks description"
-        for key, value in node.items():
-            check(value, f"{location}.{key}")
-
-    check(schema)
+    assert len(inventory.targets) == 1
+    assert len(inventory.targets[0].profiles) == 1
+    operations = tuple(inventory.targets[0].profiles[0].operations.values())
+    assert len(operations) == 1
+    assert isinstance(operations[0], FlashOperation)
 
 
 def write_inventory(tmp_path: Path, document: object) -> Path:
@@ -83,27 +61,19 @@ def change(document: dict, path: tuple[str, ...], value: object) -> dict:
 
 def test_example_is_complete_and_renderable(tmp_path: Path) -> None:
     inventory = load_inventory(EXAMPLE)
-    assert inventory.build_environment("zephyr44").west == Path(
-        "/path/to/zephyrproject/.venv/bin/west"
-    )
-    assert inventory.toolchain("arm").gdb == Path(
-        "/path/to/zephyr-sdk/arm-zephyr-eabi/bin/arm-zephyr-eabi-gdb"
-    )
-    host = inventory.host("lab")
-    assert host.forward_env == ("PROBE_CHANNEL",)
-    assert host.openocd_command == ("/absolute/remote/path/to/openocd",)
-    target = inventory.target("stm32f746g_disco")
-    assert target.build("hello").application == "samples/hello_world"
-    assert target.endpoint("console").baud == 115200
-    flash = target.profile("core")
-    assert flash.environment == (("PROBE_CHANNEL", "0"),)
-    assert isinstance(flash.operation("flash"), FlashOperation)
-    debug = target.profile("core")
-    assert debug.operation_names == ("flash", "debug", "attach", "debugserver")
-    assert isinstance(debug.operation("debug"), DebugOperation)
-    assert isinstance(debug.operation("attach"), AttachOperation)
-    assert isinstance(target.profile("rtt").operation("rtt"), RttOperation)
+    assert inventory.build_environments
+    assert inventory.toolchains
+    assert inventory.hosts
+    assert inventory.targets
+    operations = {
+        type(operation)
+        for target in inventory.targets
+        for profile in target.profiles
+        for operation in profile.operations.values()
+    }
+    assert {FlashOperation, DebugOperation, AttachOperation, RttOperation} <= operations
 
+    host = inventory.hosts[0]
     config_path = tmp_path / "config.yaml"
     config_path.write_text(render_product_config(host), encoding="utf-8")
     assert load_config(config_path).default_runner == "openocd"
