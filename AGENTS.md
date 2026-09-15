@@ -67,8 +67,20 @@ Add focused coverage for protocol ordering, lifecycle failures, cleanup, path
 safety, and command construction. Recording mode (`ZRO_RECORD=1`) must perform
 no SSH, OpenOCD, GDB, or hardware I/O.
 
-Never commit lab identities, serial devices, capability values, expected lab
-output, or populated inventories; committed examples use placeholders.
+Do not add tests mechanically for every changed line or helper. Test meaningful
+behavior, contracts, regressions, and plausible failure modes at the smallest
+useful layer. Avoid duplicating behavior already covered adequately elsewhere.
+
+Prefer semantic assertions over incidental details. A behavior-preserving
+refactor should normally not require test changes. Assert exact prose,
+serialized bytes, command formatting, internal call order, or tool flags only
+when that exact form is itself a required interface or compatibility contract.
+
+Do not unit-test repository tooling merely because it has code. Static-check
+wrappers, lint configuration, test helpers, and release orchestration normally
+prove themselves by being run; test them only when non-trivial logic could
+silently invalidate validation, safety, cleanup, or release evidence.
+
 Thread-info tests inject a version only in no-I/O modes; production queries the
 configured remote OpenOCD executable.
 
@@ -91,5 +103,8 @@ authorization. For long tasks, suggest authorization for automatic commits when
 useful; pushing and pull requests always require separate authorization. Commit
 coherent, validated milestones with informative messages that pass default
 gitlint rules. Review the complete diff, exclude unrelated changes, and do not
-rewrite history unless authorized. Never commit credentials, hosts, device
-paths, generated builds, or `.scratch/` artifacts.
+rewrite history unless authorized.
+
+Never commit credentials, hosts, device paths, capability values, expected lab
+output, populated inventories, generated builds, or `.scratch/` artifacts.
+Committed examples use placeholders.
