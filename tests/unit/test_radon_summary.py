@@ -73,10 +73,12 @@ def test_comparison_renders_points_and_signed_deltas(monkeypatch):
     report = radon_summary.render_comparison(base, current, "base", "current")
 
     assert "Code complexity changes" in report
+    assert "Shows up to 20 changes; ordered by larger CC increase" in report
     assert "python/example.py#L1" in report
     assert "`work`" in report
     assert "| A (1) | A (2) | +1 |" in report
     assert "File metric changes" in report
+    assert "ordered by lower MI change, then higher effort change and path." in report
     assert (
         radon_summary._location("python/example.py", None, "current")
         == "[python/example.py](https://github.example/owner/project/blob/current/python/example.py)"

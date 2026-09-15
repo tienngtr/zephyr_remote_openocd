@@ -386,6 +386,9 @@ def _render_block_changes(
     lines = [
         "### Callable complexity changes",
         "",
+        f"Shows up to {DETAIL_LIMIT} changes; ordered by larger CC increase, then "
+        "higher current CC, path, and callable name.",
+        "",
         "| Scope | Point | Callable | Base | Current | Δ |",
         "|---|---|---|---:|---:|---:|",
     ]
@@ -416,6 +419,9 @@ def _render_file_changes(
 ) -> list[str]:
     lines = [
         "### File metric changes",
+        "",
+        f"Shows up to {DETAIL_LIMIT} changes; ordered by lower MI change, then "
+        "higher effort change and path.",
         "",
         "| Scope | File | Base MI | Current MI | Δ MI | Base effort | Current effort | Δ effort |",
         "|---|---|---:|---:|---:|---:|---:|---:|",
