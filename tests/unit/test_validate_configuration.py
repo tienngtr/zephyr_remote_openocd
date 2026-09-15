@@ -24,11 +24,44 @@ SPEC.loader.exec_module(validator)
 EXAMPLE = ROOT / "resources/config.example.yaml"
 
 
-def test_example_resolves_explicit_remote(capsys) -> None:
-    assert validator.main([str(EXAMPLE), "--remote", "lab"]) == 0
+def test_explicit_remote_summary_includes_effective_non_secret_settings(
+    tmp_path: Path, capsys
+) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "default_runner: remote_openocd\n"
+        "presets:\n"
+        "  controlled_preset:\n"
+        "    ssh_command: [ssh, -F, /controlled/ssh-config]\n"
+        "remotes:\n"
+        "  controlled_remote:\n"
+        "    preset: controlled_preset\n"
+        "    ssh_host: controlled-host\n"
+        "    openocd_command: [/controlled/openocd, --verbose]\n"
+        "    forward_env: [CONTROLLED_TOKEN]\n"
+        "    path_mappings: {/controlled/local: /controlled/remote}\n",
+        encoding="utf-8",
+    )
+
+    assert validator.main([str(path), "--remote", "controlled_remote"]) == 0
     output = capsys.readouterr()
-    assert output.out
     assert output.err == ""
+    for value in (
+        str(path),
+        "remote_openocd",
+        "controlled_preset",
+        "controlled_remote",
+        "controlled-host",
+        "ssh",
+        "-F",
+        "/controlled/ssh-config",
+        "/controlled/openocd",
+        "--verbose",
+        "CONTROLLED_TOKEN",
+        "/controlled/local",
+        "/controlled/remote",
+    ):
+        assert value in output.out
 
 
 def test_default_remote_is_resolved_without_environment_override(
