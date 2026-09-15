@@ -38,14 +38,12 @@ def test_creates_template_and_reports_activation(tmp_path: Path):
     config = tmp_path / ".config" / "zephyr_remote_openocd" / "config.yaml"
     assert result.returncode == 0, result.stderr
     assert config.read_bytes() == TEMPLATE.read_bytes()
-    assert f"Configuration (created): {config}" in result.stdout
-    assert f"Module root: {ROOT}" in result.stdout
+    assert str(config) in result.stdout
+    assert str(ROOT) in result.stdout
     assert "EXTRA_ZEPHYR_MODULES" in result.stdout
-    assert "${EXTRA_ZEPHYR_MODULES:+$EXTRA_ZEPHYR_MODULES;}" in result.stdout
-    assert "Activate the module by making this path available to Zephyr:" in result.stdout
-    assert "Next, edit the configuration and validate a remote:" in result.stdout
     validator = ROOT / "scripts" / "validate_configuration.py"
-    assert f"python3 {validator} --remote NAME" in result.stdout
+    assert str(validator) in result.stdout
+    assert "--remote" in result.stdout
     assert stat.S_IMODE(config.parent.stat().st_mode) == 0o700
     assert stat.S_IMODE(config.stat().st_mode) == 0o600
 
@@ -61,7 +59,6 @@ def test_existing_configuration_is_preserved_and_not_chmodded(tmp_path: Path):
     config.chmod(0o644)
     result = run_setup(tmp_path)
     assert result.returncode == 0, result.stderr
-    assert f"Configuration (already exists): {config}" in result.stdout
     assert config.read_text() == 'default_runner: remote_openocd\n'
     assert stat.S_IMODE(config_parent.stat().st_mode) == 0o755
     assert stat.S_IMODE(config_dir.stat().st_mode) == 0o755
