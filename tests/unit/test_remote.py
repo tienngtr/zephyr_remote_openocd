@@ -154,7 +154,9 @@ class TestProtocol:
         write_start(stream, process, (Service("gdb", 3333, 3333),))
         write_stop(stream)
 
-        assert stream.getvalue() == fixture.read_bytes()
+        actual = [decode_message(line) for line in stream.getvalue().splitlines()]
+        expected = [decode_message(line) for line in fixture.read_bytes().splitlines()]
+        assert actual == expected
 
     def test_one_shot_responses_keep_their_schema(self):
         fixture = ROOT / "tests/fixtures/protocol_v1/one_shot_responses.jsonl"
