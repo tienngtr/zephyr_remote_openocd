@@ -233,8 +233,8 @@ complexity renderers with explicit revisions and writes them to its job summary.
 ## Coverage
 
 The self-contained suite can collect branch coverage for the production
-package, west runner entry point, maintained scripts, and locally launched
-Python helper processes:
+package, west runner entry point, maintained scripts and tools, and locally
+launched Python helper processes:
 
 ```sh
 .venv/bin/python -m pytest --cov --cov-config=.coveragerc \

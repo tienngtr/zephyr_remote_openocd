@@ -37,7 +37,7 @@ def source_files(root: Path) -> tuple[str, ...]:
         capture_output=True,
         text=True,
     )
-    return tuple(result.stdout.splitlines())
+    return tuple(path for path in result.stdout.splitlines() if (root / path).is_file())
 
 
 def yaml_files(root: Path) -> tuple[str, ...]:
@@ -58,7 +58,7 @@ def yaml_files(root: Path) -> tuple[str, ...]:
         capture_output=True,
         text=True,
     )
-    return tuple(result.stdout.splitlines())
+    return tuple(path for path in result.stdout.splitlines() if (root / path).is_file())
 
 
 def markdown_files(root: Path) -> tuple[str, ...]:
@@ -70,7 +70,7 @@ def markdown_files(root: Path) -> tuple[str, ...]:
         capture_output=True,
         text=True,
     )
-    return tuple(result.stdout.splitlines())
+    return tuple(path for path in result.stdout.splitlines() if (root / path).is_file())
 
 
 def json_schema_files() -> tuple[str, ...]:

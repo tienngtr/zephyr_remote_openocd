@@ -23,7 +23,7 @@ set_property(GLOBAL APPEND PROPERTY ZEPHYR_RUNNERS remote_openocd)
 
 execute_process(
   COMMAND "${PYTHON_EXECUTABLE}"
-          "${ZEPHYR_CURRENT_MODULE_DIR}/scripts/config_default.py"
+          "${ZEPHYR_CURRENT_MODULE_DIR}/tools/config_default.py"
           "${_zro_config}"
   RESULT_VARIABLE _zro_config_result
   OUTPUT_VARIABLE _zro_default

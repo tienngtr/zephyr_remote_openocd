@@ -130,14 +130,15 @@ zephyr_remote_openocd/
     resources/
         config.example.yaml
 
-    scripts/
+    tools/
         config_default.py
         setup.py
+        validate_configuration.py
 ```
 
 The implementation is intentionally self-contained in the module tree. Apart
 from the discovery markers described below, exact filenames are not
-architectural contracts. User setup is implemented by `scripts/setup.py`; pip
+architectural contracts. User setup is implemented by `tools/setup.py`; pip
 packaging is not required.
 
 ---
@@ -192,7 +193,7 @@ This path is only an example; the module may live anywhere persistent.
 User setup is a separate, non-invasive operation:
 
 ```text
-python3 scripts/setup.py
+python3 tools/setup.py
 ```
 
 The setup script copies `resources/config.example.yaml` only when the canonical
@@ -244,7 +245,7 @@ during a real operation; recording keeps them unresolved.
 
 The SSH command is represented as an argv list rather than a shell command string.
 
-`scripts/validate_configuration.py` is a no-I/O front end to this loader and
+`tools/validate_configuration.py` is a no-I/O front end to this loader and
 resolver. Its optional configuration path follows the product default and
 `ZEPHYR_REMOTE_OPENOCD_CONFIG`. It resolves an explicit `--remote`, otherwise
 the file's `default_remote`; it does not consult

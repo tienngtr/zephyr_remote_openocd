@@ -19,7 +19,7 @@ from urllib.parse import quote
 from radon.complexity import cc_rank, cc_visit
 from radon.metrics import h_visit, mi_visit
 
-PRODUCTION_PREFIXES = ("python/", "runners/", "scripts/")
+PRODUCTION_PREFIXES = ("python/", "runners/", "scripts/", "tools/")
 TEST_PREFIXES = ("tests/",)
 DETAIL_LIMIT = 20
 WORKING_TREE = "working tree"
@@ -97,6 +97,7 @@ def revision_sources(root: Path, revision: str) -> dict[str, str]:
             "python",
             "runners",
             "scripts",
+            "tools",
             "tests",
         ),
         cwd=root,
@@ -131,6 +132,7 @@ def working_tree_sources(root: Path) -> dict[str, str]:
             "python",
             "runners",
             "scripts",
+            "tools",
             "tests",
         ),
         cwd=root,
