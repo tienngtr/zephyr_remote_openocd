@@ -30,7 +30,7 @@ def tool_executable(name: str) -> str:
 
 
 def source_files(root: Path) -> tuple[str, ...]:
-    """Return tracked Python files relative to the repository root."""
+    """Return existing tracked or untracked Python files."""
     result = subprocess.run(
         ("git", "ls-files", "--cached", "--others", "--exclude-standard", "--", "*.py"),
         cwd=root,
@@ -38,11 +38,11 @@ def source_files(root: Path) -> tuple[str, ...]:
         capture_output=True,
         text=True,
     )
-    return tuple(result.stdout.splitlines())
+    return tuple(path for path in result.stdout.splitlines() if (root / path).is_file())
 
 
 def yaml_files(root: Path) -> tuple[str, ...]:
-    """Return tracked YAML files, including the canonical example."""
+    """Return existing tracked or untracked YAML files."""
     result = subprocess.run(
         (
             "git",
@@ -59,11 +59,11 @@ def yaml_files(root: Path) -> tuple[str, ...]:
         capture_output=True,
         text=True,
     )
-    return tuple(result.stdout.splitlines())
+    return tuple(path for path in result.stdout.splitlines() if (root / path).is_file())
 
 
 def markdown_files(root: Path) -> tuple[str, ...]:
-    """Return tracked and non-ignored Markdown files."""
+    """Return existing tracked or untracked Markdown files."""
     result = subprocess.run(
         ("git", "ls-files", "--cached", "--others", "--exclude-standard", "--", "*.md"),
         cwd=root,
@@ -71,7 +71,7 @@ def markdown_files(root: Path) -> tuple[str, ...]:
         capture_output=True,
         text=True,
     )
-    return tuple(result.stdout.splitlines())
+    return tuple(path for path in result.stdout.splitlines() if (root / path).is_file())
 
 
 def json_schema_files() -> tuple[str, ...]:
