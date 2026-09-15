@@ -88,7 +88,10 @@ def run_rtt_client(
             if connection in readable:
                 payload = connection.recv(4096)
                 if not payload:
-                    return poll_session()
+                    returncode = poll_session()
+                    if returncode is not None:
+                        return returncode
+                    raise RttClientError("RTT channel closed while remote session is still running")
                 output_stream.write(payload)
                 output_stream.flush()
     finally:

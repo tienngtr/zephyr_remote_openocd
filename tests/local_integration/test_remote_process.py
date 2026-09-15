@@ -223,11 +223,39 @@ class TestRttClient:
             os.fdopen(input_read, "rb", buffering=0) as stdin,
             os.fdopen(output_write, "wb", buffering=0) as stdout,
         ):
-            assert run_rtt_client(port, lambda: None, stdin=stdin, stdout=stdout) is None
+            assert (
+                run_rtt_client(
+                    port,
+                    lambda: 0 if received else None,
+                    stdin=stdin,
+                    stdout=stdout,
+                )
+                == 0
+            )
         thread.join(2)
         assert received == [b"local_input"]
         assert os.read(output_read, 64) == b"remote_output"
         os.close(output_read)
+
+    def test_established_channel_closure_fails_while_session_is_running(self):
+        class Connection:
+            def recv(self, _size):
+                return b""
+
+            def close(self):
+                pass
+
+        connection = Connection()
+        with (
+            tempfile.TemporaryFile("w+b") as stream,
+            patch.object(rtt_module, "_connect", return_value=(connection, b"connected")),
+            patch.object(rtt_module.select, "select", return_value=([connection], [], [])),
+            pytest.raises(
+                RttClientError,
+                match="RTT channel closed while remote session is still running",
+            ),
+        ):
+            run_rtt_client(5555, lambda: None, stdin=stream, stdout=stream)
 
     def test_immediate_forwarded_channel_failure_is_authoritative(self):
         def server(listener):
@@ -257,6 +285,7 @@ class TestRttClient:
             [7],
         ]
         connection = Connection()
+        poll_results = iter((None, None, 0))
         with (
             tempfile.TemporaryFile("w+b") as stream,
             patch.object(rtt_module, "_connect", return_value=(connection, b"")),
@@ -274,7 +303,15 @@ class TestRttClient:
             ),
             patch.object(rtt_module.termios, "tcsetattr") as set_attributes,
         ):
-            assert run_rtt_client(5555, lambda: None, stdin=stream, stdout=stream) is None
+            assert (
+                run_rtt_client(
+                    5555,
+                    lambda: next(poll_results),
+                    stdin=stream,
+                    stdout=stream,
+                )
+                == 0
+            )
         configured = set_attributes.call_args_list[0].args[2]
         assert not configured[3] & rtt_module.termios.ICANON
         assert not configured[3] & rtt_module.termios.ECHO
