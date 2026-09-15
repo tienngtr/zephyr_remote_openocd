@@ -125,7 +125,8 @@ ZEPHYR_BASE=/path/to/zephyr pytest tests/zephyr_integration/test_adapter.py
 
 These compare applicable parser behavior with upstream and execute recording
 through the real adapter while rejecting external process, socket, and SSH
-operations. Static import-layer checks run in the ordinary unit suite.
+operations. The Zephyr compatibility import boundary is enforced by
+`scripts/static_check.py`.
 
 Native SSH tests require an `ssh` executable on `PATH` and a reachable host
 from the inventory. Zephyr integration additionally requires a Zephyr checkout,
