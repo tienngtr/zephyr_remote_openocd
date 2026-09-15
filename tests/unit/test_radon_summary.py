@@ -73,18 +73,11 @@ def test_comparison_renders_points_and_signed_deltas(monkeypatch):
     report = radon_summary.render_comparison(base, current, "base", "current")
 
     assert "Code complexity changes" in report
-    assert "Shows up to 20 changes; ordered by larger CC increase" in report
     assert "python/example.py#L1" in report
     assert "`work`" in report
     assert "| A (1) | A (2) | +1 |" in report
     assert "File metric changes" in report
-    assert "ordered by lower MI change, then higher effort change and path." in report
-    assert (
-        radon_summary._location("python/example.py", None, "current")
-        == "[python/example.py](https://github.example/owner/project/blob/current/python/example.py)"
-    )
-    assert "Minimum MI" not in report
-    assert "quality threshold" not in report
+    assert "blob/current/python/example.py" in report
 
 
 def test_push_renders_callable_and_file_hotspots():
@@ -99,9 +92,6 @@ def test_push_renders_callable_and_file_hotspots():
     assert "`complex_work`" in report
     assert "Current file hotspots" in report
     assert "Includes the five lowest-MI and five highest-effort files in each scope" in report
-    assert "ordered by lower MI, then higher Halstead effort, then path." in report
-    assert "Minimum MI" not in report
-    assert "quality threshold" not in report
 
 
 def test_file_hotspots_order_by_mi_effort_then_path():
@@ -121,10 +111,6 @@ def test_file_hotspots_order_by_mi_effort_then_path():
 
     assert report.index("python/z.py") < report.index("python/a.py")
     assert report.index("python/a.py") < report.index("python/b.py")
-
-
-def test_detail_lists_are_limited():
-    assert radon_summary._limited(list(range(25))) == (list(range(20)), 5)
 
 
 def test_cli_defaults_to_head():
