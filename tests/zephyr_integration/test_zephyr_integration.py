@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import stat
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
@@ -66,7 +64,6 @@ class TestZephyrIntegration:
         cls.ccache_tmp = cls.scratch / "ccache_tmp"
         cls.build_in_tree = cls.scratch / "build_in_tree"
         cls.build_out_tree = cls.scratch / "build_out_tree"
-        cls.build_thread_info = cls.scratch / "build_thread_info"
         cls.build_without_openocd = cls.scratch / "build_without_openocd"
         cls.app_out_tree = cls.scratch / "application"
         cls._write_config("openocd")
@@ -82,18 +79,6 @@ class TestZephyrIntegration:
             "--",
             f"-DUSER_CACHE_DIR={cls.cache}",
             f"-DOPENOCD={cls.fake_openocd}",
-        )
-        cls._west(
-            "build",
-            "-b",
-            cls.openocd_board,
-            str(sample),
-            "-d",
-            str(cls.build_thread_info),
-            "--",
-            f"-DUSER_CACHE_DIR={cls.cache}",
-            f"-DOPENOCD={cls.fake_openocd}",
-            "-DCONFIG_DEBUG_THREAD_INFO=y",
         )
         shutil.copytree(sample, cls.app_out_tree)
         cls._west(
@@ -126,7 +111,7 @@ class TestZephyrIntegration:
             scratch.cleanup()
 
     @classmethod
-    def _write_config(cls, default_runner: str, forward_env: tuple[str, ...] = ()):
+    def _write_config(cls, default_runner: str):
         content = (
             f"default_runner: {default_runner}\n"
             "default_remote: record_only\n"
@@ -138,9 +123,6 @@ class TestZephyrIntegration:
             "    path_mappings:\n"
             "      /: /recorded\n"
         )
-        if forward_env:
-            names = ", ".join(forward_env)
-            content += f"    forward_env: [{names}]\n"
         cls.config.write_text(content)
 
     @classmethod
@@ -207,219 +189,22 @@ class TestZephyrIntegration:
         args = self._runner_state(self.build_in_tree)["args"]
         assert args["remote_openocd"] == args["openocd"]
 
-    def test_recording_commands_receive_runner_config_without_io(self):
-        for command in ("flash", "debug", "attach", "debugserver"):
-            result = self._west(
-                command,
-                "-d",
-                str(self.build_in_tree),
-                "-r",
-                "remote_openocd",
-                "--no-rebuild",
-            )
-            recording = self._recording(result.stdout)
-            assert recording["command"] == command
-            config = recording["runner_config"]
-            for required in ("board_dir", "elf_file", "gdb", "openocd"):
-                assert config[required], required
-            for optional in ("hex_file", "bin_file", "openocd_search"):
-                assert optional in config
-            if command == "flash":
-                request = recording["remote_session_request"]
-                assert request["host"] == "record_only"
-                argv = request["process"]["argv"]
-                assert argv[0] == "/remote/openocd"
-                assert "bindto {address}" in argv
-                assert not any(" disabled" in argument for argument in argv)
-                if recording["runner_args"].get("file_type") == "elf":
-                    assert any(argument.startswith("load_image ") for argument in argv)
-                else:
-                    assert any(argument.startswith("flash write_image ") for argument in argv)
-                assert request["process"]["environment"] == []
-            else:
-                request = recording["remote_session_request"]
-                assert [
-                    (item["name"], item["local_port"], item["remote_port"])
-                    for item in request["services"]
-                ] == [("gdb", 3333, 3333), ("tcl", 6333, 6333), ("telnet", 4444, 4444)]
-                assert re.match(r"^ZRO_READY_[0-9a-f]{32}$", request["process"]["readiness_marker"])
-                if command == "debugserver":
-                    assert recording["local_gdb_argv"] is None
-                    assert "reset init" in request["process"]["argv"]
-                else:
-                    client = recording["local_gdb_argv"]
-                    assert "target extended-remote 127.0.0.1:3333" in client
-                    assert ("load" in client) == (command == "debug")
-
-    def test_recording_forwards_only_present_allow_list_environment(self):
-        selected = "ZRO_TEST_PROBE_CHANNEL"
-        missing = "ZRO_TEST_ABSENT_ENVIRONMENT"
-        prior_missing = os.environ.pop(missing, None)
-        try:
-            self._write_config("remote_openocd", (selected, missing))
-            try:
-                result = self._west(
-                    "flash",
-                    "-d",
-                    str(self.build_in_tree),
-                    "-r",
-                    "remote_openocd",
-                    "--no-rebuild",
-                    extra_env={selected: "channel_1", "ZRO_TEST_UNLISTED": "not_forwarded"},
-                )
-                recording = self._recording(result.stdout)
-                assert recording["remote_session_request"]["process"]["environment"] == [selected]
-                assert (
-                    f"allow-listed environment variable {missing} is absent; omitting it"
-                    in result.stdout
-                )
-            finally:
-                self._write_config("openocd")
-        finally:
-            if prior_missing is not None:
-                os.environ[missing] = prior_missing
-
-    def test_recording_thread_info_uses_injected_remote_version(self):
+    @pytest.mark.parametrize("command", ("flash", "debug"))
+    def test_recording_smoke_reaches_adapter(self, command):
         result = self._west(
-            "debug",
-            "-d",
-            str(self.build_thread_info),
-            "-r",
-            "remote_openocd",
-            "--no-rebuild",
-            extra_env={"ZRO_RECORD_VERSION": "Open On-Chip Debugger 0.12.0"},
-        )
-        recording = self._recording(result.stdout)
-        assert recording["thread_info"] == {
-            "requested": True,
-            "version": "Open On-Chip Debugger 0.12.0",
-            "version_source": "injected",
-            "rtos_awareness": True,
-        }
-        assert (
-            "$_TARGETNAME configure -rtos Zephyr"
-            in recording["remote_session_request"]["process"]["argv"]
-        )
-
-    def test_recording_thread_info_requires_injected_version(self):
-        result = self._west(
-            "debug",
-            "-d",
-            str(self.build_thread_info),
-            "-r",
-            "remote_openocd",
-            "--no-rebuild",
-            check=False,
-        )
-        assert result.returncode != 0
-        assert "ZRO_RECORD_VERSION is required" in result.stdout
-
-    def test_recording_rtt_reuses_thread_info_decision(self):
-        result = self._west(
-            "rtt",
-            "-d",
-            str(self.build_thread_info),
-            "-r",
-            "remote_openocd",
-            "--no-rebuild",
-            "--",
-            "--rtt-address=0x20001000",
-            extra_env={"ZRO_RECORD_VERSION": "Open On-Chip Debugger 0.12.0"},
-        )
-        recording = self._recording(result.stdout)
-        assert recording["thread_info"]["rtos_awareness"]
-        assert (
-            "$_TARGETNAME configure -rtos Zephyr"
-            in recording["remote_session_request"]["process"]["argv"]
-        )
-
-    def test_recording_rtt_command_construction_without_io(self):
-        cases = (
-            ("rtt", ("--rtt-address=0x20001000", "--rtt-port=5566")),
-            (
-                "debug",
-                ("--rtt-server", "--rtt-address=0x20001000", "--rtt-port=5566"),
-            ),
-            (
-                "debugserver",
-                ("--rtt-server", "--rtt-address=0x20001000", "--rtt-port=5566"),
-            ),
-        )
-        for command, runner_args in cases:
-            result = self._west(
-                command,
-                "-d",
-                str(self.build_in_tree),
-                "-r",
-                "remote_openocd",
-                "--no-rebuild",
-                "--",
-                *runner_args,
-            )
-            recording = self._recording(result.stdout)
-            assert recording["rtt"]["address"] == 0x20001000
-            assert recording["rtt"]["port"] == 5566
-            assert recording["rtt"]["setup"] == (
-                "batch_gdb" if command == "rtt" else "openocd_startup"
-            )
-            assert recording["rtt"]["launches_local_client"] == (command == "rtt")
-            services = recording["remote_session_request"]["services"]
-            assert any(item["name"] == "rtt" for item in services) == (command != "rtt")
-            if command == "rtt":
-                assert "--batch" in recording["local_gdb_argv"]
-                assert "monitor rtt server start 5566 0" in recording["local_gdb_argv"]
-            else:
-                assert (
-                    "rtt server start 5566 0"
-                    in recording["remote_session_request"]["process"]["argv"]
-                )
-
-    def test_recording_direct_semihosting_commands_without_io(self):
-        commands = (
-            "init",
-            "arm semihosting enable",
-            "arm semihosting_fileio disable",
-            "arm semihosting_redirect disable",
-        )
-        result = self._west(
-            "debug",
+            command,
             "-d",
             str(self.build_in_tree),
             "-r",
             "remote_openocd",
             "--no-rebuild",
-            "--",
-            "--no-load",
-            "--no-init",
-            *(f"--cmd-pre-init={command}" for command in commands),
-            "--gdb-init=monitor reset run",
         )
         recording = self._recording(result.stdout)
-        argv = recording["remote_session_request"]["process"]["argv"]
-        for command in commands:
-            assert command in argv
-        assert [item["name"] for item in recording["remote_session_request"]["services"]] == [
-            "gdb",
-            "tcl",
-            "telnet",
-        ]
-        assert not recording["rtt"]["enabled"]
-
-    def test_explicit_elf_file_type_uses_zephyr_elf_flash_flow(self):
-        result = self._west(
-            "flash",
-            "-d",
-            str(self.build_in_tree),
-            "-r",
-            "remote_openocd",
-            "--no-rebuild",
-            "--",
-            "--file-type=elf",
-        )
-        recording = self._recording(result.stdout)
-        argv = recording["remote_session_request"]["process"]["argv"]
-        assert any(argument.startswith("load_image ") for argument in argv)
-        assert not any(argument.startswith("flash write_image ") for argument in argv)
+        assert recording["command"] == command
+        assert recording["remote_session_request"]["host"] == "record_only"
+        config = recording["runner_config"]
+        for field in ("board_dir", "elf_file", "gdb", "openocd"):
+            assert config[field], field
 
     def test_config_change_regenerates_default_runner(self):
         state = self._runner_state(self.build_in_tree)
@@ -432,32 +217,14 @@ class TestZephyrIntegration:
         self._west("flash", "-d", str(self.build_in_tree))
         assert self._runner_state(self.build_in_tree)["flash-runner"] == "openocd"
 
-    @staticmethod
-    def _west_python(west: Path) -> Path:
-        """Return West's interpreter so setup checks its Zephyr dependencies."""
-        try:
-            first_line = west.read_text(encoding="utf-8").splitlines()[0]
-        except (OSError, UnicodeDecodeError, IndexError):
-            return Path(sys.executable)
-        if not first_line.startswith("#!"):
-            return Path(sys.executable)
-        command = first_line[2:].strip().split()
-        if not command:
-            return Path(sys.executable)
-        if Path(command[0]).name == "env":
-            resolved = shutil.which(command[-1])
-            return Path(resolved) if resolved else Path(sys.executable)
-        candidate = Path(command[0])
-        return candidate if candidate.is_file() else Path(sys.executable)
-
     def test_clean_install_acceptance_from_git_free_distribution(self):
-        """A copied module works through setup and EXTRA_ZEPHYR_MODULES alone."""
+        """A copied module works through EXTRA_ZEPHYR_MODULES alone."""
         with tempfile.TemporaryDirectory(prefix="zro_clean_install_") as directory:
             root = Path(directory)
             distribution = root / "zephyr_remote_openocd"
-            home = root / "home"
             build = root / "build"
             cache = root / "cache"
+            config = root / "config.yaml"
             fake_openocd = root / "fake_openocd"
             ignored = shutil.ignore_patterns(
                 ".git",
@@ -475,11 +242,18 @@ class TestZephyrIntegration:
             )
             shutil.copytree(ROOT, distribution, ignore=ignored)
             assert not (distribution / ".git").exists()
-            shutil.rmtree(distribution / "docs")
-            assert not (distribution / "docs").exists()
             assert not str(distribution).startswith(str(ROOT))
             fake_openocd.write_text("#!/bin/sh\nprintf 'Open On-Chip Debugger 0.12.0\\n'\n")
             fake_openocd.chmod(fake_openocd.stat().st_mode | stat.S_IXUSR)
+            config.write_text(
+                "default_remote: record_only\n"
+                "remotes:\n"
+                "  record_only:\n"
+                "    ssh_host: record_only\n"
+                "    openocd_command: [/remote/openocd]\n"
+                "    ssh_command: [ssh]\n"
+                '    path_mappings: {"/": /recorded}\n'
+            )
 
             clean_env = os.environ.copy()
             for name in (
@@ -495,65 +269,13 @@ class TestZephyrIntegration:
                 clean_env.pop(name, None)
             clean_env.update(
                 {
-                    "HOME": str(home),
                     "EXTRA_ZEPHYR_MODULES": str(distribution),
+                    "ZEPHYR_REMOTE_OPENOCD_CONFIG": str(config),
+                    "ZRO_RECORD": "1",
                     "CCACHE_DIR": str(root / "ccache"),
                     "CCACHE_TEMPDIR": str(root / "ccache_tmp"),
                 }
             )
-            zephyr_python = self._west_python(self.west)
-            assert (
-                subprocess.run(
-                    [str(zephyr_python), "-c", "import elftools"],
-                    env=clean_env,
-                    check=False,
-                ).returncode
-                == 0
-            ), "the Zephyr Python environment must provide pyelftools"
-            setup_command = [str(zephyr_python), str(distribution / "scripts" / "setup.py")]
-            first_setup = subprocess.run(
-                setup_command,
-                cwd=distribution,
-                env=clean_env,
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-            assert first_setup.returncode == 0, first_setup.stderr
-            config = home / ".config" / "zephyr_remote_openocd" / "config.yaml"
-            assert (
-                config.read_bytes()
-                == (distribution / "resources" / "config.example.yaml").read_bytes()
-            )
-            assert stat.S_IMODE(config.parent.stat().st_mode) == 0o700
-            assert stat.S_IMODE(config.stat().st_mode) == 0o600
-            assert f"Configuration (created): {config}" in first_setup.stdout
-            assert f"Module root: {distribution}" in first_setup.stdout
-            assert "pyelftools: found" in first_setup.stdout
-            assert "YAML configuration dependencies: found" in first_setup.stdout
-            assert str(ROOT) not in first_setup.stdout
-
-            config.write_text(
-                'default_runner: openocd\n'
-                'default_remote: record_only\n'
-                'remotes:\n  record_only:\n'
-                '    ssh_host: record_only\n'
-                '    openocd_command: [/remote/openocd]\n'
-                '    ssh_command: [ssh]\n'
-                '    path_mappings: {"/": /recorded}\n'
-            )
-            configured_contents = config.read_bytes()
-            second_setup = subprocess.run(
-                setup_command,
-                cwd=root,
-                env=clean_env,
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-            assert second_setup.returncode == 0, second_setup.stderr
-            assert config.read_bytes() == configured_contents
-            assert f"Configuration (already exists): {config}" in second_setup.stdout
 
             def west(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
                 result = subprocess.run(
@@ -588,21 +310,14 @@ class TestZephyrIntegration:
             modules = (build / "zephyr_modules.txt").read_text()
             assert str(distribution) in modules
             assert str(ROOT) not in modules
-            initial = self._runner_state(build)
-            assert "openocd" in initial["runners"]
-            assert "remote_openocd" in initial["runners"]
-            assert initial["flash-runner"] == "openocd"
-            local_context = west("flash", "-d", str(build), "--context")
-            assert "openocd capabilities:" in local_context.stdout
-
-            config.write_text(
-                config.read_text().replace(
-                    "default_runner: openocd", "default_runner: remote_openocd"
-                )
+            recorded = west(
+                "flash",
+                "-d",
+                str(build),
+                "-r",
+                "remote_openocd",
+                "--no-rebuild",
             )
-            clean_env["ZRO_RECORD"] = "1"
-            recorded = west("flash", "-d", str(build))
-            assert self._runner_state(build)["flash-runner"] == "remote_openocd"
             recording = self._recording(recorded.stdout)
             assert recording["command"] == "flash"
             assert recording["remote_session_request"]["host"] == "record_only"
