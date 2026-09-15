@@ -16,7 +16,8 @@ class Config:
     def __init__(self, option: str | None):
         self.option = option
 
-    def getoption(self, _name: str) -> str | None:
+    def getoption(self, name: str) -> str | None:
+        assert name == "--hardware-config"
         return self.option
 
 
