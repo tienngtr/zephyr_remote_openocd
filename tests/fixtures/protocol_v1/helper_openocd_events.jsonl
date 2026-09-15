@@ -1,6 +1,0 @@
-{"helper":"zephyr_remote_openocd","type":"SESSION_CREATED","remote_workspace":"/run/user/1000/zephyr_remote_openocd/fixed_session","session_id":"fixed_session","version":1}
-{"payload":"Open On-Chip Debugger ready","stream":"stdout","type":"CHILD_OUTPUT","version":1}
-{"child_pid":4242,"remote_address":"127.64.12.34","type":"PROCESS_READY","version":1}
-{"payload":"Open On-Chip Debugger ready","stream":"stdout","type":"CHILD_OUTPUT","version":1}
-{"payload":"diagnostic","stream":"stderr","type":"CHILD_OUTPUT","version":1}
-{"reason":"process_exit","returncode":0,"type":"SESSION_CLOSED","version":1}

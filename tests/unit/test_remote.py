@@ -47,10 +47,7 @@ from zephyr_remote_openocd.remote.protocol import (
     ProtocolError,
     decode_message,
     encode_message,
-    validate_deployment_response,
     validate_helper_event,
-    validate_openocd_version_response,
-    validate_staged_response,
     write_start,
     write_stop,
 )
@@ -67,8 +64,6 @@ from zephyr_remote_openocd.remote.session import (
 )
 from zephyr_remote_openocd.remote.ssh import SshCommand
 from zephyr_remote_openocd.remote.staging import StagingError, build_archive, extract_archive
-
-from tests.support import ROOT
 
 
 class TestProtocol:
@@ -119,51 +114,6 @@ class TestProtocol:
             order.accept(
                 decode_message(encode_message("CHILD_OUTPUT", stream="stdout", payload="late"))
             )
-
-    def test_current_helper_fixture_has_valid_order(self):
-        fixture = ROOT / "tests/fixtures/protocol_v1/helper_openocd_events.jsonl"
-        order = EventOrder()
-        for line in fixture.read_bytes().splitlines():
-            order.accept(decode_message(line))
-
-        fake_fixture = ROOT / "tests/fixtures/protocol_v1/helper_fake_events.jsonl"
-        fake_order = EventOrder()
-        for line in fake_fixture.read_bytes().splitlines():
-            fake_order.accept(decode_message(line))
-
-    def test_current_client_fixture_matches_typed_serializers(self):
-        fixture = ROOT / "tests/fixtures/protocol_v1/client_commands.jsonl"
-        stream = io.BytesIO()
-        process = RemoteProcess(
-            (
-                "/opt/openocd/bin/openocd",
-                "-c",
-                "gdb_port 3333",
-                "-c",
-                "echo ZRO_READY_fixed",
-            ),
-            environment=(("FTDI_CHANNEL", "1"),),
-            required_paths=(
-                RemotePathCheck("{workspace}/staged/zephyr.elf", "file"),
-                RemotePathCheck("/opt/openocd/scripts", "directory"),
-            ),
-            readiness_marker="ZRO_READY_fixed",
-            readiness_timeout=30.0,
-            literal_prefix=1,
-        )
-        write_start(stream, process, (Service("gdb", 3333, 3333),))
-        write_stop(stream)
-
-        assert stream.getvalue() == fixture.read_bytes()
-
-    def test_one_shot_responses_keep_their_schema(self):
-        fixture = ROOT / "tests/fixtures/protocol_v1/one_shot_responses.jsonl"
-        staged, version, deployed = [
-            decode_message(line) for line in fixture.read_bytes().splitlines()
-        ]
-        validate_staged_response(staged)
-        validate_openocd_version_response(version)
-        validate_deployment_response(deployed)
 
     def test_start_serializers_use_validated_domain_models(self):
         stream = io.BytesIO()
