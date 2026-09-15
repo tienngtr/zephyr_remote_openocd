@@ -192,6 +192,29 @@ class TestForwardingLifecycle:
         assert second.terminate_calls == 1
         assert first.terminate_calls == 1
 
+    def test_poll_returns_consumed_status_while_reader_remains_alive(self):
+        session = self.session(self.Command(self.Process(returncode=0)))
+        session.helper_process = session.request.ssh_command.process
+        session.process_returncode = None
+        session.reader_error = None
+        event_consumed = threading.Event()
+        release_reader = threading.Event()
+
+        def consume_session_closed():
+            session.process_returncode = 0
+            event_consumed.set()
+            release_reader.wait()
+
+        session.reader_thread = threading.Thread(target=consume_session_closed)
+        session.reader_thread.start()
+        assert event_consumed.wait(2)
+        try:
+            assert session.reader_thread.is_alive()
+            assert session.poll() == 0
+        finally:
+            release_reader.set()
+            session.reader_thread.join(2)
+
 
 class TestRttClient:
     @staticmethod
@@ -256,6 +279,41 @@ class TestRttClient:
             ),
         ):
             run_rtt_client(5555, lambda: None, stdin=stream, stdout=stream)
+
+    def test_eof_drains_pending_session_closed_status(self):
+        class Connection:
+            def recv(self, _size):
+                session.helper_process.returncode = 0
+                return b""
+
+            def close(self):
+                pass
+
+        class Reader:
+            def __init__(self):
+                self.alive = True
+
+            def is_alive(self):
+                return self.alive
+
+            def join(self):
+                session.process_returncode = 0
+                self.alive = False
+
+        session = TestForwardingLifecycle.session(
+            TestForwardingLifecycle.Command(TestForwardingLifecycle.Process())
+        )
+        session.helper_process = session.request.ssh_command.process
+        session.process_returncode = None
+        session.reader_error = None
+        session.reader_thread = Reader()
+        connection = Connection()
+        with (
+            tempfile.TemporaryFile("w+b") as stream,
+            patch.object(rtt_module, "_connect", return_value=(connection, b"connected")),
+            patch.object(rtt_module.select, "select", return_value=([connection], [], [])),
+        ):
+            assert run_rtt_client(5555, session.poll, stdin=stream, stdout=stream) == 0
 
     def test_immediate_forwarded_channel_failure_is_authoritative(self):
         def server(listener):

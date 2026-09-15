@@ -277,13 +277,20 @@ class SshHelperSession(BackendSession):
     def poll(self) -> int | None:
         if self.process_returncode is not None:
             return self.process_returncode
-        helper_status = self.helper_process.poll()
-        if helper_status is not None:
-            return helper_status or 1
         if self.reader_error is not None:
             raise SessionError(
                 f"helper event stream failed: {self.reader_error}"
             ) from self.reader_error
+        helper_status = self.helper_process.poll()
+        if (
+            helper_status is not None
+            and self.reader_thread is not None
+            and self.reader_thread.is_alive()
+        ):
+            self.reader_thread.join()
+            return self.poll()
+        if helper_status is not None:
+            return helper_status or 1
         if any(process.poll() is not None for process in self.forwards):
             return 1
         return None
