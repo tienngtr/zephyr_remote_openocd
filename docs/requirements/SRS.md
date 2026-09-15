@@ -1155,7 +1155,7 @@ The current scope does not include:
 
 ## 29. Major Risks
 
-### RISK-003 — Zephyr-version API coupling
+### RISK-003 - Zephyr-version API coupling
 
 Zephyr supports `runners.core` as its external-runner API but makes no such
 guarantee for `OpenOcdBinaryRunner`. Reusing that class therefore requires
@@ -1169,7 +1169,7 @@ Keep all use of `OpenOcdBinaryRunner` in the Zephyr 4.4 compatibility layer.
 Do not use private attributes or methods. Validate or update the adapter for
 each newly supported Zephyr version.
 
-### RISK-007 — SSH client differences
+### RISK-007 - SSH client differences
 
 OpenSSH-compatible clients can differ in supported options, process behavior,
 authentication, and forwarding behavior.

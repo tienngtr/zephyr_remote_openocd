@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 
-"""Print the configured runner default for CMake."""
+"""Print the configured runner default for the Zephyr CMake integration."""
 
 import sys
 from pathlib import Path

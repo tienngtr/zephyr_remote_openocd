@@ -5,7 +5,7 @@
 Create the canonical configuration:
 
 ```sh
-python3 /path/to/zephyr_remote_openocd/scripts/setup.py
+python3 /path/to/zephyr_remote_openocd/tools/setup.py
 ```
 
 Setup creates `~/.config/zephyr_remote_openocd/config.yaml` and never
@@ -25,7 +25,7 @@ The OpenOCD path is interpreted on that remote host. Validate the file and show
 the effective settings without contacting SSH, OpenOCD, GDB, or hardware:
 
 ```sh
-python3 /path/to/zephyr_remote_openocd/scripts/validate_configuration.py \
+python3 /path/to/zephyr_remote_openocd/tools/validate_configuration.py \
   --remote lab
 ```
 
