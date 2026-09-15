@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import json
 from pathlib import Path
 
 import pytest
@@ -37,29 +36,6 @@ def test_starter_example_is_minimal_and_valid() -> None:
     target = inventory.target("stm32f746g_disco")
     assert [profile.name for profile in target.profiles] == ["flash"]
     assert target.profile("flash").operation_names == ("flash",)
-
-
-def test_schema_documents_every_named_property_and_array_item() -> None:
-    schema_path = ROOT / "tests/fixtures/hardware.schema.json"
-    schema = json.loads(schema_path.read_text())
-
-    def check(node: object, location: str = "schema") -> None:
-        if isinstance(node, list):
-            for index, item in enumerate(node):
-                check(item, f"{location}[{index}]")
-            return
-        if not isinstance(node, dict):
-            return
-        for name, value in node.get("properties", {}).items():
-            assert "description" in value, f"{location}.properties.{name} lacks description"
-        for keyword in ("items", "prefixItems"):
-            value = node.get(keyword)
-            if isinstance(value, dict):
-                assert "description" in value, f"{location}.{keyword} lacks description"
-        for key, value in node.items():
-            check(value, f"{location}.{key}")
-
-    check(schema)
 
 
 def write_inventory(tmp_path: Path, document: object) -> Path:

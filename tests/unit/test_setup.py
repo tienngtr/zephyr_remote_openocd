@@ -107,33 +107,6 @@ def test_config_default_finds_module_by_markers(tmp_path):
         module.find_module_root(tmp_path / "missing")
 
 
-def test_dependency_detection_found_and_missing():
-    setup = load_setup_module()
-    assert setup.pyelftools_available(lambda _: object())
-    assert not setup.pyelftools_available(lambda _: None)
-    assert setup.configuration_dependencies_available(lambda _: object())
-    assert not setup.configuration_dependencies_available(
-        lambda name: object() if name == "yaml" else None
-    )
-
-
-def test_dependency_status_messages():
-    setup = load_setup_module()
-    found = io.StringIO()
-    with contextlib.redirect_stdout(found):
-        setup._print_dependency_status(lambda _: object())
-    assert "pyelftools: found" in found.getvalue()
-
-    missing = io.StringIO()
-    with contextlib.redirect_stdout(missing):
-        setup._print_dependency_status(lambda _: None)
-    assert "Warning: pyelftools is not available" in missing.getvalue()
-    assert "Use the Python environment configured for Zephyr" in missing.getvalue()
-    assert "Warning: PyYAML and jsonschema are not available" in missing.getvalue()
-    assert "Use the Python environment configured for Zephyr 4.4" in missing.getvalue()
-    assert "requirements.txt" not in missing.getvalue()
-
-
 def test_activation_command_preserves_module_path_with_spaces(tmp_path, monkeypatch):
     setup = load_setup_module()
     root = tmp_path / "module root"

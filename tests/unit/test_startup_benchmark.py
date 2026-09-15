@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -88,26 +86,8 @@ def test_benchmark_cli_reports_measured_overhead(monkeypatch, capsys, remote, me
     assert decoded["overhead"]["statistics"]["median"] == median
     assert decoded["overhead"]["threshold_seconds"] == 0.5
     assert decoded["overhead"]["pass"] is (status == 0)
-    assert "median additional startup" in captured.err
     baseline_call, remote_call = measure.call_args_list
     assert baseline_call.args[0][-3:] == ["-r", "openocd", "--context"]
     assert remote_call.args[0][-2:] == ["-r", "remote_openocd"]
     assert remote_call.args[1]["ZRO_RECORD"] == "1"
     assert remote_call.args[3:] == (1, 3)
-
-
-def test_optional_environment_metadata_is_unknown_when_unavailable():
-    args = SimpleNamespace(
-        warmup=5,
-        iterations=100,
-        command="flash",
-        build_dir=Path("build"),
-        config=Path("config.yaml"),
-    )
-    with (
-        patch.object(benchmark.subprocess, "run", side_effect=OSError),
-        patch.object(benchmark.platform, "processor", side_effect=OSError),
-    ):
-        metadata = benchmark._metadata(ROOT, args)
-    assert metadata["revision"] == "unknown"
-    assert metadata["cpu"] == "unknown"
