@@ -202,6 +202,13 @@ testability, or diagnostics; do not add pass-through helpers only to improve a
 score. Compare aggregate and maximum complexity with maintainability and
 Halstead effort before accepting a change.
 
+GitHub Actions writes Radon code-complexity metrics to the job summary. Push
+reports show aggregate values, C-F callable hotspots, and file-level
+maintainability and effort hotspots for the tip commit. Pull request reports
+compare the base with the tested merge commit, link directly to changed
+callables and files, and show the remaining C-F callable hotspots. Detailed
+tables are limited to 20 entries and do not enforce a quality threshold.
+
 ## Coverage
 
 The self-contained suite can collect branch coverage for the production

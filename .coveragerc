@@ -9,3 +9,4 @@ relative_files = True
 
 [report]
 show_missing = True
+sort = Cover
