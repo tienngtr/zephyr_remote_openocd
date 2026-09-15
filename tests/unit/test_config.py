@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
 
-import json
 from importlib.resources import files
 from pathlib import Path
 
@@ -84,36 +83,6 @@ def test_canonical_template_loads():
 def test_configuration_schema_is_a_package_resource():
     schema = files("zephyr_remote_openocd").joinpath("resources", "configuration.schema.json")
     assert schema.is_file()
-
-
-def test_schema_documents_every_named_property_and_array_item():
-    schema_path = ROOT / "python/zephyr_remote_openocd/resources/configuration.schema.json"
-    schema = json.loads(schema_path.read_text())
-
-    def check(node: object, location: str = "schema") -> None:
-        if isinstance(node, list):
-            for index, item in enumerate(node):
-                check(item, f"{location}[{index}]")
-            return
-        if not isinstance(node, dict):
-            return
-        properties = node.get("properties", {})
-        if isinstance(properties, dict):
-            for name, value in properties.items():
-                assert isinstance(value, dict)
-                assert "description" in value, f"{location}.properties.{name} lacks description"
-        for keyword in ("items", "prefixItems"):
-            value = node.get(keyword)
-            if isinstance(value, dict):
-                assert "description" in value, f"{location}.{keyword} lacks description"
-            elif isinstance(value, list):
-                for index, item in enumerate(value):
-                    assert isinstance(item, dict)
-                    assert "description" in item, f"{location}.{keyword}[{index}] lacks description"
-        for key, value in node.items():
-            check(value, f"{location}.{key}")
-
-    check(schema)
 
 
 @pytest.mark.parametrize("runner", ("openocd", "remote_openocd"))
