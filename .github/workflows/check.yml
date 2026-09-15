@@ -39,8 +39,22 @@ jobs:
           gitlint --fail-without-commits --commits "$range"
       - name: Run self-contained tests
         run: >-
-          pytest --cov --cov-config=.coveragerc --cov-report=term-missing
-          --cov-report=xml:coverage.xml
+          pytest --cov --cov-config=.coveragerc --cov-report=
+      - name: Check out Zephyr 4.4 runner sources
+        uses: actions/checkout@v7
+        with:
+          repository: zephyrproject-rtos/zephyr
+          ref: v4.4.0
+          path: .scratch/zephyr
+          sparse-checkout: scripts/west_commands
+          persist-credentials: false
+      - name: Run Zephyr adapter tests
+        env:
+          ZEPHYR_BASE: ${{ github.workspace }}/.scratch/zephyr
+        run: >-
+          pytest tests/zephyr_integration/test_adapter.py -m zephyr
+          --cov --cov-config=.coveragerc --cov-append
+          --cov-report=term-missing --cov-report=xml:coverage.xml
           --cov-report="markdown-append:${GITHUB_STEP_SUMMARY}"
       - name: Upload coverage report
         if: always()
