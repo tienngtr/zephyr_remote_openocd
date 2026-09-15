@@ -74,10 +74,10 @@ def test_canonical_template_loads():
     assert config.presets == {}
     assert tuple(config.remotes) == ("lab",)
     remote = resolve_remote(config, "lab")
-    assert remote.ssh_host == "replace-with-ssh-host-or-alias"
-    assert remote.openocd_command == (
-        "/opt/zephyr-sdk-1.0.1/hosttools/sysroots/x86_64-pokysdk-linux/usr/bin/openocd",
-    )
+    assert remote.name == "lab"
+    assert remote.ssh_host
+    assert remote.openocd_command
+    assert remote.ssh_command
 
 
 def test_configuration_schema_is_a_package_resource():

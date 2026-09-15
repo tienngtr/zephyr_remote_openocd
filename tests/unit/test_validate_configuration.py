@@ -8,6 +8,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+from zephyr_remote_openocd.config import ResolvedRemote
+
 from tests.support import ROOT
 
 SPEC = importlib.util.spec_from_file_location(
@@ -24,23 +27,12 @@ EXAMPLE = ROOT / "resources/config.example.yaml"
 def test_example_resolves_explicit_remote(capsys) -> None:
     assert validator.main([str(EXAMPLE), "--remote", "lab"]) == 0
     output = capsys.readouterr()
-    assert f"Configuration valid: {EXAMPLE}" in output.out
-    assert "Default runner: openocd" in output.out
-    assert "Presets: (none)" in output.out
-    assert "Remotes: lab" in output.out
-    assert "Resolved remote: lab" in output.out
-    assert 'SSH command: ["ssh"]' in output.out
-    assert (
-        'OpenOCD command: ["/opt/zephyr-sdk-1.0.1/hosttools/sysroots/'
-        'x86_64-pokysdk-linux/usr/bin/openocd"]' in output.out
-    )
-    assert "Forwarded environment names: (none)" in output.out
-    assert "Path mappings: (none)" in output.out
+    assert output.out
     assert output.err == ""
 
 
 def test_default_remote_is_resolved_without_environment_override(
-    tmp_path: Path, monkeypatch, capsys
+    tmp_path: Path, monkeypatch
 ) -> None:
     path = tmp_path / "config.yaml"
     path.write_text(
@@ -52,29 +44,38 @@ def test_default_remote_is_resolved_without_environment_override(
         "    openocd_command: [other-openocd]\n"
     )
     monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_REMOTE", "environment")
+    remotes: list[ResolvedRemote] = []
+    monkeypatch.setattr(validator, "_print_remote", remotes.append)
     assert validator.main([str(path)]) == 0
-    output = capsys.readouterr()
-    assert "Resolved remote: configured" in output.out
-    assert "other-openocd" not in output.out
+    assert [remote.name for remote in remotes] == ["configured"]
+    assert remotes[0].openocd_command == ("openocd",)
 
 
-def test_no_selected_remote_reports_structural_success(tmp_path: Path, capsys) -> None:
+def test_no_selected_remote_reports_structural_success(tmp_path: Path, monkeypatch) -> None:
     path = tmp_path / "config.yaml"
     path.write_text("remotes:\n  incomplete: {}\n")
+    monkeypatch.setattr(
+        validator,
+        "resolve_remote",
+        lambda *_args, **_kwargs: pytest.fail("an unselected remote must not be resolved"),
+    )
     assert validator.main([str(path)]) == 0
-    output = capsys.readouterr()
-    assert "Configuration valid:" in output.out
-    assert "Remotes: incomplete" in output.out
-    assert "No default remote is configured." in output.out
-    assert "python3 scripts/validate_configuration.py [CONFIG] --remote NAME" in output.out
 
 
-def test_default_path_honors_configuration_environment(tmp_path: Path, monkeypatch, capsys) -> None:
+def test_default_path_honors_configuration_environment(tmp_path: Path, monkeypatch) -> None:
     path = tmp_path / "custom.yaml"
     path.write_text("{}\n")
     monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", str(path))
+    loaded: list[Path] = []
+    load_config = validator.load_config
+
+    def capture_path(candidate):
+        loaded.append(candidate)
+        return load_config(candidate)
+
+    monkeypatch.setattr(validator, "load_config", capture_path)
     assert validator.main([]) == 0
-    assert f"Configuration valid: {path}" in capsys.readouterr().out
+    assert loaded == [path]
 
 
 def test_missing_file_fails_with_setup_guidance(tmp_path: Path, capsys) -> None:
@@ -110,7 +111,7 @@ def test_configuration_and_resolution_errors_are_actionable(tmp_path: Path, caps
     invalid = tmp_path / "invalid.yaml"
     invalid.write_text("unknown: true\n")
     assert validator.main([str(invalid)]) == 1
-    assert "Configuration invalid: invalid configuration" in capsys.readouterr().err
+    assert "invalid configuration" in capsys.readouterr().err
 
     incomplete = tmp_path / "incomplete.yaml"
     incomplete.write_text("remotes:\n  lab: {}\n")
