@@ -209,6 +209,27 @@ compare the base with the tested merge commit, link directly to changed
 callables and files, and show the remaining C-F callable hotspots. Detailed
 tables are limited to 20 entries and do not enforce a quality threshold.
 
+### Local quality report
+
+Run the self-contained tests and print both the sorted coverage report and
+working-tree complexity report with one command:
+
+```sh
+.venv/bin/python scripts/local_report.py --base-revision main
+```
+
+To include the focused Zephyr adapter tests, provide a Zephyr 4.4 source tree:
+
+```sh
+.venv/bin/python scripts/local_report.py --base-revision main \
+  --zephyr-base /path/to/zephyr
+```
+
+The complexity report includes tracked and untracked Python files while
+excluding ignored and deleted files. Omit `--base-revision` to report current
+values without a comparison. GitHub Actions reuses the underlying coverage and
+complexity renderers with explicit revisions and writes them to its job summary.
+
 ## Coverage
 
 The self-contained suite can collect branch coverage for the production
@@ -219,6 +240,17 @@ Python helper processes:
 .venv/bin/python -m pytest --cov --cov-config=.coveragerc \
   --cov-report=term-missing
 ```
+
+The local quality report runs these underlying coverage commands:
+
+```sh
+.venv/bin/python -m pytest --cov --cov-config=.coveragerc --cov-report=
+.venv/bin/python scripts/coverage_summary.py
+```
+
+Additional pytest invocations can contribute to the same data with
+`--cov-append`. In GitHub Actions the renderer links file names to the explicit
+tested revision; local output keeps them as plain paths.
 
 GitHub Actions also writes the report to its job summary and uploads
 `coverage.xml`. Coverage is currently informational; no percentage threshold

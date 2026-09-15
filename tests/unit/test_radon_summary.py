@@ -125,6 +125,48 @@ def test_detail_lists_are_limited():
     assert radon_summary._limited(list(range(25))) == (list(range(20)), 5)
 
 
+def test_cli_defaults_to_head():
+    args = radon_summary.parse_args([])
+
+    assert args.revision == "HEAD"
+    assert args.working_tree is False
+    assert args.base_revision is None
+    assert args.output is None
+
+
+def test_cli_rejects_revision_with_working_tree():
+    with pytest.raises(SystemExit):
+        radon_summary.parse_args(["--revision", "tip", "--working-tree"])
+
+
+def test_working_tree_sources_include_untracked_and_skip_deleted(monkeypatch, tmp_path):
+    source = tmp_path / "python" / "new.py"
+    source.parent.mkdir()
+    source.write_text("value = 1\n", encoding="utf-8")
+    monkeypatch.setattr(
+        radon_summary.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            stdout=b"python/new.py\0python/deleted.py\0docs/not_python.md\0"
+        ),
+    )
+
+    assert radon_summary.working_tree_sources(tmp_path) == {"python/new.py": "value = 1\n"}
+
+
+def test_main_compares_working_tree_with_committed_base(monkeypatch, tmp_path, capsys):
+    sample = {"Production": metrics("def work():\n    return None\n")}
+    monkeypatch.setattr(radon_summary, "repository_root", lambda: tmp_path)
+    monkeypatch.setattr(radon_summary, "analyze_working_tree", lambda _root: sample)
+    monkeypatch.setattr(radon_summary, "analyze_revision", lambda _root, _revision: sample)
+
+    assert radon_summary.main(["--working-tree", "--base-revision", "main"]) == 0
+
+    report = capsys.readouterr().out
+    assert "Base `main`" in report
+    assert "tested revision `working tree`" in report
+
+
 def test_revision_sources_reads_archive_and_reports_git_failure(monkeypatch, tmp_path):
     archive_bytes = io.BytesIO()
     with tarfile.open(fileobj=archive_bytes, mode="w") as archive:

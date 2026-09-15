@@ -22,6 +22,7 @@ from radon.metrics import h_visit, mi_visit
 PRODUCTION_PREFIXES = ("python/", "runners/", "scripts/")
 TEST_PREFIXES = ("tests/",)
 DETAIL_LIMIT = 20
+WORKING_TREE = "working tree"
 
 
 @dataclass(frozen=True)
@@ -116,6 +117,35 @@ def revision_sources(root: Path, revision: str) -> dict[str, str]:
     return sources
 
 
+def working_tree_sources(root: Path) -> dict[str, str]:
+    """Read tracked and untracked Python sources from the working tree."""
+    result = subprocess.run(
+        (
+            "git",
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "--",
+            "python",
+            "runners",
+            "scripts",
+            "tests",
+        ),
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+    sources = {}
+    for encoded_path in result.stdout.split(b"\0"):
+        path = os.fsdecode(encoded_path)
+        source_path = root / path
+        if path.endswith(".py") and source_path.is_file():
+            sources[path] = source_path.read_text(encoding="utf-8")
+    return sources
+
+
 def analyze_sources(sources: dict[str, str], prefixes: tuple[str, ...]) -> ScopeMetrics:
     is_test_scope = prefixes == TEST_PREFIXES
     blocks = []
@@ -153,6 +183,14 @@ def analyze_revision(root: Path, revision: str) -> dict[str, ScopeMetrics]:
     }
 
 
+def analyze_working_tree(root: Path) -> dict[str, ScopeMetrics]:
+    sources = working_tree_sources(root)
+    return {
+        "Production": analyze_sources(sources, PRODUCTION_PREFIXES),
+        "Tests": analyze_sources(sources, TEST_PREFIXES),
+    }
+
+
 def _number(value: float, digits: int = 2) -> str:
     return f"{value:,.{digits}f}"
 
@@ -165,7 +203,7 @@ def _location(path: str, line: int | None, revision: str) -> str:
     label = f"{path}:{line}" if line is not None else path
     server = os.environ.get("GITHUB_SERVER_URL")
     repository = os.environ.get("GITHUB_REPOSITORY")
-    if not server or not repository:
+    if not server or not repository or revision == WORKING_TREE:
         return f"`{label}`"
     url = f"{server}/{repository}/blob/{revision}/{quote(path, safe='/')}"
     if line is not None:
@@ -434,7 +472,13 @@ def render_comparison(
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--revision", required=True, help="Git revision to report")
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("--revision", default="HEAD", help="Git revision to report (default: HEAD)")
+    source.add_argument(
+        "--working-tree",
+        action="store_true",
+        help="report tracked and untracked working-tree sources",
+    )
     parser.add_argument("--base-revision", help="Git revision used as the comparison base")
     parser.add_argument("--output", type=Path, help="append Markdown to this file")
     return parser.parse_args(argv)
@@ -443,12 +487,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     root = repository_root()
-    current = analyze_revision(root, args.revision)
+    revision = WORKING_TREE if args.working_tree else args.revision
+    current = analyze_working_tree(root) if args.working_tree else analyze_revision(root, revision)
     if args.base_revision:
         base = analyze_revision(root, args.base_revision)
-        report = render_comparison(base, current, args.base_revision, args.revision)
+        report = render_comparison(base, current, args.base_revision, revision)
     else:
-        report = render_push(current, args.revision)
+        report = render_push(current, revision)
     if args.output:
         with args.output.open("a", encoding="utf-8") as stream:
             stream.write(report)

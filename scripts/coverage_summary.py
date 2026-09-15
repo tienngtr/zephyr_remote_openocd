@@ -63,7 +63,11 @@ def repository_root() -> Path:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--revision", required=True, help="Git revision linked by the report")
+    parser.add_argument(
+        "--revision",
+        default="HEAD",
+        help="Git revision linked by the report (default: HEAD)",
+    )
     parser.add_argument("--output", type=Path, help="append Markdown to this file")
     return parser.parse_args(argv)
 

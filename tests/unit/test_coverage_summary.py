@@ -57,3 +57,10 @@ def test_main_adds_heading_and_appends_output(monkeypatch, tmp_path):
     result = output.read_text(encoding="utf-8")
     assert result.startswith("existing\n## Coverage\n\n")
     assert "| Name | Stmts |" in result
+
+
+def test_cli_defaults_to_head():
+    args = coverage_summary.parse_args([])
+
+    assert args.revision == "HEAD"
+    assert args.output is None
