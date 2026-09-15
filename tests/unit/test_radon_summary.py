@@ -175,14 +175,15 @@ def test_revision_sources_reads_archive_and_reports_git_failure(monkeypatch, tmp
         member.size = len(payload)
         archive.addfile(member, io.BytesIO(payload))
 
-    monkeypatch.setattr(
-        radon_summary.subprocess,
-        "run",
-        lambda *args, **kwargs: SimpleNamespace(
-            returncode=0, stdout=archive_bytes.getvalue(), stderr=b""
-        ),
-    )
+    commands = []
+
+    def archive_revision(command, **_kwargs):
+        commands.append(command)
+        return SimpleNamespace(returncode=0, stdout=archive_bytes.getvalue(), stderr=b"")
+
+    monkeypatch.setattr(radon_summary.subprocess, "run", archive_revision)
     assert radon_summary.revision_sources(tmp_path, "tip") == {"python/example.py": "value = 1\n"}
+    assert commands == [("git", "archive", "--format=tar", "tip")]
 
     monkeypatch.setattr(
         radon_summary.subprocess,
