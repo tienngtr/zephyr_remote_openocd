@@ -20,7 +20,7 @@ def isolated_product_environment(monkeypatch):
         "ZEPHYR_REMOTE_OPENOCD_CONFIG",
         "ZEPHYR_REMOTE_OPENOCD_REMOTE",
         "ZRO_RECORD",
-        "ZRO_RECORD_VERSION",
+        "ZRO_RECORD_OPENOCD_VERSION",
     ):
         monkeypatch.delenv(name, raising=False)
 

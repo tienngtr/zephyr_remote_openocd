@@ -303,7 +303,11 @@ class HardwarePreparation:
             if recipe.cmake_args:
                 command.extend(("--", *recipe.cmake_args))
             environment = os.environ.copy()
-            for name in ("ZEPHYR_REMOTE_OPENOCD_REMOTE", "ZRO_RECORD", "ZRO_RECORD_VERSION"):
+            for name in (
+                "ZEPHYR_REMOTE_OPENOCD_REMOTE",
+                "ZRO_RECORD",
+                "ZRO_RECORD_OPENOCD_VERSION",
+            ):
                 environment.pop(name, None)
             environment.update(
                 EXTRA_ZEPHYR_MODULES=str(ROOT),

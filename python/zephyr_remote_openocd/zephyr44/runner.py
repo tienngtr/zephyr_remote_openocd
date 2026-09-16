@@ -262,9 +262,11 @@ def _record_operation(runner, command, selected):
     if command not in {"debug", "attach", "debugserver", "rtt"}:
         return None, None, None, None
     requested = runner.thread_info_enabled
-    supplied = os.environ.get("ZRO_RECORD_VERSION")
+    supplied = os.environ.get("ZRO_RECORD_OPENOCD_VERSION")
     if requested and supplied is None:
-        raise RuntimeError("ZRO_RECORD_VERSION is required to record a thread-info-enabled build")
+        raise RuntimeError(
+            "ZRO_RECORD_OPENOCD_VERSION is required to record a thread-info-enabled build"
+        )
     version = parse_openocd_version(supplied) if requested and supplied is not None else None
     plan = _debug_plan(runner, command, selected, version)
     thread_info = {

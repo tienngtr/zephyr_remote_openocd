@@ -129,7 +129,7 @@ class TestZephyrIntegration:
     def _west(cls, *args: str, check: bool = True, extra_env=None):
         env = os.environ.copy()
         env.pop("ZEPHYR_REMOTE_OPENOCD_REMOTE", None)
-        env.pop("ZRO_RECORD_VERSION", None)
+        env.pop("ZRO_RECORD_OPENOCD_VERSION", None)
         env.update(
             {
                 "EXTRA_ZEPHYR_MODULES": str(ROOT),
@@ -260,7 +260,7 @@ class TestZephyrIntegration:
                 "ZEPHYR_REMOTE_OPENOCD_CONFIG",
                 "ZEPHYR_REMOTE_OPENOCD_REMOTE",
                 "ZRO_RECORD",
-                "ZRO_RECORD_VERSION",
+                "ZRO_RECORD_OPENOCD_VERSION",
                 "EXTRA_ZEPHYR_MODULES",
                 "ZEPHYR_EXTRA_MODULES",
                 "ZEPHYR_MODULES",
