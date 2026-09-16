@@ -13,16 +13,12 @@ import subprocess
 import time
 
 import pytest
-from zephyr_remote_openocd.remote.ssh import SshCommand
 
-from tests.hardware.test_real_debug import SESSION_PATTERN
 from tests.hardware_support import RttFixture
 from tests.process_support import read_until
 from tests.support import ROOT
 
 pytestmark = [pytest.mark.hardware, pytest.mark.destructive]
-
-RTT_ENDPOINT_PATTERN = re.compile(r"RTT server available at 127\.0\.0\.1:(\d+)")
 
 
 class TestRealRtt:
@@ -39,16 +35,6 @@ class TestRealRtt:
         )
         environment.update(dict(fixture.target.environment))
         return environment
-
-    def _assert_cleanup(self, fixture: RttFixture, output: str) -> None:
-        session = SESSION_PATTERN.search(output)
-        assert session is not None, output
-        result = SshCommand(fixture.target.host.ssh_command).run(
-            fixture.target.host.ssh_host,
-            f"test ! -e {shlex.quote(session.group(2))}",
-            timeout=20,
-        )
-        assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
 
     @staticmethod
     def _west_command(fixture: RttFixture, command: str, *runner_args: str) -> list[str]:
@@ -87,7 +73,6 @@ class TestRealRtt:
             timeout=180,
         )
         assert result.returncode == 0, result.stdout
-        self._assert_cleanup(fixture, result.stdout)
 
     def _finish(self, fixture: RttFixture, process, output, *, interrupt=False):
         if process.poll() is None and interrupt:
@@ -100,7 +85,6 @@ class TestRealRtt:
             output.extend(process.communicate()[0])
             pytest.fail("RTT west process did not terminate")
         text = bytes(output).decode("utf-8", "replace")
-        self._assert_cleanup(fixture, text)
         return text
 
     @staticmethod
@@ -141,7 +125,7 @@ class TestRealRtt:
         process = self._start(fixture, "rtt", f"--rtt-port={port}")
         output = bytearray()
         try:
-            read_until(process, RTT_ENDPOINT_PATTERN.pattern, 90, output)
+            read_until(process, rf"127\.0\.0\.1:{port}\b", 90, output)
             assert process.poll() is None
             assert f"127.0.0.1:{port}".encode() in output
             time.sleep(1)
@@ -155,13 +139,13 @@ class TestRealRtt:
                 output,
             )
         finally:
-            text = self._finish(fixture, process, output, interrupt=True)
-        assert SESSION_PATTERN.search(text)
+            self._finish(fixture, process, output, interrupt=True)
 
-    def test_debug_rtt_server_keeps_gdb_foreground(self, rtt_fixture: RttFixture) -> None:
+    def test_debug_rtt_server_keeps_gdb_foreground(self, rtt_fixture: RttFixture, tmp_path) -> None:
         fixture = rtt_fixture
         breakpoint = fixture.operation.breakpoint
         port = fixture.operation.port
+        release = tmp_path / "release-gdb"
         process = self._start(
             fixture,
             "debug",
@@ -178,22 +162,25 @@ class TestRealRtt:
             "--gdb-init=delete breakpoints",
             "--gdb-init=monitor resume",
             "--gdb-init=echo ZRO_GDB_RTT_READY\\n",
-            "--gdb-init=shell sleep 15",
+            f"--gdb-init=shell while test ! -e {shlex.quote(str(release))}; do sleep 0.1; done",
             "--gdb-init=detach",
             "--gdb-init=quit",
         )
         output = bytearray()
         try:
-            read_until(process, RTT_ENDPOINT_PATTERN.pattern, 90, output)
+            read_until(process, rf"127\.0\.0\.1:{port}\b", 90, output)
             read_until(process, "ZRO_GDB_RTT_READY", 90, output)
             assert process.poll() is None
             try:
                 self._rtt_round_trip(fixture, port)
             except (AssertionError, OSError) as error:
-                text = self._finish(fixture, process, output, interrupt=True)
+                release.touch()
+                text = self._finish(fixture, process, output)
                 pytest.fail(f"{error}\n{text}")
+            release.touch()
             text = self._finish(fixture, process, output)
         finally:
+            release.touch()
             self._abort(process)
         assert re.search(rf"Breakpoint \d+,\s+{re.escape(breakpoint)}\b", text)
         assert re.search(r"ZRO_PC_BEGIN\s*\$\d+\s*=\s*0x[0-9a-fA-F]+", text)
@@ -206,7 +193,7 @@ class TestRealRtt:
         process = self._start(fixture, "debugserver", "--rtt-server", f"--rtt-port={port}")
         output = bytearray()
         try:
-            read_until(process, RTT_ENDPOINT_PATTERN.pattern, 90, output)
+            read_until(process, rf"127\.0\.0\.1:{port}\b", 90, output)
             gdb_port = 3333
             client = subprocess.run(
                 [

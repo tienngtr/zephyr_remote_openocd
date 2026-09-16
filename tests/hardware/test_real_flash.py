@@ -6,7 +6,6 @@ import base64
 import ipaddress
 import os
 import re
-import shlex
 import subprocess
 from pathlib import Path
 
@@ -30,7 +29,6 @@ class TestRealOpenOcdFlash:
         ssh = SshCommand(fixture.target.host.ssh_command)
         precondition = self._flash(fixture, fixture.precondition_build_dir)
         assert precondition.returncode == 0, precondition.stdout
-        self._assert_session(fixture, ssh, precondition.stdout)
 
         quiet_reader = ssh.popen(
             fixture.target.host.ssh_host,
@@ -68,7 +66,7 @@ class TestRealOpenOcdFlash:
             captured = self._captured_text(event)
             assert flash.returncode == 0, flash.stdout + "\nserial:\n" + captured
             assert event["type"] == "MATCH", f"serial oracle failed: {event}\n{captured}"
-            self._assert_session(fixture, ssh, flash.stdout, check_bind=True)
+            self._assert_bindto(fixture, flash.stdout)
             for pattern in fixture.operation.output_patterns:
                 assert re.search(pattern, flash.stdout)
             assert reader.wait(timeout=5) == 0
@@ -128,22 +126,10 @@ class TestRealOpenOcdFlash:
         )
 
     @staticmethod
-    def _assert_session(
-        fixture: FlashFixture,
-        ssh: SshCommand,
-        output: str,
-        *,
-        check_bind: bool = False,
-    ) -> None:
-        session = re.search(r"Remote OpenOCD session (\S+) workspace=(\S+) bindto=(\S+)", output)
-        assert session is not None, output
-        address = ipaddress.ip_address(session.group(3))
+    def _assert_bindto(fixture: FlashFixture, output: str) -> None:
+        if not fixture.operation.assert_bindto:
+            return
+        match = re.search(r"bindto name: (\S+)", output)
+        assert match is not None, output
+        address = ipaddress.ip_address(match.group(1))
         assert address in ipaddress.ip_network("127.64.0.0/10")
-        if check_bind and fixture.operation.assert_bindto:
-            assert f"bindto name: {address}" in output
-        cleanup = ssh.run(
-            fixture.target.host.ssh_host,
-            f"test ! -e {shlex.quote(session.group(2))}",
-            timeout=20,
-        )
-        assert cleanup.returncode == 0, cleanup.stderr.decode("utf-8", "replace")

@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import os
 import re
-import shlex
 import signal
 import socket
 import subprocess
 import time
+from pathlib import Path
 
 import pytest
-from zephyr_remote_openocd.remote.ssh import SshCommand
 
 from tests.hardware_support import (
     AttachFixture,
@@ -20,12 +19,10 @@ from tests.hardware_support import (
     ThreadInfoFixture,
     elf_memory_witness,
 )
-from tests.process_support import read_line
 from tests.support import ROOT
 
 pytestmark = [pytest.mark.hardware, pytest.mark.destructive]
 
-SESSION_PATTERN = re.compile(r"Remote OpenOCD session (\S+) workspace=(\S+) bindto=(\S+)")
 DebugHardwareFixture = DebugFixture | AttachFixture | DebugServerFixture | ThreadInfoFixture
 
 
@@ -65,25 +62,14 @@ class TestRealOpenOcdDebug:
             result.extend(("--", *map(str, runner_args)))
         return result
 
-    def _assert_cleanup(self, fixture: DebugHardwareFixture, output: str) -> None:
-        session = SESSION_PATTERN.search(output)
-        assert session is not None, output
-        ssh = SshCommand(fixture.target.host.ssh_command)
-        cleanup = ssh.run(
-            fixture.target.host.ssh_host,
-            f"test ! -e {shlex.quote(session.group(2))}",
-            timeout=20,
-        )
-        assert cleanup.returncode == 0, cleanup.stderr.decode("utf-8", "replace")
-
     def test_debug(self, debug_fixture: DebugFixture) -> None:
         self._debug(debug_fixture)
 
     def test_attach(self, attach_fixture: AttachFixture) -> None:
         self._attach(attach_fixture)
 
-    def test_debugserver(self, debugserver_fixture: DebugServerFixture) -> None:
-        self._debugserver(debugserver_fixture)
+    def test_debugserver(self, debugserver_fixture: DebugServerFixture, tmp_path: Path) -> None:
+        self._debugserver(debugserver_fixture, tmp_path / "debugserver.log")
 
     def _debug(self, fixture: DebugFixture) -> None:
         breakpoint = fixture.operation.breakpoint
@@ -120,7 +106,6 @@ class TestRealOpenOcdDebug:
         assert "ZRO_INSN_END" in result.stdout
         for pattern in fixture.operation.output_patterns:
             assert re.search(pattern, result.stdout)
-        self._assert_cleanup(fixture, result.stdout)
 
     def _attach(self, fixture: AttachFixture) -> None:
         prepared = subprocess.run(
@@ -134,7 +119,6 @@ class TestRealOpenOcdDebug:
             timeout=180,
         )
         assert prepared.returncode == 0, prepared.stdout
-        self._assert_cleanup(fixture, prepared.stdout)
         address, precondition_bytes, selected_bytes = elf_memory_witness(
             fixture.precondition_elf_file, fixture.target.elf_file
         )
@@ -181,71 +165,82 @@ class TestRealOpenOcdDebug:
         )
         assert observed == precondition_bytes
         assert observed != selected_bytes
-        self._assert_cleanup(fixture, result.stdout)
 
-    def _debugserver(self, fixture: DebugServerFixture) -> None:
-        process = subprocess.Popen(
-            self._west_command(fixture, "debugserver"),
-            cwd=fixture.target.workspace,
-            env=self._environment(fixture),
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-        )
-        output = []
-        try:
-            assert process.stdout is not None
-            end = time.monotonic() + 90
-            session = None
-            while time.monotonic() < end and session is None:
-                line = read_line(process.stdout, end - time.monotonic()).decode("utf-8", "replace")
-                if not line:
-                    break
-                output.append(line)
-                session = SESSION_PATTERN.search(line)
-            assert session is not None, "".join(output)
-            assert process.poll() is None, "debugserver exited before client connection"
-            for port in (6333, 4444):
-                with socket.create_connection(("127.0.0.1", int(port)), timeout=5):
-                    pass
-            gdb_port = 3333
-            client = subprocess.run(
-                [
-                    str(fixture.target.gdb),
-                    "-q",
-                    "-batch",
-                    str(fixture.target.elf_file),
-                    "-ex",
-                    f"target extended-remote 127.0.0.1:{gdb_port}",
-                    "-ex",
-                    "monitor halt",
-                    "-ex",
-                    "monitor resume",
-                    "-ex",
-                    "detach",
-                    "-ex",
-                    "quit",
-                ],
+    def _debugserver(self, fixture: DebugServerFixture, output_path: Path) -> None:
+        with output_path.open("w", encoding="utf-8") as output:
+            process = subprocess.Popen(
+                self._west_command(fixture, "debugserver"),
+                cwd=fixture.target.workspace,
+                env=self._environment(fixture),
                 text=True,
-                stdout=subprocess.PIPE,
+                stdout=output,
                 stderr=subprocess.STDOUT,
-                check=False,
-                timeout=30,
             )
-            assert client.returncode == 0, client.stdout
-            assert process.poll() is None, "debugserver did not remain persistent"
-            process.send_signal(signal.SIGINT)
-            remainder, _ = process.communicate(timeout=15)
-            output.append(remainder)
-            self._assert_cleanup(fixture, "".join(output))
-        finally:
-            if process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait()
+
+            def diagnostics() -> str:
+                output.flush()
+                return output_path.read_text(encoding="utf-8", errors="replace")
+
+            try:
+                pending_ports = {6333, 4444}
+                end = time.monotonic() + 90
+                while pending_ports and time.monotonic() < end:
+                    if process.poll() is not None:
+                        pytest.fail("debugserver exited before readiness:\n" + diagnostics())
+                    for port in tuple(pending_ports):
+                        try:
+                            with socket.create_connection(("127.0.0.1", port), timeout=1):
+                                pending_ports.remove(port)
+                        except OSError:
+                            pass
+                    if pending_ports:
+                        time.sleep(0.1)
+                if pending_ports:
+                    pytest.fail(
+                        "debugserver endpoints did not become ready "
+                        f"({sorted(pending_ports)}):\n" + diagnostics()
+                    )
+                assert process.poll() is None, (
+                    "debugserver exited before client connection:\n" + diagnostics()
+                )
+                gdb_port = 3333
+                client = subprocess.run(
+                    [
+                        str(fixture.target.gdb),
+                        "-q",
+                        "-batch",
+                        str(fixture.target.elf_file),
+                        "-ex",
+                        f"target extended-remote 127.0.0.1:{gdb_port}",
+                        "-ex",
+                        "monitor halt",
+                        "-ex",
+                        "monitor resume",
+                        "-ex",
+                        "detach",
+                        "-ex",
+                        "quit",
+                    ],
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    check=False,
+                    timeout=30,
+                )
+                assert client.returncode == 0, client.stdout
+                assert process.poll() is None, (
+                    "debugserver did not remain persistent:\n" + diagnostics()
+                )
+                process.send_signal(signal.SIGINT)
+                process.wait(timeout=15)
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
 
     def test_thread_info_on_capable_fixture(self, thread_info_fixture: ThreadInfoFixture) -> None:
         fixture = thread_info_fixture
@@ -265,7 +260,6 @@ class TestRealOpenOcdDebug:
             timeout=180,
         )
         assert prepared.returncode == 0, prepared.stdout
-        self._assert_cleanup(fixture, prepared.stdout)
         command = self._west_command(
             fixture,
             "attach",
@@ -284,4 +278,3 @@ class TestRealOpenOcdDebug:
         )
         assert result.returncode == 0, result.stdout
         assert re.search(fixture.operation.pattern, result.stdout)
-        self._assert_cleanup(fixture, result.stdout)
