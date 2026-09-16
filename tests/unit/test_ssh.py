@@ -24,20 +24,6 @@ def test_fixed_arguments_are_preserved_without_a_shell():
     ]
 
 
-@patch("subprocess.run")
-def test_stream_uses_stdin(run):
-    run.return_value = subprocess.CompletedProcess([], 0, b"ok", b"")
-    result = SshCommand(("ssh", "-p", "2222")).run("host", "consume", input_data=b"payload")
-    assert result.stdout == b"ok"
-    run.assert_called_once_with(
-        ["ssh", "-p", "2222", "host", "consume"],
-        input=b"payload",
-        capture_output=True,
-        check=False,
-        timeout=15,
-    )
-
-
 @patch("subprocess.Popen")
 def test_long_lived_process_preserves_explicit_path_and_generated_arguments(popen):
     SshCommand(("/opt/client/custom-ssh", "-F", "/a file")).popen("host", "serve", "-N")

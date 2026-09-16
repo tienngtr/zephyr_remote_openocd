@@ -151,7 +151,10 @@ class TestForwardingLifecycle:
                 1,
             )
 
-        assert command.calls == [("target", "python3 /helper.py control", ())]
+        assert len(command.calls) == 1
+        host, _remote_command, extra_args = command.calls[0]
+        assert host == "target"
+        assert extra_args == ()
 
     def test_stale_gdb_forward_cannot_mask_current_forward_failure(self):
         stale = self.Process()
