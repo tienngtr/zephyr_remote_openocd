@@ -6,6 +6,27 @@ environment provides `pyelftools`, PyYAML, and jsonschema. Module developers may
 install the convenience tooling in `requirements_dev.txt`; normal users should
 not install that file.
 
+## Validation checklist
+
+Run the checks appropriate to every change and state the actual coverage in the
+pull request:
+
+- Every change: run `pytest` and `python3 scripts/static_check.py`.
+- Zephyr runner or build-integration changes: run the applicable Zephyr 4.4
+  integration tests.
+- SSH, helper, session, or forwarding changes: run the applicable SSH
+  integration tests when a suitable host is available.
+- Flash, debug, RTT, semihosting, or other board-visible changes: run the
+  affected hardware tests when suitable hardware is available.
+- Before a release/tag, or when claiming full external validation, run all
+  applicable external suites with `ZRO_STRICT_EXTERNAL=1`, confirm there are no
+  unexpected skips, and inspect cleanup before reusing targets.
+- PR descriptions should state what validation was performed and explicitly
+  mention relevant external tests that could not be run.
+- Never put credentials, SSH host identities, probe serials, serial-device
+  paths, populated hardware inventories, or other lab-specific sensitive data
+  in pull requests or committed files.
+
 Set up the contributor environment and run the ordinary checks with:
 
 ```sh

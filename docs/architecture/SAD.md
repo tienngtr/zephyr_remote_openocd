@@ -1127,13 +1127,13 @@ Platform-specific SSH behavior, if any is eventually needed, shall remain inside
 ## 44. Test Architecture
 
 The maintained test suite separates self-contained unit tests, local process and
-socket integration, Zephyr integration, SSH integration, destructive hardware
-validation, and manual release validation. External layers consume explicitly
-configured environments and local hardware inventory data. Recording mode remains free of
-SSH, helper, OpenOCD, GDB, and hardware I/O. Hardware capabilities are selected
+socket integration, Zephyr integration, SSH integration, and destructive
+hardware validation. External layers consume explicitly configured environments
+and local hardware inventory data. Recording mode remains free of SSH, helper,
+OpenOCD, GDB, and hardware I/O. Hardware capabilities are selected
 independently so an unsupported optional capability does not suppress other
-operations. The separate validation record maps acceptance criteria to executed
-evidence; this document describes only the architecture of that test boundary.
+operations. Acceptance traceability maps criteria to maintained tests; this
+document describes only the architecture of that test boundary.
 
 ---
 

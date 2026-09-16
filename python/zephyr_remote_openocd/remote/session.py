@@ -76,7 +76,7 @@ class RemoteSession:
                     self._session.close()
                 except BaseException as cleanup_error:
                     # Preserve the startup failure while retaining cleanup
-                    # diagnostics for callers and release logs.
+                    # diagnostics for callers.
                     error.add_note(f"startup failure cleanup also failed: {cleanup_error}")
             raise
 

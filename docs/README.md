@@ -10,9 +10,7 @@ Documentation is grouped by audience:
   format and behavior.
 - [`development/`](development/): contributor test and fixture guidance.
 - [`traceability/acceptance.md`](traceability/acceptance.md): acceptance-criteria
-  evidence mapping.
-- [`validation/`](validation/): strict release procedure and retained execution
-  evidence.
+  to maintained-test mapping.
 
 The root [`README.md`](../README.md) is the quickest user entry point. Human
 contribution guidance is in [`CONTRIBUTING.md`](../CONTRIBUTING.md), while

@@ -1068,14 +1068,6 @@ The implementation SHOULD separate:
 - process supervision;
 - diagnostics.
 
-### REQ-NFUNC-PERF-001
-
-Under representative local conditions, `remote_openocd` SHOULD add less than
-0.5 seconds of runner processing compared with the equivalent built-in
-`openocd` invocation.
-
-SSH authentication, external network latency, network-transfer time, and remote OpenOCD initialization are excluded.
-
 ### REQ-NFUNC-ADMIN-001
 
 Routine use, helper deployment, upgrades, cleanup, and diagnostics SHALL NOT require root privileges.
