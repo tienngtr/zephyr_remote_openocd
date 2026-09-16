@@ -24,7 +24,7 @@ executed.
 | AC-INSTALL-003 | Automated | [`test_existing_configuration_is_preserved_and_not_chmodded`](../../tests/unit/test_setup.py); clean-install acceptance |
 | AC-INSTALL-004 | Automated | [`test_creates_template_and_reports_activation`](../../tests/unit/test_setup.py); clean-install acceptance |
 | AC-INSTALL-005 | Automated | [Setup unit tests](../../tests/unit/test_setup.py); clean-install acceptance |
-| AC-INSTALL-006 | Automated | [`test_missing_dependencies_warn_without_blocking_initialization`](../../tests/unit/test_setup.py) |
+| AC-INSTALL-006 | Automated | [`test_missing_dependency_warns_without_blocking_initialization`](../../tests/unit/test_setup.py) |
 | AC-CONFIG-001 | Automated | [`test_canonical_template_loads`](../../tests/unit/test_config.py); [`test_creates_template_and_reports_activation`](../../tests/unit/test_setup.py) |
 | AC-CONFIG-002 | Automated | [Configuration validator unit tests](../../tests/unit/test_validate_configuration.py) |
 | AC-SELECT-001 | Automated | [`TestZephyrIntegration.test_config_change_regenerates_default_runner`](../../tests/zephyr_integration/test_zephyr_integration.py); clean-install acceptance |
