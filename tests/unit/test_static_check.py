@@ -109,28 +109,35 @@ def test_json_schema_files_are_checked_with_canonical_formatting(tmp_path, capsy
     assert static_check.check_json_format(tmp_path, ("schema.json",))
 
 
-def test_source_files_are_selected_from_git(monkeypatch):
+def test_source_files_are_selected_from_git(monkeypatch, tmp_path):
     class Result:
-        stdout = "one.py\ntwo.py\n"
+        stdout = "one.py\ntwo.py\ndeleted.py\n"
 
     monkeypatch.setattr(static_check.subprocess, "run", lambda *args, **kwargs: Result())
-    assert static_check.source_files(ROOT) == ("one.py", "two.py")
+    (tmp_path / "one.py").touch()
+    (tmp_path / "two.py").touch()
+    assert static_check.source_files(tmp_path) == ("one.py", "two.py")
 
 
-def test_yaml_files_include_configuration_examples(monkeypatch):
+def test_yaml_files_include_configuration_examples(monkeypatch, tmp_path):
     class Result:
         stdout = "workflow.yml\nconfig.example.yaml\n"
 
     monkeypatch.setattr(static_check.subprocess, "run", lambda *args, **kwargs: Result())
-    assert static_check.yaml_files(ROOT) == ("workflow.yml", "config.example.yaml")
+    (tmp_path / "workflow.yml").touch()
+    (tmp_path / "config.example.yaml").touch()
+    assert static_check.yaml_files(tmp_path) == ("workflow.yml", "config.example.yaml")
 
 
-def test_markdown_files_are_selected_from_git(monkeypatch):
+def test_markdown_files_are_selected_from_git(monkeypatch, tmp_path):
     class Result:
         stdout = "README.md\ndocs/guide.md\n"
 
     monkeypatch.setattr(static_check.subprocess, "run", lambda *args, **kwargs: Result())
-    assert static_check.markdown_files(ROOT) == ("README.md", "docs/guide.md")
+    (tmp_path / "README.md").touch()
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "guide.md").touch()
+    assert static_check.markdown_files(tmp_path) == ("README.md", "docs/guide.md")
 
 
 def test_repository_root_is_reported_by_git(monkeypatch, tmp_path):

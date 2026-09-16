@@ -151,7 +151,7 @@ def main() -> int:
     )
     print("Next, edit the configuration and validate a remote:")
     print(f"  {destination}")
-    validator = shlex.quote(str(root / "scripts" / "validate_configuration.py"))
+    validator = shlex.quote(str(root / "tools" / "validate_configuration.py"))
     print(f"  python3 {validator} --remote NAME")
     _print_dependency_status()
     return 0

@@ -77,7 +77,7 @@ def main(argv: list[str] | None = None) -> int:
     except FileNotFoundError:
         print(
             f"Configuration invalid: {path} does not exist; run "
-            "python3 scripts/setup.py or provide CONFIG",
+            "python3 tools/setup.py or provide CONFIG",
             file=sys.stderr,
         )
         return 1
@@ -97,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
     if remote is None:
         print("No default remote is configured.")
         print("Resolve one with:")
-        print("  python3 scripts/validate_configuration.py [CONFIG] --remote NAME")
+        print("  python3 tools/validate_configuration.py [CONFIG] --remote NAME")
     else:
         _print_remote(remote)
     return 0

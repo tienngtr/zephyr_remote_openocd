@@ -18,6 +18,18 @@ jobs:
           python-version: "3.12"
       - name: Install developer tools
         run: python -m pip install -r requirements_dev.txt
+      - name: Report tip code complexity metrics
+        if: github.event_name == 'push'
+        run: >-
+          python scripts/radon_summary.py --revision "${{ github.sha }}"
+          --output "${GITHUB_STEP_SUMMARY}"
+      - name: Report pull request code complexity changes
+        if: github.event_name == 'pull_request'
+        run: >-
+          python scripts/radon_summary.py
+          --base-revision "${{ github.event.pull_request.base.sha }}"
+          --revision "${{ github.sha }}"
+          --output "${GITHUB_STEP_SUMMARY}"
       - name: Check pull request commit messages
         if: github.event_name == 'pull_request'
         run: >-
@@ -55,7 +67,10 @@ jobs:
           pytest tests/zephyr_integration/test_adapter.py -m zephyr
           --cov --cov-config=.coveragerc --cov-append
           --cov-report=term-missing --cov-report=xml:coverage.xml
-          --cov-report="markdown-append:${GITHUB_STEP_SUMMARY}"
+      - name: Write coverage summary
+        run: >-
+          python scripts/coverage_summary.py --revision "${{ github.sha }}"
+          --output "${GITHUB_STEP_SUMMARY}"
       - name: Upload coverage report
         if: always()
         uses: actions/upload-artifact@v7
