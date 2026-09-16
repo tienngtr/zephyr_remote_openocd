@@ -18,6 +18,10 @@ class RttClientError(RuntimeError):
     pass
 
 
+_INPUT_CHUNK_SIZE = 4096
+_MAX_PENDING_INPUT = 64 * 1024
+
+
 def _connect(port: int, timeout: float) -> tuple[socket.socket, bytes]:
     deadline = time.monotonic() + timeout
     last_error: OSError | None = None
@@ -43,7 +47,6 @@ def _connect(port: int, timeout: float) -> tuple[socket.socket, bytes]:
             continue
         if channel_failed:
             raise RttClientError("RTT forward could not open the remote channel")
-        connection.setblocking(True)
         return connection, initial
     raise RttClientError(f"cannot connect to local RTT port 127.0.0.1:{port}") from last_error
 
@@ -73,20 +76,38 @@ def run_rtt_client(
             termios.tcsetattr(input_fd, termios.TCSAFLUSH, client_terminal)
 
         input_open = True
+        pending_input = bytearray()
         while True:
             returncode = poll_session()
             if returncode is not None:
                 return returncode
-            inputs = (input_fd, connection) if input_open else (connection,)
-            readable, _, _ = select.select(inputs, (), (), 0.1)
-            if input_open and input_fd in readable:
-                payload = os.read(input_fd, 4096)
+            input_readable = input_open and len(pending_input) < _MAX_PENDING_INPUT
+            inputs = (input_fd, connection) if input_readable else (connection,)
+            writable_inputs = (connection,) if pending_input else ()
+            readable, writable, _ = select.select(inputs, writable_inputs, (), 0.1)
+            if input_readable and input_fd in readable:
+                payload = os.read(
+                    input_fd,
+                    min(_INPUT_CHUNK_SIZE, _MAX_PENDING_INPUT - len(pending_input)),
+                )
                 if not payload:
                     input_open = False
                 else:
-                    connection.sendall(payload)
+                    pending_input.extend(payload)
+            if connection in writable and pending_input:
+                try:
+                    sent = connection.send(pending_input)
+                except BlockingIOError:
+                    pass
+                else:
+                    if sent <= 0:
+                        raise RttClientError("RTT channel closed while sending input")
+                    del pending_input[:sent]
             if connection in readable:
-                payload = connection.recv(4096)
+                try:
+                    payload = connection.recv(_INPUT_CHUNK_SIZE)
+                except BlockingIOError:
+                    continue
                 if not payload:
                     returncode = poll_session()
                     if returncode is not None:

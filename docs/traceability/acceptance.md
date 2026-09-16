@@ -31,7 +31,7 @@ executed.
 | AC-FLASH-001 | Hardware | [`TestRealOpenOcdFlash.test_configured_target_flashes_and_emits_fresh_serial_output`](../../tests/hardware/test_real_flash.py) (quiet precondition image followed by selected-image output) |
 | AC-DEBUG-001 | Hardware | [`TestRealOpenOcdDebug`](../../tests/hardware/test_real_debug.py): `test_debug` (load, continue, configured breakpoint, PC/instruction inspection, detach), `test_attach` (no load, PC/instruction inspection), and `test_debugserver` (independent client halt/resume) |
 | AC-DEBUG-002 | Both | [`TestDebugPlanning.test_disabled_services_and_distinct_gdb_ports`](../../tests/unit/test_remote.py); [`TestRealOpenOcdDebug.test_debugserver`](../../tests/hardware/test_real_debug.py) |
-| AC-RTT-001 | Both | [`TestRttClient.test_bidirectional_non_tty_channel`](../../tests/unit/test_remote.py); all three [`TestRealRtt`](../../tests/hardware/test_real_rtt.py) command variants |
+| AC-RTT-001 | Both | [`TestRttClient.test_bidirectional_non_tty_channel`](../../tests/local_integration/test_remote_process.py); all three [`TestRealRtt`](../../tests/hardware/test_real_rtt.py) command variants |
 | AC-RTT-002 | Both | [`TestDebugPlanning`](../../tests/unit/test_remote.py); adapter recording coverage; [`TestRealRtt.test_standalone_rtt`](../../tests/hardware/test_real_rtt.py) |
 | AC-SEMI-001 | Both | Upstream option and adapter recording coverage; [`TestRealSemihosting.test_direct_semihosting_console_normal_completion`](../../tests/hardware/test_real_semihosting.py) |
 | AC-CONC-001 | Automated | [`TestSshTransportIntegration.test_concurrent_fake_sessions_isolate_identical_remote_ports`](../../tests/ssh_integration/test_ssh_integration.py) |
