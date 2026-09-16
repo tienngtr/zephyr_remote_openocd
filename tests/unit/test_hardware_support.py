@@ -28,11 +28,13 @@ from tests.hardware_support import (
     HardwarePreparation,
     elf_memory_witness,
 )
-from tests.inventory import load_inventory
+from tests.inventory import Inventory, load_inventory
 from tests.inventory_samples import inventory_document
 
 
-def test_preparation_builds_only_requested_recipes_and_caches_success(tmp_path, monkeypatch):
+def _preparation_with_unavailable_recipe(
+    tmp_path: Path,
+) -> tuple[HardwarePreparation, Inventory, Path]:
     inventory_path = tmp_path / "hardware.yaml"
     inventory_path.write_text(
         yaml.safe_dump(
@@ -65,18 +67,42 @@ def test_preparation_builds_only_requested_recipes_and_caches_success(tmp_path, 
     config_root = tmp_path / "configs"
     build_root.mkdir()
     config_root.mkdir()
-    preparation = HardwarePreparation(inventory, build_root, config_root)
+    return HardwarePreparation(inventory, build_root, config_root), inventory, build_root
+
+
+def test_preparation_builds_only_requested_recipes(tmp_path):
+    preparation, _inventory, build_root = _preparation_with_unavailable_recipe(tmp_path)
+    with patch("tests.hardware_support.subprocess.run") as run:
+        run.return_value = SimpleNamespace(returncode=0, stdout="")
+        preparation.prepare("target:profile", "flash")
+
+    assert run.call_count == 2
+    commands = [call.args[0] for call in run.call_args_list]
+    assert all(not any("/unavailable" in value for value in command) for command in commands)
+    build_dirs = {command[command.index("-d") + 1] for command in commands}
+    assert build_dirs == {
+        str(build_root / "target" / "application"),
+        str(build_root / "target" / "precondition"),
+    }
+    assert not (build_root / "unavailable").exists()
+    assert not (build_root / "target" / "unused").exists()
+
+
+def test_preparation_retries_failed_build_and_caches_success(tmp_path, monkeypatch):
+    preparation, inventory, build_root = _preparation_with_unavailable_recipe(tmp_path)
     monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_REMOTE", "developer_remote")
     monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", "/developer/config.yaml")
     with patch("tests.hardware_support.subprocess.run") as run:
-        run.return_value = SimpleNamespace(returncode=1, stdout="build failed")
+        run.side_effect = [
+            SimpleNamespace(returncode=1, stdout="build failed"),
+            SimpleNamespace(returncode=0, stdout=""),
+            SimpleNamespace(returncode=0, stdout=""),
+        ]
         with pytest.raises(pytest.fail.Exception, match="build failed"):
             preparation.prepare("target:profile", "flash")
-        run.return_value = SimpleNamespace(returncode=0, stdout="")
         flash = preparation.prepare("target:profile", "flash")
         debug = preparation.prepare("target:profile", "debug")
-    # Failed attempts are retried; the successful flash preparation builds both
-    # the intended and precondition recipes, and debug reuses the intended one.
+
     assert run.call_count == 3
     assert isinstance(flash, FlashFixture)
     assert isinstance(debug, DebugFixture)
@@ -90,8 +116,6 @@ def test_preparation_builds_only_requested_recipes_and_caches_success(tmp_path, 
     assert environment["ZEPHYR_REMOTE_OPENOCD_CONFIG"] == str(flash.target.config_path)
     selected = resolve_remote(load_config(flash.target.config_path), remote_name="host")
     assert selected.ssh_host == inventory.host("host").ssh_host
-    assert not (build_root / "unavailable").exists()
-    assert not (build_root / "target" / "unused").exists()
 
 
 def test_elf_memory_witness_finds_bytes_that_distinguish_images(tmp_path: Path) -> None:
