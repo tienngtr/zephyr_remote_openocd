@@ -296,7 +296,6 @@ class TestZephyrIntegration:
             sample = self.zephyr_base / "samples" / "hello_world"
             west(
                 "build",
-                "--cmake-only",
                 "-b",
                 self.openocd_board,
                 str(sample),
