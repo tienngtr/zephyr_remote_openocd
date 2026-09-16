@@ -23,6 +23,7 @@ from zephyr_remote_openocd.remote.model import (
     RemoteSessionRequest,
     Service,
     SessionAllocation,
+    SessionDescriptor,
     StagedFile,
 )
 from zephyr_remote_openocd.remote.paths import ADDRESS_TOKEN
@@ -155,6 +156,103 @@ class TestForwardingLifecycle:
         assert host == "target"
         assert extra_args == ()
 
+    def test_helper_startup_error_survives_process_cleanup_failure(self):
+        process = self.Process()
+        process.stdout = io.BytesIO()
+        command = self.Command(process)
+        startup_error = SessionError("invalid helper response")
+
+        with (
+            patch.object(SshHelperSession, "_read_event", side_effect=startup_error),
+            patch.object(
+                SshHelperSession,
+                "_stop_process",
+                side_effect=RuntimeError("process cleanup failed"),
+            ),
+            pytest.raises(SessionError, match="invalid helper response") as raised,
+        ):
+            SshHelperSession(
+                RemoteSessionRequest("target", command),
+                DeploymentResult("/helper.py", "digest", False),
+                1,
+            )
+
+        assert raised.value is startup_error
+        assert any("process cleanup failed" in note for note in raised.value.__notes__)
+
+    def test_session_start_error_survives_forward_cleanup_failure(self):
+        helper = self.Process()
+        helper.stdin = io.BytesIO()
+        command = self.Command(helper)
+        session = self.session(command)
+        session.request = RemoteSessionRequest("dot4", command, process=RemoteProcess(("openocd",)))
+        session.helper_process = helper
+        session.allocation = SessionAllocation("session", "/workspace")
+        service = Service("gdb", 1234, 3333)
+        startup_error = SessionError("forward startup failed")
+
+        with (
+            patch.object(session, "_await_process_ready", return_value="127.64.1.1"),
+            patch.object(session, "_start_forwards", side_effect=startup_error),
+            patch.object(
+                session,
+                "_close_forwards",
+                side_effect=RuntimeError("forward cleanup failed"),
+            ),
+            pytest.raises(SessionError, match="forward startup failed") as raised,
+        ):
+            session.start((service,))
+
+        assert raised.value is startup_error
+        assert any("forward cleanup failed" in note for note in raised.value.__notes__)
+
+    def test_dynamic_forward_error_survives_rollback_failure(self):
+        existing = self.Process()
+        added = self.Process()
+        session = self.session(self.Command(self.Process()))
+        session.descriptor = SessionDescriptor(
+            SessionAllocation("session", "/workspace"), "127.64.1.1"
+        )
+        session.forwards = [existing]
+        forward_error = SessionError("forward failed")
+
+        def fail_after_starting_forward(*_args):
+            session.forwards.append(added)
+            raise forward_error
+
+        with (
+            patch.object(session, "_start_forwards", side_effect=fail_after_starting_forward),
+            patch.object(
+                session,
+                "_stop_process",
+                side_effect=RuntimeError("forward rollback failed"),
+            ),
+            pytest.raises(SessionError, match="forward failed") as raised,
+        ):
+            session.forward((Service("rtt", 19021, 19021),))
+
+        assert raised.value is forward_error
+        assert any("forward rollback failed" in note for note in raised.value.__notes__)
+        assert session.forwards == [existing, added]
+
+    def test_wait_error_survives_session_cleanup_failure(self):
+        session = self.session(self.Command(self.Process()))
+        wait_error = SessionError("event stream failed")
+
+        with (
+            patch.object(session, "poll", side_effect=wait_error),
+            patch.object(
+                session,
+                "close",
+                side_effect=RuntimeError("session cleanup failed"),
+            ),
+            pytest.raises(SessionError, match="event stream failed") as raised,
+        ):
+            session.wait()
+
+        assert raised.value is wait_error
+        assert any("session cleanup failed" in note for note in raised.value.__notes__)
+
     def test_stale_gdb_forward_cannot_mask_current_forward_failure(self):
         stale = self.Process()
         read_fd, write_fd = os.pipe()
@@ -193,6 +291,83 @@ class TestForwardingLifecycle:
         session._close_forwards()
         assert second.terminate_calls == 1
         assert first.terminate_calls == 1
+
+    def test_close_attempts_helper_and_all_forwards_after_cleanup_failure(self):
+        class FailingProcess(self.Process):
+            def __init__(self):
+                super().__init__()
+                self.fail_termination = True
+
+            def terminate(self):
+                self.terminate_calls += 1
+                if self.fail_termination:
+                    raise RuntimeError("forward cleanup failed")
+                self.returncode = 0
+
+        failed = FailingProcess()
+        healthy = self.Process()
+        helper = self.Process()
+        session = self.session(self.Command(helper))
+        session.helper_process = helper
+        session.forwards = [failed, healthy]
+
+        with pytest.raises(RuntimeError, match="forward cleanup failed"):
+            session.close()
+
+        assert healthy.terminate_calls == 1
+        assert helper.terminate_calls == 1
+        assert session.forwards == [failed]
+        assert not session.closed
+
+        failed.fail_termination = False
+        session.close()
+        assert failed.terminate_calls == 2
+        assert session.forwards == []
+        assert session.closed
+
+    def test_close_forces_helper_after_unexpected_graceful_stop_failure(self):
+        class FailingStdin:
+            def __init__(self):
+                self.closed = False
+                self.fail = True
+
+            def write(self, _payload):
+                if self.fail:
+                    raise RuntimeError("graceful stop failed")
+
+            def flush(self):
+                pass
+
+            def close(self):
+                self.closed = True
+
+        class FailingHelper(self.Process):
+            def __init__(self):
+                super().__init__()
+                self.fail_termination = True
+
+            def terminate(self):
+                self.terminate_calls += 1
+                if self.fail_termination:
+                    raise RuntimeError("forced stop failed")
+                self.returncode = 0
+
+        helper = FailingHelper()
+        helper.stdin = FailingStdin()
+        session = self.session(self.Command(helper))
+        session.helper_process = helper
+
+        with pytest.raises(RuntimeError, match="graceful stop failed") as raised:
+            session.close()
+
+        assert helper.terminate_calls == 1
+        assert any("forced stop failed" in note for note in raised.value.__notes__)
+        assert not session.closed
+
+        helper.stdin.fail = False
+        helper.fail_termination = False
+        session.close()
+        assert session.closed
 
     def test_poll_returns_consumed_status_while_reader_remains_alive(self):
         session = self.session(self.Command(self.Process(returncode=0)))
@@ -496,7 +671,9 @@ class TestRealProcessHelper:
             )
             try:
                 assert process.stdout is not None and process.stdin is not None
-                assert json.loads(read_line(process.stdout))["type"] == "SESSION_CREATED"
+                created = json.loads(read_line(process.stdout))
+                assert created["type"] == "SESSION_CREATED"
+                workspace = Path(created["remote_workspace"])
                 marker = "ZRO_READY_unit"
                 child_code = (
                     "import socket,sys,time;"
@@ -522,7 +699,8 @@ class TestRealProcessHelper:
                 events = []
                 while not any(event["type"] == "PROCESS_READY" for event in events):
                     events.append(json.loads(read_line(process.stdout)))
-                assert any(event["type"] == "PROCESS_READY" for event in events)
+                ready = next(event for event in events if event["type"] == "PROCESS_READY")
+                child_pid = ready["child_pid"]
                 assert any(
                     event["type"] == "CHILD_OUTPUT" and event["payload"] == marker
                     for event in events
@@ -530,6 +708,9 @@ class TestRealProcessHelper:
                 process.stdin.write(encode_message("STOP"))
                 process.stdin.flush()
                 assert process.wait(timeout=8) == 0
+                assert not workspace.exists()
+                with pytest.raises(ProcessLookupError):
+                    os.kill(child_pid, 0)
             finally:
                 if process.poll() is None:
                     process.terminate()

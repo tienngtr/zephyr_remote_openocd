@@ -33,6 +33,16 @@ STALE_SESSION_AGE = 24 * 60 * 60
 _emit_lock = threading.Lock()
 
 
+def _raise_cleanup_errors(errors):
+    """Raise the first cleanup error after retaining subsequent diagnostics."""
+    if not errors:
+        return
+    first, *additional = errors
+    for error in additional:
+        first.add_note(f"additional cleanup failure: {error}")
+    raise first
+
+
 def emit(kind, **values):
     line = json.dumps(
         {"version": VERSION, "type": kind, **values}, separators=(",", ":"), sort_keys=True
@@ -693,11 +703,26 @@ class ControlSession:
     def cleanup(self):
         if self.stopping:
             return
-        self.stopping = True
+        errors = []
         if self.child is not None:
-            self.child.terminate()
-        shutil.rmtree(self.work, ignore_errors=True)
-        self.workspace_lock.close()
+            try:
+                self.child.terminate()
+            except BaseException as error:
+                errors.append(error)
+        try:
+            shutil.rmtree(self.work)
+        except FileNotFoundError as error:
+            if self.work.exists():
+                errors.append(error)
+        except BaseException as error:
+            errors.append(error)
+        try:
+            self.workspace_lock.close()
+        except BaseException as error:
+            errors.append(error)
+        if errors:
+            _raise_cleanup_errors(errors)
+        self.stopping = True
 
 
 def control():

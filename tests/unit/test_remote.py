@@ -355,15 +355,22 @@ class _FakeSession(BackendSession):
     def __init__(self):
         self.actions = []
         self.returncode = None
+        self.stage_error = None
+        self.start_error = None
         self.forward_error = None
         self.poll_error = None
         self.wait_error = None
+        self.close_error = None
 
     def stage(self, files):
         self.actions.append(("stage", tuple(files)))
+        if self.stage_error is not None:
+            raise self.stage_error
 
     def start(self, services):
         self.actions.append(("start", tuple(services)))
+        if self.start_error is not None:
+            raise self.start_error
         return SessionDescriptor(SessionAllocation("id", "/workspace"), "127.64.0.1")
 
     def forward(self, services):
@@ -383,6 +390,8 @@ class _FakeSession(BackendSession):
 
     def close(self):
         self.actions.append(("close",))
+        if self.close_error is not None:
+            raise self.close_error
 
 
 class _FakeBackend(SessionBackend):
@@ -409,6 +418,20 @@ class TestSession:
         assert session.poll() == 7
         assert session.termination_returncode == 7
         assert session.state == SessionState.FAILED
+
+    @pytest.mark.parametrize("failure", ("stage_error", "start_error"))
+    def test_start_failure_closes_backend_and_preserves_error(self, failure):
+        backend = _FakeBackend()
+        error = RuntimeError(f"injected {failure}")
+        setattr(backend.session, failure, error)
+        session = RemoteSession(self.request(), backend)
+
+        with pytest.raises(RuntimeError, match=failure) as raised:
+            session.start()
+
+        assert raised.value is error
+        assert session.state == SessionState.FAILED
+        assert backend.session.actions[-1] == ("close",)
 
     def test_dynamic_forward_accepts_distinct_services(self):
         backend = _FakeBackend()
@@ -469,6 +492,22 @@ class TestSession:
         assert session.state == SessionState.FAILED
         assert backend.session.actions[-1] == ("close",)
 
+    def test_dynamic_forward_failure_preserves_error_when_cleanup_fails(self):
+        backend = _FakeBackend()
+        session = RemoteSession(self.request(), backend)
+        session.start()
+        forward_error = RuntimeError("forward failed")
+        backend.session.forward_error = forward_error
+        backend.session.close_error = RuntimeError("cleanup failed")
+
+        with pytest.raises(RuntimeError, match="forward failed") as raised:
+            session.forward((Service("rtt", 5555, 5555),))
+
+        assert raised.value is forward_error
+        assert any("cleanup failed" in note for note in raised.value.__notes__)
+        assert session.state == SessionState.FAILED
+        assert backend.session.actions[-1] == ("close",)
+
     def test_poll_failure_closes_session_and_marks_failed(self):
         backend = _FakeBackend()
         session = RemoteSession(self.request(), backend)
@@ -488,6 +527,26 @@ class TestSession:
             session.wait()
         assert session.state == SessionState.FAILED
         assert backend.session.actions[-1] == ("close",)
+
+    def test_close_failure_keeps_session_retryable(self):
+        backend = _FakeBackend()
+        session = RemoteSession(self.request(), backend)
+        session.start()
+        cleanup_error = RuntimeError("cleanup failed")
+        backend.session.close_error = cleanup_error
+
+        with pytest.raises(RuntimeError, match="cleanup failed") as raised:
+            session.close()
+
+        assert raised.value is cleanup_error
+        assert session.state == SessionState.FAILED
+        backend.session.close_error = None
+        session.close()
+        assert session.state == SessionState.CLOSED
+        assert [action for action in backend.session.actions if action == ("close",)] == [
+            ("close",),
+            ("close",),
+        ]
 
 
 class TestAllocation:
@@ -622,7 +681,7 @@ class TestFlashPlanning:
             with pytest.raises(PathPlanningError, match="escapes"):
                 PathPlanner(()).plan_directory(root, "search_0")
 
-    def test_bin_plan_requires_address_and_preserves_erase_verify(self):
+    def test_bin_plan_preserves_address_erase_and_verify(self):
         with tempfile.TemporaryDirectory() as directory:
             image = Path(directory) / "image.bin"
             image.write_bytes(b"binary")

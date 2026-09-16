@@ -144,8 +144,8 @@ def _build_operation(runner, command, selected):
 
 def _execute_operation(runner, command, request, plan, backend):
     session = RemoteSession(request, backend)
+    descriptor = session.start()
     try:
-        descriptor = session.start()
         runner.logger.info(
             "Remote OpenOCD session %s workspace=%s bindto=%s",
             descriptor.session_id,
@@ -153,11 +153,16 @@ def _execute_operation(runner, command, request, plan, backend):
             descriptor.remote_address,
         )
         returncode = _execute_started_operation(runner, command, plan, session)
-    except KeyboardInterrupt:
-        session.close()
+        if returncode:
+            raise RuntimeError(f"remote OpenOCD failed with exit status {returncode}")
+    except BaseException as error:
+        try:
+            session.close()
+        except BaseException as cleanup_error:
+            error.add_note(f"session cleanup also failed: {cleanup_error}")
         raise
-    if returncode:
-        raise RuntimeError(f"remote OpenOCD failed with exit status {returncode}")
+    else:
+        session.close()
 
 
 def _execute_started_operation(runner, command, plan, session):
@@ -172,25 +177,18 @@ def _execute_started_operation(runner, command, plan, session):
 def _execute_gdb_client(runner, plan, session):
     assert plan is not None and plan.gdb_argv is not None
     runner.require(plan.gdb_argv[0])
-    try:
-        runner.run_client(list(plan.gdb_argv))
-    finally:
-        returncode = session.poll()
-        session.close()
-    return returncode
+    runner.run_client(list(plan.gdb_argv))
+    return session.poll()
 
 
 def _execute_rtt(runner, plan, session):
     assert plan is not None and plan.gdb_argv is not None
     assert plan.rtt_service is not None
     runner.require(plan.gdb_argv[0])
-    try:
-        runner.run_client(list(plan.gdb_argv))
-        session.forward((plan.rtt_service,))
-        _report_rtt_service(runner, plan)
-        return run_rtt_client(plan.rtt_service.local_port, session.poll)
-    finally:
-        session.close()
+    runner.run_client(list(plan.gdb_argv))
+    session.forward((plan.rtt_service,))
+    _report_rtt_service(runner, plan)
+    return run_rtt_client(plan.rtt_service.local_port, session.poll)
 
 
 def _execute_server(runner, command, plan, session):
