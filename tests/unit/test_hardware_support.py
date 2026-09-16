@@ -11,9 +11,17 @@ from unittest.mock import patch
 
 import pytest
 import yaml
-from elftools.elf.elffile import ELFFile
 from zephyr_remote_openocd.config import load_config, resolve_remote
 
+from tests.elf_fixtures import (
+    ELF_LOAD_VADDR_OFFSET,
+    ELF_PADDING_OFFSET,
+    ELF_SHIFTED_LOAD_VADDR,
+    ELF_WITNESS_ADDRESS,
+    ELF_WITNESS_BYTES,
+    ELF_WITNESS_OFFSET,
+    elf_memory_witness_bytes,
+)
 from tests.hardware_support import (
     DebugFixture,
     FlashFixture,
@@ -87,69 +95,30 @@ def test_preparation_builds_only_requested_recipes_and_caches_success(tmp_path, 
 
 
 def test_elf_memory_witness_finds_bytes_that_distinguish_images(tmp_path: Path) -> None:
-    original = Path(sys.executable).read_bytes()
+    original = elf_memory_witness_bytes()
     selected_data = bytearray(original)
-    with Path(sys.executable).open("rb") as stream:
-        elf = ELFFile(stream)
-        segment_index, segment, section = next(
-            (segment_index, segment, section)
-            for segment_index, segment in enumerate(elf.iter_segments())
-            if segment["p_type"] == "PT_LOAD"
-            for section in elf.iter_sections()
-            if int(section["sh_flags"]) & 0x2
-            and section["sh_type"] != "SHT_NOBITS"
-            and int(section["sh_size"]) >= 16
-            and int(segment["p_vaddr"]) < int(section["sh_addr"])
-            and int(section["sh_addr"]) + int(section["sh_size"])
-            < int(segment["p_vaddr"]) + int(segment["p_filesz"])
-            and int(segment["p_offset"]) <= int(section["sh_offset"])
-            and int(section["sh_offset"]) + int(section["sh_size"])
-            <= int(segment["p_offset"]) + int(segment["p_filesz"])
-        )
-        selected_data[int(section["sh_offset"])] ^= 0xFF
-        original_vma = int(segment["p_vaddr"])
-        header_offset = int(elf.header["e_phoff"]) + segment_index * int(elf.header["e_phentsize"])
-        vma_offset = header_offset + (16 if elf.elfclass == 64 else 8)
-        byte_order = "<" if elf.little_endian else ">"
-        address_format = "Q" if elf.elfclass == 64 else "I"
-        struct.pack_into(byte_order + address_format, selected_data, vma_offset, original_vma + 1)
-        expected_address = (
-            int(segment["p_paddr"]) + int(section["sh_offset"]) - int(segment["p_offset"])
-        )
+    selected_data[ELF_WITNESS_OFFSET] ^= 0xFF
+    struct.pack_into(
+        "<Q",
+        selected_data,
+        ELF_LOAD_VADDR_OFFSET,
+        ELF_SHIFTED_LOAD_VADDR,
+    )
     before_path = tmp_path / "before.elf"
     selected_path = tmp_path / "selected.elf"
     before_path.write_bytes(original)
     selected_path.write_bytes(selected_data)
 
     address, before, selected = elf_memory_witness(before_path, selected_path)
-    assert address == expected_address
-    assert len(before) == len(selected) == 16
-    assert before != selected
+    assert address == ELF_WITNESS_ADDRESS
+    assert before == ELF_WITNESS_BYTES[:16]
+    assert selected == bytes((ELF_WITNESS_BYTES[0] ^ 0xFF, *ELF_WITNESS_BYTES[1:16]))
 
 
 def test_elf_memory_witness_ignores_load_segment_padding(tmp_path: Path) -> None:
-    original = Path(sys.executable).read_bytes()
+    original = elf_memory_witness_bytes()
     selected_data = bytearray(original)
-    with Path(sys.executable).open("rb") as stream:
-        elf = ELFFile(stream)
-        occupied = [
-            (int(section["sh_offset"]), int(section["sh_offset"]) + int(section["sh_size"]))
-            for section in elf.iter_sections()
-            if int(section["sh_flags"]) & 0x2 and section["sh_type"] != "SHT_NOBITS"
-        ]
-        padding_offset = next(
-            offset
-            for segment in elf.iter_segments()
-            if segment["p_type"] == "PT_LOAD" and int(segment["p_offset"]) > 0
-            for offset in range(
-                int(segment["p_offset"]), int(segment["p_offset"]) + int(segment["p_filesz"])
-            )
-            if all(
-                offset + 1 <= section_start or offset >= section_end
-                for section_start, section_end in occupied
-            )
-        )
-        selected_data[padding_offset] ^= 0xFF
+    selected_data[ELF_PADDING_OFFSET] ^= 0xFF
     before_path = tmp_path / "before.elf"
     selected_path = tmp_path / "selected.elf"
     before_path.write_bytes(original)
