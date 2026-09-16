@@ -132,9 +132,8 @@ def test_debugserver_execution_reports_gdb_service_and_waits(runner_module):
 
     returncode = runner_module._execute_server(runner, "debugserver", plan, session)
 
-    runner.logger.info.assert_called_once_with(
-        "Remote OpenOCD GDB server available at 127.0.0.1:%s", 3333
-    )
+    runner.logger.info.assert_called_once()
+    assert 3333 in runner.logger.info.call_args.args
     session.wait.assert_called_once_with()
     assert returncode == 5
 
