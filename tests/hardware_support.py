@@ -330,5 +330,5 @@ def prepared_hardware(hardware_inventory: Inventory, tmp_path_factory: pytest.Te
     return HardwarePreparation(
         hardware_inventory,
         tmp_path_factory.mktemp("hardware_builds"),
-        tmp_path_factory.mktemp("hardware_config"),
+        tmp_path_factory.mktemp("hardware_inventory"),
     )

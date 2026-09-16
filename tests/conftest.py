@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -29,10 +28,10 @@ def isolated_product_environment(monkeypatch):
 def pytest_addoption(parser: pytest.Parser) -> None:
     group = parser.getgroup("external validation")
     group.addoption(
-        "--hardware-config",
+        "--hardware-inventory",
         action="store",
         default=None,
-        help="path to the local YAML hardware inventory (or use ZRO_HARDWARE_CONFIG)",
+        help="path to the local YAML hardware inventory",
     )
     group.addoption(
         "--require-external-tests",
@@ -42,18 +41,18 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
 
 
-def hardware_config_path(config: pytest.Config) -> Path | None:
-    """Resolve CLI-first inventory selection without touching the filesystem."""
-    value = config.getoption("--hardware-config") or os.environ.get("ZRO_HARDWARE_CONFIG")
+def hardware_inventory_path(config: pytest.Config) -> Path | None:
+    """Resolve CLI inventory selection without touching the filesystem."""
+    value = config.getoption("--hardware-inventory")
     return Path(value).expanduser().resolve() if value else None
 
 
 @pytest.fixture(scope="session")
 def hardware_inventory(pytestconfig: pytest.Config) -> Inventory:
     """Load the configured inventory, skipping normal runs with no fixture."""
-    path = hardware_config_path(pytestconfig)
+    path = hardware_inventory_path(pytestconfig)
     if path is None:
-        pytest.skip("hardware inventory is not configured; pass --hardware-config")
+        pytest.skip("hardware inventory is not configured; pass --hardware-inventory")
     try:
         return load_inventory(path)
     except InventoryError as error:
@@ -62,7 +61,7 @@ def hardware_inventory(pytestconfig: pytest.Config) -> Inventory:
 
 def _inventory_profile_ids(config: pytest.Config, capability: str) -> list[str]:
     """Return stable profile identifiers for collection-time parametrization."""
-    path = hardware_config_path(config)
+    path = hardware_inventory_path(config)
     if path is None:
         return ["__no_inventory__"]
     try:

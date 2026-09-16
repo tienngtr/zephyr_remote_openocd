@@ -20,12 +20,11 @@ placeholder, validate the contract and local paths, and inspect test selection:
 .venv/bin/python scripts/validate_hardware_inventory.py \
   .scratch/config/hardware.yaml --check-local
 .venv/bin/python -m pytest --collect-only -q \
-  --hardware-config .scratch/config/hardware.yaml
+  --hardware-inventory .scratch/config/hardware.yaml
 ```
 
-The command-line option takes precedence over `ZRO_HARDWARE_CONFIG`. Validation
-does not contact SSH, OpenOCD, serial devices, or hardware. Collection also
-performs no build, flash, debug, or hardware I/O.
+Validation does not contact SSH, OpenOCD, serial devices, or hardware.
+Collection also performs no build, flash, debug, or hardware I/O.
 
 Use
 [`hardware.complete.example.yaml`](../../tests/fixtures/hardware.complete.example.yaml)
@@ -142,7 +141,7 @@ first and run destructive profiles serially. Start with one complete node ID:
 ```sh
 .venv/bin/python -m pytest --require-external-tests \
   'tests/hardware/test_real_flash.py::TestRealOpenOcdFlash::test_configured_target_flashes_and_emits_fresh_serial_output[stm32f746g_disco:flash]' \
-  --hardware-config .scratch/config/hardware.yaml
+  --hardware-inventory .scratch/config/hardware.yaml
 ```
 
 Inspect cleanup output before reusing a target. Never commit a populated

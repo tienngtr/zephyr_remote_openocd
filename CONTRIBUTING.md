@@ -67,7 +67,7 @@ Environment variables read by the product use the
 `ZEPHYR_REMOTE_OPENOCD_` prefix. Reserve the shorter `ZRO_` prefix for the test
 harness, validation tools, test payloads, and generated internal markers. In
 particular, `ZEPHYR_REMOTE_OPENOCD_CONFIG` selects the product YAML file, while
-`ZRO_HARDWARE_CONFIG` selects the local YAML hardware inventory used by external
+`--hardware-inventory` selects the local YAML hardware inventory used by external
 tests. `ZRO_RECORD` and `ZRO_RECORD_VERSION` control the runner's test-only
 [recording mode](docs/development/testing.md#runner-recording-mode). Do not
 introduce a public product setting with the `ZRO_` prefix.

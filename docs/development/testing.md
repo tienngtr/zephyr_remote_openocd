@@ -24,8 +24,8 @@ contributor run never needs SSH, a Zephyr checkout, or lab hardware:
 ```sh
 pytest                         # unit + local integration
 pytest tests/zephyr_integration -m zephyr
-pytest tests/ssh_integration -m ssh --hardware-config /path/to/hardware.yaml
-pytest tests/hardware -m hardware --hardware-config /path/to/hardware.yaml
+pytest tests/ssh_integration -m ssh --hardware-inventory /path/to/hardware.yaml
+pytest tests/hardware -m hardware --hardware-inventory /path/to/hardware.yaml
 ```
 
 ## Common external-test setup
@@ -71,13 +71,12 @@ Validate collection before execution:
 
 ```sh
 .venv/bin/python -m pytest --collect-only -q \
-  --hardware-config /path/to/hardware.yaml
+  --hardware-inventory /path/to/hardware.yaml
 ```
 
 Use `--require-external-tests` when a missing prerequisite or unexpected skip
 should fail the run. The SSH and hardware commands below use the same
-`--hardware-config` option; `ZRO_HARDWARE_CONFIG` is an equivalent environment
-override.
+`--hardware-inventory` option.
 
 The `ZRO_` prefix identifies test and validation controls. Product settings use
 the longer `ZEPHYR_REMOTE_OPENOCD_` prefix; for example,
@@ -157,7 +156,7 @@ Run the desired layers explicitly:
 ```sh
 .venv/bin/python -m pytest --require-external-tests \
   tests/ssh_integration -m ssh \
-  --hardware-config /path/to/hardware.yaml
+  --hardware-inventory /path/to/hardware.yaml
 
 ZEPHYR_BASE=/path/to/zephyr \
 WEST=/path/to/west \
@@ -167,7 +166,7 @@ OPENOCD_TEST_BOARD=stm32f746g_disco \
 
 .venv/bin/python -m pytest --require-external-tests \
   tests/hardware -m hardware \
-  --hardware-config /path/to/hardware.yaml
+  --hardware-inventory /path/to/hardware.yaml
 ```
 
 Select one real debug profile without running other destructive nodes by using
@@ -176,7 +175,7 @@ its complete parametrized node ID:
 ```sh
 .venv/bin/python -m pytest --require-external-tests \
   'tests/hardware/test_real_debug.py::TestRealOpenOcdDebug::test_debug[board:debug]' \
-  --hardware-config /path/to/hardware.yaml
+  --hardware-inventory /path/to/hardware.yaml
 ```
 
 Run all configured static checks with:

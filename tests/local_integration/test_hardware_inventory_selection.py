@@ -17,7 +17,7 @@ pytestmark = pytest.mark.local
 HARDWARE_EXAMPLE = ROOT / "tests" / "fixtures" / "hardware.example.yaml"
 
 
-def test_hardware_config_option_is_registered_and_overrides_environment(tmp_path: Path) -> None:
+def test_hardware_inventory_option_is_registered_and_selects_inventory(tmp_path: Path) -> None:
     selection_test = tmp_path / "test_inventory_selection.py"
     selection_test.write_text(
         "import os\n"
@@ -27,7 +27,6 @@ def test_hardware_config_option_is_registered_and_overrides_environment(tmp_path
         encoding="utf-8",
     )
     environment = os.environ.copy()
-    environment["ZRO_HARDWARE_CONFIG"] = str(tmp_path / "wrong-inventory.yaml")
     environment["EXPECTED_INVENTORY"] = str(HARDWARE_EXAMPLE)
     result = subprocess.run(
         (
@@ -38,7 +37,7 @@ def test_hardware_config_option_is_registered_and_overrides_environment(tmp_path
             "-p",
             "tests.conftest",
             str(selection_test),
-            "--hardware-config",
+            "--hardware-inventory",
             str(HARDWARE_EXAMPLE),
         ),
         cwd=ROOT,

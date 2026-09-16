@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import json
-import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -609,9 +608,3 @@ def render_product_config(host: InventoryHost, *, default_runner: str = "openocd
         },
         sort_keys=False,
     )
-
-
-def inventory_path_from_environment() -> Path | None:
-    """Return the fallback inventory path, if configured."""
-    value = os.environ.get("ZRO_HARDWARE_CONFIG")
-    return Path(value).expanduser().resolve() if value else None
