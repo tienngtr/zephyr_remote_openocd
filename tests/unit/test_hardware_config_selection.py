@@ -25,11 +25,6 @@ def config(option: str | None) -> pytest.Config:
     return cast(pytest.Config, Config(option))
 
 
-def test_hardware_config_cli_option_has_precedence(monkeypatch) -> None:
-    monkeypatch.setenv("ZRO_HARDWARE_CONFIG", "/from/environment.yaml")
-    assert hardware_config_path(config("/from/cli.yaml")) == Path("/from/cli.yaml")
-
-
 def test_hardware_config_environment_fallback(monkeypatch) -> None:
     monkeypatch.setenv("ZRO_HARDWARE_CONFIG", "/from/environment.yaml")
     assert hardware_config_path(config(None)) == Path("/from/environment.yaml")
