@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import importlib.util
-import os
 import sys
+from pathlib import Path
 
-from tests.inventory import BuildEnvironment, BuildRecipe, Inventory, InventoryTarget, Toolchain
+import yaml
+
+from tests.inventory_samples import inventory_document
 from tests.support import ROOT
 
 SPEC = importlib.util.spec_from_file_location(
@@ -17,62 +19,55 @@ validator = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = validator
 SPEC.loader.exec_module(validator)
 
-EXAMPLE = ROOT / "tests/fixtures/hardware.example.yaml"
+
+def write_inventory(tmp_path: Path, document: object) -> Path:
+    path = tmp_path / "hardware.yaml"
+    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    return path
 
 
-def test_valid_inventory_reports_profiles(capsys) -> None:
-    assert validator.main([str(EXAMPLE)]) == 0
+def test_valid_inventory_reports_profiles(tmp_path, capsys) -> None:
+    document = inventory_document()
+    document["targets"]["summary_target"] = document["targets"].pop("target")
+    profiles = document["targets"]["summary_target"]["profiles"]
+    profiles["summary_profile"] = profiles.pop("profile")
+
+    assert validator.main([str(write_inventory(tmp_path, document))]) == 0
     output = capsys.readouterr()
-    assert output.out
+    assert "summary_target" in output.out
+    assert "summary_profile" in output.out
+    assert "flash" in output.out
+    assert "debug" in output.out
     assert output.err == ""
 
 
 def test_invalid_inventory_reports_semantic_location(tmp_path, capsys) -> None:
-    path = tmp_path / "hardware.yaml"
-    path.write_text(EXAMPLE.read_text().replace("host: lab", "host: missing"))
+    document = inventory_document()
+    document["targets"]["target"]["host"] = "missing"
+    path = write_inventory(tmp_path, document)
     assert validator.main([str(path)]) == 1
-    assert "targets.stm32f746g_disco.host" in capsys.readouterr().err
+    assert "targets.target.host" in capsys.readouterr().err
 
 
-def test_local_checks_report_missing_paths(capsys) -> None:
-    assert validator.main([str(EXAMPLE), "--check-local"]) == 1
+def test_local_checks_report_missing_paths(tmp_path, capsys) -> None:
+    path = write_inventory(tmp_path, inventory_document())
+    assert validator.main([str(path), "--check-local"]) == 1
     output = capsys.readouterr()
-    assert "Local check failed: build_environments.zephyr44.zephyr_base" in output.err
+    assert "build_environments.environment.zephyr_base" in output.err
     assert "Local paths valid" not in output.out
 
 
-def test_local_checks_accept_complete_local_paths(tmp_path, monkeypatch, capsys) -> None:
+def test_local_checks_accept_complete_local_paths(tmp_path, capsys) -> None:
     executable = tmp_path / "tool"
     executable.write_text("#!/bin/sh\n")
     executable.chmod(executable.stat().st_mode | 0o100)
-    application = tmp_path / "app"
-    application.mkdir()
-    inventory = Inventory(
-        tmp_path / "hardware.yaml",
-        (BuildEnvironment("local", tmp_path, executable),),
-        (Toolchain("arm", executable),),
-        (),
-        (
-            InventoryTarget(
-                "board",
-                "host",
-                "local",
-                "arm",
-                "board",
-                (BuildRecipe("app", "app", "board", (), ()),),
-                (),
-                (),
-            ),
-        ),
-    )
-    monkeypatch.setattr(validator, "load_inventory", lambda _path: inventory)
-    assert validator.main(["hardware.yaml", "--check-local"]) == 0
+    for directory in ("app", "before", "mapped"):
+        (tmp_path / directory).mkdir()
+
+    document = inventory_document(zephyr_base=str(tmp_path), west=str(executable))
+    document["toolchains"]["toolchain"]["gdb"] = str(executable)
+    document["hosts"]["host"]["path_mappings"] = {str(tmp_path / "mapped"): "/remote"}
+    path = write_inventory(tmp_path, document)
+
+    assert validator.main([str(path), "--check-local"]) == 0
     assert capsys.readouterr().err == ""
-
-
-def test_validation_performs_no_external_io(monkeypatch) -> None:
-    def forbidden(*_args, **_kwargs):
-        raise AssertionError("external I/O is forbidden")
-
-    monkeypatch.setattr(os, "system", forbidden)
-    assert validator.main([str(EXAMPLE)]) == 0

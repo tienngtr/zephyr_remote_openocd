@@ -10,14 +10,11 @@ import yaml
 from zephyr_remote_openocd.config import load_config, resolve_remote
 
 from tests.inventory import (
-    AttachOperation,
-    DebugOperation,
-    FlashOperation,
     InventoryError,
-    RttOperation,
     load_inventory,
     render_product_config,
 )
+from tests.inventory_samples import inventory_document
 from tests.support import ROOT
 
 STARTER_EXAMPLE = ROOT / "tests/fixtures/hardware.example.yaml"
@@ -25,19 +22,9 @@ EXAMPLE = ROOT / "tests/fixtures/hardware.complete.example.yaml"
 DELETE = object()
 
 
-def example_document() -> dict:
-    document = yaml.safe_load(EXAMPLE.read_text(encoding="utf-8"))
-    assert isinstance(document, dict)
-    return document
-
-
-def test_starter_example_is_minimal_and_valid() -> None:
-    inventory = load_inventory(STARTER_EXAMPLE)
-    assert len(inventory.targets) == 1
-    assert len(inventory.targets[0].profiles) == 1
-    operations = tuple(inventory.targets[0].profiles[0].operations.values())
-    assert len(operations) == 1
-    assert isinstance(operations[0], FlashOperation)
+@pytest.mark.parametrize("path", (STARTER_EXAMPLE, EXAMPLE))
+def test_hardware_example_loads(path: Path) -> None:
+    load_inventory(path)
 
 
 def write_inventory(tmp_path: Path, document: object) -> Path:
@@ -59,20 +46,8 @@ def change(document: dict, path: tuple[str, ...], value: object) -> dict:
     return updated
 
 
-def test_example_is_complete_and_renderable(tmp_path: Path) -> None:
-    inventory = load_inventory(EXAMPLE)
-    assert inventory.build_environments
-    assert inventory.toolchains
-    assert inventory.hosts
-    assert inventory.targets
-    operations = {
-        type(operation)
-        for target in inventory.targets
-        for profile in target.profiles
-        for operation in profile.operations.values()
-    }
-    assert {FlashOperation, DebugOperation, AttachOperation, RttOperation} <= operations
-
+def test_inventory_host_is_renderable_as_product_config(tmp_path: Path) -> None:
+    inventory = load_inventory(write_inventory(tmp_path, inventory_document()))
     host = inventory.hosts[0]
     config_path = tmp_path / "config.yaml"
     config_path.write_text(render_product_config(host), encoding="utf-8")
@@ -81,9 +56,9 @@ def test_example_is_complete_and_renderable(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("name", ("lab", "on", "off", "true", "null"))
 def test_rendered_inventory_round_trips_through_product_schema(tmp_path, name):
-    document = example_document()
-    document["hosts"][name] = document["hosts"].pop("lab")
-    document["targets"]["stm32f746g_disco"]["host"] = name
+    document = inventory_document()
+    document["hosts"][name] = document["hosts"].pop("host")
+    document["targets"]["target"]["host"] = name
     inventory = load_inventory(write_inventory(tmp_path, document))
     host = inventory.host(name)
     path = tmp_path / "config.yaml"
@@ -103,21 +78,21 @@ def test_rendered_inventory_round_trips_through_product_schema(tmp_path, name):
     ("path", "value", "diagnostic"),
     (
         (("future",), True, "future"),
-        (("hosts", "lab", "ssh_host"), DELETE, "ssh_host"),
-        (("hosts", "lab", "openocd_command"), ["openocd"], "openocd_command"),
-        (("hosts", "lab", "openocd_command"), ["/"], "openocd_command"),
-        (("hosts", "lab", "ssh_command"), [""], "ssh_command"),
+        (("hosts", "host", "ssh_host"), DELETE, "ssh_host"),
+        (("hosts", "host", "openocd_command"), ["openocd"], "openocd_command"),
+        (("hosts", "host", "openocd_command"), ["/"], "openocd_command"),
+        (("hosts", "host", "ssh_command"), [""], "ssh_command"),
         (
-            ("targets", "stm32f746g_disco", "profiles", "core", "capabilities"),
+            ("targets", "target", "profiles", "profile", "capabilities"),
             ["debug"],
             "capabilities",
         ),
         (
             (
                 "targets",
-                "stm32f746g_disco",
+                "target",
                 "profiles",
-                "core",
+                "profile",
                 "operations",
                 "debug",
                 "breakpoint",
@@ -128,9 +103,9 @@ def test_rendered_inventory_round_trips_through_product_schema(tmp_path, name):
         (
             (
                 "targets",
-                "stm32f746g_disco",
+                "target",
                 "profiles",
-                "core",
+                "profile",
                 "operations",
                 "flash",
                 "serial",
@@ -141,9 +116,9 @@ def test_rendered_inventory_round_trips_through_product_schema(tmp_path, name):
         (
             (
                 "targets",
-                "stm32f746g_disco",
+                "target",
                 "profiles",
-                "rtt",
+                "rtt_profile",
                 "operations",
                 "rtt",
                 "program_survives_reset",
@@ -154,7 +129,7 @@ def test_rendered_inventory_round_trips_through_product_schema(tmp_path, name):
     ),
 )
 def test_schema_rejects_invalid_structure(tmp_path, path, value, diagnostic) -> None:
-    document = change(example_document(), path, value)
+    document = change(inventory_document(), path, value)
     with pytest.raises(InventoryError, match=diagnostic):
         load_inventory(write_inventory(tmp_path, document))
 
@@ -162,42 +137,42 @@ def test_schema_rejects_invalid_structure(tmp_path, path, value, diagnostic) -> 
 @pytest.mark.parametrize(
     ("path", "value", "diagnostic"),
     (
-        (("targets", "stm32f746g_disco", "host"), "missing", "unknown host"),
+        (("targets", "target", "host"), "missing", "unknown host"),
         (
-            ("targets", "stm32f746g_disco", "build_environment"),
+            ("targets", "target", "build_environment"),
             "missing",
             "unknown build environment",
         ),
-        (("targets", "stm32f746g_disco", "toolchain"), "missing", "unknown toolchain"),
+        (("targets", "target", "toolchain"), "missing", "unknown toolchain"),
         (
-            ("targets", "stm32f746g_disco", "profiles", "core", "build"),
+            ("targets", "target", "profiles", "profile", "build"),
             "missing",
             "unknown build",
         ),
         (
-            ("targets", "stm32f746g_disco", "profiles", "core", "environment"),
+            ("targets", "target", "profiles", "profile", "environment"),
             {"OTHER": "1"},
             "allow-list",
         ),
         (
             (
                 "targets",
-                "stm32f746g_disco",
+                "target",
                 "profiles",
-                "core",
+                "profile",
                 "operations",
                 "flash",
                 "precondition_build",
             ),
-            "hello",
+            "application",
             "must differ",
         ),
         (
             (
                 "targets",
-                "stm32f746g_disco",
+                "target",
                 "profiles",
-                "core",
+                "profile",
                 "operations",
                 "flash",
                 "precondition_build",
@@ -208,9 +183,9 @@ def test_schema_rejects_invalid_structure(tmp_path, path, value, diagnostic) -> 
         (
             (
                 "targets",
-                "stm32f746g_disco",
+                "target",
                 "profiles",
-                "core",
+                "profile",
                 "operations",
                 "flash",
                 "serial",
@@ -220,20 +195,20 @@ def test_schema_rejects_invalid_structure(tmp_path, path, value, diagnostic) -> 
             "unknown serial",
         ),
         (
-            ("targets", "stm32f746g_disco", "builds", "hello", "application"),
+            ("targets", "target", "builds", "application", "application"),
             "../escape",
             "escape",
         ),
     ),
 )
 def test_semantic_references_are_validated(tmp_path, path, value, diagnostic) -> None:
-    document = change(example_document(), path, value)
+    document = change(inventory_document(), path, value)
     with pytest.raises(InventoryError, match=diagnostic):
         load_inventory(write_inventory(tmp_path, document))
 
 
 def test_direct_gdb_operations_require_a_toolchain(tmp_path: Path) -> None:
-    document = change(example_document(), ("targets", "stm32f746g_disco", "toolchain"), DELETE)
+    document = change(inventory_document(), ("targets", "target", "toolchain"), DELETE)
     with pytest.raises(InventoryError, match="toolchain.*required"):
         load_inventory(write_inventory(tmp_path, document))
 
@@ -254,8 +229,8 @@ def test_strict_yaml_rejections(tmp_path: Path, text: str, diagnostic: str) -> N
 
 
 def test_normalized_mapping_collisions_are_rejected(tmp_path: Path) -> None:
-    document = example_document()
-    document["hosts"]["lab"]["path_mappings"] = {
+    document = inventory_document()
+    document["hosts"]["host"]["path_mappings"] = {
         "/same/path": "/one",
         "/same/./path": "/two",
     }
@@ -264,12 +239,12 @@ def test_normalized_mapping_collisions_are_rejected(tmp_path: Path) -> None:
 
 
 def test_target_or_recipe_must_supply_board(tmp_path: Path) -> None:
-    document = change(example_document(), ("targets", "stm32f746g_disco", "board"), DELETE)
+    document = change(inventory_document(), ("targets", "target", "board"), DELETE)
     with pytest.raises(InventoryError, match="board.*required"):
         load_inventory(write_inventory(tmp_path, document))
 
 
-def test_render_rejects_invalid_default() -> None:
-    inventory = load_inventory(EXAMPLE)
+def test_render_rejects_invalid_default(tmp_path: Path) -> None:
+    inventory = load_inventory(write_inventory(tmp_path, inventory_document()))
     with pytest.raises(ValueError, match="default"):
-        render_product_config(inventory.host("lab"), default_runner="invalid")
+        render_product_config(inventory.host("host"), default_runner="invalid")

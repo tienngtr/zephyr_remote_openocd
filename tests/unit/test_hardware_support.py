@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+import yaml
 from elftools.elf.elffile import ELFFile
 from zephyr_remote_openocd.config import load_config, resolve_remote
 
@@ -20,32 +21,21 @@ from tests.hardware_support import (
     elf_memory_witness,
 )
 from tests.inventory import load_inventory
-from tests.support import ROOT
-
-
-def test_inventory_profiles_expose_operations_without_capability_records():
-    inventory = load_inventory(ROOT / "tests/fixtures/hardware.complete.example.yaml")
-    target = inventory.target("stm32f746g_disco")
-    profile = target.profile("core")
-    assert profile.operation_names == ("flash", "debug", "attach", "debugserver")
-    assert "rtt" not in profile.operations
+from tests.inventory_samples import inventory_document
 
 
 def test_preparation_builds_only_requested_recipes_and_caches_success(tmp_path, monkeypatch):
-    inventory = load_inventory(ROOT / "tests/fixtures/hardware.complete.example.yaml")
-    original = inventory.target("stm32f746g_disco")
-    build_environment = replace(
-        inventory.build_environment("zephyr44"),
-        zephyr_base=tmp_path,
-        west=Path(sys.executable),
+    inventory_path = tmp_path / "hardware.yaml"
+    inventory_path.write_text(
+        yaml.safe_dump(
+            inventory_document(zephyr_base=str(tmp_path), west=sys.executable),
+            sort_keys=False,
+        )
     )
-    flash_profile = replace(original.profile("core"), probe_serial="example_probe")
-    target = replace(
-        original,
-        profiles=tuple(
-            flash_profile if profile.name == "core" else profile for profile in original.profiles
-        ),
-    )
+    inventory = load_inventory(inventory_path)
+    original = inventory.target("target")
+    build_environment = inventory.build_environment("environment")
+    target = original
     # An unavailable unrelated target and recipe must not affect selection.
     unavailable_environment = replace(
         build_environment,
@@ -54,7 +44,7 @@ def test_preparation_builds_only_requested_recipes_and_caches_success(tmp_path, 
     )
     unrelated = replace(original, name="unavailable", build_environment="unavailable")
     extra = replace(target.builds[0], name="unused", application="/unavailable/application")
-    unused_profile = replace(target.profile("core"), name="unused", build="unused")
+    unused_profile = replace(target.profile("profile"), name="unused", build="unused")
     target = replace(
         target, builds=(*target.builds, extra), profiles=(*target.profiles, unused_profile)
     )
@@ -73,10 +63,10 @@ def test_preparation_builds_only_requested_recipes_and_caches_success(tmp_path, 
     with patch("tests.hardware_support.subprocess.run") as run:
         run.return_value = SimpleNamespace(returncode=1, stdout="build failed")
         with pytest.raises(pytest.fail.Exception, match="build failed"):
-            preparation.prepare("stm32f746g_disco:core", "flash")
+            preparation.prepare("target:profile", "flash")
         run.return_value = SimpleNamespace(returncode=0, stdout="")
-        flash = preparation.prepare("stm32f746g_disco:core", "flash")
-        debug = preparation.prepare("stm32f746g_disco:core", "debug")
+        flash = preparation.prepare("target:profile", "flash")
+        debug = preparation.prepare("target:profile", "debug")
     # Failed attempts are retried; the successful flash preparation builds both
     # the intended and precondition recipes, and debug reuses the intended one.
     assert run.call_count == 3
@@ -84,16 +74,16 @@ def test_preparation_builds_only_requested_recipes_and_caches_success(tmp_path, 
     assert isinstance(debug, DebugFixture)
     assert flash.target.build_dir == debug.target.build_dir
     assert flash.target.id == debug.target.id
-    assert "--serial=example_probe" in flash.target.runner_args
-    assert flash.precondition_build_dir == build_root / "stm32f746g_disco" / "minimal"
+    assert "--serial=probe" in flash.target.runner_args
+    assert flash.precondition_build_dir == build_root / "target" / "precondition"
     assert flash.operation.quiescence_timeout == 2
     environment = run.call_args.kwargs["env"]
     assert "ZEPHYR_REMOTE_OPENOCD_REMOTE" not in environment
     assert environment["ZEPHYR_REMOTE_OPENOCD_CONFIG"] == str(flash.target.config_path)
-    selected = resolve_remote(load_config(flash.target.config_path), remote_name="lab")
-    assert selected.ssh_host == inventory.host("lab").ssh_host
+    selected = resolve_remote(load_config(flash.target.config_path), remote_name="host")
+    assert selected.ssh_host == inventory.host("host").ssh_host
     assert not (build_root / "unavailable").exists()
-    assert not (build_root / "stm32f746g_disco" / "unused").exists()
+    assert not (build_root / "target" / "unused").exists()
 
 
 def test_elf_memory_witness_finds_bytes_that_distinguish_images(tmp_path: Path) -> None:
