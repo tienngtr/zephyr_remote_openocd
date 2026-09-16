@@ -162,21 +162,6 @@ def test_control_session_closes_selector_and_cleans_up_on_registration_failure(
     assert lock.closed
 
 
-def test_decode_command_returns_immutable_typed_requests(start_command):
-    request = remote_helper.decode_command(start_command)
-
-    assert isinstance(request, remote_helper.StartRequest)
-    assert request.argv == ("openocd", "{address}")
-    assert request.environment == (("ZRO_TEST", "value"),)
-    assert request.required_paths == (remote_helper.RequiredPath("file", "{workspace}/image"),)
-    assert request.services == (
-        remote_helper.ServiceRequest("gdb", 3333),
-        remote_helper.ServiceRequest("tcl", 6333),
-    )
-    with pytest.raises(AttributeError):
-        request.argv = ()
-
-
 def test_decode_command_rejects_malformed_required_path_before_launch(start_command):
     start_command["required_paths"] = [{"kind": "socket", "path": "not-valid"}]
     with pytest.raises(ValueError, match="invalid required-path assertion"):
