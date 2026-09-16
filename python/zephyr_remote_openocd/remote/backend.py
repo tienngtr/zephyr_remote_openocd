@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import json
 import secrets
 import selectors
 import shlex
@@ -27,7 +26,7 @@ from .model import (
 from .protocol import (
     EventOrder,
     ProtocolError,
-    is_protocol_version,
+    decode_message,
     read_message,
     validate_openocd_version_response,
     validate_staged_response,
@@ -76,12 +75,10 @@ class SshHelperBackend(SessionBackend):
                 f"remote OpenOCD version query failed ({result.returncode}): " + detail
             )
         try:
-            message = json.loads(result.stdout)
-            if not is_protocol_version(message.get("version")):
-                raise ValueError("unexpected version response")
+            message = decode_message(result.stdout)
             validate_openocd_version_response(message)
             return message["output"]
-        except (KeyError, ProtocolError, ValueError, json.JSONDecodeError) as error:
+        except (KeyError, ProtocolError, ValueError) as error:
             raise SessionError(
                 f"invalid remote OpenOCD version response: {result.stdout!r}"
             ) from error
@@ -157,9 +154,7 @@ class SshHelperSession(BackendSession):
                 + result.stderr.decode("utf-8", "replace").strip()
             )
         try:
-            message = json.loads(result.stdout)
-            if not is_protocol_version(message.get("version")):
-                raise ValueError("unexpected staging response")
+            message = decode_message(result.stdout)
             validate_staged_response(message)
             if tuple(message.get("files", ())) != archive.files:
                 raise ValueError("remote staged-file confirmation differs from manifest")
@@ -168,7 +163,7 @@ class SshHelperSession(BackendSession):
             if message["sha256"] != archive.sha256:
                 raise ValueError("remote staged-file digest differs from manifest")
             return message
-        except (ProtocolError, ValueError, json.JSONDecodeError) as error:
+        except (ProtocolError, ValueError) as error:
             raise SessionError(f"invalid remote staging response: {result.stdout!r}") from error
 
     @staticmethod

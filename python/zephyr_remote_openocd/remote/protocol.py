@@ -94,6 +94,11 @@ def _has_exact_fields(message: dict[str, Any], fields: frozenset[str]) -> bool:
     return set(message) == _ENVELOPE_FIELDS | fields
 
 
+_STAGED_FIELDS = frozenset(("byte_count", "sha256", "files"))
+_OPENOCD_VERSION_FIELDS = frozenset(("output",))
+_DEPLOYMENT_FIELDS = frozenset(("status", "path", "sha256"))
+
+
 def _valid_session_created(message: dict[str, Any]) -> bool:
     return (
         _non_empty_string(message.get("helper"))
@@ -166,7 +171,9 @@ def validate_helper_event(message: dict[str, Any]) -> None:
 
 def validate_staged_response(message: dict[str, Any]) -> None:
     if (
-        message["type"] != "STAGED"
+        not isinstance(message, dict)
+        or not _has_exact_fields(message, _STAGED_FIELDS)
+        or message.get("type") != "STAGED"
         or not isinstance(message.get("byte_count"), int)
         or isinstance(message.get("byte_count"), bool)
         or message["byte_count"] < 0
@@ -178,7 +185,12 @@ def validate_staged_response(message: dict[str, Any]) -> None:
 
 
 def validate_openocd_version_response(message: dict[str, Any]) -> None:
-    if message["type"] != "OPENOCD_VERSION" or not isinstance(message.get("output"), str):
+    if (
+        not isinstance(message, dict)
+        or not _has_exact_fields(message, _OPENOCD_VERSION_FIELDS)
+        or message.get("type") != "OPENOCD_VERSION"
+        or not isinstance(message.get("output"), str)
+    ):
         raise ProtocolError("invalid OPENOCD_VERSION response")
 
 
@@ -192,7 +204,9 @@ def _sha256(value: Any) -> bool:
 
 def validate_deployment_response(message: dict[str, Any]) -> None:
     if (
-        message["type"] != "DEPLOYED"
+        not isinstance(message, dict)
+        or not _has_exact_fields(message, _DEPLOYMENT_FIELDS)
+        or message.get("type") != "DEPLOYED"
         or message.get("status") not in {"deployed", "reused"}
         or not _non_empty_string(message.get("path"))
         or not _sha256(message.get("sha256"))

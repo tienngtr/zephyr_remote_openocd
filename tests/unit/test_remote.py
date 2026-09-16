@@ -47,7 +47,10 @@ from zephyr_remote_openocd.remote.protocol import (
     ProtocolError,
     decode_message,
     encode_message,
+    validate_deployment_response,
     validate_helper_event,
+    validate_openocd_version_response,
+    validate_staged_response,
     write_start,
     write_stop,
 )
@@ -144,6 +147,57 @@ class TestProtocol:
                 )
             )
 
+    @pytest.mark.parametrize(
+        ("validator", "valid", "mistyped_field"),
+        (
+            pytest.param(
+                validate_staged_response,
+                {
+                    "version": 1,
+                    "type": "STAGED",
+                    "byte_count": 0,
+                    "sha256": "0" * 64,
+                    "files": [],
+                },
+                {"byte_count": "0"},
+                id="staged",
+            ),
+            pytest.param(
+                validate_openocd_version_response,
+                {"version": 1, "type": "OPENOCD_VERSION", "output": "OpenOCD 0.12.0"},
+                {"output": None},
+                id="openocd-version",
+            ),
+            pytest.param(
+                validate_deployment_response,
+                {
+                    "version": 1,
+                    "type": "DEPLOYED",
+                    "status": "deployed",
+                    "path": "/tmp/helper.py",
+                    "sha256": "0" * 64,
+                },
+                {"sha256": 0},
+                id="deployment",
+            ),
+        ),
+    )
+    def test_one_shot_response_validators_require_exact_typed_fields(
+        self, validator, valid, mistyped_field
+    ):
+        validator(valid)
+
+        missing_type = dict(valid)
+        missing_type.pop("type")
+        malformed = (
+            missing_type,
+            {**valid, "unexpected": True},
+            {**valid, **mistyped_field},
+        )
+        for response in malformed:
+            with pytest.raises(ProtocolError):
+                validator(response)
+
     def test_session_closed_reason_requires_matching_returncode(self):
         validate_helper_event(
             decode_message(encode_message("SESSION_CLOSED", reason="process_exit", returncode=0))
@@ -161,6 +215,16 @@ def test_missing_packaged_remote_helper_is_actionable(monkeypatch, tmp_path):
     monkeypatch.setattr(deploy_module, "files", lambda _package: tmp_path)
     with pytest.raises(deploy_module.DeploymentError, match="packaged remote helper"):
         _helper_source()
+
+
+def test_deployment_wraps_invalid_utf8_response():
+    class InvalidReply:
+        @staticmethod
+        def run(host, command, input_data=None, timeout=30):
+            return subprocess.CompletedProcess(command, 0, b"\xff", b"")
+
+    with pytest.raises(deploy_module.DeploymentError, match="invalid deployment response"):
+        deploy_module.deploy_helper(InvalidReply(), "host", source=b"helper source")
 
 
 def _run_bootstrap(home: Path, source: bytes) -> dict[str, object]:

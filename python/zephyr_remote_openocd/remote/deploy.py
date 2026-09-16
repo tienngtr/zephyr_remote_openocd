@@ -5,12 +5,11 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import shlex
 from dataclasses import dataclass
 from importlib.resources import files
 
-from .protocol import ProtocolError, is_protocol_version, validate_deployment_response
+from .protocol import ProtocolError, decode_message, validate_deployment_response
 from .ssh import SshCommand
 
 PROTOCOL_VERSION = 1
@@ -81,14 +80,12 @@ def deploy_helper(ssh: SshCommand, host: str, *, source: bytes | None = None) ->
         diagnostic = result.stderr.decode("utf-8", "replace").strip()
         raise DeploymentError(f"helper deployment failed ({result.returncode}): {diagnostic}")
     try:
-        message = json.loads(result.stdout)
-        if not is_protocol_version(message.get("version")):
-            raise ValueError("unexpected deployment response")
+        message = decode_message(result.stdout)
         validate_deployment_response(message)
         path = message["path"]
         digest = message["sha256"]
         if digest != hashlib.sha256(content).hexdigest():
             raise ValueError("remote helper digest differs from deployed source")
         return DeploymentResult(path, digest, message["status"] == "reused")
-    except (KeyError, ProtocolError, TypeError, ValueError, json.JSONDecodeError) as error:
+    except (KeyError, ProtocolError, TypeError, ValueError) as error:
         raise DeploymentError(f"invalid deployment response: {result.stdout!r}") from error

@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 import pytest
 from zephyr_remote_openocd.remote import rtt as rtt_module
-from zephyr_remote_openocd.remote.backend import SshHelperSession
+from zephyr_remote_openocd.remote.backend import SshHelperBackend, SshHelperSession
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
 from zephyr_remote_openocd.remote.model import (
     RemoteProcess,
@@ -692,21 +692,32 @@ class TestRealProcessHelper:
         assert json.loads(result.stdout)["type"] == "ERROR"
         assert tuple((workspace / "staged").iterdir()) == ()
 
-    def test_backend_rejects_mismatched_staging_confirmation(self):
+    @pytest.mark.parametrize(
+        "response",
+        (
+            encode_message(
+                "STAGED",
+                byte_count=999,
+                sha256="0" * 64,
+                files=["firmware.bin"],
+            ),
+            json.dumps(
+                {
+                    "version": 1,
+                    "byte_count": 7,
+                    "sha256": "0" * 64,
+                    "files": ["firmware.bin"],
+                }
+            ).encode("utf-8"),
+            b"\xff",
+        ),
+        ids=("mismatched-manifest", "missing-type", "invalid-utf8"),
+    )
+    def test_backend_rejects_invalid_staging_confirmation(self, response):
         class LocalCommand:
             def run_stream(self, host, command, stream, timeout=60):
                 stream.read()
-                return subprocess.CompletedProcess(
-                    command,
-                    0,
-                    encode_message(
-                        "STAGED",
-                        byte_count=999,
-                        sha256="0" * 64,
-                        files=["firmware.bin"],
-                    ),
-                    b"",
-                )
+                return subprocess.CompletedProcess(command, 0, response, b"")
 
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "firmware.bin"
@@ -717,6 +728,19 @@ class TestRealProcessHelper:
             session.allocation = SessionAllocation("session", "/workspace")
             with pytest.raises(SessionError, match="invalid remote staging response"):
                 session.stage((StagedFile(source, "firmware.bin"),))
+
+    def test_backend_wraps_invalid_utf8_version_response(self, monkeypatch):
+        class LocalCommand:
+            def run(self, host, command, timeout=30):
+                return subprocess.CompletedProcess(command, 0, b"\xff", b"")
+
+        monkeypatch.setattr(
+            "zephyr_remote_openocd.remote.backend.deploy_helper",
+            lambda _command, _host: DeploymentResult("/helper.py", "0" * 64, False),
+        )
+
+        with pytest.raises(SessionError, match="invalid remote OpenOCD version response"):
+            SshHelperBackend().openocd_version(LocalCommand(), "local", ("openocd",))
 
     def test_helper_applies_requested_environment_before_child_executes(self):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
