@@ -499,9 +499,9 @@ class TestAllocation:
             calls.append(address)
             raise OSError("occupied")
 
-        with pytest.raises(RuntimeError, match="32 attempts"):
-            allocate_loopback(collision)
-        assert len(calls) == 32
+        with pytest.raises(RuntimeError, match="3 attempts"):
+            allocate_loopback(collision, attempts=3)
+        assert len(calls) == 3
 
 
 class TestFlashPlanning:
