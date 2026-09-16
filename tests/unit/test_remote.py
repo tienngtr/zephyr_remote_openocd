@@ -703,7 +703,12 @@ class TestDebugPlanning:
                 ),
                 PathPlanner(()),
             )
-            assert [item.name for item in debug.services] == ["gdb", "tcl", "telnet"]
+            services = {item.name: item for item in debug.services}
+            assert services == {
+                "gdb": Service("gdb", 3333, 3333),
+                "tcl": Service("tcl", 6333, 6333),
+                "telnet": Service("telnet", 4444, 4444),
+            }
             assert debug.gdb_argv[-6:] == (
                 "-ex",
                 "load",
@@ -819,7 +824,12 @@ class TestDebugPlanning:
                 ),
                 PathPlanner(()),
             )
-            assert [item.name for item in plan.services] == ["gdb", "tcl", "telnet"]
+            services = {item.name: item for item in plan.services}
+            assert services == {
+                "gdb": Service("gdb", 3333, 3333),
+                "tcl": Service("tcl", 6333, 6333),
+                "telnet": Service("telnet", 4444, 4444),
+            }
             assert plan.rtt_service == Service("rtt", 5566, 5566)
             assert plan.rtt_setup == "batch_gdb"
             assert plan.launches_rtt_client
@@ -843,7 +853,8 @@ class TestDebugPlanning:
                     ),
                     PathPlanner(()),
                 )
-                assert plan.services[-1] == Service("rtt", 5577, 5577)
+                services = {item.name: item for item in plan.services}
+                assert services["rtt"] == Service("rtt", 5577, 5577)
                 assert "rtt server start 5577 0" in plan.process.argv
                 assert plan.rtt_setup == "openocd_startup"
                 assert not plan.launches_rtt_client
