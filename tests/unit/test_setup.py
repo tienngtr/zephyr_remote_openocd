@@ -104,6 +104,39 @@ def test_config_default_finds_module_by_markers(tmp_path):
         module.find_module_root(tmp_path / "missing")
 
 
+@pytest.mark.parametrize(
+    ("missing_module", "missing_name"),
+    (("elftools", "pyelftools"), ("yaml", "PyYAML"), ("jsonschema", "jsonschema")),
+)
+def test_missing_dependency_warns_without_blocking_initialization(
+    tmp_path, monkeypatch, missing_module, missing_name
+):
+    setup = load_setup_module()
+    destination = tmp_path / ".config" / "zephyr_remote_openocd" / "config.yaml"
+    print_dependency_status = setup._print_dependency_status
+    monkeypatch.setattr(setup, "module_root", lambda: ROOT)
+    monkeypatch.setattr(setup, "config_path", lambda: destination)
+    monkeypatch.setattr(
+        setup,
+        "_print_dependency_status",
+        lambda: print_dependency_status(lambda name: None if name == missing_module else object()),
+    )
+
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        assert setup.main() == 0
+
+    text = output.getvalue()
+    assert destination.is_file()
+    assert f"{missing_name}: missing" in text
+    for dependency_name in ("pyelftools", "PyYAML", "jsonschema"):
+        if dependency_name != missing_name:
+            assert f"{dependency_name}: found" in text
+    assert "Zephyr 4.4" in text
+    assert "pip install" not in text
+    assert "requirements.txt" not in text
+
+
 def test_activation_command_preserves_module_path_with_spaces(tmp_path, monkeypatch):
     setup = load_setup_module()
     root = tmp_path / "module root"

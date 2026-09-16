@@ -30,22 +30,13 @@ def config_path(home: str | os.PathLike[str] | None = None) -> Path:
     return home_path / ".config" / "zephyr_remote_openocd" / "config.yaml"
 
 
-def pyelftools_available(
-    finder: Callable[[str], object | None] = importlib.util.find_spec,
+def _dependency_available(
+    module_name: str,
+    finder: Callable[[str], object | None],
 ) -> bool:
-    """Return whether the Zephyr environment can discover ``elftools``."""
+    """Return whether the active Python environment can discover a module."""
     try:
-        return finder("elftools") is not None
-    except (ImportError, ModuleNotFoundError, ValueError):
-        return False
-
-
-def configuration_dependencies_available(
-    finder: Callable[[str], object | None] = importlib.util.find_spec,
-) -> bool:
-    """Return whether YAML configuration runtime dependencies are discoverable."""
-    try:
-        return finder("yaml") is not None and finder("jsonschema") is not None
+        return finder(module_name) is not None
     except (ImportError, ModuleNotFoundError, ValueError):
         return False
 
@@ -117,17 +108,14 @@ def initialize_config(root: Path, destination: Path) -> bool:
 def _print_dependency_status(
     finder: Callable[[str], object | None] = importlib.util.find_spec,
 ) -> None:
-    if pyelftools_available(finder):
-        print("Python dependency:")
-        print("  pyelftools: found")
-    else:
-        print("Warning: pyelftools is not available in this Python environment.")
-        print("Some remote_openocd operations require pyelftools to inspect ELF files.")
-        print("Use the Python environment configured for Zephyr.")
-    if configuration_dependencies_available(finder):
-        print("  YAML configuration dependencies: found")
-    else:
-        print("Warning: PyYAML and jsonschema are not available in this Python environment.")
+    dependencies = (("pyelftools", "elftools"), ("PyYAML", "yaml"), ("jsonschema", "jsonschema"))
+    print("Python dependencies:")
+    for display_name, module_name in dependencies:
+        if _dependency_available(module_name, finder):
+            print(f"  {display_name}: found")
+            continue
+        print(f"  {display_name}: missing")
+        print(f"Warning: {display_name} is not available in this Python environment.")
         print("Use the Python environment configured for Zephyr 4.4.")
 
 
