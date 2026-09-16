@@ -256,7 +256,14 @@ def forbid_external_io(monkeypatch):
 @pytest.mark.parametrize("command", ("flash", "debug", "attach", "debugserver", "rtt"))
 @pytest.mark.parametrize("thread_info", (False, True))
 def test_recording_runs_real_adapter_without_external_io(
-    runner_api, tmp_path, monkeypatch, capsys, forbid_external_io, command, thread_info
+    runner_api,
+    runner_module,
+    tmp_path,
+    monkeypatch,
+    capsys,
+    forbid_external_io,
+    command,
+    thread_info,
 ):
     core, _, remote = runner_api
     build = tmp_path / "build"
@@ -272,10 +279,12 @@ def test_recording_runs_real_adapter_without_external_io(
         "  unused: {openocd_command: [openocd]}\n"
         "  chosen:\n    ssh_host: selected_host\n"
         "    openocd_command: ['~/tools/openocd', '--debug']\n"
+        "    forward_env: [ZRO_CONTROLLED_ENV]\n"
         "    path_mappings: {'/': '~/mapped'}\n"
     )
     monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", str(config))
     monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_REMOTE", "unused")
+    monkeypatch.setenv("ZRO_CONTROLLED_ENV", "secret-value")
     monkeypatch.setenv("ZRO_RECORD", "1")
     if thread_info:
         monkeypatch.setenv("ZRO_RECORD_OPENOCD_VERSION", "Open On-Chip Debugger 0.12.0")
@@ -307,8 +316,19 @@ def test_recording_runs_real_adapter_without_external_io(
         ]
     )
     runner = remote.create(cfg, args)
+
+    planned_requests = []
+    original_record_operation = runner_module._record_operation
+
+    def capture_record_operation(record_runner, record_command, selected):
+        recorded = original_record_operation(record_runner, record_command, selected)
+        planned_requests.append(recorded[0])
+        return recorded
+
+    monkeypatch.setattr(runner_module, "_record_operation", capture_record_operation)
     runner.run(command)
-    result = json.loads(capsys.readouterr().out)
+    output = capsys.readouterr().out
+    result = json.loads(output)
     assert result["command"] == command
     request = result["remote_session_request"]
     assert request["host"] == "selected_host"
@@ -316,6 +336,10 @@ def test_recording_runs_real_adapter_without_external_io(
     assert "echo test" in request["process"]["argv"]
     assert any("probe" in argument for argument in request["process"]["argv"])
     assert any("~/mapped/" in argument for argument in request["process"]["argv"])
+    assert request["process"]["environment"] == ["ZRO_CONTROLLED_ENV"]
+    assert "secret-value" not in output
+    assert planned_requests[0] is not None
+    assert dict(planned_requests[0].process.environment) == {"ZRO_CONTROLLED_ENV": "secret-value"}
     if command != "flash":
         assert result["thread_info"]["requested"] is thread_info
         assert result["thread_info"]["version_source"] == ("injected" if thread_info else None)
