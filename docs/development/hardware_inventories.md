@@ -140,7 +140,7 @@ External tests can build, flash, halt, reset, and resume targets. Always collect
 first and run destructive profiles serially. Start with one complete node ID:
 
 ```sh
-ZRO_STRICT_EXTERNAL=1 .venv/bin/python -m pytest \
+.venv/bin/python -m pytest --require-external-tests \
   'tests/hardware/test_real_flash.py::TestRealOpenOcdFlash::test_configured_target_flashes_and_emits_fresh_serial_output[stm32f746g_disco:flash]' \
   --hardware-config .scratch/config/hardware.yaml
 ```

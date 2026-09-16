@@ -19,8 +19,8 @@ pull request:
 - Flash, debug, RTT, semihosting, or other board-visible changes: run the
   affected hardware tests when suitable hardware is available.
 - Before a release/tag, or when claiming full external validation, run all
-  applicable external suites with `ZRO_STRICT_EXTERNAL=1`, confirm there are no
-  unexpected skips, and inspect cleanup before reusing targets.
+  applicable external suites with `--require-external-tests`, confirm there are
+  no unexpected skips, and inspect cleanup before reusing targets.
 - PR descriptions should state what validation was performed and explicitly
   mention relevant external tests that could not be run.
 - Never put credentials, SSH host identities, probe serials, serial-device

@@ -74,7 +74,7 @@ Validate collection before execution:
   --hardware-config /path/to/hardware.yaml
 ```
 
-Use `ZRO_STRICT_EXTERNAL=1` when a missing prerequisite or unexpected skip
+Use `--require-external-tests` when a missing prerequisite or unexpected skip
 should fail the run. The SSH and hardware commands below use the same
 `--hardware-config` option; `ZRO_HARDWARE_CONFIG` is an equivalent environment
 override.
@@ -155,17 +155,17 @@ same source-level breakpoint evidence with a bidirectional RTT exchange.
 Run the desired layers explicitly:
 
 ```sh
-ZRO_STRICT_EXTERNAL=1 .venv/bin/python -m pytest \
+.venv/bin/python -m pytest --require-external-tests \
   tests/ssh_integration -m ssh \
   --hardware-config /path/to/hardware.yaml
 
 ZEPHYR_BASE=/path/to/zephyr \
 WEST=/path/to/west \
 OPENOCD_TEST_BOARD=stm32f746g_disco \
-ZRO_STRICT_EXTERNAL=1 .venv/bin/python -m pytest \
+.venv/bin/python -m pytest --require-external-tests \
   tests/zephyr_integration -m zephyr
 
-ZRO_STRICT_EXTERNAL=1 .venv/bin/python -m pytest \
+.venv/bin/python -m pytest --require-external-tests \
   tests/hardware -m hardware \
   --hardware-config /path/to/hardware.yaml
 ```
@@ -174,7 +174,7 @@ Select one real debug profile without running other destructive nodes by using
 its complete parametrized node ID:
 
 ```sh
-ZRO_STRICT_EXTERNAL=1 .venv/bin/python -m pytest \
+.venv/bin/python -m pytest --require-external-tests \
   'tests/hardware/test_real_debug.py::TestRealOpenOcdDebug::test_debug[board:debug]' \
   --hardware-config /path/to/hardware.yaml
 ```
