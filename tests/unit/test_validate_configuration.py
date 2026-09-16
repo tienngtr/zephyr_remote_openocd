@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import socket
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 from zephyr_remote_openocd.config import ResolvedRemote
+from zephyr_remote_openocd.remote.ssh import SshCommand
 
 from tests.support import ROOT
 
@@ -20,8 +23,6 @@ assert SPEC is not None and SPEC.loader is not None
 validator = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = validator
 SPEC.loader.exec_module(validator)
-
-EXAMPLE = ROOT / "resources/config.example.yaml"
 
 
 def test_explicit_remote_summary_includes_effective_non_secret_settings(
@@ -167,11 +168,28 @@ def test_summary_does_not_read_or_print_forwarded_values(
     assert "do-not-print-this" not in output
 
 
-def test_validation_performs_no_external_io(monkeypatch) -> None:
-    def forbidden(*_args, **_kwargs):
-        raise AssertionError("external I/O is forbidden")
+def test_validation_performs_no_external_io(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "default_remote: lab\nremotes:\n  lab:\n    openocd_command: [openocd]\n",
+        encoding="utf-8",
+    )
 
-    monkeypatch.setattr(socket, "create_connection", forbidden)
-    monkeypatch.setattr(subprocess, "run", forbidden)
-    monkeypatch.setattr(subprocess, "Popen", forbidden)
-    assert validator.main([str(EXAMPLE), "--remote", "lab"]) == 0
+    guards = []
+    for owner, name in (
+        (subprocess, "run"),
+        (subprocess, "Popen"),
+        (os, "system"),
+        (socket, "create_connection"),
+        (socket, "socket"),
+        (SshCommand, "run"),
+        (SshCommand, "popen"),
+        (SshCommand, "run_stream"),
+    ):
+        guard = Mock(side_effect=AssertionError(f"external I/O is forbidden: {name}"))
+        monkeypatch.setattr(owner, name, guard)
+        guards.append(guard)
+
+    assert validator.main([str(path)]) == 0
+    for guard in guards:
+        guard.assert_not_called()
