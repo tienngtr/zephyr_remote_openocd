@@ -34,6 +34,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=None,
         help="path to the local YAML hardware inventory (or use ZRO_HARDWARE_CONFIG)",
     )
+    group.addoption(
+        "--require-external-tests",
+        action="store_true",
+        default=False,
+        help="fail the run if any test is skipped during external validation",
+    )
 
 
 def hardware_config_path(config: pytest.Config) -> Path | None:
@@ -98,12 +104,12 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    """Make strict external runs fail instead of accepting infrastructure skips."""
-    if not os.environ.get("ZRO_STRICT_EXTERNAL"):
+    """Make required external-test runs fail instead of accepting skips."""
+    if not session.config.getoption("--require-external-tests"):
         return
     reporter = session.config.pluginmanager.get_plugin("terminalreporter")
     skipped = len(reporter.stats.get("skipped", [])) if reporter is not None else 0
-    if skipped:
+    if skipped and exitstatus == pytest.ExitCode.OK:
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
