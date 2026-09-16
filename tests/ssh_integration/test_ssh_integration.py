@@ -18,6 +18,7 @@ from zephyr_remote_openocd.remote import (
     RemoteSession,
     RemoteSessionRequest,
     Service,
+    SessionError,
     SshHelperBackend,
     StagedFile,
 )
@@ -273,13 +274,10 @@ class TestSshTransportIntegration:
         try:
             backend_session = session._session
             assert isinstance(backend_session, SshHelperSession)
-            assert isinstance(backend_session, SshHelperSession)
             backend_session.helper_process.terminate()
             backend_session.helper_process.wait(timeout=20)
-            deadline = time.monotonic() + 20
-            while time.monotonic() < deadline and session.poll() is None:
-                time.sleep(0.1)
-            assert session.termination_returncode is not None
+            with pytest.raises(SessionError, match="helper event stream failed"):
+                session.wait(timeout=20)
         finally:
             session.close()
         result = self.ssh.run(
