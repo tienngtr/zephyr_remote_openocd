@@ -5,15 +5,13 @@
 from __future__ import annotations
 
 import hashlib
-import os
 import tarfile
 import tempfile
 from collections.abc import Iterable
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
 from typing import BinaryIO, cast
 
-from .model import StagedFile, validated_destination
+from .model import StagedFile
 
 
 class StagingError(RuntimeError):
@@ -77,42 +75,3 @@ def build_archive(files: Iterable[StagedFile], *, spool_limit: int = 1024 * 1024
     except BaseException:
         stream.close()
         raise
-
-
-def extract_archive(stream: BinaryIO, destination: Path) -> tuple[int, str, tuple[str, ...]]:
-    """Extract regular files after explicit checks; safe on Python 3.12."""
-    destination = destination.resolve()
-    seen: set[PurePosixPath] = set()
-    count = 0
-    digest = hashlib.sha256()
-    names: list[str] = []
-    with tarfile.open(fileobj=stream, mode="r:*") as archive:
-        members = archive.getmembers()
-        for member in members:
-            try:
-                relative = validated_destination(member.name)
-            except ValueError as error:
-                raise StagingError(str(error)) from error
-            if relative in seen:
-                raise StagingError(f"duplicate archive destination: {relative}")
-            seen.add(relative)
-            if not member.isreg():
-                raise StagingError(f"archive member is not a regular file: {relative}")
-            target = destination.joinpath(*relative.parts)
-            if destination not in target.resolve().parents:
-                raise StagingError(f"archive member escapes staging directory: {relative}")
-        for member in members:
-            relative = PurePosixPath(member.name)
-            target = destination.joinpath(*relative.parts)
-            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            source = archive.extractfile(member)
-            if source is None:
-                raise StagingError(f"archive member has no content: {relative}")
-            with target.open("wb") as output:
-                while chunk := source.read(1024 * 1024):
-                    output.write(chunk)
-                    count += len(chunk)
-                    digest.update(chunk)
-            os.chmod(target, member.mode & 0o700 or 0o600)
-            names.append(str(relative))
-    return count, digest.hexdigest(), tuple(names)

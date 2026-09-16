@@ -9,6 +9,7 @@ import os
 import socket
 import subprocess
 import sys
+import tarfile
 import tempfile
 import threading
 from pathlib import Path
@@ -62,6 +63,22 @@ def start_frame(
         readiness_timeout=readiness_timeout,
         literal_prefix=literal_prefix,
     )
+
+
+def archive_bytes(members):
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode="w", format=tarfile.PAX_FORMAT) as archive:
+        for name, member_type, linkname in members:
+            info = tarfile.TarInfo(name)
+            info.type = member_type
+            if member_type == tarfile.SYMTYPE:
+                info.linkname = linkname
+            if member_type == tarfile.REGTYPE:
+                info.size = 1
+                archive.addfile(info, io.BytesIO(b"x"))
+            else:
+                archive.addfile(info)
+    return stream.getvalue()
 
 
 class TestForwardingLifecycle:
@@ -555,6 +572,38 @@ class TestRttClient:
 
 
 class TestRealProcessHelper:
+    @pytest.mark.parametrize(
+        "members",
+        (
+            (("../escape", tarfile.REGTYPE, None),),
+            (("nested/link", tarfile.SYMTYPE, "target"),),
+            (("fifo", tarfile.FIFOTYPE, None),),
+            (
+                ("duplicate", tarfile.REGTYPE, None),
+                ("duplicate", tarfile.REGTYPE, None),
+            ),
+        ),
+    )
+    def test_helper_rejects_unsafe_staging_members(self, tmp_path, members):
+        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        runtime = tmp_path / "runtime"
+        workspace = runtime / "zephyr_remote_openocd" / "session"
+        (workspace / "staged").mkdir(parents=True)
+        environment = os.environ.copy()
+        environment["XDG_RUNTIME_DIR"] = str(runtime)
+
+        result = subprocess.run(
+            [sys.executable, str(helper), "stage", str(workspace)],
+            env=environment,
+            input=archive_bytes(members),
+            capture_output=True,
+            check=False,
+        )
+
+        assert result.returncode != 0
+        assert json.loads(result.stdout)["type"] == "ERROR"
+        assert tuple((workspace / "staged").iterdir()) == ()
+
     def test_backend_rejects_mismatched_staging_confirmation(self):
         class LocalCommand:
             def run_stream(self, host, command, stream, timeout=60):
