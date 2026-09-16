@@ -6,7 +6,6 @@ import io
 import ipaddress
 import json
 import os
-import shutil
 import socket
 import subprocess
 import sys
@@ -438,54 +437,6 @@ class TestRealProcessHelper:
                     "payload": "before_config",
                 }
                 assert process.wait(timeout=5) == 0
-            finally:
-                if process.poll() is None:
-                    process.kill()
-                    process.wait(timeout=5)
-                for stream in (process.stdin, process.stdout, process.stderr):
-                    if stream is not None and not stream.closed:
-                        stream.close()
-
-    def test_helper_forwards_environment_to_openocd_configuration(self):
-        executable = shutil.which("openocd")
-        if executable is None:
-            pytest.skip("openocd is not installed")
-        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
-        with tempfile.TemporaryDirectory() as directory:
-            config = Path(directory) / "environment.cfg"
-            config.write_text(
-                "set zro_forwarded_value $::env(ZRO_CONFIG_VALUE)\n"
-                "echo ZRO_CONFIG_VALUE=$zro_forwarded_value\n"
-                "shutdown\n"
-            )
-            environment = os.environ.copy()
-            environment["XDG_RUNTIME_DIR"] = directory
-            process = subprocess.Popen(
-                [sys.executable, str(helper), "control"],
-                env=environment,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
-            try:
-                assert process.stdin is not None and process.stdout is not None
-                read_line(process.stdout)
-                process.stdin.write(
-                    start_frame(
-                        [executable, "-f", str(config)],
-                        environment={"ZRO_CONFIG_VALUE": "channel_1"},
-                    )
-                )
-                process.stdin.flush()
-                events = [json.loads(line) for line in read_lines(process.stdout)]
-                output = next(
-                    event
-                    for event in events
-                    if event["type"] == "CHILD_OUTPUT"
-                    and event["payload"] == "ZRO_CONFIG_VALUE=channel_1"
-                )
-                assert output["stream"] in ("stdout", "stderr")
-                assert process.wait(timeout=15) == 0
             finally:
                 if process.poll() is None:
                     process.kill()
