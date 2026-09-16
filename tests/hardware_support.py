@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import os
+import socket
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,6 +32,20 @@ from tests.inventory import (
     render_product_config,
 )
 from tests.support import ROOT
+
+
+def free_loopback_ports(count: int) -> tuple[int, ...]:
+    """Allocate distinct ephemeral loopback ports for test endpoints."""
+    listeners = []
+    try:
+        for _ in range(count):
+            listener = socket.socket()
+            listener.bind(("127.0.0.1", 0))
+            listeners.append(listener)
+        return tuple(listener.getsockname()[1] for listener in listeners)
+    finally:
+        for listener in listeners:
+            listener.close()
 
 
 def elf_memory_witness(

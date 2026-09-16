@@ -18,6 +18,7 @@ from tests.hardware_support import (
     DebugServerFixture,
     ThreadInfoFixture,
     elf_memory_witness,
+    free_loopback_ports,
 )
 from tests.support import ROOT
 
@@ -167,9 +168,15 @@ class TestRealOpenOcdDebug:
         assert observed != selected_bytes
 
     def _debugserver(self, fixture: DebugServerFixture, output_path: Path) -> None:
+        gdb_client_port, tcl_port, telnet_port = free_loopback_ports(3)
+        extra_args = (
+            f"--gdb-client-port={gdb_client_port}",
+            f"--tcl-port={tcl_port}",
+            f"--telnet-port={telnet_port}",
+        )
         with output_path.open("w", encoding="utf-8") as output:
             process = subprocess.Popen(
-                self._west_command(fixture, "debugserver"),
+                self._west_command(fixture, "debugserver", extra_args=extra_args),
                 cwd=fixture.target.workspace,
                 env=self._environment(fixture),
                 text=True,
@@ -182,7 +189,7 @@ class TestRealOpenOcdDebug:
                 return output_path.read_text(encoding="utf-8", errors="replace")
 
             try:
-                pending_ports = {6333, 4444}
+                pending_ports = {tcl_port, telnet_port}
                 end = time.monotonic() + 90
                 while pending_ports and time.monotonic() < end:
                     if process.poll() is not None:
@@ -203,7 +210,6 @@ class TestRealOpenOcdDebug:
                 assert process.poll() is None, (
                     "debugserver exited before client connection:\n" + diagnostics()
                 )
-                gdb_port = 3333
                 client = subprocess.run(
                     [
                         str(fixture.target.gdb),
@@ -211,7 +217,7 @@ class TestRealOpenOcdDebug:
                         "-batch",
                         str(fixture.target.elf_file),
                         "-ex",
-                        f"target extended-remote 127.0.0.1:{gdb_port}",
+                        f"target extended-remote 127.0.0.1:{gdb_client_port}",
                         "-ex",
                         "monitor halt",
                         "-ex",
