@@ -77,9 +77,9 @@ serialized bytes, command formatting, internal call order, or tool flags only
 when that exact form is itself a required interface or compatibility contract.
 
 Do not unit-test repository tooling merely because it has code. Static-check
-wrappers, lint configuration, test helpers, and release orchestration normally
+wrappers, lint configuration, test helpers, and test orchestration normally
 prove themselves by being run; test them only when non-trivial logic could
-silently invalidate validation, safety, cleanup, or release evidence.
+silently invalidate validation, safety, cleanup, or external-test results.
 
 Thread-info tests inject a version only in no-I/O modes; production queries the
 configured remote OpenOCD executable.
@@ -88,15 +88,14 @@ Run validation appropriate to the change and use `python3
 scripts/static_check.py` for all repository static checks. The script uses
 single-process Pylint for restricted sandboxes.
 Inspect external nodes with `--collect-only`, and inspect cleanup output before
-reusing a target. `scripts/release_validate.py` is the separate serial Linux
-release driver described in `docs/validation/README.md`.
+reusing a target. See `CONTRIBUTING.md` for the contributor validation checklist.
 
 ## Work and Git
 
 Durable rules belong here. Follow task-specific `.agents/GOAL.md` and
 `.agents/PLAN.md` when present. Put temporary investigations and handoffs under
 untracked `.scratch/agents/`; put requirements, architecture decisions, and
-release results in their tracked documents.
+other durable project decisions in their tracked documents.
 
 Commit, push, or create/update a pull request only with explicit user
 authorization. For long tasks, suggest authorization for automatic commits when

@@ -1,5 +1,9 @@
 # Testing layers
 
+The contributor-facing validation policy is summarized in
+[`../../CONTRIBUTING.md`](../../CONTRIBUTING.md). This page provides the
+layer-specific commands and external-test setup details.
+
 Choose the smallest layer that covers the change:
 
 - Every change: `pytest` and `python3 scripts/static_check.py`.
@@ -8,8 +12,6 @@ Choose the smallest layer that covers the change:
 - SSH transport behavior: `tests/ssh_integration/` with a local hardware inventory.
 - Real board behavior: `tests/hardware/` with a board, probe, serial endpoint,
   and remote OpenOCD.
-- Release evidence: the serial procedure in
-  [`docs/validation/README.md`](../validation/README.md).
 
 Run external nodes only after `--collect-only` confirms the intended selection.
 Hardware and SSH tests can change external state; keep destructive profiles
