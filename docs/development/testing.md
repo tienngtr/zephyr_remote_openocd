@@ -103,11 +103,11 @@ lifecycle and cleanup, target state, or hardware behavior. Do not use a
 recording result as acceptance evidence for those behaviors.
 
 For a thread-info-enabled `debug`, `attach`, `debugserver`, or `rtt` build, set
-`ZRO_RECORD_VERSION` to representative output from `openocd --version`:
+`ZRO_RECORD_OPENOCD_VERSION` to representative output from `openocd --version`:
 
 ```sh
 ZRO_RECORD=1 \
-ZRO_RECORD_VERSION='Open On-Chip Debugger 0.12.0' \
+ZRO_RECORD_OPENOCD_VERSION='Open On-Chip Debugger 0.12.0' \
 west debug -r remote_openocd --remote lab
 ```
 
