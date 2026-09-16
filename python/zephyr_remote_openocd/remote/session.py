@@ -94,9 +94,12 @@ class RemoteSession:
         try:
             self._session.forward(additions)
             self._services.extend(additions)
-        except BaseException:
+        except BaseException as error:
             self.state = SessionState.FAILED
-            self._session.close()
+            try:
+                self._session.close()
+            except BaseException as cleanup_error:
+                error.add_note(f"forward failure cleanup also failed: {cleanup_error}")
             raise
 
     def poll(self) -> int | None:
@@ -151,7 +154,10 @@ class RemoteSession:
         try:
             if self._session is not None:
                 self._session.close()
-        finally:
+        except BaseException:
+            self.state = SessionState.FAILED
+            raise
+        else:
             self.state = SessionState.CLOSED
 
     def __enter__(self):

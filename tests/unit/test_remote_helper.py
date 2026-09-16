@@ -116,6 +116,86 @@ def test_control_session_cleans_up_when_announcement_fails(tmp_path, monkeypatch
     assert lock.closed
 
 
+def test_control_session_cleanup_attempts_all_resources_and_retries(tmp_path):
+    class Child:
+        def __init__(self):
+            self.terminate_calls = 0
+            self.fail = True
+
+        def terminate(self):
+            self.terminate_calls += 1
+            if self.fail:
+                raise RuntimeError("child cleanup failed")
+
+    class Lock:
+        def __init__(self):
+            self.close_calls = 0
+
+        def close(self):
+            self.close_calls += 1
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    child = Child()
+    lock = Lock()
+    session = remote_helper.ControlSession("session", workspace, lock)
+    session.child = child
+
+    with pytest.raises(RuntimeError, match="child cleanup failed"):
+        session.cleanup()
+
+    assert child.terminate_calls == 1
+    assert lock.close_calls == 1
+    assert not workspace.exists()
+    assert not session.stopping
+
+    child.fail = False
+    session.cleanup()
+    assert child.terminate_calls == 2
+    assert lock.close_calls == 2
+    assert session.stopping
+
+
+def test_control_session_cleanup_retries_descendant_disappearance(tmp_path, monkeypatch):
+    class Lock:
+        def __init__(self):
+            self.close_calls = 0
+
+        def close(self):
+            self.close_calls += 1
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    staged_entry = workspace / "staged.bin"
+    staged_entry.write_bytes(b"staged")
+    lock = Lock()
+    session = remote_helper.ControlSession("session", workspace, lock)
+    original_rmtree = remote_helper.shutil.rmtree
+    removal_calls = []
+
+    def fail_first_removal(path):
+        removal_calls.append(path)
+        if len(removal_calls) == 1:
+            staged_entry.unlink()
+            raise FileNotFoundError("staged entry disappeared")
+        original_rmtree(path)
+
+    monkeypatch.setattr(remote_helper.shutil, "rmtree", fail_first_removal)
+
+    with pytest.raises(FileNotFoundError, match="staged entry disappeared"):
+        session.cleanup()
+
+    assert workspace.exists()
+    assert lock.close_calls == 1
+    assert not session.stopping
+
+    session.cleanup()
+    assert removal_calls == [workspace, workspace]
+    assert not workspace.exists()
+    assert lock.close_calls == 2
+    assert session.stopping
+
+
 def test_decode_command_rejects_malformed_required_path_before_launch(start_command):
     start_command["required_paths"] = [{"kind": "socket", "path": "not-valid"}]
     with pytest.raises(ValueError, match="invalid required-path assertion"):

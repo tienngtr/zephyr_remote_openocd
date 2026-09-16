@@ -89,7 +89,7 @@ def test_remote_home_json_rejects_invalid_paths(runner_module, monkeypatch, tmp_
         runner_module._prepare_remote_paths(selected)
 
 
-def test_gdb_execution_owns_client_and_session_lifecycle(runner_module):
+def test_gdb_execution_reports_session_status(runner_module):
     runner = Mock()
     session = Mock()
     session.poll.return_value = 7
@@ -100,8 +100,52 @@ def test_gdb_execution_owns_client_and_session_lifecycle(runner_module):
     runner.require.assert_called_once_with("gdb")
     runner.run_client.assert_called_once_with(["gdb", "zephyr.elf"])
     session.poll.assert_called_once_with()
-    session.close.assert_called_once_with()
+    session.close.assert_not_called()
     assert returncode == 7
+
+
+def test_gdb_requirement_failure_closes_started_session(runner_module):
+    runner = Mock()
+    runner.require.side_effect = FileNotFoundError("gdb is unavailable")
+    backend = Mock()
+    backend_session = Mock()
+    backend_session.start.return_value = SimpleNamespace(
+        session_id="session",
+        remote_workspace="/workspace",
+        remote_address="127.0.0.1",
+    )
+    backend.create.return_value = backend_session
+    request = SimpleNamespace(staged_files=(), services=())
+    plan = SimpleNamespace(gdb_argv=("gdb",), rtt_service=None)
+
+    with pytest.raises(FileNotFoundError, match="gdb is unavailable"):
+        runner_module._execute_operation(runner, "debug", request, plan, backend)
+
+    backend_session.close.assert_called_once_with()
+
+
+def test_gdb_failure_survives_session_cleanup_failure(runner_module):
+    runner = Mock()
+    operation_error = RuntimeError("GDB client failed")
+    runner.run_client.side_effect = operation_error
+    backend = Mock()
+    backend_session = Mock()
+    backend_session.start.return_value = SimpleNamespace(
+        session_id="session",
+        remote_workspace="/workspace",
+        remote_address="127.0.0.1",
+    )
+    backend_session.close.side_effect = RuntimeError("cleanup failed")
+    backend.create.return_value = backend_session
+    request = SimpleNamespace(staged_files=(), services=())
+    plan = SimpleNamespace(gdb_argv=("gdb",), rtt_service=None)
+
+    with pytest.raises(RuntimeError, match="GDB client failed") as raised:
+        runner_module._execute_operation(runner, "debug", request, plan, backend)
+
+    assert raised.value is operation_error
+    assert any("cleanup failed" in note for note in raised.value.__notes__)
+    backend_session.close.assert_called_once_with()
 
 
 def test_rtt_execution_defers_forward_until_after_gdb(runner_module, monkeypatch):
@@ -119,7 +163,7 @@ def test_rtt_execution_defers_forward_until_after_gdb(runner_module, monkeypatch
 
     assert calls == ["gdb", "forward", "rtt"]
     session.forward.assert_called_once_with((rtt_service,))
-    session.close.assert_called_once_with()
+    session.close.assert_not_called()
     assert returncode == 3
 
 

@@ -38,6 +38,16 @@ from .session import BackendSession, SessionBackend, SessionError
 from .staging import build_archive
 
 
+def _raise_cleanup_errors(errors: list[BaseException]) -> None:
+    """Raise the first cleanup error after retaining subsequent diagnostics."""
+    if not errors:
+        return
+    first, *additional = errors
+    for error in additional:
+        first.add_note(f"additional cleanup failure: {error}")
+    raise first
+
+
 class SshHelperBackend(SessionBackend):
     def __init__(
         self,
@@ -106,8 +116,11 @@ class SshHelperSession(BackendSession):
             if created["type"] != "SESSION_CREATED":
                 raise ProtocolError("helper did not begin with SESSION_CREATED")
             self.allocation = SessionAllocation(created["session_id"], created["remote_workspace"])
-        except BaseException:
-            self._stop_process(self.helper_process)
+        except BaseException as error:
+            try:
+                self._stop_process(self.helper_process)
+            except BaseException as cleanup_error:
+                error.add_note(f"helper startup cleanup also failed: {cleanup_error}")
             raise
 
     def _read_event(self) -> dict:
@@ -225,8 +238,11 @@ class SshHelperSession(BackendSession):
                         if (message := self._preflight(item.local_port))
                     ]
                 self._start_forwards(service_list, address, advisories)
-            except BaseException:
-                self._close_forwards()
+            except BaseException as error:
+                try:
+                    self._close_forwards()
+                except BaseException as cleanup_error:
+                    error.add_note(f"forward startup cleanup also failed: {cleanup_error}")
                 raise
         self._start_event_drain()
         self.descriptor = SessionDescriptor(self.allocation, address)
@@ -269,9 +285,15 @@ class SshHelperSession(BackendSession):
         before = len(self.forwards)
         try:
             self._start_forwards(service_list, self.descriptor.remote_address)
-        except BaseException:
-            while len(self.forwards) > before:
-                self._stop_process(self.forwards.pop())
+        except BaseException as error:
+            added = self.forwards[before:]
+            del self.forwards[before:]
+            for process in added:
+                try:
+                    self._stop_process(process)
+                except BaseException as cleanup_error:
+                    self.forwards.append(process)
+                    error.add_note(f"forward rollback also failed: {cleanup_error}")
             raise
 
     def poll(self) -> int | None:
@@ -322,14 +344,23 @@ class SshHelperSession(BackendSession):
                     f"{detail}"
                 )
             if not connected:
-                self._stop_process(process, close_streams=False)
-                detail = self._forward_diagnostic(process)
-                self._stop_process(process)
-                suffix = f": {detail}" if detail else ""
-                raise SessionError(
+                error = SessionError(
                     f"SSH forwarding did not become ready for {service.name} on "
-                    f"127.0.0.1:{service.local_port}{suffix}"
+                    f"127.0.0.1:{service.local_port}"
                 )
+                detail = ""
+                try:
+                    self._stop_process(process, close_streams=False)
+                    detail = self._forward_diagnostic(process)
+                except BaseException as cleanup_error:
+                    error.add_note(f"forward cleanup also failed: {cleanup_error}")
+                try:
+                    self._stop_process(process)
+                except BaseException as cleanup_error:
+                    error.add_note(f"forward cleanup also failed: {cleanup_error}")
+                suffix = f": {detail}" if detail else ""
+                error.args = (error.args[0] + suffix,)
+                raise error
 
     def wait(self, timeout: float | None = None) -> int:
         try:
@@ -350,8 +381,11 @@ class SshHelperSession(BackendSession):
             if self.process_returncode is not None:
                 return self.process_returncode
             return result
-        except BaseException:
-            self.close()
+        except BaseException as error:
+            try:
+                self.close()
+            except BaseException as cleanup_error:
+                error.add_note(f"session cleanup also failed: {cleanup_error}")
             raise
 
     def _dispatch(self, event: dict) -> None:
@@ -387,19 +421,41 @@ class SshHelperSession(BackendSession):
                     stream.close()
 
     def _close_forwards(self) -> None:
-        while self.forwards:
-            self._stop_process(self.forwards.pop())
+        pending = self.forwards
+        self.forwards = []
+        errors = []
+        for process in pending:
+            try:
+                self._stop_process(process)
+            except BaseException as error:
+                self.forwards.append(process)
+                errors.append(error)
+        _raise_cleanup_errors(errors)
 
     def close(self) -> None:
         if self.closed:
             return
+        errors = []
+        try:
+            self._close_forwards()
+        except BaseException as error:
+            errors.append(error)
+        try:
+            if self.helper_process.poll() is None and self.helper_process.stdin is not None:
+                try:
+                    write_stop(cast(BinaryIO, self.helper_process.stdin))
+                    self.helper_process.stdin.close()
+                    self.helper_process.wait(timeout=5)
+                except (BrokenPipeError, OSError, ValueError, subprocess.TimeoutExpired):
+                    pass
+                except BaseException as error:
+                    errors.append(error)
+        except BaseException as error:
+            errors.append(error)
+        try:
+            self._stop_process(self.helper_process)
+        except BaseException as error:
+            errors.append(error)
+        if errors:
+            _raise_cleanup_errors(errors)
         self.closed = True
-        self._close_forwards()
-        if self.helper_process.poll() is None and self.helper_process.stdin is not None:
-            try:
-                write_stop(cast(BinaryIO, self.helper_process.stdin))
-                self.helper_process.stdin.close()
-                self.helper_process.wait(timeout=5)
-            except (BrokenPipeError, OSError, subprocess.TimeoutExpired):
-                self._stop_process(self.helper_process)
-        self._stop_process(self.helper_process)
