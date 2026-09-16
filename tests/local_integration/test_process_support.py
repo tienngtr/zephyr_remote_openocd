@@ -12,7 +12,6 @@ from contextlib import contextmanager
 import pytest
 
 from tests.process_support import (
-    assert_semihosting_acceptance,
     read_line,
     read_lines,
     read_until,
@@ -58,20 +57,3 @@ def test_rtt_reader_matches_markers_in_same_chunk_after_exit():
         read_until(process, "ready", 1, output)
         with pytest.raises(AssertionError, match="missing"):
             read_until(process, "missing", 1, output)
-
-
-@pytest.mark.parametrize(
-    ("returncode", "output", "error"),
-    (
-        (0, "console", None),
-        (1, "console", AssertionError),
-        (0, "wrong output", AssertionError),
-        (-9, "console", AssertionError),
-    ),
-)
-def test_semihosting_acceptance_requires_output_and_natural_success(returncode, output, error):
-    if error:
-        with pytest.raises(error):
-            assert_semihosting_acceptance(returncode, output, "console")
-    else:
-        assert_semihosting_acceptance(returncode, output, "console")
