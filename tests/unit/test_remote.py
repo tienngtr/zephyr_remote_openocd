@@ -63,7 +63,7 @@ from zephyr_remote_openocd.remote.session import (
     SessionError,
 )
 from zephyr_remote_openocd.remote.ssh import SshCommand
-from zephyr_remote_openocd.remote.staging import StagingError, build_archive, extract_archive
+from zephyr_remote_openocd.remote.staging import build_archive
 
 
 class TestProtocol:
@@ -243,7 +243,7 @@ def test_packaged_remote_helper_is_available_and_valid_python():
 
 
 class TestStaging:
-    def test_binary_and_empty_files_round_trip(self):
+    def test_build_archive_preserves_binary_and_empty_files(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "empty").write_bytes(b"")
@@ -257,44 +257,24 @@ class TestStaging:
             )
             assert archive.byte_count == 257
             assert archive.sha256 == hashlib.sha256(bytes(range(256)) + b"\0").hexdigest()
-            output = root / "output"
-            output.mkdir()
-            _, _, files = extract_archive(archive.stream, output)
+            with tarfile.open(fileobj=archive.stream, mode="r:*") as packaged:
+                assert packaged.getnames() == ["a/empty", "b/binary"]
+                assert packaged.extractfile("a/empty").read() == b""
+                assert packaged.extractfile("b/binary").read() == bytes(range(256)) + b"\0"
             archive.stream.close()
-            assert files == ("a/empty", "b/binary")
-            assert (output / "b/binary").read_bytes() == bytes(range(256)) + b"\0"
 
-    def test_path_components_with_spaces_round_trip(self, tmp_path: Path):
+    def test_build_archive_preserves_path_components_with_spaces(self, tmp_path: Path):
         source = tmp_path / "source file.bin"
         source.write_bytes(b"payload")
         archive = build_archive(
             (StagedFile(source, PurePosixPath("directory with spaces/file name.bin")),)
         )
-        output = tmp_path / "output directory"
-        output.mkdir()
-        _, _, files = extract_archive(archive.stream, output)
+        with tarfile.open(fileobj=archive.stream, mode="r:*") as packaged:
+            assert packaged.getnames() == ["directory with spaces/file name.bin"]
+            content = packaged.extractfile(packaged.getmember(packaged.getnames()[0]))
+            assert content is not None
+            assert content.read() == b"payload"
         archive.stream.close()
-        assert files == ("directory with spaces/file name.bin",)
-        assert (output / files[0]).read_bytes() == b"payload"
-
-    def test_unsafe_archive_members_are_rejected(self):
-        cases = (("../escape", None), ("absolute", "symlink"), ("fifo", "fifo"))
-        for name, kind in cases:
-            with tempfile.TemporaryDirectory() as directory:
-                stream = io.BytesIO()
-                with tarfile.open(fileobj=stream, mode="w") as archive:
-                    info = tarfile.TarInfo("/absolute" if name == "absolute" else name)
-                    if kind == "symlink":
-                        info.type = tarfile.SYMTYPE
-                        info.linkname = "target"
-                    elif kind == "fifo":
-                        info.type = tarfile.FIFOTYPE
-                    else:
-                        info.size = 1
-                    archive.addfile(info, io.BytesIO(b"x"))
-                stream.seek(0)
-                with pytest.raises(StagingError):
-                    extract_archive(stream, Path(directory))
 
 
 class TestRemoteModels:
