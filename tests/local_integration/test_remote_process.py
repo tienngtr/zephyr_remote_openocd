@@ -454,6 +454,94 @@ class TestRttClient:
         assert os.read(output_read, 64) == b"remote_output"
         os.close(output_read)
 
+    def test_non_consuming_channel_does_not_block_session_poll(self):
+        class Connection:
+            def sendall(self, _payload):
+                raise AssertionError("blocking sendall must not be used")
+
+            def send(self, _payload):
+                raise AssertionError("socket was not writable")
+
+            def close(self):
+                pass
+
+        connection = Connection()
+        input_read, input_write = os.pipe()
+        os.write(input_write, b"pending input")
+        os.close(input_write)
+        polls = []
+
+        def poll_session():
+            polls.append(None)
+            return 0 if len(polls) == 2 else None
+
+        with (
+            os.fdopen(input_read, "rb", buffering=0) as stdin,
+            tempfile.TemporaryFile("w+b") as stdout,
+            patch.object(rtt_module, "_connect", return_value=(connection, b"")),
+            patch.object(
+                rtt_module.select,
+                "select",
+                return_value=([stdin.fileno()], [], []),
+            ) as select_call,
+        ):
+            input_fd = stdin.fileno()
+            assert run_rtt_client(5555, poll_session, stdin=stdin, stdout=stdout) == 0
+
+        assert polls == [None, None]
+        select_call.assert_called_once_with((input_fd, connection), (), (), 0.1)
+
+    def test_full_input_queue_pauses_and_resumes_stdin_after_partial_send(self, monkeypatch):
+        class Connection:
+            def __init__(self):
+                self.sent = []
+
+            def send(self, payload):
+                self.sent.append(bytes(payload))
+                return 2
+
+            def close(self):
+                pass
+
+        connection = Connection()
+        monkeypatch.setattr(rtt_module, "_INPUT_CHUNK_SIZE", 4)
+        monkeypatch.setattr(rtt_module, "_MAX_PENDING_INPUT", 4)
+        input_read, input_write = os.pipe()
+        os.write(input_write, b"abcdefgh")
+        os.close(input_write)
+        polls = []
+
+        def poll_session():
+            polls.append(None)
+            return 0 if len(polls) == 4 else None
+
+        with (
+            os.fdopen(input_read, "rb", buffering=0) as stdin,
+            tempfile.TemporaryFile("w+b") as stdout,
+        ):
+            input_fd = stdin.fileno()
+            with (
+                patch.object(rtt_module, "_connect", return_value=(connection, b"")),
+                patch.object(
+                    rtt_module.select,
+                    "select",
+                    side_effect=(
+                        ([input_fd], [], []),
+                        ([], [connection], []),
+                        ([input_fd], [connection], []),
+                    ),
+                ) as select_call,
+            ):
+                assert run_rtt_client(5555, poll_session, stdin=stdin, stdout=stdout) == 0
+
+        assert polls == [None, None, None, None]
+        assert connection.sent == [b"abcd", b"cdef"]
+        assert [call.args[:2] for call in select_call.call_args_list] == [
+            ((input_fd, connection), ()),
+            ((connection,), (connection,)),
+            ((input_fd, connection), (connection,)),
+        ]
+
     def test_established_channel_closure_fails_while_session_is_running(self):
         class Connection:
             def recv(self, _size):
