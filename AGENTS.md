@@ -107,3 +107,31 @@ rewrite history unless authorized.
 Never commit credentials, hosts, device paths, capability values, expected lab
 output, populated inventories, generated builds, or `.scratch/` artifacts.
 Committed examples use placeholders.
+
+## Subagent Quality Gate
+
+When delegating implementation of review findings, process findings
+sequentially because agents share the worktree. Use `finding_worker` for one
+bounded finding at a time and keep its changes uncommitted. Spawn
+`finding_worker` and `risk_reviewer` with `fork_turns="none"`; give each a
+self-contained task message or a focused handoff under `.scratch/agents/`
+rather than the full history of a long-running thread.
+
+After each implementation, the primary agent must independently inspect the
+complete diff, trace the relevant production path, and assess whether tests can
+pass for the wrong reason. A worker's passing tests and self-assessment are not
+sufficient approval to commit.
+
+Also use `risk_reviewer` when a change affects cleanup or rollback, locks,
+processes, signals, sockets, concurrency or timing, protocol or parser
+boundaries, path safety, destructive hardware behavior, or code that can
+silently produce false validation evidence. Also escalate when the primary
+review finds ambiguity or when a change crosses multiple architectural layers.
+Give the risk reviewer only the finding, compact diff, focused test evidence,
+and directly relevant execution paths.
+
+For lifecycle changes, review the combinations of operation success or
+failure, inner and outer cleanup success or failure, partial or absent resource
+state, primary exception preservation, and retryability. For protocol
+boundaries, consider malformed bytes, malformed syntax, invalid envelopes,
+invalid semantic fields, and valid messages that conflict with local state.
