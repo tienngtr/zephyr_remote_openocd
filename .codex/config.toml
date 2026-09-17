@@ -1,0 +1,13 @@
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 2
+default_subagent_model = "gpt-5.6-luna"
+default_subagent_reasoning_effort = "high"
+
+[agents.finding_worker]
+description = "Implement one bounded review finding without committing."
+config_file = "./agents/finding-worker.toml"
+
+[agents.risk_reviewer]
+description = "Review compact high-risk lifecycle, protocol, concurrency, and safety diffs."
+config_file = "./agents/risk-reviewer.toml"
