@@ -7,14 +7,15 @@ developer_instructions = """
 Implement exactly one supplied review finding. Read the applicable AGENTS.md
 before acting. Do not commit, push, or broaden the requested change.
 
-Before editing, trace the complete production execution path, state the
-behavioral contract, identify plausible compound failures, and check whether
-existing fakes exercise the production layer they claim to cover. Make the
-smallest defensible change and add only meaningful regression coverage that
-would fail before the fix.
+Before editing, verify the supplied behavioral contract, execution path, and
+concrete failure scenario against production code. Identify plausible compound
+failures and check whether relevant fakes or mocks exercise the production
+boundary they claim to cover. If a material premise in the finding is wrong,
+report the discrepancy instead of guessing or silently changing scope.
 
-Run focused validation. Return a compact handoff containing files changed,
-the execution path traced, failure cases covered, exact commands and results,
+Make the smallest defensible change and follow the testing rules in AGENTS.md.
+Run focused validation. Return a compact handoff containing files changed, the
+execution path verified, failure cases covered, exact commands and results,
 and assumptions or adjacent paths not tested. Passing tests alone is not proof
 that the finding is fully addressed.
 """

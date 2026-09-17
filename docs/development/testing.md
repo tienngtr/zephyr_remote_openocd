@@ -6,7 +6,7 @@ layer-specific commands and external-test setup details.
 
 Choose the smallest layer that covers the change:
 
-- Every change: `pytest` and `python3 scripts/static_check.py`.
+- Every change: `.venv/bin/python -m pytest` and `.venv/bin/python scripts/static_check.py`.
 - Zephyr adapter or build integration: `tests/zephyr_integration/` with a
   Zephyr 4.4 source tree and its configured Python environment.
 - SSH transport behavior: `tests/ssh_integration/` with a local hardware inventory.
@@ -17,15 +17,16 @@ Run external nodes only after `--collect-only` confirms the intended selection.
 Hardware and SSH tests can change external state; keep destructive profiles
 serial and inspect cleanup output before reusing a target.
 
-The maintained suite uses pytest. Plain `pytest` runs only hardware-free unit
-and local-process tests. External layers are selected explicitly so a normal
-contributor run never needs SSH, a Zephyr checkout, or lab hardware:
+The maintained suite uses pytest. The ordinary `.venv/bin/python -m pytest`
+command runs only hardware-free unit and local-process tests. External layers
+are selected explicitly so a normal contributor run never needs SSH, a Zephyr
+checkout, or lab hardware:
 
 ```sh
-pytest                         # unit + local integration
-pytest tests/zephyr_integration -m zephyr
-pytest tests/ssh_integration -m ssh --hardware-inventory /path/to/hardware.yaml
-pytest tests/hardware -m hardware --hardware-inventory /path/to/hardware.yaml
+.venv/bin/python -m pytest
+.venv/bin/python -m pytest tests/zephyr_integration -m zephyr
+.venv/bin/python -m pytest tests/ssh_integration -m ssh --hardware-inventory /path/to/hardware.yaml
+.venv/bin/python -m pytest tests/hardware -m hardware --hardware-inventory /path/to/hardware.yaml
 ```
 
 ## Common external-test setup
@@ -121,7 +122,8 @@ The focused adapter contract tests need only the Zephyr source and its Python
 runner dependencies, not a board, SDK, or firmware build:
 
 ```sh
-ZEPHYR_BASE=/path/to/zephyr pytest tests/zephyr_integration/test_adapter.py
+ZEPHYR_BASE=/path/to/zephyr \
+.venv/bin/python -m pytest tests/zephyr_integration/test_adapter.py
 ```
 
 These compare applicable parser behavior with upstream and execute recording
@@ -181,7 +183,7 @@ its complete parametrized node ID:
 Run all configured static checks with:
 
 ```sh
-python3 scripts/static_check.py
+.venv/bin/python scripts/static_check.py
 ```
 
 ## Complexity review
@@ -191,10 +193,10 @@ threshold. Measure production code normally and test code with assertions
 excluded from the control-flow count:
 
 ```sh
-python3 -m radon cc -s -n C python runners scripts
-python3 -m radon cc -s -n C --no-assert tests
-python3 -m radon mi -s python runners scripts tests
-python3 -m radon hal python runners scripts tests
+.venv/bin/python -m radon cc -s -n C python runners scripts
+.venv/bin/python -m radon cc -s -n C --no-assert tests
+.venv/bin/python -m radon mi -s python runners scripts tests
+.venv/bin/python -m radon hal python runners scripts tests
 ```
 
 Review C-ranked callables and normally refactor D-F production or test-support
@@ -208,7 +210,7 @@ Halstead effort before accepting a change.
 
 The self-contained suite can collect branch coverage for the production
 package, west runner entry point, maintained scripts, and locally launched
-Python helper processes:
+Python helper subprocesses with:
 
 ```sh
 .venv/bin/python -m pytest --cov --cov-config=.coveragerc \

@@ -11,7 +11,7 @@ not install that file.
 Run the checks appropriate to every change and state the actual coverage in the
 pull request:
 
-- Every change: run `pytest` and `python3 scripts/static_check.py`.
+- Every change: run `.venv/bin/python -m pytest` and `.venv/bin/python scripts/static_check.py`.
 - Zephyr runner or build-integration changes: run the applicable Zephyr 4.4
   integration tests.
 - SSH, helper, session, or forwarding changes: run the applicable SSH
