@@ -9,7 +9,7 @@ from pathlib import Path, PurePosixPath
 
 from zephyr_remote_openocd.config import PathMapping
 
-from .model import RemotePathCheck, StagedFile
+from .model import RemotePathCheck, StagedDirectory, StagedEntry, StagedFile
 
 WORKSPACE_TOKEN = "{workspace}"
 ADDRESS_TOKEN = "{address}"
@@ -32,10 +32,10 @@ class PathPlanner:
         self.mappings = tuple(
             sorted(mappings, key=lambda item: len(item.local.parts), reverse=True)
         )
-        self.staged_files: list[StagedFile] = []
+        self.staged_files: list[StagedEntry] = []
         self.remote_checks: list[RemotePathCheck] = []
         self._staged_roots: list[tuple[Path, PurePosixPath]] = []
-        self._destinations: set[PurePosixPath] = set()
+        self._destinations: dict[PurePosixPath, str] = {}
 
     @staticmethod
     def _relative(path: Path, root: Path) -> Path | None:
@@ -77,6 +77,7 @@ class PathPlanner:
             return PlannedPath(source, existing, "directory", False)
         destination = PurePosixPath("trees", namespace)
         self._staged_roots.append((source, destination))
+        self._add_directory(source, destination)
         self._walk(source, source, destination, set())
         return PlannedPath(source, f"{WORKSPACE_TOKEN}/staged/{destination}", "directory", False)
 
@@ -97,11 +98,23 @@ class PathPlanner:
         self._add_file(source, destination)
         return PlannedPath(source, f"{WORKSPACE_TOKEN}/staged/{destination}", "file", False)
 
-    def _add_file(self, source: Path, destination: PurePosixPath) -> None:
+    def _add_entry(self, entry: StagedEntry) -> None:
+        destination = entry.destination
+        kind = "directory" if isinstance(entry, StagedDirectory) else "file"
         if destination in self._destinations:
             raise PathPlanningError(f"duplicate staged destination: {destination}")
-        self._destinations.add(destination)
-        self.staged_files.append(StagedFile(source, destination))
+        if any(self._destinations.get(parent) == "file" for parent in destination.parents):
+            raise PathPlanningError(f"staged file ancestor conflict: {destination}")
+        if kind == "file" and any(destination in other.parents for other in self._destinations):
+            raise PathPlanningError(f"staged file ancestor conflict: {destination}")
+        self._destinations[destination] = kind
+        self.staged_files.append(entry)
+
+    def _add_file(self, source: Path, destination: PurePosixPath) -> None:
+        self._add_entry(StagedFile(source, destination))
+
+    def _add_directory(self, source: Path, destination: PurePosixPath) -> None:
+        self._add_entry(StagedDirectory(source, destination))
 
     def _walk(
         self, physical: Path, root: Path, destination: PurePosixPath, stack: set[Path]
@@ -118,6 +131,7 @@ class PathPlanner:
                 raise PathPlanningError(f"symlink escapes staged root {root}: {child}")
             target = destination / child.name
             if child_resolved.is_dir():
+                self._add_directory(child_resolved, target)
                 self._walk(child_resolved, root, target, next_stack)
             elif child_resolved.is_file():
                 self._add_file(child_resolved, target)

@@ -6,6 +6,8 @@ import io
 import ipaddress
 import json
 import os
+import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -27,7 +29,7 @@ from zephyr_remote_openocd.remote.model import (
     SessionDescriptor,
     StagedFile,
 )
-from zephyr_remote_openocd.remote.paths import ADDRESS_TOKEN
+from zephyr_remote_openocd.remote.paths import ADDRESS_TOKEN, PathPlanner
 from zephyr_remote_openocd.remote.protocol import (
     encode_message,
 )
@@ -38,6 +40,7 @@ from zephyr_remote_openocd.remote.services import (
 from zephyr_remote_openocd.remote.session import (
     SessionError,
 )
+from zephyr_remote_openocd.remote.staging import build_archive
 
 from tests.process_support import read_line, read_lines
 from tests.support import ROOT
@@ -660,15 +663,130 @@ class TestRttClient:
 
 
 class TestRealProcessHelper:
+    def test_helper_normalizes_restricted_directory_for_cleanup(self, tmp_path):
+        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        archive_stream = io.BytesIO()
+        with tarfile.open(fileobj=archive_stream, mode="w", format=tarfile.PAX_FORMAT) as archive:
+            payload = tarfile.TarInfo("restricted/payload")
+            payload.size = 1
+            payload.mode = 0o600
+            archive.addfile(payload, io.BytesIO(b"x"))
+            restricted = tarfile.TarInfo("restricted")
+            restricted.type = tarfile.DIRTYPE
+            restricted.mode = 0o500
+            archive.addfile(restricted)
+
+        runtime = tmp_path / "runtime"
+        workspace = runtime / "zephyr_remote_openocd" / "session"
+        (workspace / "staged").mkdir(parents=True)
+        environment = os.environ.copy()
+        environment["XDG_RUNTIME_DIR"] = str(runtime)
+        result = subprocess.run(
+            [sys.executable, str(helper), "stage", str(workspace)],
+            env=environment,
+            input=archive_stream.getvalue(),
+            capture_output=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+        assert (workspace / "staged" / "restricted").stat().st_mode & 0o777 == 0o700
+        shutil.rmtree(workspace)
+
+    def test_helper_stages_empty_search_root(self, tmp_path):
+        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        local_root = tmp_path / "empty-search"
+        local_root.mkdir()
+        planner = PathPlanner(())
+        planner.plan_directory(local_root, "search_0")
+        archive = build_archive(planner.staged_files)
+
+        runtime = tmp_path / "runtime"
+        workspace = runtime / "zephyr_remote_openocd" / "session"
+        (workspace / "staged").mkdir(parents=True)
+        environment = os.environ.copy()
+        environment["XDG_RUNTIME_DIR"] = str(runtime)
+        try:
+            result = subprocess.run(
+                [sys.executable, str(helper), "stage", str(workspace)],
+                env=environment,
+                input=archive.stream.read(),
+                capture_output=True,
+                check=False,
+            )
+        finally:
+            archive.stream.close()
+
+        assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+        response = json.loads(result.stdout)
+        assert response["files"] == []
+        assert response["directories"] == ["trees/search_0"]
+        assert (workspace / "staged" / "trees" / "search_0").is_dir()
+
+    def test_helper_stages_empty_and_nested_directories(self, tmp_path):
+        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        local_root = tmp_path / "search"
+        (local_root / "empty").mkdir(parents=True)
+        (local_root / "nested" / "also-empty").mkdir(parents=True)
+        (local_root / "nested" / "payload.cfg").write_text("payload")
+        planner = PathPlanner(())
+        planner.plan_directory(local_root, "search_0")
+        archive = build_archive(planner.staged_files)
+
+        runtime = tmp_path / "runtime"
+        workspace = runtime / "zephyr_remote_openocd" / "session"
+        (workspace / "staged").mkdir(parents=True)
+        environment = os.environ.copy()
+        environment["XDG_RUNTIME_DIR"] = str(runtime)
+        try:
+            result = subprocess.run(
+                [sys.executable, str(helper), "stage", str(workspace)],
+                env=environment,
+                input=archive.stream.read(),
+                capture_output=True,
+                check=False,
+            )
+        finally:
+            archive.stream.close()
+
+        assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+        response = json.loads(result.stdout)
+        assert response["files"] == ["trees/search_0/nested/payload.cfg"]
+        assert response["directories"] == [
+            "trees/search_0",
+            "trees/search_0/empty",
+            "trees/search_0/nested",
+            "trees/search_0/nested/also-empty",
+        ]
+        staged = workspace / "staged"
+        assert {path.relative_to(staged).as_posix() for path in staged.rglob("*")} == {
+            "trees",
+            "trees/search_0",
+            "trees/search_0/empty",
+            "trees/search_0/nested",
+            "trees/search_0/nested/also-empty",
+            "trees/search_0/nested/payload.cfg",
+        }
+
     @pytest.mark.parametrize(
         "members",
         (
             (("../escape", tarfile.REGTYPE, None),),
+            (("/absolute", tarfile.DIRTYPE, None),),
+            (("../directory", tarfile.DIRTYPE, None),),
             (("nested/link", tarfile.SYMTYPE, "target"),),
             (("fifo", tarfile.FIFOTYPE, None),),
             (
                 ("duplicate", tarfile.REGTYPE, None),
                 ("duplicate", tarfile.REGTYPE, None),
+            ),
+            (
+                ("file", tarfile.REGTYPE, None),
+                ("file/child", tarfile.DIRTYPE, None),
+            ),
+            (
+                ("directory", tarfile.REGTYPE, None),
+                ("directory", tarfile.DIRTYPE, None),
             ),
         ),
     )
@@ -700,6 +818,7 @@ class TestRealProcessHelper:
                 byte_count=999,
                 sha256="0" * 64,
                 files=["firmware.bin"],
+                directories=[],
             ),
             json.dumps(
                 {
@@ -707,6 +826,7 @@ class TestRealProcessHelper:
                     "byte_count": 7,
                     "sha256": "0" * 64,
                     "files": ["firmware.bin"],
+                    "directories": [],
                 }
             ).encode("utf-8"),
             b"\xff",

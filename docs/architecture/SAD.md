@@ -910,7 +910,9 @@ Advantages include:
 
 The Protocol v1 helper and flash implementation handle the staging manifest,
 safe archive encoding and extraction, private remote filesystem layout, path
-rewriting, helper deployment, and OpenOCD artifact staging.
+rewriting, helper deployment, and OpenOCD artifact staging. Staging manifests
+carry explicit directory entries, including empty roots and nested
+directories; file byte counts and digests cover regular-file content only.
 
 ---
 

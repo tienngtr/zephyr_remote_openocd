@@ -699,7 +699,9 @@ A required local file not covered by an explicit mapping SHALL be staged into th
 
 ### REQ-FUNC-FILE-006
 
-A required local search directory not covered by an explicit mapping SHALL be staged while preserving relative structure required by OpenOCD lookup.
+A required local search directory not covered by an explicit mapping SHALL be
+staged while preserving relative structure required by OpenOCD lookup,
+including an empty search root and empty nested directories.
 
 ### REQ-FUNC-FILE-007
 
