@@ -21,7 +21,7 @@ from .model import (
     Service,
     SessionAllocation,
     SessionDescriptor,
-    StagedFile,
+    StagedEntry,
 )
 from .protocol import (
     EventOrder,
@@ -136,7 +136,7 @@ class SshHelperSession(BackendSession):
             raise SessionError(f"remote helper error: {message.get('message', 'unknown error')}")
         return message
 
-    def stage(self, files: Iterable[StagedFile]):
+    def stage(self, files: Iterable[StagedEntry]):
         archive = build_archive(files)
         try:
             command = (
@@ -158,6 +158,8 @@ class SshHelperSession(BackendSession):
             validate_staged_response(message)
             if tuple(message.get("files", ())) != archive.files:
                 raise ValueError("remote staged-file confirmation differs from manifest")
+            if tuple(message.get("directories", ())) != archive.directories:
+                raise ValueError("remote staged-directory confirmation differs from manifest")
             if message["byte_count"] != archive.byte_count:
                 raise ValueError("remote staged-file byte count differs from manifest")
             if message["sha256"] != archive.sha256:

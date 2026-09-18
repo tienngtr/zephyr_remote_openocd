@@ -53,6 +53,19 @@ class StagedFile:
 
 
 @dataclass(frozen=True)
+class StagedDirectory:
+    source: Path
+    destination: PurePosixPath
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "source", Path(self.source))
+        object.__setattr__(self, "destination", validated_destination(self.destination))
+
+
+StagedEntry = StagedFile | StagedDirectory
+
+
+@dataclass(frozen=True)
 class Service:
     name: str
     local_port: int
@@ -70,7 +83,7 @@ class Service:
 class RemoteSessionRequest:
     host: str
     ssh_command: SshCommand
-    staged_files: tuple[StagedFile, ...] = field(default_factory=tuple)
+    staged_files: tuple[StagedEntry, ...] = field(default_factory=tuple)
     services: tuple[Service, ...] = field(default_factory=tuple)
     process: RemoteProcess | None = None
 

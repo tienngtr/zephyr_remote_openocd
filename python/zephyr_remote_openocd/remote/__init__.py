@@ -11,6 +11,8 @@ from .model import (
     SessionAllocation,
     SessionDescriptor,
     SessionState,
+    StagedDirectory,
+    StagedEntry,
     StagedFile,
 )
 from .session import BackendSession, RemoteSession, SessionBackend, SessionError
@@ -28,5 +30,7 @@ __all__ = [
     "SessionError",
     "SessionState",
     "SshHelperBackend",
+    "StagedDirectory",
+    "StagedEntry",
     "StagedFile",
 ]
