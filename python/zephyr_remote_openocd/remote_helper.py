@@ -117,19 +117,23 @@ def new_workspace():
 
 
 def valid_member(member, seen):
-    path = PurePosixPath(member.name)
-    if (
-        not member.name
-        or member.name == "."
-        or path.is_absolute()
-        or any(p in ("", ".", "..") for p in path.parts)
-    ):
+    name = member.name
+    if member.isdir() and name.endswith("/"):
+        name = name[:-1]
+    parts = name.split("/") if name else []
+    if not name or name == "." or any(p in ("", ".", "..") for p in parts) or "\0" in name:
+        raise ValueError(f"unsafe archive path: {member.name!r}")
+    path = PurePosixPath(name)
+    if path.is_absolute() or str(path) != name:
         raise ValueError(f"unsafe archive path: {member.name!r}")
     if path in seen:
         raise ValueError(f"duplicate archive path: {path}")
     seen.add(path)
-    if not member.isreg():
-        raise ValueError(f"archive member is not a regular file: {path}")
+    if member.isdir():
+        if member.size:
+            raise ValueError(f"archive directory has content: {path}")
+    elif not member.isreg():
+        raise ValueError(f"archive member is not a regular file or directory: {path}")
     return path
 
 
@@ -150,13 +154,31 @@ def stage(workspace):
             members = archive.getmembers()
             seen: set[PurePosixPath] = set()
             validated = []
+            kinds = {}
             for member in members:
                 relative = valid_member(member, seen)
+                kind = "directory" if member.isdir() else "file"
+                kinds[relative] = kind
                 target = target_root.joinpath(*relative.parts)
                 if target_root.resolve() not in target.resolve().parents:
                     raise ValueError(f"archive path escapes staging directory: {relative}")
-                validated.append((member, relative, target))
-            for member, relative, target in validated:
+                validated.append((member, relative, target, kind))
+            if any(
+                kind == "file" and any(kinds.get(parent) == "file" for parent in path.parents)
+                for path, kind in kinds.items()
+            ) or any(
+                kind == "file" and any(path in other.parents for other in kinds)
+                for path, kind in kinds.items()
+            ):
+                raise ValueError("archive contains a file/directory ancestor conflict")
+            for member, relative, target, kind in validated:
+                if kind == "directory":
+                    target.mkdir(mode=0o700, parents=True, exist_ok=True)
+                    # Keep extracted directories owner-private and writable so
+                    # session cleanup can remove their contents regardless of
+                    # archive permission metadata.
+                    os.chmod(target, 0o700)
+                    continue
                 target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
                 source = archive.extractfile(member)
                 if source is None:
@@ -173,7 +195,13 @@ def stage(workspace):
                 names.append(str(relative))
     finally:
         spool.close()
-    emit("STAGED", byte_count=count, sha256=digest.hexdigest(), files=names)
+    emit(
+        "STAGED",
+        byte_count=count,
+        sha256=digest.hexdigest(),
+        files=names,
+        directories=[str(relative) for _, relative, _, kind in validated if kind == "directory"],
+    )
 
 
 def random_address():

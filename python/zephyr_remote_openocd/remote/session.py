@@ -13,7 +13,7 @@ from .model import (
     Service,
     SessionDescriptor,
     SessionState,
-    StagedFile,
+    StagedEntry,
     validated_services,
 )
 
@@ -24,7 +24,7 @@ class SessionError(RuntimeError):
 
 class BackendSession(ABC):
     @abstractmethod
-    def stage(self, files: Iterable[StagedFile]): ...
+    def stage(self, files: Iterable[StagedEntry]): ...
 
     @abstractmethod
     def start(self, services: Iterable[Service]) -> SessionDescriptor: ...

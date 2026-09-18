@@ -83,7 +83,11 @@ connection cannot deliver it.
 
 Staging, deployment, and version probing are separate helper invocations, not
 commands in the persistent control protocol. `helper stage <workspace>` reads
-tar stdin and emits `STAGED {byte_count, sha256, files}` on success.
+tar stdin and emits `STAGED {byte_count, sha256, files, directories}` on
+success. `files` and `directories` are normalized relative archive paths;
+directory entries are explicit, and `byte_count` and `sha256` cover regular
+file content only. Duplicate paths and file ancestors are rejected before
+extraction.
 `helper openocd-version <command...>` executes exactly `<command...>
 --version` and emits `OPENOCD_VERSION {output}` on success. Deployment emits
 `DEPLOYED {status, path, sha256}`; helpers are installed atomically at
