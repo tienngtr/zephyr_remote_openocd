@@ -44,8 +44,8 @@ scripts, and local Python helper subprocesses with:
   --cov-report=term-missing
 ```
 
-CI additionally publishes a Markdown job summary and a machine-readable
-`coverage.xml` artifact. Coverage is informational and has no minimum threshold.
+CI additionally publishes a Markdown job summary. Coverage is informational and
+has no minimum threshold.
 
 The repository map is small: `python/zephyr_remote_openocd/remote/` contains
 generic transport and session logic, `zephyr44/runner.py` contains Zephyr 4.4
