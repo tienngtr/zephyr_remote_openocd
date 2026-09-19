@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import struct
+import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -73,7 +73,7 @@ def _preparation_with_unavailable_recipe(
 def test_preparation_builds_only_requested_recipes(tmp_path):
     preparation, _inventory, build_root = _preparation_with_unavailable_recipe(tmp_path)
     with patch("tests.hardware_support.subprocess.run") as run:
-        run.return_value = SimpleNamespace(returncode=0, stdout="")
+        run.return_value = subprocess.CompletedProcess([], 0, "")
         preparation.prepare("target:profile", "flash")
 
     assert run.call_count == 2
@@ -94,9 +94,9 @@ def test_preparation_retries_failed_build_and_caches_success(tmp_path, monkeypat
     monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", "/developer/config.yaml")
     with patch("tests.hardware_support.subprocess.run") as run:
         run.side_effect = [
-            SimpleNamespace(returncode=1, stdout="build failed"),
-            SimpleNamespace(returncode=0, stdout=""),
-            SimpleNamespace(returncode=0, stdout=""),
+            subprocess.CompletedProcess([], 1, "build failed"),
+            subprocess.CompletedProcess([], 0, ""),
+            subprocess.CompletedProcess([], 0, ""),
         ]
         with pytest.raises(pytest.fail.Exception, match="build failed"):
             preparation.prepare("target:profile", "flash")

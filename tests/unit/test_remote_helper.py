@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 from contextlib import suppress
+from typing import Any
 
 import pytest
 
@@ -132,7 +133,7 @@ def test_relay_emits_bounded_fragments_and_preserves_utf8(monkeypatch):
         lambda kind, **values: events.append((kind, values)),
     )
     marker_seen = threading.Event()
-    captured = []
+    captured: list[Any] = []
     stream = _ChunkStream(
         b"abc\n",
         b"defg",

@@ -8,7 +8,7 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass
-from typing import BinaryIO, cast
+from typing import BinaryIO, Protocol, cast
 
 # SSH diagnostics must never be allowed to fill the OS pipe, but retaining a
 # small tail keeps connection and forwarding failures actionable.  This limit
@@ -19,10 +19,16 @@ _SSH_STDERR_READ_BYTES = 8192
 _SSH_STDERR_JOIN_TIMEOUT = 1.0
 
 
+class _StderrStream(Protocol):
+    def read(self, size: int = -1, /) -> bytes: ...
+
+    def close(self) -> None: ...
+
+
 class _StderrDrain:
     """Consume a process stderr pipe while retaining a bounded byte tail."""
 
-    def __init__(self, stream: BinaryIO):
+    def __init__(self, stream: _StderrStream):
         self._stream = stream
         self._tail = bytearray()
         self._lock = threading.Lock()

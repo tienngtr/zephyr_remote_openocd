@@ -56,7 +56,9 @@ def test_serial_reader_matches_fragmented_output_after_arm():
         os.write(master, b"marker\n")
         event = read_event(process, 5)
         assert event["type"] == "MATCH"
-        assert b"fresh marker" in base64.b64decode(event["data"])
+        data = event["data"]
+        assert isinstance(data, str)
+        assert b"fresh marker" in base64.b64decode(data)
         assert process.wait(timeout=5) == 0
 
 
@@ -66,7 +68,9 @@ def test_serial_reader_discards_pre_arm_output_and_times_out():
         arm(process)
         event = read_event(process, 5)
         assert event["type"] == "TIMEOUT"
-        assert b"fresh marker" not in base64.b64decode(event["data"])
+        data = event["data"]
+        assert isinstance(data, str)
+        assert b"fresh marker" not in base64.b64decode(data)
         assert process.wait(timeout=5) == 2
 
 

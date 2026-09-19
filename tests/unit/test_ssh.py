@@ -8,8 +8,10 @@ import os
 import subprocess
 import sys
 import threading
+from collections.abc import Iterator
 from contextlib import suppress
 from types import SimpleNamespace
+from typing import Any, BinaryIO, cast, override
 from unittest.mock import patch
 
 import pytest
@@ -17,10 +19,40 @@ from zephyr_remote_openocd.remote import backend as backend_module
 from zephyr_remote_openocd.remote import ssh as ssh_module
 from zephyr_remote_openocd.remote.backend import SshHelperSession
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
-from zephyr_remote_openocd.remote.model import RemoteProcess, RemoteSessionRequest, Service
+from zephyr_remote_openocd.remote.model import (
+    RemoteProcess,
+    RemoteSessionRequest,
+    Service,
+    SessionAllocation,
+    SessionDescriptor,
+)
 from zephyr_remote_openocd.remote.protocol import encode_message
 from zephyr_remote_openocd.remote.session import SessionError
 from zephyr_remote_openocd.remote.ssh import SSH_STDERR_TAIL_BYTES, SshCommand
+
+
+class _PopenOnlySshCommand(SshCommand):
+    @override
+    def run(
+        self,
+        host: str,
+        remote_command: str,
+        *,
+        input_data: bytes | None = None,
+        timeout: float = 15,
+    ) -> subprocess.CompletedProcess[bytes]:
+        raise AssertionError("run() is not expected in this test")
+
+    @override
+    def run_stream(
+        self,
+        host: str,
+        remote_command: str,
+        stream: BinaryIO,
+        *,
+        timeout: float = 60,
+    ) -> subprocess.CompletedProcess[bytes]:
+        raise AssertionError("run_stream() is not expected in this test")
 
 
 def test_fixed_arguments_are_preserved_without_a_shell():
@@ -250,11 +282,15 @@ def test_helper_output_delivery_does_not_retain_event_history():
         def close_stderr(self):
             pass
 
-    class Command:
-        def __init__(self):
-            self.process = Process()
+    class Command(_PopenOnlySshCommand):
+        process: Any
 
-        def popen(self, host, remote_command, *extra_args):
+        def __init__(self):
+            super().__init__()
+            object.__setattr__(self, "process", Process())
+
+        @override
+        def popen(self, host: str, remote_command: str | None, *extra_args: str) -> Any:
             return self.process
 
     handled = []
@@ -352,23 +388,28 @@ class _HelperProcess:
         self.returncode = -9
 
 
-class _ForwardCommand:
-    def __init__(self, *processes):
-        self.processes = iter(processes)
-        self.calls = []
+class _ForwardCommand(_PopenOnlySshCommand):
+    processes: Iterator[Any]
+    calls: list[tuple[str, str | None, tuple[str, ...]]]
 
-    def popen(self, host, remote_command, *extra_args):
+    def __init__(self, *processes):
+        super().__init__()
+        object.__setattr__(self, "processes", iter(processes))
+        object.__setattr__(self, "calls", [])
+
+    @override
+    def popen(self, host: str, remote_command: str | None, *extra_args: str) -> Any:
         self.calls.append((host, remote_command, extra_args))
         return next(self.processes)
 
 
 def _forward_session(command, *, timeout=1):
-    session = object.__new__(SshHelperSession)
-    session.request = SimpleNamespace(host="host", ssh_command=command)
+    session = cast(Any, object.__new__(SshHelperSession))
+    session.request = RemoteSessionRequest("host", command)
     session.forward_start_timeout = timeout
     session.forwards = []
     session.closed = False
-    session.descriptor = SimpleNamespace(remote_address="127.64.0.1")
+    session.descriptor = SessionDescriptor(SessionAllocation("session", "/workspace"), "127.64.0.1")
     session.output_handler = None
     session.process_returncode = None
     session.reader_error = None

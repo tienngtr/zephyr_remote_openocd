@@ -14,6 +14,7 @@ import tarfile
 import tempfile
 import time
 from pathlib import Path, PurePosixPath
+from typing import Any, BinaryIO, override
 
 import pytest
 from zephyr_remote_openocd.config import PathMapping
@@ -327,10 +328,32 @@ def test_missing_packaged_remote_helper_is_actionable(monkeypatch, tmp_path):
 
 
 def test_deployment_wraps_invalid_utf8_response():
-    class InvalidReply:
-        @staticmethod
-        def run(host, command, input_data=None, timeout=30):
-            return subprocess.CompletedProcess(command, 0, b"\xff", b"")
+    class InvalidReply(SshCommand):
+        @override
+        def run(
+            self,
+            host: str,
+            remote_command: str,
+            *,
+            input_data: bytes | None = None,
+            timeout: float = 15,
+        ) -> subprocess.CompletedProcess[bytes]:
+            return subprocess.CompletedProcess(remote_command, 0, b"\xff", b"")
+
+        @override
+        def popen(self, host: str, remote_command: str | None, *extra_args: str) -> Any:
+            raise AssertionError("popen() is not expected in this test")
+
+        @override
+        def run_stream(
+            self,
+            host: str,
+            remote_command: str,
+            stream: BinaryIO,
+            *,
+            timeout: float = 60,
+        ) -> subprocess.CompletedProcess[bytes]:
+            raise AssertionError("run_stream() is not expected in this test")
 
     with pytest.raises(deploy_module.DeploymentError, match="invalid deployment response"):
         deploy_module.deploy_helper(InvalidReply(), "host", source=b"helper source")
@@ -354,7 +377,9 @@ def test_helper_deployment_is_content_addressed_and_prunes_stale_revisions(tmp_p
     first_source = b"first helper revision"
     second_source = b"second helper revision"
     first = _run_bootstrap(tmp_path, first_source)
-    first_path = Path(first["path"])
+    first_path_value = first["path"]
+    assert isinstance(first_path_value, str)
+    first_path = Path(first_path_value)
     helper_directory = first_path.parent
 
     assert first["status"] == "deployed"
@@ -375,7 +400,9 @@ def test_helper_deployment_is_content_addressed_and_prunes_stale_revisions(tmp_p
     os.utime(stale_path, (stale_time, stale_time))
 
     second = _run_bootstrap(tmp_path, second_source)
-    second_path = Path(second["path"])
+    second_path_value = second["path"]
+    assert isinstance(second_path_value, str)
+    second_path = Path(second_path_value)
     assert second["status"] == "deployed"
     assert second_path != first_path
     assert first_path.exists()
@@ -423,8 +450,8 @@ class TestStaging:
             (root / "binary").write_bytes(bytes(range(256)) + b"\0")
             archive = build_archive(
                 (
-                    StagedFile(root / "empty", "a/empty"),
-                    StagedFile(root / "binary", "b/binary"),
+                    StagedFile(root / "empty", PurePosixPath("a/empty")),
+                    StagedFile(root / "binary", PurePosixPath("b/binary")),
                 ),
                 spool_limit=1,
             )
@@ -433,8 +460,11 @@ class TestStaging:
             assert archive.directories == ()
             with tarfile.open(fileobj=archive.stream, mode="r:*") as packaged:
                 assert packaged.getnames() == ["a/empty", "b/binary"]
-                assert packaged.extractfile("a/empty").read() == b""
-                assert packaged.extractfile("b/binary").read() == bytes(range(256)) + b"\0"
+                empty = packaged.extractfile("a/empty")
+                binary = packaged.extractfile("b/binary")
+                assert empty is not None and binary is not None
+                assert empty.read() == b""
+                assert binary.read() == bytes(range(256)) + b"\0"
             archive.stream.close()
 
     def test_build_archive_preserves_path_components_with_spaces(self, tmp_path: Path):
@@ -622,8 +652,8 @@ class TestSession:
         backend = _FakeBackend()
         session = RemoteSession(self.request(), backend)
         with session:
-            assert session.state == SessionState.READY
-        assert session.state == SessionState.CLOSED
+            assert session.state.name == "READY"
+        assert session.state.name == "CLOSED"
         session = RemoteSession(self.request(), backend := _FakeBackend())
         session.start()
         backend.session.returncode = 7
@@ -1031,6 +1061,7 @@ class TestDebugPlanning:
                 ),
                 PathPlanner(()),
             )
+            assert debug.gdb_argv is not None
             services = {item.name: item for item in debug.services}
             assert services == {
                 "gdb": Service("gdb", 3333, 3333),
@@ -1047,6 +1078,7 @@ class TestDebugPlanning:
             )
             assert "halt" in debug.process.argv
             attach = build_debug_plan(self.inputs(root, "attach"), PathPlanner(()))
+            assert attach.gdb_argv is not None
             assert "load" not in attach.gdb_argv
             server = build_debug_plan(
                 self.inputs(
@@ -1103,6 +1135,7 @@ class TestDebugPlanning:
                 ),
                 PathPlanner(()),
             )
+            assert plan.gdb_argv is not None
             assert plan.services == (Service("gdb", 3355, 3344),)
             assert "target extended-remote 127.0.0.1:3355" in plan.gdb_argv
             assert "tcl_port disabled" in plan.process.argv
@@ -1152,6 +1185,7 @@ class TestDebugPlanning:
                 ),
                 PathPlanner(()),
             )
+            assert plan.gdb_argv is not None
             services = {item.name: item for item in plan.services}
             assert services == {
                 "gdb": Service("gdb", 3333, 3333),

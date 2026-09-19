@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import threading
+from typing import Any, cast
 
 import pytest
 from zephyr_remote_openocd.remote.backend import SshHelperSession
@@ -37,7 +38,7 @@ def test_close_disposes_streams_after_delayed_reader_stops(monkeypatch):
         def close_stderr(self):
             self.stderr.close()
 
-    session = object.__new__(SshHelperSession)
+    session = cast(Any, object.__new__(SshHelperSession))
     session.closed = False
     session.forwards = []
     session.output_handler = None

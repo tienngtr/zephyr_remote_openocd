@@ -10,7 +10,7 @@ import shutil
 import socket
 import tempfile
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 from zephyr_remote_openocd.remote import (
@@ -189,7 +189,7 @@ class TestSshTransportIntegration:
             request = RemoteSessionRequest(
                 self.host,
                 self.ssh,
-                (StagedFile(source, "nested/payload.bin"),),
+                (StagedFile(source, PurePosixPath("nested/payload.bin")),),
                 (Service("gdb", local_port, 3333),),
             )
             session = RemoteSession(request, SshHelperBackend())
@@ -310,7 +310,7 @@ class TestSshTransportIntegration:
             request = RemoteSessionRequest(
                 self.host,
                 self.ssh,
-                (StagedFile(config, "environment.cfg"),),
+                (StagedFile(config, PurePosixPath("environment.cfg")),),
                 (),
                 process,
             )
