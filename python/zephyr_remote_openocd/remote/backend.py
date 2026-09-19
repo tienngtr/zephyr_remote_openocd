@@ -134,7 +134,7 @@ class SshHelperSession(BackendSession):
         try:
             message = read_message(cast(BinaryIO, self.helper_process.stdout))
         except EOFError as error:
-            diagnostic = self.helper_process.stderr_tail(wait=True)
+            diagnostic = self.helper_process.stderr_tail()
             raise SessionError(
                 "remote helper terminated: " + diagnostic.decode("utf-8", "replace")
             ) from error
@@ -216,7 +216,7 @@ class SshHelperSession(BackendSession):
     @staticmethod
     def _forward_diagnostic(process: ManagedSshProcess) -> str:
         try:
-            return process.stderr_tail(wait=True).decode("utf-8", "replace").strip()
+            return process.stderr_tail().decode("utf-8", "replace").strip()
         except (OSError, ValueError):
             return ""
 
@@ -533,6 +533,24 @@ class SshHelperSession(BackendSession):
         failure.__cause__ = reader_error
         return failure
 
+    def _emit_helper_diagnostic(self) -> None:
+        """Surface the bounded helper stderr tail without changing close status."""
+        if self.output_handler is None:
+            return
+        try:
+            diagnostic = self.helper_process.stderr_tail()
+            if not diagnostic:
+                return
+            payload = diagnostic.decode("utf-8", "replace")
+            fragments = payload.split("\n")
+            for index, fragment in enumerate(fragments):
+                line_end = index < len(fragments) - 1
+                if fragment or line_end:
+                    self.output_handler("stderr", fragment, line_end)
+        except BaseException:
+            # Diagnostics are best effort and must not mask a successful close.
+            return
+
     def _close_helper(self) -> tuple[BaseException | None, list[BaseException]]:
         """Stop the helper and return logical and mechanical cleanup failures.
 
@@ -553,7 +571,6 @@ class SshHelperSession(BackendSession):
         stop_requested = False
         helper_status = helper.poll()
         reader_thread = self.reader_thread
-        can_validate_events = helper.stdout is not None or reader_thread is not None
 
         if terminal_before_stop == "requested":
             logical_error = SessionError(
@@ -563,12 +580,11 @@ class SshHelperSession(BackendSession):
         # handled the remote process.  Do not send a second STOP merely
         # because a fake or SSH wrapper has not reaped its own process yet.
         elif helper_status is None and terminal_before_stop is None:
-            if reader_thread is None and helper.stdout is not None:
+            if reader_thread is None:
                 self._start_event_drain()
                 reader_thread = self.reader_thread
             if helper.stdin is None:
-                if can_validate_events:
-                    logical_error = SessionError("helper stdin was not captured")
+                logical_error = SessionError("helper stdin was not captured")
             else:
 
                 def request_stop() -> None:
@@ -624,33 +640,31 @@ class SshHelperSession(BackendSession):
                 reader_cleanup_error = SessionError("helper event reader did not stop")
                 cleanup_errors.append(reader_cleanup_error)
 
+        self._emit_helper_diagnostic()
+
         reader_failure = self._helper_reader_failure()
         if reader_failure is not None:
             logical_error = logical_error or reader_failure
 
         terminal = terminal_reason()
-        if stop_requested and logical_error is None and can_validate_events:
-            if terminal != "requested":
+        if stop_requested and logical_error is None:
+            if terminal not in {"requested", "process_exit"}:
                 status = helper.poll()
                 logical_error = SessionError(
                     "helper shutdown did not produce "
-                    f"SESSION_CLOSED(reason='requested') (terminal={terminal!r}, "
+                    "SESSION_CLOSED(reason='requested' or 'process_exit') "
+                    f"(terminal={terminal!r}, "
                     f"exit={status!r})"
                 )
             elif helper.poll() not in (0, None):
                 logical_error = SessionError(
-                    f"remote helper exited with status {helper.poll()} after requested shutdown"
+                    f"remote helper exited with status {helper.poll()} after {terminal} shutdown"
                 )
 
         # If close was called after a natural process-exit terminal event,
         # preserve that already-observed outcome.  It is the result returned
         # by wait()/poll(), rather than a requested STOP transaction.
-        if (
-            not stop_requested
-            and terminal is None
-            and logical_error is None
-            and can_validate_events
-        ):
+        if not stop_requested and terminal is None and logical_error is None:
             logical_error = SessionError("helper exited without a terminal SESSION_CLOSED event")
 
         if logical_error is not None:
@@ -659,9 +673,9 @@ class SshHelperSession(BackendSession):
 
         return logical_error, cleanup_errors
 
-    def close(self) -> None:
+    def close(self) -> int | None:
         if self.closed:
-            return
+            return self.process_returncode
 
         forward_errors: list[BaseException] = []
         try:
@@ -685,3 +699,4 @@ class SshHelperSession(BackendSession):
         self.closed = True
         if errors:
             _raise_cleanup_errors(errors)
+        return self.process_returncode

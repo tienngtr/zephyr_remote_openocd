@@ -1028,17 +1028,20 @@ helper wire validation SHALL reject duplicate values before process startup.
 ### REQ-FUNC-HELP-009
 
 A client-requested persistent-helper shutdown SHALL be considered successful
-only after the helper accepts `STOP`, emits a valid
-`SESSION_CLOSED` event with `reason: "requested"` and `returncode: null`, and
-exits with status zero. A helper `ERROR`, malformed or invalid terminal event,
-missing terminal event, nonzero helper exit, or shutdown transport failure
-SHALL fail the local close operation. Cleanup SHALL attempt all owned
-mechanical cleanup in one pass. The primary operation or shutdown failure SHALL
-be preserved when later cleanup also fails. Cleanup SHALL NOT be required to
-preserve partially cleaned resources solely so that a later `close()` can
-resume from an intermediate state. Repeated `close()` calls SHOULD be safe, but
-successful continuation of a previously failed cleanup transaction is not a
-required capability.
+after local `STOP` initiation when the helper emits a valid terminal
+`SESSION_CLOSED` event with either `reason: "requested"` and
+`returncode: null`, or `reason: "process_exit"` and the child's integer
+return code. The client SHALL preserve the child return code from the
+process-exit terminal event. In either case, the helper SHALL exit with status
+zero. A helper `ERROR`, malformed or invalid terminal event, missing terminal
+event, nonzero helper exit, or shutdown transport failure SHALL fail the local
+close operation. Cleanup SHALL attempt all owned mechanical cleanup in one
+pass. The primary operation or shutdown failure SHALL be preserved when later
+cleanup also fails. Cleanup SHALL NOT be required to preserve partially
+cleaned resources solely so that a later `close()` can resume from an
+intermediate state. Repeated `close()` calls SHOULD be safe, but successful
+continuation of a previously failed cleanup transaction is not a required
+capability.
 
 Remote OpenOCD SHALL run in its own process group and session. The helper SHALL
 treat that process group as the ownership boundary for cleanup. Loss or
@@ -1047,7 +1050,10 @@ remaining processes in that group. Cleanup SHALL send `SIGTERM` to the group,
 wait a bounded grace period for the OpenOCD leader, check whether the group
 still exists, send `SIGKILL` to a remaining group, reap the leader, and release
 owned relay resources. If the helper can identify non-leader group members
-during cleanup, it SHOULD emit a diagnostic warning before terminating them.
+during cleanup, it SHALL emit a diagnostic warning before terminating them, and
+the local client SHALL show that warning through its user-facing diagnostic
+path after bounded SSH stderr capture. Failure to show this warning SHALL NOT
+make otherwise successful process-group cleanup fail.
 Descendant detection SHALL be best-effort and SHALL NOT be required for
 successful process-group cleanup.
 

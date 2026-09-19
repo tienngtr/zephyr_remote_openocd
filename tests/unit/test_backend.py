@@ -5,9 +5,11 @@ from __future__ import annotations
 import io
 import threading
 
+import pytest
 from zephyr_remote_openocd.remote.backend import SshHelperSession
 
 
+@pytest.mark.timeout(10)
 def test_close_disposes_streams_after_delayed_reader_stops(monkeypatch):
     release_reader = threading.Event()
     reader_started = threading.Event()
@@ -38,7 +40,9 @@ def test_close_disposes_streams_after_delayed_reader_stops(monkeypatch):
     session = object.__new__(SshHelperSession)
     session.closed = False
     session.forwards = []
+    session.output_handler = None
     session.helper_process = Process()
+    session.process_returncode = None
     session.reader_error = None
     session._state_lock = threading.RLock()
     session._terminal_reason = None
@@ -51,7 +55,7 @@ def test_close_disposes_streams_after_delayed_reader_stops(monkeypatch):
 
     session.reader_thread = threading.Thread(target=consume_terminal_event)
     session.reader_thread.start()
-    assert reader_started.wait(timeout=1)
+    reader_started.wait()
 
     original_join = SshHelperSession._join_reader
     join_results = []
@@ -79,7 +83,7 @@ def test_close_disposes_streams_after_delayed_reader_stops(monkeypatch):
         session.close()
     finally:
         release_reader.set()
-        session.reader_thread.join(timeout=1)
+        session.reader_thread.join()
 
     assert join_results == [False, True]
     assert stop_stream_flags == [False, True]

@@ -77,7 +77,7 @@ def test_long_lived_process_drains_noisy_stderr_and_keeps_bounded_tail():
         assert process.stdin is not None
         process.stdin.close()
         assert process.wait(timeout=5) == 7
-        tail = process.stderr_tail(wait=True)
+        tail = process.stderr_tail()
         assert len(tail) <= SSH_STDERR_TAIL_BYTES
         assert tail.endswith(b"tail-marker\n")
     finally:
@@ -108,6 +108,7 @@ def test_run_stream_passes_file_as_stdin_and_captures_output(tmp_path):
     assert result.stderr == b"x" * 100000
 
 
+@pytest.mark.timeout(10)
 def test_stderr_tail_is_best_effort_when_drain_has_not_reached_eof(monkeypatch):
     first_chunk_read = threading.Event()
     release_eof = threading.Event()
@@ -131,14 +132,60 @@ def test_stderr_tail_is_best_effort_when_drain_has_not_reached_eof(monkeypatch):
     drain = ssh_module._StderrDrain(Stream())
     drain.start()
     try:
-        assert first_chunk_read.wait(timeout=1)
-        assert drain.tail(wait=True) == b"prefix"
+        first_chunk_read.wait()
+        assert drain.tail() == b"prefix"
         assert not drain._finished.is_set()
         release_eof.set()
-        assert drain._finished.wait(timeout=1)
+        drain._finished.wait()
     finally:
         release_eof.set()
-        drain._thread.join(timeout=1)
+        drain._thread.join()
+
+
+@pytest.mark.timeout(10)
+def test_stderr_tail_waits_for_delayed_eof_with_a_bounded_timeout(monkeypatch):
+    first_chunk_read = threading.Event()
+    release_suffix = threading.Event()
+    suffix_read = threading.Event()
+
+    class Stream:
+        def __init__(self):
+            self.reads = 0
+
+        def read(self, _size=-1):
+            self.reads += 1
+            if self.reads == 1:
+                first_chunk_read.set()
+                return b"prefix"
+            if self.reads == 2:
+                release_suffix.wait()
+                suffix_read.set()
+                return b"suffix"
+            return b""
+
+        def close(self):
+            release_suffix.set()
+
+    monkeypatch.setattr(ssh_module, "_SSH_STDERR_JOIN_TIMEOUT", 1.0)
+    drain = ssh_module._StderrDrain(Stream())
+    wait_timeouts = []
+    original_wait = drain._finished.wait
+
+    def wait(timeout=None):
+        wait_timeouts.append(timeout)
+        release_suffix.set()
+        return original_wait(timeout)
+
+    monkeypatch.setattr(drain._finished, "wait", wait)
+    drain.start()
+    try:
+        first_chunk_read.wait()
+        assert drain.tail() == b"prefixsuffix"
+        assert suffix_read.is_set()
+        assert wait_timeouts == [ssh_module._SSH_STDERR_JOIN_TIMEOUT]
+    finally:
+        release_suffix.set()
+        drain._thread.join()
 
 
 def test_process_cleanup_closes_an_active_stderr_drain():
@@ -153,6 +200,7 @@ def test_process_cleanup_closes_an_active_stderr_drain():
             process.wait(timeout=5)
 
 
+@pytest.mark.timeout(10)
 def test_helper_output_delivery_does_not_retain_event_history():
     payloads = [f"payload-{index}" for index in range(1024)]
     frames = [
@@ -196,7 +244,7 @@ def test_helper_output_delivery_does_not_retain_event_history():
         def kill(self):
             self.returncode = -9
 
-        def stderr_tail(self, *, wait=False):
+        def stderr_tail(self):
             return b""
 
         def close_stderr(self):
@@ -223,7 +271,7 @@ def test_helper_output_delivery_does_not_retain_event_history():
     try:
         backend.start(())
         assert backend.reader_thread is not None
-        backend.reader_thread.join(timeout=1)
+        backend.reader_thread.join()
         assert not backend.reader_thread.is_alive()
         assert handled == [
             ("stdout" if index % 2 == 0 else "stderr", payload, False)
@@ -275,7 +323,7 @@ class _ForwardProcess:
     def kill(self):
         self.returncode = -9
 
-    def stderr_tail(self, *, wait=False):
+    def stderr_tail(self):
         return b""
 
     def close_stderr(self):

@@ -128,7 +128,7 @@ class TestSshTransportIntegration:
             assert helper_process.stdout is not None
             line = read_line(helper_process.stdout)
             if not line:
-                pytest.fail(helper_process.stderr_tail(wait=True).decode(errors="replace"))
+                pytest.fail(helper_process.stderr_tail().decode(errors="replace"))
             remote_port = int(line)
             local_port = free_loopback_port()
             tunnel = self.ssh.popen(
