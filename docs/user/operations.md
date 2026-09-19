@@ -52,7 +52,10 @@ no local listener or readiness requirement.
 Direct semihosting uses ordinary user-supplied OpenOCD commands, typically
 through `--cmd-pre-init`, and the existing OpenOCD stdout/stderr relay. It is
 intentionally not a semihosting proxy, filesystem virtualization, TCP redirect,
-or GDB File-I/O implementation.
+or GDB File-I/O implementation. Remote OpenOCD may transparently pass GDB
+File-I/O to a locally connected GDB, which may access the local GDB host's
+filesystem. That behavior requires no runner involvement and is outside the
+runner's compatibility guarantees.
 
 ## Operation recipes
 
@@ -121,7 +124,10 @@ west debug -r remote_openocd --remote lab \
 The `lappend` form registers the commands before initialization and executes
 them afterward, when the target is available. Semihosting text appears in the
 relayed OpenOCD output. The runner provides no filesystem proxy or GDB File-I/O
-transport; the target and OpenOCD commands must define the behavior.
+configuration, virtualization, or path translation; the target, OpenOCD, and
+GDB define that behavior. Other semihosting operations handled directly by
+OpenOCD execute on the remote host according to OpenOCD behavior and are outside
+the runner's compatibility guarantees.
 
 ## Stop and uninstall
 
