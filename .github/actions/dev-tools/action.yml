@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+
+name: Developer tools
+description: Set up Python and install the repository developer tools
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v7
+      with:
+        python-version: "3.12"
+    - name: Install developer tools
+      shell: bash
+      run: python -m pip install -r requirements_dev.txt
