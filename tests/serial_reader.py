@@ -9,7 +9,11 @@ import json
 import shlex
 import subprocess
 
+from zephyr_remote_openocd.remote.ssh import ManagedSshProcess
+
 from tests.process_support import read_line
+
+type ReaderProcess = subprocess.Popen[bytes] | ManagedSshProcess
 
 SERIAL_READER_SOURCE = r'''import base64,json,os,re,select,sys,termios,time
 device,baud_text,data_bits_text,parity,stop_bits_text,flow,pattern_text,timeout_text=sys.argv[1:]
@@ -61,19 +65,22 @@ finally:
 '''
 
 
-def read_event(process: subprocess.Popen[bytes], timeout: float) -> dict[str, object]:
+def read_event(process: ReaderProcess, timeout: float) -> dict[str, object]:
     """Read one JSON event from the remote reader."""
     if process.stdout is None:
         raise AssertionError("remote serial reader has no stdout")
     line = read_line(process.stdout, timeout)
     if not line:
-        _, diagnostic = process.communicate(timeout=5)
-        diagnostic = diagnostic or b""
+        if isinstance(process, ManagedSshProcess):
+            diagnostic = process.stderr_tail(wait=True)
+        else:
+            _, diagnostic = process.communicate(timeout=5)
+            diagnostic = diagnostic or b""
         raise AssertionError("remote serial reader exited: " + diagnostic.decode(errors="replace"))
     return json.loads(line)
 
 
-def stop_reader(process: subprocess.Popen[bytes]) -> None:
+def stop_reader(process: ReaderProcess) -> None:
     """Terminate a reader and close all of its pipes."""
     if process.poll() is None:
         process.terminate()
@@ -82,9 +89,15 @@ def stop_reader(process: subprocess.Popen[bytes]) -> None:
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait()
-    for stream in (process.stdin, process.stdout, process.stderr):
-        if stream is not None and not stream.closed:
-            stream.close()
+    if isinstance(process, ManagedSshProcess):
+        process.close_stderr()
+        for stream in (process.stdin, process.stdout):
+            if stream is not None and not stream.closed:
+                stream.close()
+    else:
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is not None and not stream.closed:
+                stream.close()
 
 
 def remote_serial_reader_command(

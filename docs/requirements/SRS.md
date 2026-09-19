@@ -859,6 +859,11 @@ The runner SHALL NOT require GDB Remote Serial Protocol inspection solely to det
 
 ## 20. Semihosting Console
 
+Semihosting console output is the semihosting behavior explicitly guaranteed
+by this runner. Other semihosting behavior may be available through OpenOCD or
+GDB without runner involvement, but is outside the runner's compatibility
+guarantees.
+
 ### REQ-FUNC-SEMI-001
 
 Ordinary OpenOCD commands used to enable semihosting SHALL be accepted through applicable runner command options.
@@ -870,6 +875,20 @@ Semihosting console output emitted by remote OpenOCD on stdout/stderr SHALL appe
 ### REQ-FUNC-SEMI-003
 
 The runner SHALL NOT require a dedicated semihosting network protocol or proxy.
+
+### REQ-FUNC-SEMI-004
+
+The runner SHALL NOT implement, configure, proxy, virtualize, or path-translate
+GDB File-I/O for semihosting. GDB File-I/O provided transparently by remote
+OpenOCD and a locally connected GDB MAY work without runner involvement and MAY
+access the filesystem of the host running GDB. Such transparent behavior is
+outside the runner's compatibility guarantees.
+
+### REQ-FUNC-SEMI-005
+
+Semihosting operations handled directly by OpenOCD MAY execute according to
+OpenOCD behavior on the remote host, but behavior other than console output is
+outside the runner's compatibility guarantees.
 
 ---
 
@@ -984,7 +1003,14 @@ service fields SHALL be validated in the client domain model before
 serialization and independently by the helper after receipt; unknown wire
 fields SHALL be rejected. The contract SHALL define `SESSION_CREATED`,
 `PROCESS_READY`, `CHILD_OUTPUT`, `SESSION_CLOSED`, and `ERROR` events with one
-terminal close event per session.
+terminal close event per session. `CHILD_OUTPUT` SHALL carry ordered UTF-8
+decoded fragments from the identified child stream, omit `LF` delimiters, and
+bound relay buffering. Each event SHALL include Boolean `line_end` metadata;
+it SHALL be true only when the fragment is followed by an actual child `LF`.
+An event with `line_end` false SHALL have a non-empty payload. Readiness SHALL
+require a complete intended marker line rather than a matching fragment prefix.
+`SESSION_CLOSED` SHALL follow relay completion and is the terminal event for
+both child streams.
 
 ### REQ-FUNC-HELP-007
 
@@ -998,6 +1024,32 @@ be serialized for concurrent deployments.
 Each persistent `START` service list SHALL contain unique service names and
 unique `remote_port` values within that request. Client domain validation and
 helper wire validation SHALL reject duplicate values before process startup.
+
+### REQ-FUNC-HELP-009
+
+A client-requested persistent-helper shutdown SHALL be considered successful
+only after the helper accepts `STOP`, emits a valid
+`SESSION_CLOSED` event with `reason: "requested"` and `returncode: null`, and
+exits with status zero. A helper `ERROR`, malformed or invalid terminal event,
+missing terminal event, nonzero helper exit, or shutdown transport failure
+SHALL fail the local close operation. Cleanup SHALL attempt all owned
+mechanical cleanup in one pass. The primary operation or shutdown failure SHALL
+be preserved when later cleanup also fails. Cleanup SHALL NOT be required to
+preserve partially cleaned resources solely so that a later `close()` can
+resume from an intermediate state. Repeated `close()` calls SHOULD be safe, but
+successful continuation of a previously failed cleanup transaction is not a
+required capability.
+
+Remote OpenOCD SHALL run in its own process group and session. The helper SHALL
+treat that process group as the ownership boundary for cleanup. Loss or
+termination of the controlling remote session SHALL terminate OpenOCD and any
+remaining processes in that group. Cleanup SHALL send `SIGTERM` to the group,
+wait a bounded grace period for the OpenOCD leader, check whether the group
+still exists, send `SIGKILL` to a remaining group, reap the leader, and release
+owned relay resources. If the helper can identify non-leader group members
+during cleanup, it SHOULD emit a diagnostic warning before terminating them.
+Descendant detection SHALL be best-effort and SHALL NOT be required for
+successful process-group cleanup.
 
 ---
 
@@ -1142,7 +1194,8 @@ The current scope does not include:
 - multiple simultaneous RTT channels;
 - multiple simultaneous RTT clients;
 - semihosting filesystem virtualization;
-- GDB File-I/O remoting for semihosting;
+- runner-provided configuration, proxying, virtualization, or path translation
+  for semihosting GDB File-I/O;
 - requiring a specific SSH-agent implementation.
 
 ---

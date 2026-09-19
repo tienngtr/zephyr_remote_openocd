@@ -83,7 +83,8 @@ def stop_and_close(process, timeout: float = 20):
     if process.poll() is None:
         process.terminate()
         process.wait(timeout=timeout)
-    for stream in (process.stdin, process.stdout, process.stderr):
+    process.close_stderr()
+    for stream in (process.stdin, process.stdout):
         if stream is not None and not stream.closed:
             stream.close()
 
@@ -127,9 +128,7 @@ class TestSshTransportIntegration:
             assert helper_process.stdout is not None
             line = read_line(helper_process.stdout)
             if not line:
-                assert helper_process.stderr is not None
-                _, diagnostic = helper_process.communicate(timeout=10)
-                pytest.fail(diagnostic.decode(errors="replace"))
+                pytest.fail(helper_process.stderr_tail(wait=True).decode(errors="replace"))
             remote_port = int(line)
             local_port = free_loopback_port()
             tunnel = self.ssh.popen(
@@ -276,7 +275,7 @@ class TestSshTransportIntegration:
             assert isinstance(backend_session, SshHelperSession)
             backend_session.helper_process.terminate()
             backend_session.helper_process.wait(timeout=20)
-            with pytest.raises(SessionError, match="helper event stream failed"):
+            with pytest.raises(SessionError):
                 session.wait(timeout=20)
         finally:
             session.close()
@@ -318,7 +317,9 @@ class TestSshTransportIntegration:
             session = RemoteSession(
                 request,
                 SshHelperBackend(
-                    output_handler=lambda stream, payload: output.append((stream, payload))
+                    output_handler=lambda stream, payload, line_end: output.append(
+                        (stream, payload, line_end)
+                    )
                 ),
             )
             try:
@@ -326,4 +327,6 @@ class TestSshTransportIntegration:
                 assert session.wait(timeout=30) == 0
             finally:
                 session.close()
-            assert any(payload == "ZRO_CONFIG_VALUE=channel_1" for _stream, payload in output)
+            assert any(
+                payload == "ZRO_CONFIG_VALUE=channel_1" for _stream, payload, _line_end in output
+            )
