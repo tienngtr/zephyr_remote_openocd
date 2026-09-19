@@ -177,7 +177,7 @@ class TestForwardingLifecycle:
     @staticmethod
     def session(command):
         session = cast(Any, object.__new__(SshHelperSession))
-        session.request = RemoteSessionRequest("dot4", command)
+        session.request = RemoteSessionRequest("target", command)
         session.forward_start_timeout = 1
         session.forwards = []
         session.closed = False
@@ -279,7 +279,9 @@ class TestForwardingLifecycle:
         helper.stdin = io.BytesIO()
         command = self.Command(helper)
         session = self.session(command)
-        session.request = RemoteSessionRequest("dot4", command, process=RemoteProcess(("openocd",)))
+        session.request = RemoteSessionRequest(
+            "target", command, process=RemoteProcess(("openocd",))
+        )
         session.helper_process = helper
         session.allocation = SessionAllocation("session", "/workspace")
         service = Service("gdb", 1234, 3333)
