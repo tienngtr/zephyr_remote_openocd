@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import codecs
 import fcntl
 import hashlib
 import ipaddress
@@ -23,6 +24,7 @@ import tarfile
 import tempfile
 import threading
 import time
+from contextlib import suppress
 from pathlib import Path, PurePosixPath
 from typing import NamedTuple
 
@@ -30,6 +32,10 @@ VERSION = 1
 RANGE = ipaddress.IPv4Network("127.64.0.0/10")
 SESSION_LOCK = ".session.lock"
 STALE_SESSION_AGE = 24 * 60 * 60
+CHILD_TERM_TIMEOUT = 5
+CHILD_POLL_INTERVAL = 0.05
+CHILD_REAP_TIMEOUT = 1
+RELAY_CHUNK_SIZE = 64 * 1024
 _emit_lock = threading.Lock()
 
 
@@ -248,23 +254,123 @@ def echo(connection):
             connection.sendall(data)
 
 
-def relay(stream, stream_name, marker=None, marker_seen=None, captured=None):
-    while True:
-        line = stream.readline()
-        if not line:
+class _MarkerMatcher:
+    """Recognize one complete trimmed marker line without retaining its text."""
+
+    def __init__(self, marker, marker_seen):
+        self.marker = marker
+        self.marker_seen = marker_seen
+        self._index = 0
+        self._started = False
+        self._valid = True
+
+    def feed(self, character):
+        if self.marker_seen.is_set() or not self._valid:
             return
-        payload = line.decode("utf-8", "replace").rstrip("\n")
+        if not self._started and character.isspace():
+            return
+        if self._index < len(self.marker) and character == self.marker[self._index]:
+            self._started = True
+            self._index += 1
+            return
+        if self._index == len(self.marker) and character.isspace():
+            return
+        self._valid = False
+
+    def finish_line(self):
+        if (
+            not self.marker_seen.is_set()
+            and self._valid
+            and self._started
+            and self._index == len(self.marker)
+        ):
+            self.marker_seen.set()
+        self._index = 0
+        self._started = False
+        self._valid = True
+
+
+class _CapturedFragment:
+    """Retained startup output with its stream and boundary metadata."""
+
+    __slots__ = ("stream", "payload", "line_end")
+
+    def __init__(self, stream, payload, line_end):
+        self.stream = stream
+        self.payload = payload
+        self.line_end = line_end
+
+
+def relay(stream, stream_name, marker=None, marker_seen=None, captured=None, capture_lock=None):
+    """Relay bounded UTF-8 fragments while matching complete marker lines."""
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
+    matcher = (
+        _MarkerMatcher(marker, marker_seen)
+        if marker is not None and marker_seen is not None
+        else None
+    )
+    pending: list[str] = []
+    read_chunk = getattr(stream, "read1", None)
+    if read_chunk is None:
+        read_chunk = stream.read
+
+    def emit_fragment(payload, *, line_end=False):
         if captured is not None:
-            captured.append(payload)
-            del captured[:-128]
-        if marker is not None and payload.strip() == marker:
-            marker_seen.set()
-        emit("CHILD_OUTPUT", stream=stream_name, payload=payload)
+            record = _CapturedFragment(stream_name, payload, line_end)
+            if capture_lock is None:
+                captured.append(record)
+                del captured[:-128]
+            else:
+                with capture_lock:
+                    captured.append(record)
+                    del captured[:-128]
+        emit(
+            "CHILD_OUTPUT",
+            stream=stream_name,
+            payload=payload,
+            line_end=line_end,
+        )
+
+    def consume(text):
+        for character in text:
+            if character == "\n":
+                if matcher is not None:
+                    matcher.finish_line()
+                emit_fragment("".join(pending), line_end=True)
+                pending.clear()
+                continue
+            if matcher is not None:
+                matcher.feed(character)
+            pending.append(character)
+            if len(pending) >= RELAY_CHUNK_SIZE:
+                emit_fragment("".join(pending))
+                pending.clear()
+
+    while True:
+        chunk = read_chunk(RELAY_CHUNK_SIZE)
+        if not chunk:
+            consume(decoder.decode(b"", final=True))
+            if matcher is not None:
+                matcher.finish_line()
+            if pending:
+                emit_fragment("".join(pending))
+            return
+        consume(decoder.decode(chunk, final=False))
 
 
-def is_bind_collision(output):
+def is_bind_collision(output: list[_CapturedFragment]):
     """Recognize the POSIX EADDRINUSE diagnostic from OpenOCD startup."""
-    return "address already in use" in "\n".join(output).casefold()
+    phrase = "address already in use"
+    lines: dict[str, str] = {}
+    for item in output:
+        stream = item.stream
+        payload = item.payload
+        line_end = item.line_end
+        line = lines.get(stream, "") + payload.casefold()
+        if phrase in line:
+            return True
+        lines[stream] = "" if line_end else line[-len(phrase) + 1 :]
+    return False
 
 
 def allocate_service_address(ports):
@@ -533,8 +639,10 @@ class SupervisedChild:
         self.process = process
         self.marker = marker
         self.marker_seen = threading.Event()
-        self.startup_output: list[str] = []
+        self.startup_output: list[_CapturedFragment] = []
+        self._capture_lock = threading.Lock()
         self.relay_threads: list[threading.Thread] = []
+        self._observed_returncode = None
 
     @property
     def pid(self):
@@ -542,10 +650,27 @@ class SupervisedChild:
 
     @property
     def returncode(self):
+        if self._observed_returncode is not None:
+            return self._observed_returncode
         return self.process.returncode
 
     def poll(self):
-        return self.process.poll()
+        if self._observed_returncode is not None:
+            return self._observed_returncode
+        if self.process.returncode is not None:
+            self._observed_returncode = self.process.returncode
+            return self._observed_returncode
+        result = os.waitid(os.P_PID, self.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        if result is None or result.si_pid == 0:
+            return None
+        if result.si_code == os.CLD_EXITED:
+            returncode = result.si_status
+        elif result.si_code in (os.CLD_KILLED, os.CLD_DUMPED):
+            returncode = -result.si_status
+        else:
+            raise RuntimeError(f"unexpected child wait status: {result.si_code}")
+        self._observed_returncode = returncode
+        return returncode
 
     def start_relays(self, capture_startup=False):
         if self.process.stdout is None or self.process.stderr is None:
@@ -554,12 +679,26 @@ class SupervisedChild:
         self.relay_threads = [
             threading.Thread(
                 target=relay,
-                args=(self.process.stdout, "stdout", self.marker, self.marker_seen, captured),
+                args=(
+                    self.process.stdout,
+                    "stdout",
+                    self.marker,
+                    self.marker_seen,
+                    captured,
+                    self._capture_lock,
+                ),
                 daemon=True,
             ),
             threading.Thread(
                 target=relay,
-                args=(self.process.stderr, "stderr", self.marker, self.marker_seen, captured),
+                args=(
+                    self.process.stderr,
+                    "stderr",
+                    self.marker,
+                    self.marker_seen,
+                    captured,
+                    self._capture_lock,
+                ),
                 daemon=True,
             ),
         ]
@@ -567,30 +706,121 @@ class SupervisedChild:
             thread.start()
 
     def join_relays(self):
+        deadline = time.monotonic() + 2
         for thread in self.relay_threads:
             # A signal may arrive before start_relays has started every thread.
+            if thread.ident is None:
+                continue
             if thread.is_alive():
-                thread.join(timeout=2)
+                thread.join(timeout=max(0.0, deadline - time.monotonic()))
+
+    def _active_relays(self):
+        return tuple(thread for thread in self.relay_threads if thread.is_alive())
 
     def close_streams(self):
+        active = self._active_relays()
+        errors: list[BaseException] = []
+        if active:
+            names = ", ".join(thread.name for thread in active)
+            errors.append(RuntimeError(f"child output relay did not stop ({names})"))
         for stream in (self.process.stdout, self.process.stderr):
-            if stream is not None and not stream.closed:
+            if stream is None or stream.closed:
+                continue
+            if active:
+                continue
+            try:
                 stream.close()
+            except BaseException as error:
+                errors.append(error)
+        _raise_cleanup_errors(errors)
 
     def dispose(self):
         self.join_relays()
         self.close_streams()
 
+    def _group_exists(self):
+        try:
+            os.killpg(self.pid, 0)
+        except ProcessLookupError:
+            return False
+        return True
+
+    def _wait_for_leader_exit(self):
+        deadline = time.monotonic() + CHILD_TERM_TIMEOUT
+        while self.poll() is None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(CHILD_POLL_INTERVAL, remaining))
+        return True
+
+    def _remaining_group_members(self):
+        """Return observable non-leader members of the owned process group."""
+        members = []
+        try:
+            entries = Path("/proc").iterdir()
+        except OSError:
+            return ()
+        for entry in entries:
+            if not entry.name.isdigit() or int(entry.name) == self.pid:
+                continue
+            try:
+                fields = (entry / "stat").read_text(encoding="ascii").rsplit(")", 1)[1].split()
+                if int(fields[2]) == self.pid:
+                    members.append(int(entry.name))
+            except (IndexError, OSError, ValueError):
+                continue
+        return tuple(members)
+
+    def _warn_remaining_group_members(self):
+        members = self._remaining_group_members()
+        if members:
+            print(
+                "warning: terminating remaining OpenOCD process-group members: "
+                + ", ".join(map(str, members)),
+                file=sys.stderr,
+                flush=True,
+            )
+
     def terminate(self):
-        if self.poll() is None:
+        errors = []
+        if self.process.returncode is None:
+            group_exists = True
             try:
                 os.killpg(self.pid, signal.SIGTERM)
-                self.process.wait(timeout=5)
-            except (ProcessLookupError, subprocess.TimeoutExpired):
-                if self.poll() is None:
-                    os.killpg(self.pid, signal.SIGKILL)
-                    self.process.wait()
-        self.dispose()
+            except ProcessLookupError:
+                group_exists = False
+            except BaseException as error:
+                errors.append(error)
+            if group_exists:
+                try:
+                    self._wait_for_leader_exit()
+                except BaseException as error:
+                    errors.append(error)
+                try:
+                    group_exists = self._group_exists()
+                except BaseException as error:
+                    errors.append(error)
+                    group_exists = True
+                if group_exists:
+                    with suppress(BaseException):
+                        self._warn_remaining_group_members()
+                    try:
+                        os.killpg(self.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    except BaseException as error:
+                        errors.append(error)
+            try:
+                returncode = self.process.wait(timeout=CHILD_REAP_TIMEOUT)
+                self._observed_returncode = returncode
+            except BaseException as error:
+                errors.append(error)
+        try:
+            self.dispose()
+        except BaseException as error:
+            errors.append(error)
+        _raise_cleanup_errors(errors)
 
 
 def _spawn_child(argv, *, cwd=None, environment=None, marker=None):
@@ -627,7 +857,7 @@ def _wait_for_process(child, address, request, attempt):
     deadline = time.monotonic() + request.readiness_timeout
     while time.monotonic() < deadline:
         if child.poll() is not None:
-            child.dispose()
+            child.terminate()
             if is_bind_collision(child.startup_output) and attempt < 31:
                 return False
             raise RuntimeError(f"process exited before readiness with status {child.returncode}")
@@ -646,6 +876,7 @@ class ControlSession:
         self.work = work
         self.workspace_lock = workspace_lock
         self.child: SupervisedChild | None = None
+        self.protocol_error: BaseException | None = None
         self.stopping = False
 
     @classmethod
@@ -695,8 +926,9 @@ class ControlSession:
     def _child_finished(self):
         if self.child is None or self.child.poll() is None:
             return False
-        self.child.dispose()
-        emit("SESSION_CLOSED", reason="process_exit", returncode=self.child.returncode)
+        returncode = self.child.returncode
+        self.cleanup()
+        emit("SESSION_CLOSED", reason="process_exit", returncode=returncode)
         return True
 
     def _read_and_dispatch(self):
@@ -707,22 +939,46 @@ class ControlSession:
             message = json.loads(line)
             return self.dispatch(message)
         except Exception as exc:
-            error(exc, "PROTOCOL_ERROR")
+            self.protocol_error = exc
             return False
 
     def run(self):
+        operation_error = None
+        cleanup_error = None
         try:
-            self.announce()
-            selector = selectors.DefaultSelector()
             try:
-                selector.register(sys.stdin.buffer, selectors.EVENT_READ)
-                while not self._child_finished():
-                    if selector.select(0.2) and not self._read_and_dispatch():
-                        return
-            finally:
-                selector.close()
+                self.announce()
+                selector = selectors.DefaultSelector()
+                try:
+                    selector.register(sys.stdin.buffer, selectors.EVENT_READ)
+                    while not self._child_finished():
+                        if selector.select(0.2) and not self._read_and_dispatch():
+                            break
+                finally:
+                    selector.close()
+            except BaseException as exc:
+                operation_error = exc
         finally:
-            self.cleanup()
+            try:
+                self.cleanup()
+            except BaseException as exc:
+                cleanup_error = exc
+
+        if self.protocol_error is not None:
+            if operation_error is not None:
+                self.protocol_error.add_note(f"session operation also failed: {operation_error}")
+            if cleanup_error is not None:
+                self.protocol_error.add_note(f"session cleanup also failed: {cleanup_error}")
+            error(self.protocol_error, "PROTOCOL_ERROR")
+            if operation_error is not None or cleanup_error is not None:
+                raise SystemExit(1)
+            return
+        if operation_error is not None:
+            if cleanup_error is not None:
+                operation_error.add_note(f"session cleanup also failed: {cleanup_error}")
+            raise operation_error
+        if cleanup_error is not None:
+            raise cleanup_error
 
     def handle_signal(self, *_):
         self.cleanup()
@@ -748,9 +1004,9 @@ class ControlSession:
             self.workspace_lock.close()
         except BaseException as error:
             errors.append(error)
+        self.stopping = True
         if errors:
             _raise_cleanup_errors(errors)
-        self.stopping = True
 
 
 def control():

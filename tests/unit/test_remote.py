@@ -104,7 +104,14 @@ class TestProtocol:
             )
         )
         order.accept(
-            decode_message(encode_message("CHILD_OUTPUT", stream="stdout", payload="before-ready"))
+            decode_message(
+                encode_message(
+                    "CHILD_OUTPUT",
+                    stream="stdout",
+                    payload="before-ready",
+                    line_end=False,
+                )
+            )
         )
         order.accept(
             decode_message(
@@ -116,7 +123,14 @@ class TestProtocol:
         )
         with pytest.raises(ProtocolError):
             order.accept(
-                decode_message(encode_message("CHILD_OUTPUT", stream="stdout", payload="late"))
+                decode_message(
+                    encode_message(
+                        "CHILD_OUTPUT",
+                        stream="stdout",
+                        payload="late",
+                        line_end=False,
+                    )
+                )
             )
 
     def test_start_serializers_use_validated_domain_models(self):
@@ -211,6 +225,99 @@ class TestProtocol:
             validate_helper_event(
                 decode_message(encode_message("SESSION_CLOSED", reason="requested", returncode=0))
             )
+
+    @pytest.mark.parametrize("payload", ("line\nbreak", "line\n"))
+    def test_child_output_payload_rejects_embedded_line_delimiters(self, payload):
+        with pytest.raises(ProtocolError, match="invalid required fields"):
+            validate_helper_event(
+                decode_message(
+                    encode_message(
+                        "CHILD_OUTPUT",
+                        stream="stdout",
+                        payload=payload,
+                        line_end=False,
+                    )
+                )
+            )
+
+    def test_child_output_requires_boundary_metadata(self):
+        valid = encode_message(
+            "CHILD_OUTPUT",
+            stream="stdout",
+            payload="fragment",
+            line_end=False,
+        )
+        validate_helper_event(decode_message(valid))
+        for fields in (
+            {},
+            {"line_end": 1},
+            {"line_end": False, "obsolete": False},
+            {"line_end": False, "unexpected": True},
+        ):
+            with pytest.raises(ProtocolError):
+                validate_helper_event(
+                    decode_message(
+                        encode_message(
+                            "CHILD_OUTPUT",
+                            stream="stdout",
+                            payload="fragment",
+                            **fields,
+                        )
+                    )
+                )
+
+    def test_child_output_boundary_states_are_unambiguous(self):
+        for payload, line_end in (("", False),):
+            with pytest.raises(ProtocolError):
+                validate_helper_event(
+                    decode_message(
+                        encode_message(
+                            "CHILD_OUTPUT",
+                            stream="stdout",
+                            payload=payload,
+                            line_end=line_end,
+                        )
+                    )
+                )
+
+    def test_event_order_accepts_output_until_terminal_event(self):
+        order = EventOrder()
+        order.accept(
+            decode_message(
+                encode_message(
+                    "SESSION_CREATED",
+                    helper="helper",
+                    session_id="session",
+                    remote_workspace="/workspace",
+                )
+            )
+        )
+        order.accept(
+            decode_message(
+                encode_message("PROCESS_READY", remote_address="127.64.1.1", child_pid=1)
+            )
+        )
+
+        def output(stream, payload, *, line_end=False):
+            order.accept(
+                decode_message(
+                    encode_message(
+                        "CHILD_OUTPUT",
+                        stream=stream,
+                        payload=payload,
+                        line_end=line_end,
+                    )
+                )
+            )
+
+        output("stdout", "first")
+        output("stderr", "still open")
+        output("stdout", "later output")
+        order.accept(
+            decode_message(encode_message("SESSION_CLOSED", reason="process_exit", returncode=0))
+        )
+        with pytest.raises(ProtocolError):
+            output("stderr", "late output")
 
 
 def test_missing_packaged_remote_helper_is_actionable(monkeypatch, tmp_path):
@@ -497,6 +604,16 @@ class _FakeSession(BackendSession):
             raise self.close_error
 
 
+class _UnprintableError(RuntimeError):
+    def __str__(self):
+        raise RuntimeError("cannot stringify error")
+
+
+class _UnnotableError(RuntimeError):
+    def add_note(self, _note):
+        raise RuntimeError("cannot attach note")
+
+
 class _FakeBackend(SessionBackend):
     def __init__(self):
         self.session = _FakeSession()
@@ -521,6 +638,72 @@ class TestSession:
         assert session.poll() == 7
         assert session.termination_returncode == 7
         assert session.state == SessionState.FAILED
+        assert backend.session.actions[-1] == ("close",)
+
+    @pytest.mark.parametrize(
+        ("body_failed", "cleanup_failed"),
+        ((False, False), (False, True), (True, False), (True, True)),
+    )
+    def test_context_body_and_cleanup_failure_matrix(self, body_failed, cleanup_failed):
+        backend = _FakeBackend()
+        session = RemoteSession(self.request(), backend)
+        body_error = RuntimeError("body failed")
+        cleanup_error = RuntimeError("cleanup failed")
+        if cleanup_failed:
+            backend.session.close_error = cleanup_error
+        expected_error = body_error if body_failed else cleanup_error if cleanup_failed else None
+
+        def run_context():
+            with session:
+                if body_failed:
+                    raise body_error
+
+        if expected_error is None:
+            run_context()
+        else:
+            with pytest.raises(RuntimeError) as raised:
+                run_context()
+            assert raised.value is expected_error
+            if body_failed and cleanup_failed:
+                assert any(str(cleanup_error) in note for note in raised.value.__notes__)
+
+        assert backend.session.actions.count(("close",)) == 1
+        assert session.state is SessionState.CLOSED
+
+    def test_context_cleanup_diagnostics_cannot_mask_body_failure(self):
+        backend = _FakeBackend()
+        session = RemoteSession(self.request(), backend)
+        body_error = _UnnotableError("body failed")
+        cleanup_error = _UnprintableError("cleanup failed")
+        backend.session.close_error = cleanup_error
+
+        def run_context():
+            with session:
+                raise body_error
+
+        with pytest.raises(_UnnotableError) as raised:
+            run_context()
+
+        assert raised.value is body_error
+        assert session.state is SessionState.CLOSED
+        assert backend.session.actions.count(("close",)) == 1
+
+    def test_context_cleanup_only_preserves_unprintable_cleanup_failure(self):
+        backend = _FakeBackend()
+        session = RemoteSession(self.request(), backend)
+        cleanup_error = _UnprintableError("cleanup failed")
+        backend.session.close_error = cleanup_error
+
+        def run_context():
+            with session:
+                pass
+
+        with pytest.raises(_UnprintableError) as raised:
+            run_context()
+
+        assert raised.value is cleanup_error
+        assert session.state is SessionState.CLOSED
+        assert backend.session.actions.count(("close",)) == 1
 
     @pytest.mark.parametrize("failure", ("stage_error", "start_error"))
     def test_start_failure_closes_backend_and_preserves_error(self, failure):
@@ -631,7 +814,7 @@ class TestSession:
         assert session.state == SessionState.FAILED
         assert backend.session.actions[-1] == ("close",)
 
-    def test_close_failure_keeps_session_retryable(self):
+    def test_close_failure_finishes_close_attempt(self):
         backend = _FakeBackend()
         session = RemoteSession(self.request(), backend)
         session.start()
@@ -642,12 +825,10 @@ class TestSession:
             session.close()
 
         assert raised.value is cleanup_error
-        assert session.state == SessionState.FAILED
+        assert session.state == SessionState.CLOSED
         backend.session.close_error = None
         session.close()
-        assert session.state == SessionState.CLOSED
         assert [action for action in backend.session.actions if action == ("close",)] == [
-            ("close",),
             ("close",),
         ]
 

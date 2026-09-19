@@ -119,7 +119,15 @@ def _valid_process_ready(message: dict[str, Any]) -> bool:
 
 
 def _valid_child_output(message: dict[str, Any]) -> bool:
-    return message.get("stream") in {"stdout", "stderr"} and isinstance(message.get("payload"), str)
+    payload = message.get("payload")
+    line_end = message.get("line_end")
+    return (
+        message.get("stream") in {"stdout", "stderr"}
+        and isinstance(payload, str)
+        and "\n" not in payload
+        and isinstance(line_end, bool)
+        and (payload != "" or line_end)
+    )
 
 
 def _valid_session_closed(message: dict[str, Any]) -> bool:
@@ -141,7 +149,7 @@ def _valid_error(message: dict[str, Any]) -> bool:
 _EVENT_FIELDS = {
     "SESSION_CREATED": frozenset(("helper", "session_id", "remote_workspace")),
     "PROCESS_READY": frozenset(("remote_address", "child_pid")),
-    "CHILD_OUTPUT": frozenset(("stream", "payload")),
+    "CHILD_OUTPUT": frozenset(("stream", "payload", "line_end")),
     "SESSION_CLOSED": frozenset(("reason", "returncode")),
     "ERROR": frozenset(("code", "message")),
 }
