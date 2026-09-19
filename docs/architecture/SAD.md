@@ -716,6 +716,15 @@ local west process
 
 No semihosting-specific network subsystem exists.
 
+The runner explicitly supports semihosting console output through this normal
+relay and accepts ordinary OpenOCD commands that enable it. It does not
+configure, proxy, virtualize, or translate paths for GDB File-I/O. Remote
+OpenOCD may transparently pass File-I/O requests to a locally connected GDB,
+in which case GDB can access its local host filesystem without runner
+involvement. Other operations handled directly by OpenOCD execute on the
+remote host according to OpenOCD behavior. These transparent behaviors are
+outside the runner's compatibility guarantees.
+
 ---
 
 ## 27. Remote OpenOCD Service Isolation
@@ -888,6 +897,12 @@ The configured SSH command carries arbitrary byte streams, including empty,
 textual, binary/NUL-containing, and large payloads, with remote failure
 propagation. Production flash uses this transport for session staging.
 
+Staging is a finite transfer: the locally built, seekable archive is supplied
+as the configured SSH command's stdin while that command's output is captured.
+It has no general live-producer streaming subsystem. Long-lived helper and
+forwarding SSH processes instead own one bounded background stderr drain so
+diagnostics cannot block their control or forwarding traffic.
+
 A preferred candidate is:
 
 ```text
@@ -910,7 +925,9 @@ Advantages include:
 
 The Protocol v1 helper and flash implementation handle the staging manifest,
 safe archive encoding and extraction, private remote filesystem layout, path
-rewriting, helper deployment, and OpenOCD artifact staging.
+rewriting, helper deployment, and OpenOCD artifact staging. Staging manifests
+carry explicit directory entries, including empty roots and nested
+directories; file byte counts and digests cover regular-file content only.
 
 ---
 
@@ -958,13 +975,24 @@ Persistent fallback data older than 24 hours may be cleaned opportunistically.
 
 ## 38. Process Supervision
 
-OpenOCD executes in a helper-supervised process group.
+OpenOCD executes in a helper-supervised process group and session. The process
+group is the helper's ownership boundary for generic cleanup hygiene, including
+processes that outlive the OpenOCD leader.
 
 The helper's `ControlSession` owns the workspace, control selector, command
 dispatch, signal handlers, and final cleanup. A `SupervisedChild` owns each
 OpenOCD (or fake test child) process, output relays, readiness observation,
 termination, and stream closure. This keeps process resources attached to one
 owner across success, failure, EOF, and signal paths.
+
+Cleanup sends `SIGTERM` to the owned group and waits a bounded grace period for
+the leader. It then checks whether the group still exists. If so, the helper
+may inspect `/proc` once and warn about observable non-leader members before
+sending `SIGKILL`. Failure or a race during this best-effort diagnostic does
+not affect the group cleanup decision. The helper then reaps the leader, joins
+output relays, and releases their streams. It does not continuously monitor
+the process tree, retain descendant PID history, or use descendant discovery
+to decide whether the group needs cleanup.
 
 Normal termination:
 
@@ -977,6 +1005,15 @@ helper terminates OpenOCD
         v
 cleanup
 ```
+
+For a client-requested stop, local cleanup is successful only after the
+helper has emitted a valid `SESSION_CLOSED` event with `reason: "requested"`
+and `returncode: null` and has exited with status zero. Protocol, helper, or
+transport failures remain visible to the caller; later mechanical cleanup
+failures are retained as diagnostics. Local shutdown attempts all remaining
+mechanical cleanup once and then marks the session closed. A later `close()` is
+harmless, but does not resume a partially failed cleanup transaction or retain
+resources solely for that purpose.
 
 Unexpected controlling-session loss follows the same cleanup path.
 Each session holds an advisory lock in its workspace. When allocating a new
@@ -1047,7 +1084,14 @@ on ordinary human-readable OpenOCD diagnostics.
 
 ## 41. OpenOCD stdout/stderr
 
-Remote OpenOCD output is relayed with low buffering.
+Remote OpenOCD output is relayed with bounded low buffering. The helper reads
+each child stream in bounded chunks, incrementally decodes UTF-8 with
+replacement, omits `LF` delimiters, and emits ordered `CHILD_OUTPUT` fragments
+with `line_end` metadata. A bounded chunk and an actual `LF` therefore remain
+distinct. Long newline-free output becomes visible before the child exits.
+`SESSION_CLOSED` follows relay completion and terminates the session. Readiness
+matching keeps separate line state and accepts a marker only after a complete
+trimmed line, so a fragment boundary cannot make a marker appear.
 
 This includes:
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import io
 import json
 import os
 import socket
@@ -41,6 +42,21 @@ def runner_api(monkeypatch):
 @pytest.fixture
 def runner_module(runner_api):
     return importlib.import_module("zephyr_remote_openocd.zephyr44.runner")
+
+
+def test_runner_output_reconstructs_fragment_boundaries(runner_module, monkeypatch):
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    monkeypatch.setattr(runner_module.sys, "stdout", stdout)
+    monkeypatch.setattr(runner_module.sys, "stderr", stderr)
+
+    runner_module._write_output("stdout", "long ", False, False)
+    runner_module._write_output("stdout", "line", True, False)
+    runner_module._write_output("stdout", "", False, True)
+    runner_module._write_output("stderr", "unterminated", False, True)
+
+    assert stdout.getvalue() == "long line\n"
+    assert stderr.getvalue() == "unterminated"
 
 
 def test_remote_home_json_preserves_spaces(runner_module, monkeypatch, tmp_path):

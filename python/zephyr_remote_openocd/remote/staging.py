@@ -11,7 +11,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import BinaryIO, cast
 
-from .model import StagedFile
+from .model import StagedDirectory, StagedEntry, StagedFile
 
 
 class StagingError(RuntimeError):
@@ -24,6 +24,7 @@ class ArchiveInfo:
     byte_count: int
     sha256: str
     files: tuple[str, ...]
+    directories: tuple[str, ...]
 
 
 class _DigestingReader:
@@ -41,11 +42,31 @@ class _DigestingReader:
         return data
 
 
-def build_archive(files: Iterable[StagedFile], *, spool_limit: int = 1024 * 1024) -> ArchiveInfo:
+def _validate_manifest(
+    manifest: tuple[StagedEntry, ...],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    paths = {}
+    for item in manifest:
+        if not isinstance(item, (StagedFile, StagedDirectory)):
+            raise StagingError("staged manifest contains an unsupported entry")
+        destination = item.destination
+        if destination in paths:
+            raise StagingError("duplicate staged destination")
+        paths[destination] = "directory" if isinstance(item, StagedDirectory) else "file"
+    for path, kind in paths.items():
+        if kind == "file" and any(paths.get(parent) == "file" for parent in path.parents):
+            raise StagingError(f"staged file ancestor conflict: {path}")
+        if kind == "file" and any(path in other.parents for other in paths):
+            raise StagingError(f"staged file ancestor conflict: {path}")
+    return (
+        tuple(str(item.destination) for item in manifest if isinstance(item, StagedFile)),
+        tuple(str(item.destination) for item in manifest if isinstance(item, StagedDirectory)),
+    )
+
+
+def build_archive(files: Iterable[StagedEntry], *, spool_limit: int = 1024 * 1024) -> ArchiveInfo:
     manifest = tuple(files)
-    destinations = [str(item.destination) for item in manifest]
-    if len(destinations) != len(set(destinations)):
-        raise StagingError("duplicate staged destination")
+    file_names, directory_names = _validate_manifest(manifest)
     stream = cast(
         BinaryIO,
         tempfile.SpooledTemporaryFile(max_size=spool_limit, mode="w+b"),  # noqa: SIM115
@@ -58,20 +79,26 @@ def build_archive(files: Iterable[StagedFile], *, spool_limit: int = 1024 * 1024
                 source = item.source
                 try:
                     status = source.stat()
-                    if not source.is_file():
-                        raise StagingError(f"staged source is not a regular file: {source}")
-                    with source.open("rb") as content:
-                        info = tarfile.TarInfo(str(item.destination))
+                    info = tarfile.TarInfo(str(item.destination))
+                    info.mode = status.st_mode & 0o777
+                    info.mtime = int(status.st_mtime)
+                    if isinstance(item, StagedDirectory):
+                        if not source.is_dir():
+                            raise StagingError(f"staged source is not a directory: {source}")
+                        info.type = tarfile.DIRTYPE
+                        archive.addfile(info)
+                    else:
+                        if not source.is_file():
+                            raise StagingError(f"staged source is not a regular file: {source}")
                         info.size = status.st_size
-                        info.mode = status.st_mode & 0o777
-                        info.mtime = int(status.st_mtime)
-                        reader = _DigestingReader(content, digest)
-                        archive.addfile(info, reader)
-                        size += reader.byte_count
+                        with source.open("rb") as content:
+                            reader = _DigestingReader(content, digest)
+                            archive.addfile(info, reader)
+                            size += reader.byte_count
                 except OSError as error:
                     raise StagingError(f"cannot read staged source {source}: {error}") from error
         stream.seek(0)
-        return ArchiveInfo(stream, size, digest.hexdigest(), tuple(destinations))
+        return ArchiveInfo(stream, size, digest.hexdigest(), file_names, directory_names)
     except BaseException:
         stream.close()
         raise

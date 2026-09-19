@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
+from pathlib import PurePosixPath
 from typing import Any, BinaryIO
 
 from .model import RemoteProcess, Service
@@ -94,7 +95,7 @@ def _has_exact_fields(message: dict[str, Any], fields: frozenset[str]) -> bool:
     return set(message) == _ENVELOPE_FIELDS | fields
 
 
-_STAGED_FIELDS = frozenset(("byte_count", "sha256", "files"))
+_STAGED_FIELDS = frozenset(("byte_count", "sha256", "files", "directories"))
 _OPENOCD_VERSION_FIELDS = frozenset(("output",))
 _DEPLOYMENT_FIELDS = frozenset(("status", "path", "sha256"))
 
@@ -118,7 +119,15 @@ def _valid_process_ready(message: dict[str, Any]) -> bool:
 
 
 def _valid_child_output(message: dict[str, Any]) -> bool:
-    return message.get("stream") in {"stdout", "stderr"} and isinstance(message.get("payload"), str)
+    payload = message.get("payload")
+    line_end = message.get("line_end")
+    return (
+        message.get("stream") in {"stdout", "stderr"}
+        and isinstance(payload, str)
+        and "\n" not in payload
+        and isinstance(line_end, bool)
+        and (payload != "" or line_end)
+    )
 
 
 def _valid_session_closed(message: dict[str, Any]) -> bool:
@@ -140,7 +149,7 @@ def _valid_error(message: dict[str, Any]) -> bool:
 _EVENT_FIELDS = {
     "SESSION_CREATED": frozenset(("helper", "session_id", "remote_workspace")),
     "PROCESS_READY": frozenset(("remote_address", "child_pid")),
-    "CHILD_OUTPUT": frozenset(("stream", "payload")),
+    "CHILD_OUTPUT": frozenset(("stream", "payload", "line_end")),
     "SESSION_CLOSED": frozenset(("reason", "returncode")),
     "ERROR": frozenset(("code", "message")),
 }
@@ -170,18 +179,43 @@ def validate_helper_event(message: dict[str, Any]) -> None:
 
 
 def validate_staged_response(message: dict[str, Any]) -> None:
+    if not isinstance(message, dict):
+        raise ProtocolError("invalid STAGED response")
+    files = message.get("files")
+    directories = message.get("directories")
     if (
-        not isinstance(message, dict)
-        or not _has_exact_fields(message, _STAGED_FIELDS)
+        not _has_exact_fields(message, _STAGED_FIELDS)
         or message.get("type") != "STAGED"
         or not isinstance(message.get("byte_count"), int)
         or isinstance(message.get("byte_count"), bool)
         or message["byte_count"] < 0
         or not _sha256(message.get("sha256"))
-        or not isinstance(message.get("files"), list)
-        or not all(isinstance(item, str) for item in message["files"])
+        or not isinstance(files, list)
+        or not isinstance(directories, list)
+        or not all(_valid_manifest_path(item) for item in (*files, *directories))
+        or len(set(files)) != len(files)
+        or len(set(directories)) != len(directories)
+        or set(files) & set(directories)
+        or _manifest_has_file_ancestor(files, directories)
     ):
         raise ProtocolError("invalid STAGED response")
+
+
+def _valid_manifest_path(value: Any) -> bool:
+    if not isinstance(value, str) or not value or "\0" in value:
+        return False
+    path = PurePosixPath(value)
+    return (
+        not path.is_absolute()
+        and str(path) == value
+        and all(part not in ("", ".", "..") for part in path.parts)
+    )
+
+
+def _manifest_has_file_ancestor(files: list[str], directories: list[str]) -> bool:
+    file_paths = {PurePosixPath(value) for value in files}
+    all_paths = tuple(PurePosixPath(value) for value in (*files, *directories))
+    return any(any(parent in file_paths for parent in path.parents) for path in all_paths)
 
 
 def validate_openocd_version_response(message: dict[str, Any]) -> None:

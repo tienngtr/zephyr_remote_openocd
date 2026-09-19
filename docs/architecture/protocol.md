@@ -46,6 +46,9 @@ immediately considered ready. Otherwise the helper waits for a complete
 trimmed marker line on either child stream and TCP-connectability of every
 requested non-GDB service. GDB is not probed because OpenOCD can consume its
 only debugger connection. The helper then emits one `PROCESS_READY` event.
+Output reads are bounded and use an incremental UTF-8 decoder. A readiness
+marker is recognized only when the complete trimmed line is observed; a
+fragment that merely matches a marker prefix does not make the process ready.
 
 `STOP` has no fields other than `version` and `type`. It terminates the child
 process group, removes the workspace, emits `SESSION_CLOSED` with
@@ -57,7 +60,7 @@ process group, removes the workspace, emits `SESSION_CLOSED` with
 | --- | --- | --- |
 | `SESSION_CREATED` | Non-empty strings `helper`, `session_id`, `remote_workspace` | Session workspace and helper identity are available. |
 | `PROCESS_READY` | Non-empty `remote_address`, positive integer `child_pid` | The requested process passed readiness policy. |
-| `CHILD_OUTPUT` | `stream` exactly `stdout`/`stderr`, string `payload` | One child line, UTF-8 decoded with replacement and no trailing `LF`. |
+| `CHILD_OUTPUT` | `stream` exactly `stdout`/`stderr`, string `payload` without `LF`, Boolean `line_end` | One ordered decoded fragment from that child stream. `line_end` is true only when the fragment is followed by an actual child `LF` (the delimiter is omitted). A fragment with `line_end` false has a non-empty payload. UTF-8 decoding is incremental with replacement; one logical line may span several events. |
 | `SESSION_CLOSED` | `reason` and `returncode` | `reason` is `requested` with null return code, or `process_exit` with an integer return code. |
 | `ERROR` | Non-empty string `code`, string `message` | Protocol or startup failure. |
 
@@ -72,7 +75,8 @@ new --SESSION_CREATED--> created --PROCESS_READY--> active
 ```
 
 `CHILD_OUTPUT` may occur in `created` before `PROCESS_READY` and in `active`.
-`SESSION_CLOSED` and `ERROR` are terminal; no event follows either one.
+`SESSION_CLOSED` follows relay completion; it and `ERROR` are terminal, and no
+event follows either one.
 Malformed JSON, a non-object, an invalid version, an unexpected command,
 unknown fields, invalid values, or an invalid state causes `ERROR` and cleanup.
 EOF on helper stdin and `SIGINT`/`SIGTERM` also terminate the child process
@@ -83,7 +87,11 @@ connection cannot deliver it.
 
 Staging, deployment, and version probing are separate helper invocations, not
 commands in the persistent control protocol. `helper stage <workspace>` reads
-tar stdin and emits `STAGED {byte_count, sha256, files}` on success.
+tar stdin and emits `STAGED {byte_count, sha256, files, directories}` on
+success. `files` and `directories` are normalized relative archive paths;
+directory entries are explicit, and `byte_count` and `sha256` cover regular
+file content only. Duplicate paths and file ancestors are rejected before
+extraction.
 `helper openocd-version <command...>` executes exactly `<command...>
 --version` and emits `OPENOCD_VERSION {output}` on success. Deployment emits
 `DEPLOYED {status, path, sha256}`; helpers are installed atomically at

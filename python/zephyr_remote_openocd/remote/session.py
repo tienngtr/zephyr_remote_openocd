@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
+from contextlib import suppress
 
 from .model import (
     DuplicateServiceError,
@@ -13,7 +14,7 @@ from .model import (
     Service,
     SessionDescriptor,
     SessionState,
-    StagedFile,
+    StagedEntry,
     validated_services,
 )
 
@@ -24,7 +25,7 @@ class SessionError(RuntimeError):
 
 class BackendSession(ABC):
     @abstractmethod
-    def stage(self, files: Iterable[StagedFile]): ...
+    def stage(self, files: Iterable[StagedEntry]): ...
 
     @abstractmethod
     def start(self, services: Iterable[Service]) -> SessionDescriptor: ...
@@ -155,7 +156,7 @@ class RemoteSession:
             if self._session is not None:
                 self._session.close()
         except BaseException:
-            self.state = SessionState.FAILED
+            self.state = SessionState.CLOSED
             raise
         else:
             self.state = SessionState.CLOSED
@@ -164,5 +165,15 @@ class RemoteSession:
         self.start()
         return self
 
-    def __exit__(self, *_):
-        self.close()
+    def __exit__(self, _exc_type, exc_value, _traceback):
+        try:
+            self.close()
+        except BaseException as cleanup_error:
+            if exc_value is None:
+                raise
+            try:
+                cleanup_detail = str(cleanup_error)
+            except BaseException:
+                cleanup_detail = "<unprintable cleanup error>"
+            with suppress(BaseException):
+                exc_value.add_note(f"session cleanup also failed: {cleanup_detail}")
