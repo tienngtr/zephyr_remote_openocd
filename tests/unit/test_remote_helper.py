@@ -6,6 +6,7 @@ import fcntl
 import importlib.util
 import io
 import os
+import select
 import signal
 import sys
 import threading
@@ -37,18 +38,14 @@ def _wait_for_descendant(path):
     raise AssertionError("descendant PID was not published")
 
 
-def _assert_pid_gone(pid):
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return
-        time.sleep(0.01)
-    raise AssertionError(f"descendant process {pid} survived cleanup")
+def _assert_pidfd_exited(pidfd, timeout=5):
+    poller = select.poll()
+    poller.register(pidfd, select.POLLIN)
+    if not poller.poll(timeout * 1000):
+        raise AssertionError("descendant process survived cleanup")
 
 
-def _cleanup_test_child(child, descendant_pid):
+def _cleanup_test_child(child, descendant_pidfd):
     try:
         if child.poll() is None:
             child.terminate()
@@ -59,9 +56,9 @@ def _cleanup_test_child(child, descendant_pid):
             child.process.wait(timeout=5)
         with suppress(BaseException):
             child.dispose()
-    if descendant_pid is not None:
+    if descendant_pidfd is not None:
         with suppress(ProcessLookupError):
-            os.kill(descendant_pid, signal.SIGKILL)
+            signal.pidfd_send_signal(descendant_pidfd, signal.SIGKILL)
 
 
 def _forking_child_code(exit_on_term):
@@ -591,17 +588,21 @@ def test_supervised_child_terminates_descendant_after_leader_term(tmp_path, monk
         (sys.executable, "-c", _forking_child_code(True), str(descendant_path))
     )
     descendant_pid = None
+    descendant_pidfd = None
     try:
         descendant_pid = _wait_for_descendant(descendant_path)
+        descendant_pidfd = os.pidfd_open(descendant_pid)
         assert os.getpgid(descendant_pid) == child.pid
         assert child.poll() is None
 
         child.terminate()
 
         assert child.returncode == 0
-        _assert_pid_gone(descendant_pid)
+        _assert_pidfd_exited(descendant_pidfd)
     finally:
-        _cleanup_test_child(child, descendant_pid)
+        _cleanup_test_child(child, descendant_pidfd)
+        if descendant_pidfd is not None:
+            os.close(descendant_pidfd)
 
 
 def test_supervised_child_warns_and_terminates_descendant_after_leader_exit(
@@ -613,8 +614,10 @@ def test_supervised_child_warns_and_terminates_descendant_after_leader_exit(
         (sys.executable, "-c", _forking_child_code(False), str(descendant_path))
     )
     descendant_pid = None
+    descendant_pidfd = None
     try:
         descendant_pid = _wait_for_descendant(descendant_path)
+        descendant_pidfd = os.pidfd_open(descendant_pid)
         assert os.getpgid(descendant_pid) == child.pid
         deadline = time.monotonic() + 5
         while child.poll() is None and time.monotonic() < deadline:
@@ -623,10 +626,12 @@ def test_supervised_child_warns_and_terminates_descendant_after_leader_exit(
 
         child.terminate()
 
-        _assert_pid_gone(descendant_pid)
+        _assert_pidfd_exited(descendant_pidfd)
         assert str(descendant_pid) in capsys.readouterr().err
     finally:
-        _cleanup_test_child(child, descendant_pid)
+        _cleanup_test_child(child, descendant_pidfd)
+        if descendant_pidfd is not None:
+            os.close(descendant_pidfd)
 
 
 def test_supervised_child_skips_kill_after_group_disappears(monkeypatch):
@@ -738,35 +743,112 @@ def test_supervised_child_group_cleanup_ignores_diagnostic_failure(monkeypatch):
     assert signals == [signal.SIGTERM, signal.SIGKILL]
 
 
-def test_supervised_child_cleanup_is_bounded_when_relays_remain_live(monkeypatch):
-    monkeypatch.setattr(remote_helper, "emit", lambda *_args, **_values: None)
-    child = remote_helper._spawn_child((sys.executable, "-c", "import time; time.sleep(30)"))
-    child.start_relays()
-    original_killpg = remote_helper.os.killpg
+def test_supervised_child_cleanup_uses_finite_budgets_after_failures(monkeypatch):
+    class Stream:
+        closed = False
 
-    def fail_killpg(_pid, _signum):
-        raise RuntimeError("signal failed")
+        def __init__(self):
+            self.close_calls = 0
 
+        def close(self):
+            self.close_calls += 1
+            self.closed = True
+
+    class Process:
+        pid = 123
+        returncode = None
+
+        def __init__(self):
+            self.stdout = Stream()
+            self.stderr = Stream()
+            self.wait_calls = []
+
+        def wait(self, timeout=None):
+            self.wait_calls.append(timeout)
+            raise TimeoutError("reap failed")
+
+    class Relay:
+        ident = 1
+
+        def __init__(self, name):
+            self.name = name
+            self.alive = True
+            self.join_calls = []
+
+        def is_alive(self):
+            return self.alive
+
+        def join(self, timeout=None):
+            self.join_calls.append(timeout)
+            self.alive = False
+
+    process = Process()
+    relays = [Relay("stdout-relay"), Relay("stderr-relay")]
+    child = remote_helper.SupervisedChild(process)
+    child.relay_threads = relays
+    child._observed_returncode = 0
+    signals = []
+    clock = iter((10.0, 10.0, 10.25))
+
+    def fail_killpg(_pid, signum):
+        signals.append(signum)
+        if signum != 0:
+            raise RuntimeError("signal failed")
+
+    monkeypatch.setattr(remote_helper, "CHILD_RELAY_JOIN_TIMEOUT", 0.75)
     monkeypatch.setattr(remote_helper.os, "killpg", fail_killpg)
+    monkeypatch.setattr(remote_helper.time, "monotonic", lambda: next(clock))
     monkeypatch.setattr(
         child,
         "_wait_for_leader_exit",
         lambda: (_ for _ in ()).throw(RuntimeError("leader wait failed")),
     )
-    started = time.monotonic()
-    try:
-        with pytest.raises(RuntimeError, match="signal failed") as raised:
-            child.terminate()
+    monkeypatch.setattr(child, "_warn_remaining_group_members", lambda: None)
 
-        assert time.monotonic() - started < 6
-        assert any("relay did not stop" in note for note in raised.value.__notes__)
-    finally:
-        with suppress(ProcessLookupError):
-            original_killpg(child.pid, signal.SIGKILL)
-        with suppress(BaseException):
-            child.process.wait(timeout=5)
-        with suppress(BaseException):
-            child.dispose()
+    with pytest.raises(RuntimeError, match="signal failed") as raised:
+        child.terminate()
+
+    assert signals == [signal.SIGTERM, 0, signal.SIGKILL]
+    assert process.wait_calls == [remote_helper.CHILD_REAP_TIMEOUT]
+    join_calls = [timeout for relay in relays for timeout in relay.join_calls]
+    assert len(join_calls) == len(relays)
+    assert all(0 <= timeout <= remote_helper.CHILD_RELAY_JOIN_TIMEOUT for timeout in join_calls)
+    assert process.stdout.closed and process.stdout.close_calls == 1
+    assert process.stderr.closed and process.stderr.close_calls == 1
+    assert any("leader wait failed" in note for note in raised.value.__notes__)
+    assert any("reap failed" in note for note in raised.value.__notes__)
+
+
+def test_supervised_child_wait_for_leader_exit_honors_deadline(monkeypatch):
+    class Process:
+        pid = 123
+        returncode = None
+        stdout = None
+        stderr = None
+
+    process = Process()
+    child = remote_helper.SupervisedChild(process)
+    now = [100]
+    waitid_calls = []
+    sleeps = []
+
+    def waitid(*args):
+        waitid_calls.append(args)
+
+    def sleep(duration):
+        sleeps.append(duration)
+        now[0] += duration
+
+    monkeypatch.setattr(remote_helper, "CHILD_TERM_TIMEOUT", 3)
+    monkeypatch.setattr(remote_helper, "CHILD_POLL_INTERVAL", 2)
+    monkeypatch.setattr(remote_helper.os, "waitid", waitid)
+    monkeypatch.setattr(remote_helper.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(remote_helper.time, "sleep", sleep)
+
+    assert child._wait_for_leader_exit() is False
+    assert sleeps == [2, 1]
+    assert len(waitid_calls) == 3
+    assert now[0] == 103
 
 
 def test_decode_command_rejects_malformed_required_path_before_launch(start_command):

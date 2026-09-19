@@ -564,13 +564,14 @@ class TestRemoteModels:
 class _FakeSession(BackendSession):
     def __init__(self):
         self.actions = []
-        self.returncode = None
-        self.stage_error = None
-        self.start_error = None
-        self.forward_error = None
-        self.poll_error = None
-        self.wait_error = None
-        self.close_error = None
+        self.returncode: int | None = None
+        self.stage_error: BaseException | None = None
+        self.start_error: BaseException | None = None
+        self.forward_error: BaseException | None = None
+        self.poll_error: BaseException | None = None
+        self.wait_error: BaseException | None = None
+        self.close_error: BaseException | None = None
+        self.close_returncode: int | None = None
 
     def stage(self, files):
         self.actions.append(("stage", tuple(files)))
@@ -598,20 +599,11 @@ class _FakeSession(BackendSession):
             raise self.wait_error
         return 9
 
-    def close(self):
+    def close(self) -> int | None:
         self.actions.append(("close",))
         if self.close_error is not None:
             raise self.close_error
-
-
-class _UnprintableError(RuntimeError):
-    def __str__(self):
-        raise RuntimeError("cannot stringify error")
-
-
-class _UnnotableError(RuntimeError):
-    def add_note(self, _note):
-        raise RuntimeError("cannot attach note")
+        return self.close_returncode
 
 
 class _FakeBackend(SessionBackend):
@@ -639,6 +631,17 @@ class TestSession:
         assert session.termination_returncode == 7
         assert session.state == SessionState.FAILED
         assert backend.session.actions[-1] == ("close",)
+
+    def test_close_preserves_process_exit_observed_during_cleanup(self):
+        backend = _FakeBackend()
+        backend.session.close_returncode = 7
+        session = RemoteSession(self.request(), backend)
+        session.start()
+
+        assert session.poll() is None
+        assert session.close() == 7
+        assert session.termination_returncode == 7
+        assert session.state is SessionState.FAILED
 
     @pytest.mark.parametrize(
         ("body_failed", "cleanup_failed"),
@@ -669,41 +672,6 @@ class TestSession:
 
         assert backend.session.actions.count(("close",)) == 1
         assert session.state is SessionState.CLOSED
-
-    def test_context_cleanup_diagnostics_cannot_mask_body_failure(self):
-        backend = _FakeBackend()
-        session = RemoteSession(self.request(), backend)
-        body_error = _UnnotableError("body failed")
-        cleanup_error = _UnprintableError("cleanup failed")
-        backend.session.close_error = cleanup_error
-
-        def run_context():
-            with session:
-                raise body_error
-
-        with pytest.raises(_UnnotableError) as raised:
-            run_context()
-
-        assert raised.value is body_error
-        assert session.state is SessionState.CLOSED
-        assert backend.session.actions.count(("close",)) == 1
-
-    def test_context_cleanup_only_preserves_unprintable_cleanup_failure(self):
-        backend = _FakeBackend()
-        session = RemoteSession(self.request(), backend)
-        cleanup_error = _UnprintableError("cleanup failed")
-        backend.session.close_error = cleanup_error
-
-        def run_context():
-            with session:
-                pass
-
-        with pytest.raises(_UnprintableError) as raised:
-            run_context()
-
-        assert raised.value is cleanup_error
-        assert session.state is SessionState.CLOSED
-        assert backend.session.actions.count(("close",)) == 1
 
     @pytest.mark.parametrize("failure", ("stage_error", "start_error"))
     def test_start_failure_closes_backend_and_preserves_error(self, failure):

@@ -39,7 +39,7 @@ class BackendSession(ABC):
     def wait(self, timeout: float | None = None) -> int: ...
 
     @abstractmethod
-    def close(self) -> None: ...
+    def close(self) -> int | None: ...
 
 
 class SessionBackend(ABC):
@@ -147,22 +147,32 @@ class RemoteSession:
         self.state = SessionState.CLOSED if result == 0 else SessionState.FAILED
         return result
 
-    def close(self) -> None:
+    def close(self) -> int | None:
         if self.state is SessionState.CLOSED:
-            return
+            return self.termination_returncode
         self.state = SessionState.STOPPING
+        result = self.termination_returncode
         try:
             if self._session is not None:
-                self._session.close()
+                late_result = self._session.close()
+                if late_result is not None:
+                    result = late_result
+                    self.termination_returncode = late_result
         except BaseException:
-            self.state = SessionState.FAILED
+            self.state = SessionState.CLOSED
             raise
         else:
-            self.state = SessionState.CLOSED
+            self.state = SessionState.FAILED if result not in (None, 0) else SessionState.CLOSED
+        return result
 
     def __enter__(self):
         self.start()
         return self
 
-    def __exit__(self, *_):
-        self.close()
+    def __exit__(self, _exc_type, exc_value, _traceback):
+        try:
+            self.close()
+        except BaseException as cleanup_error:
+            if exc_value is None:
+                raise
+            exc_value.add_note(f"session cleanup also failed: {cleanup_error}")

@@ -6,6 +6,7 @@ import io
 import ipaddress
 import json
 import os
+import select
 import shutil
 import signal
 import socket
@@ -33,6 +34,7 @@ from zephyr_remote_openocd.remote.model import (
 )
 from zephyr_remote_openocd.remote.paths import ADDRESS_TOKEN, PathPlanner
 from zephyr_remote_openocd.remote.protocol import (
+    EventOrder,
     encode_message,
 )
 from zephyr_remote_openocd.remote.rtt import RttClientError, run_rtt_client
@@ -47,6 +49,13 @@ from zephyr_remote_openocd.remote.staging import build_archive
 
 from tests.process_support import read_line, read_lines
 from tests.support import ROOT
+
+
+def _assert_pidfd_exited(pidfd, timeout=5):
+    poller = select.poll()
+    poller.register(pidfd, select.POLLIN)
+    if not poller.poll(timeout * 1000):
+        raise AssertionError("process survived cleanup")
 
 
 def managed_popen(*args, **kwargs):
@@ -115,7 +124,7 @@ class TestForwardingLifecycle:
         def wait(self, timeout=None):
             return self.returncode
 
-        def stderr_tail(self, *, wait=False):
+        def stderr_tail(self):
             return b""
 
         def close_stderr(self):
@@ -141,9 +150,19 @@ class TestForwardingLifecycle:
         session.process_returncode = None
         session.reader_error = None
         session.reader_thread = None
+        session._order = EventOrder()
         session._terminal_reason = None
         session._state_lock = threading.RLock()
         return session
+
+    @staticmethod
+    def helper_process():
+        process = TestForwardingLifecycle.Process()
+        process.stdin = io.BytesIO()
+        process.stdout = io.BytesIO(
+            encode_message("SESSION_CLOSED", reason="requested", returncode=None)
+        )
+        return process
 
     @staticmethod
     def port():
@@ -347,7 +366,7 @@ class TestForwardingLifecycle:
 
         failed = FailingProcess()
         healthy = self.Process()
-        helper = self.Process()
+        helper = self.helper_process()
         session = self.session(self.Command(helper))
         session.helper_process = helper
         session.forwards = [failed, healthy]
@@ -391,6 +410,9 @@ class TestForwardingLifecycle:
                 self.returncode = 0
 
         helper = FailingHelper()
+        helper.stdout = io.BytesIO(
+            encode_message("SESSION_CLOSED", reason="requested", returncode=None)
+        )
         helper.stdin = FailingStdin()
         session = self.session(self.Command(helper))
         session.helper_process = helper
@@ -422,6 +444,9 @@ class TestForwardingLifecycle:
                 return self.returncode
 
         helper = StuckHelper()
+        helper.stdout = io.BytesIO(
+            encode_message("SESSION_CLOSED", reason="requested", returncode=None)
+        )
         session = self.session(self.Command(helper))
         session.helper_process = helper
 
@@ -432,6 +457,7 @@ class TestForwardingLifecycle:
         assert session.closed
 
     @pytest.mark.parametrize("returncode", (0, 7))
+    @pytest.mark.timeout(10)
     def test_poll_reports_consumed_status_while_helper_remains_alive(self, returncode):
         session = self.session(self.Command(self.Process()))
         session.helper_process = session.request.ssh_command.process
@@ -449,14 +475,14 @@ class TestForwardingLifecycle:
 
         session.reader_thread = threading.Thread(target=consume_session_closed)
         session.reader_thread.start()
-        assert event_consumed.wait(2)
+        event_consumed.wait()
         try:
             assert session.reader_thread.is_alive()
             assert session.helper_process.poll() is None
             assert session.poll() == returncode
         finally:
             release_reader.set()
-            session.reader_thread.join(2)
+            session.reader_thread.join()
 
     def test_poll_preserves_reader_error_before_known_process_exit(self):
         session = self.session(self.Command(self.Process()))
@@ -1049,6 +1075,7 @@ class TestRealProcessHelper:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
+            child_pidfd = None
             try:
                 assert process.stdout is not None and process.stdin is not None
                 created = json.loads(read_line(process.stdout))
@@ -1081,6 +1108,7 @@ class TestRealProcessHelper:
                     events.append(json.loads(read_line(process.stdout)))
                 ready = next(event for event in events if event["type"] == "PROCESS_READY")
                 child_pid = ready["child_pid"]
+                child_pidfd = os.pidfd_open(child_pid)
                 assert any(
                     event["type"] == "CHILD_OUTPUT" and event["payload"] == marker
                     for event in events
@@ -1089,8 +1117,7 @@ class TestRealProcessHelper:
                 process.stdin.flush()
                 assert process.wait(timeout=8) == 0
                 assert not workspace.exists()
-                with pytest.raises(ProcessLookupError):
-                    os.kill(child_pid, 0)
+                _assert_pidfd_exited(child_pidfd)
             finally:
                 if process.poll() is None:
                     process.terminate()
@@ -1098,6 +1125,8 @@ class TestRealProcessHelper:
                 for stream in (process.stdin, process.stdout, process.stderr):
                     if stream is not None and not stream.closed:
                         stream.close()
+                if child_pidfd is not None:
+                    os.close(child_pidfd)
 
     def test_helper_version_operation_is_structured(self):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
@@ -1247,6 +1276,7 @@ class TestRealProcessHelper:
                 stderr=subprocess.PIPE,
             )
             child_pid = None
+            child_pidfd = None
             workspace = None
             try:
                 assert process.stdout is not None and process.stdin is not None
@@ -1259,11 +1289,11 @@ class TestRealProcessHelper:
                 started = json.loads(read_line(process.stdout))
                 assert started["type"] == "PROCESS_READY"
                 child_pid = started["child_pid"]
+                child_pidfd = os.pidfd_open(child_pid)
                 process.terminate()
                 assert process.wait(timeout=8) == 0
                 assert not workspace.exists()
-                with pytest.raises(ProcessLookupError):
-                    os.kill(child_pid, 0)
+                _assert_pidfd_exited(child_pidfd)
             finally:
                 if process.poll() is None:
                     process.kill()
@@ -1271,6 +1301,8 @@ class TestRealProcessHelper:
                 for stream in (process.stdin, process.stdout, process.stderr):
                     if stream is not None and not stream.closed:
                         stream.close()
+                if child_pidfd is not None:
+                    os.close(child_pidfd)
 
     def test_helper_eof_cleans_child_and_workspace(self):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
@@ -1284,6 +1316,7 @@ class TestRealProcessHelper:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
+            child_pidfd = None
             try:
                 assert process.stdout is not None and process.stdin is not None
                 created = json.loads(read_line(process.stdout))
@@ -1296,11 +1329,11 @@ class TestRealProcessHelper:
                 started = json.loads(read_line(process.stdout))
                 assert started["type"] == "PROCESS_READY"
                 child_pid = started["child_pid"]
+                child_pidfd = os.pidfd_open(child_pid)
                 process.stdin.close()
                 assert process.wait(timeout=8) == 0
                 assert not workspace.exists()
-                with pytest.raises(ProcessLookupError):
-                    os.kill(child_pid, 0)
+                _assert_pidfd_exited(child_pidfd)
             finally:
                 if process.poll() is None:
                     process.kill()
@@ -1308,6 +1341,8 @@ class TestRealProcessHelper:
                 for stream in (process.stdin, process.stdout, process.stderr):
                     if stream is not None and not stream.closed:
                         stream.close()
+                if child_pidfd is not None:
+                    os.close(child_pidfd)
 
     def test_partial_openocd_start_cleans_child_and_workspace(self):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
@@ -1420,6 +1455,60 @@ class TestRealProcessHelper:
             finally:
                 backend.close()
 
+    def test_backend_surfaces_helper_descendant_warning(self):
+        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        with tempfile.TemporaryDirectory() as directory:
+            environment = os.environ.copy()
+            environment["XDG_RUNTIME_DIR"] = directory
+            descendant_ready = Path(directory) / "descendant-ready"
+
+            class LocalCommand:
+                argv_prefix = ("local_test",)
+
+                def popen(inner, host, remote_command, *extra_args):  # pylint: disable=no-self-argument
+                    return managed_popen(
+                        [sys.executable, str(helper), "control"],
+                        env=environment,
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+
+            child_code = (
+                "import os, signal, sys, time\n"
+                "if os.fork() == 0:\n"
+                "    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                "    open(sys.argv[1], 'w', encoding='ascii').close()\n"
+                "    time.sleep(30)\n"
+                "else:\n"
+                "    while not os.path.exists(sys.argv[1]):\n"
+                "        time.sleep(0.01)\n"
+                "    print(sys.argv[2], flush=True)\n"
+                "    time.sleep(30)\n"
+            )
+            remote_process = RemoteProcess(
+                (sys.executable, "-c", child_code, str(descendant_ready), "ZRO_DESCENDANT_READY"),
+                readiness_marker="ZRO_DESCENDANT_READY",
+            )
+            output = []
+            backend = SshHelperSession(
+                RemoteSessionRequest("local", LocalCommand(), process=remote_process),
+                DeploymentResult(str(helper), "digest", False),
+                0.1,
+                lambda stream, payload, line_end: output.append((stream, payload, line_end)),
+            )
+            try:
+                backend.start(())
+                backend.close()
+            finally:
+                with suppress(BaseException):
+                    backend.close()
+
+            warning = "warning: terminating remaining OpenOCD process-group members:"
+            assert any(
+                stream == "stderr" and warning in payload for stream, payload, _line_end in output
+            )
+
     @pytest.mark.parametrize(
         ("terminal", "exit_code", "expected"),
         (
@@ -1430,6 +1519,19 @@ class TestRealProcessHelper:
                         "type": "SESSION_CLOSED",
                         "reason": "requested",
                         "returncode": None,
+                    },
+                    separators=(",", ":"),
+                ),
+                0,
+                None,
+            ),
+            (
+                json.dumps(
+                    {
+                        "version": 1,
+                        "type": "SESSION_CLOSED",
+                        "reason": "process_exit",
+                        "returncode": 7,
                     },
                     separators=(",", ":"),
                 ),
@@ -1484,19 +1586,34 @@ class TestRealProcessHelper:
                 0,
                 "invalid required fields for SESSION_CLOSED",
             ),
+            (
+                json.dumps(
+                    {
+                        "version": 1,
+                        "type": "SESSION_CLOSED",
+                        "reason": "process_exit",
+                        "returncode": 7,
+                    },
+                    separators=(",", ":"),
+                ),
+                7,
+                "remote helper exited with status 7 after process_exit shutdown",
+            ),
             (None, 7, "did not produce SESSION_CLOSED"),
         ),
         ids=(
             "requested-success",
+            "process-exit-after-stop-success",
             "requested-then-error",
             "requested-then-malformed",
             "error-and-nonzero",
             "requested-terminal-nonzero",
             "malformed-terminal",
+            "process-exit-with-nonzero-helper",
             "nonzero-without-terminal",
         ),
     )
-    def test_backend_close_validates_requested_helper_shutdown(self, terminal, exit_code, expected):
+    def test_backend_close_validates_helper_shutdown(self, terminal, exit_code, expected):
         terminal_line = "" if terminal is None else terminal + "\n"
         helper_code = f"""
 import json
@@ -1533,9 +1650,15 @@ sys.exit({exit_code})
         backend._start_event_drain()
         try:
             if expected is None:
-                backend.close()
+                close_result = backend.close()
                 assert backend.closed
-                assert backend._terminal_reason == "requested"
+                assert backend._terminal_reason in {"requested", "process_exit"}
+                if backend._terminal_reason == "process_exit":
+                    assert backend.process_returncode == 7
+                    assert close_result == 7
+                else:
+                    assert backend.process_returncode is None
+                    assert close_result is None
             else:
                 with pytest.raises(SessionError, match=expected) as raised:
                     backend.close()
@@ -1761,23 +1884,25 @@ sys.exit(7)
             )
             workspace = Path(backend.allocation.remote_workspace)
             child_pid = None
+            child_pidfd = None
             try:
                 backend.start(())
                 child_pid = int(child_pid_path.read_text(encoding="ascii"))
+                child_pidfd = os.pidfd_open(child_pid)
 
                 backend.close()
 
                 assert backend.closed
                 assert backend.helper_process.returncode == 0
                 assert not workspace.exists()
-                with pytest.raises(ProcessLookupError):
-                    os.kill(child_pid, 0)
+                _assert_pidfd_exited(child_pidfd)
             finally:
                 with suppress(BaseException):
                     backend.close()
-                if child_pid is not None:
+                if child_pidfd is not None:
                     with suppress(ProcessLookupError):
-                        os.kill(child_pid, signal.SIGKILL)
+                        signal.pidfd_send_signal(child_pidfd, signal.SIGKILL)
+                    os.close(child_pidfd)
 
     def test_backend_reader_failure_terminates_session(self):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"

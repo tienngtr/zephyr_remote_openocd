@@ -65,15 +65,14 @@ class _StderrDrain:
                 del self._tail[:excess]
             self._tail.extend(chunk)
 
-    def tail(self, *, wait: bool = False) -> bytes:
-        """Return the captured diagnostic tail.
+    def tail(self) -> bytes:
+        """Return the captured diagnostic tail after a bounded drain wait.
 
-        ``wait=True`` waits only for the bounded drain-completion budget.  If
-        stderr has not reached EOF by then, the returned diagnostic is an
-        explicitly best-effort partial tail rather than a completeness claim.
+        If stderr has not reached EOF by the end of the bounded wait, the
+        returned diagnostic is an explicitly best-effort partial tail rather
+        than a completeness claim.
         """
-        if wait:
-            self._finished.wait(_SSH_STDERR_JOIN_TIMEOUT)
+        self._finished.wait(_SSH_STDERR_JOIN_TIMEOUT)
         with self._lock:
             return bytes(self._tail)
 
@@ -166,8 +165,8 @@ class ManagedSshProcess:
     def kill(self):
         self._process.kill()
 
-    def stderr_tail(self, *, wait: bool = False) -> bytes:
-        return self._drain.tail(wait=wait)
+    def stderr_tail(self) -> bytes:
+        return self._drain.tail()
 
     def close_stderr(self) -> None:
         self._drain.close()

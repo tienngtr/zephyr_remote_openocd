@@ -72,7 +72,7 @@ def read_event(process: ReaderProcess, timeout: float) -> dict[str, object]:
     line = read_line(process.stdout, timeout)
     if not line:
         if isinstance(process, ManagedSshProcess):
-            diagnostic = process.stderr_tail(wait=True)
+            diagnostic = process.stderr_tail()
         else:
             _, diagnostic = process.communicate(timeout=5)
             diagnostic = diagnostic or b""

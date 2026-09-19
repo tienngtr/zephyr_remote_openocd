@@ -120,7 +120,31 @@ def test_gdb_execution_reports_session_status(runner_module):
     assert returncode == 7
 
 
-def test_gdb_requirement_failure_closes_started_session(runner_module):
+def test_gdb_operation_reports_process_failure_observed_during_close(runner_api):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
+    runner = Mock()
+    backend = Mock()
+    backend_session = Mock()
+    backend_session.start.return_value = SessionDescriptor(
+        SessionAllocation("session", "/workspace"), "127.0.0.1"
+    )
+    backend_session.poll.return_value = None
+    backend_session.close.return_value = 7
+    backend.create.return_value = backend_session
+    request = RemoteSessionRequest("host", SshCommand())
+    plan = _debug_plan(gdb_argv=("gdb",))
+
+    with pytest.raises(RuntimeError, match="remote OpenOCD failed with exit status 7"):
+        runner_module._execute_operation(runner, "debug", request, plan, backend)
+
+    runner.run_client.assert_called_once_with(["gdb"])
+    backend_session.poll.assert_called_once_with()
+    backend_session.close.assert_called_once_with()
+
+
+def test_gdb_requirement_failure_closes_started_session(runner_api):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
     runner = Mock()
     runner.require.side_effect = FileNotFoundError("gdb is unavailable")
     backend = Mock()
@@ -161,6 +185,30 @@ def test_gdb_failure_survives_session_cleanup_failure(runner_module):
 
     assert raised.value is operation_error
     assert any("cleanup failed" in note for note in raised.value.__notes__)
+    backend_session.close.assert_called_once_with()
+
+
+def test_gdb_failure_notes_process_failure_observed_during_close(runner_module):
+    runner = Mock()
+    operation_error = RuntimeError("GDB client failed")
+    runner.run_client.side_effect = operation_error
+    backend = Mock()
+    backend_session = Mock()
+    backend_session.start.return_value = SimpleNamespace(
+        session_id="session",
+        remote_workspace="/workspace",
+        remote_address="127.0.0.1",
+    )
+    backend_session.close.return_value = 7
+    backend.create.return_value = backend_session
+    request = SimpleNamespace(staged_files=(), services=())
+    plan = SimpleNamespace(gdb_argv=("gdb",), rtt_service=None)
+
+    with pytest.raises(RuntimeError, match="GDB client failed") as raised:
+        runner_module._execute_operation(runner, "debug", request, plan, backend)
+
+    assert raised.value is operation_error
+    assert raised.value.__notes__ == ["remote OpenOCD also exited with status 7 during cleanup"]
     backend_session.close.assert_called_once_with()
 
 

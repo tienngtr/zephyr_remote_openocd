@@ -35,6 +35,7 @@ STALE_SESSION_AGE = 24 * 60 * 60
 CHILD_TERM_TIMEOUT = 5
 CHILD_POLL_INTERVAL = 0.05
 CHILD_REAP_TIMEOUT = 1
+CHILD_RELAY_JOIN_TIMEOUT = 2
 RELAY_CHUNK_SIZE = 64 * 1024
 _emit_lock = threading.Lock()
 
@@ -706,7 +707,7 @@ class SupervisedChild:
             thread.start()
 
     def join_relays(self):
-        deadline = time.monotonic() + 2
+        deadline = time.monotonic() + CHILD_RELAY_JOIN_TIMEOUT
         for thread in self.relay_threads:
             # A signal may arrive before start_relays has started every thread.
             if thread.ident is None:
