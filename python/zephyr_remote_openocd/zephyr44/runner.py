@@ -497,5 +497,9 @@ def _file_type(value):
     return None
 
 
-def _write_output(stream, payload):
-    print(payload, file=sys.stderr if stream == "stderr" else sys.stdout, flush=True)
+def _write_output(stream, payload, line_end):
+    destination = sys.stderr if stream == "stderr" else sys.stdout
+    destination.write(payload)
+    if line_end:
+        destination.write("\n")
+    destination.flush()
