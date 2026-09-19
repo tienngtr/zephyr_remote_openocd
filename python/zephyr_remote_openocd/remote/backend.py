@@ -34,7 +34,7 @@ from .protocol import (
     write_stop,
 )
 from .session import BackendSession, SessionBackend, SessionError
-from .ssh import ManagedSshProcess
+from .ssh import ManagedSshProcess, SshCommand
 from .staging import build_archive
 
 # The helper gives a supervised child five seconds to exit after SIGTERM,
@@ -72,7 +72,7 @@ class SshHelperBackend(SessionBackend):
             request, deployment, self.forward_start_timeout, self.output_handler
         )
 
-    def openocd_version(self, ssh_command, host: str, executable) -> str:
+    def openocd_version(self, ssh_command: SshCommand, host: str, executable) -> str:
         deployment = deploy_helper(ssh_command, host)
         argv = executable if isinstance(executable, (tuple, list)) else (executable,)
         encoded = " ".join(shlex.quote(item) for item in argv)

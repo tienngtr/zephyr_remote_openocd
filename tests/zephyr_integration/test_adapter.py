@@ -5,23 +5,49 @@
 from __future__ import annotations
 
 import argparse
-import importlib
 import io
 import json
 import os
 import socket
 import subprocess
 from pathlib import PurePosixPath
-from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 from zephyr_remote_openocd.config import ConfigError, PathMapping, ResolvedRemote
+from zephyr_remote_openocd.remote.debug import DebugPlan
+from zephyr_remote_openocd.remote.model import (
+    RemoteProcess,
+    RemoteSessionRequest,
+    Service,
+    SessionAllocation,
+    SessionDescriptor,
+)
 from zephyr_remote_openocd.remote.ssh import SshCommand
 
 from tests.support import env_path
 
 pytestmark = pytest.mark.zephyr
+
+
+def _debug_plan(
+    *,
+    gdb_argv: tuple[str, ...] | None = None,
+    services: tuple[Service, ...] = (),
+    rtt_service: Service | None = None,
+) -> DebugPlan:
+    return DebugPlan(
+        RemoteProcess(("openocd",)),
+        (),
+        services,
+        gdb_argv,
+        False,
+        None,
+        False,
+        rtt_service,
+        None,
+        rtt_service is not None,
+    )
 
 
 @pytest.fixture
@@ -31,35 +57,33 @@ def runner_api(monkeypatch):
         pytest.skip("ZEPHYR_BASE must name a Zephyr 4.4 source tree")
     pytest.importorskip("west")
     monkeypatch.syspath_prepend(str(zephyr / "scripts" / "west_commands"))
-    core = importlib.import_module("runners.core")
-    upstream = importlib.import_module("runners.openocd").OpenOcdBinaryRunner
-    remote = importlib.import_module(
-        "zephyr_remote_openocd.zephyr44.runner"
-    ).RemoteOpenOcdBinaryRunner
-    return core, upstream, remote
+    # These modules become importable only after adding the selected Zephyr tree.
+    import runners.core as core  # pylint: disable=no-name-in-module
+    import runners.openocd as openocd  # pylint: disable=no-name-in-module
+    from zephyr_remote_openocd.zephyr44.runner import RemoteOpenOcdBinaryRunner
+
+    return core, openocd.OpenOcdBinaryRunner, RemoteOpenOcdBinaryRunner
 
 
-@pytest.fixture
-def runner_module(runner_api):
-    return importlib.import_module("zephyr_remote_openocd.zephyr44.runner")
+def test_runner_output_reconstructs_fragment_boundaries(runner_api, monkeypatch):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
 
-
-def test_runner_output_reconstructs_fragment_boundaries(runner_module, monkeypatch):
     stdout = io.StringIO()
     stderr = io.StringIO()
     monkeypatch.setattr(runner_module.sys, "stdout", stdout)
     monkeypatch.setattr(runner_module.sys, "stderr", stderr)
 
-    runner_module._write_output("stdout", "long ", False, False)
-    runner_module._write_output("stdout", "line", True, False)
-    runner_module._write_output("stdout", "", False, True)
-    runner_module._write_output("stderr", "unterminated", False, True)
+    runner_module._write_output("stdout", "long ", False)
+    runner_module._write_output("stdout", "line", True)
+    runner_module._write_output("stderr", "unterminated", False)
 
     assert stdout.getvalue() == "long line\n"
     assert stderr.getvalue() == "unterminated"
 
 
-def test_remote_home_json_preserves_spaces(runner_module, monkeypatch, tmp_path):
+def test_remote_home_json_preserves_spaces(runner_api, monkeypatch, tmp_path):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
     selected = ResolvedRemote(
         "lab",
         tmp_path / "config.yaml",
@@ -86,7 +110,9 @@ def test_remote_home_json_preserves_spaces(runner_module, monkeypatch, tmp_path)
 @pytest.mark.parametrize(
     "output", (b'"relative"\n', b"null\n", b"not-json\n", b'"/bad\\u0000path"')
 )
-def test_remote_home_json_rejects_invalid_paths(runner_module, monkeypatch, tmp_path, output):
+def test_remote_home_json_rejects_invalid_paths(runner_api, monkeypatch, tmp_path, output):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
     selected = ResolvedRemote(
         "lab",
         tmp_path / "config.yaml",
@@ -105,11 +131,13 @@ def test_remote_home_json_rejects_invalid_paths(runner_module, monkeypatch, tmp_
         runner_module._prepare_remote_paths(selected)
 
 
-def test_gdb_execution_reports_session_status(runner_module):
+def test_gdb_execution_reports_session_status(runner_api):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
     runner = Mock()
     session = Mock()
     session.poll.return_value = 7
-    plan = SimpleNamespace(gdb_argv=("gdb", "zephyr.elf"))
+    plan = _debug_plan(gdb_argv=("gdb", "zephyr.elf"))
 
     returncode = runner_module._execute_gdb_client(runner, plan, session)
 
@@ -145,18 +173,17 @@ def test_gdb_operation_reports_process_failure_observed_during_close(runner_api)
 
 def test_gdb_requirement_failure_closes_started_session(runner_api):
     from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
     runner = Mock()
     runner.require.side_effect = FileNotFoundError("gdb is unavailable")
     backend = Mock()
     backend_session = Mock()
-    backend_session.start.return_value = SimpleNamespace(
-        session_id="session",
-        remote_workspace="/workspace",
-        remote_address="127.0.0.1",
+    backend_session.start.return_value = SessionDescriptor(
+        SessionAllocation("session", "/workspace"), "127.0.0.1"
     )
     backend.create.return_value = backend_session
-    request = SimpleNamespace(staged_files=(), services=())
-    plan = SimpleNamespace(gdb_argv=("gdb",), rtt_service=None)
+    request = RemoteSessionRequest("host", SshCommand())
+    plan = _debug_plan(gdb_argv=("gdb",))
 
     with pytest.raises(FileNotFoundError, match="gdb is unavailable"):
         runner_module._execute_operation(runner, "debug", request, plan, backend)
@@ -164,21 +191,21 @@ def test_gdb_requirement_failure_closes_started_session(runner_api):
     backend_session.close.assert_called_once_with()
 
 
-def test_gdb_failure_survives_session_cleanup_failure(runner_module):
+def test_gdb_failure_survives_session_cleanup_failure(runner_api):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
     runner = Mock()
     operation_error = RuntimeError("GDB client failed")
     runner.run_client.side_effect = operation_error
     backend = Mock()
     backend_session = Mock()
-    backend_session.start.return_value = SimpleNamespace(
-        session_id="session",
-        remote_workspace="/workspace",
-        remote_address="127.0.0.1",
+    backend_session.start.return_value = SessionDescriptor(
+        SessionAllocation("session", "/workspace"), "127.0.0.1"
     )
     backend_session.close.side_effect = RuntimeError("cleanup failed")
     backend.create.return_value = backend_session
-    request = SimpleNamespace(staged_files=(), services=())
-    plan = SimpleNamespace(gdb_argv=("gdb",), rtt_service=None)
+    request = RemoteSessionRequest("host", SshCommand())
+    plan = _debug_plan(gdb_argv=("gdb",))
 
     with pytest.raises(RuntimeError, match="GDB client failed") as raised:
         runner_module._execute_operation(runner, "debug", request, plan, backend)
@@ -188,21 +215,21 @@ def test_gdb_failure_survives_session_cleanup_failure(runner_module):
     backend_session.close.assert_called_once_with()
 
 
-def test_gdb_failure_notes_process_failure_observed_during_close(runner_module):
+def test_gdb_failure_notes_process_failure_observed_during_close(runner_api):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
     runner = Mock()
     operation_error = RuntimeError("GDB client failed")
     runner.run_client.side_effect = operation_error
     backend = Mock()
     backend_session = Mock()
-    backend_session.start.return_value = SimpleNamespace(
-        session_id="session",
-        remote_workspace="/workspace",
-        remote_address="127.0.0.1",
+    backend_session.start.return_value = SessionDescriptor(
+        SessionAllocation("session", "/workspace"), "127.0.0.1"
     )
     backend_session.close.return_value = 7
     backend.create.return_value = backend_session
-    request = SimpleNamespace(staged_files=(), services=())
-    plan = SimpleNamespace(gdb_argv=("gdb",), rtt_service=None)
+    request = RemoteSessionRequest("host", SshCommand())
+    plan = _debug_plan(gdb_argv=("gdb",))
 
     with pytest.raises(RuntimeError, match="GDB client failed") as raised:
         runner_module._execute_operation(runner, "debug", request, plan, backend)
@@ -212,15 +239,22 @@ def test_gdb_failure_notes_process_failure_observed_during_close(runner_module):
     backend_session.close.assert_called_once_with()
 
 
-def test_rtt_execution_defers_forward_until_after_gdb(runner_module, monkeypatch):
+def test_rtt_execution_defers_forward_until_after_gdb(runner_api, monkeypatch):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
     calls = []
     runner = Mock()
     runner.run_client.side_effect = lambda _argv: calls.append("gdb")
     session = Mock()
     session.forward.side_effect = lambda _services: calls.append("forward")
-    rtt_service = SimpleNamespace(local_port=19021)
-    plan = SimpleNamespace(gdb_argv=("gdb", "--batch"), rtt_service=rtt_service)
-    client = Mock(side_effect=lambda _port, _poll: calls.append("rtt") or 3)
+    rtt_service = Service("rtt", 19021, 19021)
+    plan = _debug_plan(gdb_argv=("gdb", "--batch"), rtt_service=rtt_service)
+
+    def run_rtt(_port, _poll):
+        calls.append("rtt")
+        return 3
+
+    client = Mock(side_effect=run_rtt)
     monkeypatch.setattr(runner_module, "run_rtt_client", client)
 
     returncode = runner_module._execute_rtt(runner, plan, session)
@@ -231,12 +265,14 @@ def test_rtt_execution_defers_forward_until_after_gdb(runner_module, monkeypatch
     assert returncode == 3
 
 
-def test_debugserver_execution_reports_gdb_service_and_waits(runner_module):
+def test_debugserver_execution_reports_gdb_service_and_waits(runner_api):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
     runner = Mock()
     session = Mock()
     session.wait.return_value = 5
-    gdb_service = SimpleNamespace(name="gdb", local_port=3333)
-    plan = SimpleNamespace(services=(gdb_service,))
+    gdb_service = Service("gdb", 3333, 3333)
+    plan = _debug_plan(services=(gdb_service,))
 
     returncode = runner_module._execute_server(runner, "debugserver", plan, session)
 
@@ -321,7 +357,6 @@ def forbid_external_io(monkeypatch):
 @pytest.mark.parametrize("thread_info", (False, True))
 def test_recording_runs_real_adapter_without_external_io(
     runner_api,
-    runner_module,
     tmp_path,
     monkeypatch,
     capsys,
@@ -329,6 +364,8 @@ def test_recording_runs_real_adapter_without_external_io(
     command,
     thread_info,
 ):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
     core, _, remote = runner_api
     build = tmp_path / "build"
     (build / "zephyr").mkdir(parents=True)

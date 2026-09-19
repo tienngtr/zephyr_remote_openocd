@@ -17,7 +17,8 @@ import tempfile
 import threading
 import time
 from contextlib import suppress
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from typing import Any, BinaryIO, cast, override
 from unittest.mock import patch
 
 import pytest
@@ -44,11 +45,41 @@ from zephyr_remote_openocd.remote.services import (
 from zephyr_remote_openocd.remote.session import (
     SessionError,
 )
-from zephyr_remote_openocd.remote.ssh import ManagedSshProcess
+from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand
 from zephyr_remote_openocd.remote.staging import build_archive
 
 from tests.process_support import read_line, read_lines
 from tests.support import ROOT
+
+
+class _BlockedSshCommand(SshCommand):
+    """SSH test double that fails unless a test overrides the operation."""
+
+    @override
+    def run(
+        self,
+        host: str,
+        remote_command: str,
+        *,
+        input_data: bytes | None = None,
+        timeout: float = 15,
+    ) -> subprocess.CompletedProcess[bytes]:
+        raise AssertionError("run() is not expected in this test")
+
+    @override
+    def popen(self, host: str, remote_command: str | None, *extra_args: str) -> ManagedSshProcess:
+        raise AssertionError("popen() is not expected in this test")
+
+    @override
+    def run_stream(
+        self,
+        host: str,
+        remote_command: str,
+        stream: BinaryIO,
+        *,
+        timeout: float = 60,
+    ) -> subprocess.CompletedProcess[bytes]:
+        raise AssertionError("run_stream() is not expected in this test")
 
 
 def _assert_pidfd_exited(pidfd, timeout=5):
@@ -130,10 +161,14 @@ class TestForwardingLifecycle:
         def close_stderr(self):
             self.stderr.close()
 
-    class Command:
+    class Command(_BlockedSshCommand):
+        process: Any
+        calls: list[tuple[str, str | None, tuple[str, ...]]]
+
         def __init__(self, process):
-            self.process = process
-            self.calls = []
+            super().__init__()
+            object.__setattr__(self, "process", process)
+            object.__setattr__(self, "calls", [])
 
         def popen(self, host, remote_command, *extra_args):
             self.calls.append((host, remote_command, extra_args))
@@ -141,7 +176,7 @@ class TestForwardingLifecycle:
 
     @staticmethod
     def session(command):
-        session = object.__new__(SshHelperSession)
+        session = cast(Any, object.__new__(SshHelperSession))
         session.request = RemoteSessionRequest("target", command)
         session.forward_start_timeout = 1
         session.forwards = []
@@ -185,7 +220,8 @@ class TestForwardingLifecycle:
         ):
             session._start_forwards((service,), "127.64.1.1")
         connect.assert_not_called()
-        assert command.calls[0][1].startswith("python3 -c ")
+        remote_command = command.calls[0][1]
+        assert remote_command is not None and remote_command.startswith("python3 -c ")
         assert "-N" not in command.calls[0][2]
         session._close_forwards()
         assert process.terminate_calls == 1
@@ -353,7 +389,7 @@ class TestForwardingLifecycle:
         assert first.terminate_calls == 1
 
     def test_close_attempts_helper_and_all_forwards_after_cleanup_failure(self):
-        class FailingProcess(self.Process):
+        class FailingProcess(TestForwardingLifecycle.Process):
             def __init__(self):
                 super().__init__()
                 self.fail_termination = True
@@ -398,7 +434,7 @@ class TestForwardingLifecycle:
             def close(self):
                 self.closed = True
 
-        class FailingHelper(self.Process):
+        class FailingHelper(TestForwardingLifecycle.Process):
             def __init__(self):
                 super().__init__()
                 self.fail_termination = True
@@ -431,7 +467,7 @@ class TestForwardingLifecycle:
         assert session.closed
 
     def test_close_reports_helper_cleanup_timeout(self):
-        class StuckHelper(self.Process):
+        class StuckHelper(TestForwardingLifecycle.Process):
             def __init__(self):
                 super().__init__()
                 self.stdin = io.BytesIO()
@@ -562,7 +598,7 @@ class TestRttClient:
         input_read, input_write = os.pipe()
         os.write(input_write, b"pending input")
         os.close(input_write)
-        polls = []
+        polls: list[None] = []
 
         def poll_session():
             polls.append(None)
@@ -602,7 +638,7 @@ class TestRttClient:
         input_read, input_write = os.pipe()
         os.write(input_write, b"abcdefgh")
         os.close(input_write)
-        polls = []
+        polls: list[None] = []
 
         def poll_session():
             polls.append(None)
@@ -788,7 +824,7 @@ class TestRealProcessHelper:
         payload = bytes(range(256)) * 8192
         source = tmp_path / "firmware.bin"
         source.write_bytes(payload)
-        archive = build_archive((StagedFile(source, "firmware.bin"),))
+        archive = build_archive((StagedFile(source, PurePosixPath("firmware.bin")),))
 
         runtime = tmp_path / "runtime"
         workspace = runtime / "zephyr_remote_openocd" / "session"
@@ -958,7 +994,7 @@ class TestRealProcessHelper:
         ids=("mismatched-manifest", "missing-type", "invalid-utf8"),
     )
     def test_backend_rejects_invalid_staging_confirmation(self, response):
-        class LocalCommand:
+        class LocalCommand(_BlockedSshCommand):
             def run_stream(self, host, command, stream, timeout=60):
                 stream.read()
                 return subprocess.CompletedProcess(command, 0, response, b"")
@@ -966,16 +1002,25 @@ class TestRealProcessHelper:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "firmware.bin"
             source.write_bytes(b"firmware")
-            session = object.__new__(SshHelperSession)
+            session = cast(Any, object.__new__(SshHelperSession))
             session.request = RemoteSessionRequest("local", LocalCommand())
             session.deployment = DeploymentResult("/helper.py", "0" * 64, False)
             session.allocation = SessionAllocation("session", "/workspace")
             with pytest.raises(SessionError, match="invalid remote staging response"):
-                session.stage((StagedFile(source, "firmware.bin"),))
+                session.stage((StagedFile(source, PurePosixPath("firmware.bin")),))
 
     def test_backend_wraps_invalid_utf8_version_response(self, monkeypatch):
-        class LocalCommand:
-            def run(self, host, command, timeout=30):
+        class LocalCommand(_BlockedSshCommand):
+            def run(
+                self,
+                host: str,
+                command: str,
+                /,
+                *,
+                input_data: bytes | None = None,
+                timeout: float = 15,
+            ) -> subprocess.CompletedProcess[bytes]:
+                assert input_data is None
                 return subprocess.CompletedProcess(command, 0, b"\xff", b"")
 
         monkeypatch.setattr(
@@ -1103,7 +1148,7 @@ class TestRealProcessHelper:
                     )
                 )
                 process.stdin.flush()
-                events = []
+                events: list[dict[str, Any]] = []
                 while not any(event["type"] == "PROCESS_READY" for event in events):
                     events.append(json.loads(read_line(process.stdout)))
                 ready = next(event for event in events if event["type"] == "PROCESS_READY")
@@ -1198,7 +1243,7 @@ class TestRealProcessHelper:
                     )
                 )
                 process.stdin.flush()
-                events = []
+                events: list[dict[str, Any]] = []
                 while not any(event["type"] == "PROCESS_READY" for event in events):
                     events.append(json.loads(read_line(process.stdout)))
                 assert any(
@@ -1254,6 +1299,7 @@ class TestRealProcessHelper:
                 assert exit_event["returncode"] == 7
                 assert exit_event["reason"] == "process_exit"
                 assert not Path(created["remote_workspace"]).exists()
+                assert process.stderr is not None
                 assert process.stderr.read() == b""
             finally:
                 if process.poll() is None:
@@ -1403,7 +1449,7 @@ class TestRealProcessHelper:
             environment = os.environ.copy()
             environment["XDG_RUNTIME_DIR"] = directory
 
-            class LocalCommand:
+            class LocalCommand(_BlockedSshCommand):
                 argv_prefix = ("local_test",)
 
                 def popen(inner, host, remote_command, *extra_args):  # pylint: disable=no-self-argument
@@ -1462,7 +1508,7 @@ class TestRealProcessHelper:
             environment["XDG_RUNTIME_DIR"] = directory
             descendant_ready = Path(directory) / "descendant-ready"
 
-            class LocalCommand:
+            class LocalCommand(_BlockedSshCommand):
                 argv_prefix = ("local_test",)
 
                 def popen(inner, host, remote_command, *extra_args):  # pylint: disable=no-self-argument
@@ -1633,8 +1679,8 @@ sys.stdout.flush()
 sys.exit({exit_code})
 """
 
-        class LocalCommand:
-            def popen(inner, host, remote_command, *extra_args):  # pylint: disable=no-self-argument,unused-argument
+        class LocalCommand(_BlockedSshCommand):
+            def popen(inner, host, remote_command, *extra_args):  # pylint: disable=no-self-argument
                 return managed_popen(
                     [sys.executable, "-c", helper_code],
                     stdin=subprocess.PIPE,
@@ -1695,8 +1741,8 @@ print(
 sys.stdin.buffer.read()
 """
 
-        class LocalCommand:
-            def popen(inner, host, remote_command, *extra_args):  # pylint: disable=no-self-argument,unused-argument
+        class LocalCommand(_BlockedSshCommand):
+            def popen(inner, host, remote_command, *extra_args):  # pylint: disable=no-self-argument
                 return managed_popen(
                     [sys.executable, "-c", helper_code],
                     stdin=subprocess.PIPE,
@@ -1750,8 +1796,8 @@ print(
 sys.exit(7)
 """
 
-        class LocalCommand:
-            def popen(inner, host, remote_command, *extra_args):  # pylint: disable=no-self-argument,unused-argument
+        class LocalCommand(_BlockedSshCommand):
+            def popen(inner, host, remote_command, *extra_args):  # pylint: disable=no-self-argument
                 return managed_popen(
                     [sys.executable, "-c", helper_code],
                     stdin=subprocess.PIPE,
@@ -1763,6 +1809,7 @@ sys.exit(7)
             def __init__(self):
                 self.returncode = None
                 self.terminate_calls = 0
+                self.fail_termination = True
                 self.stdin = None
                 self.stdout = None
                 self.stderr = None
@@ -1772,7 +1819,9 @@ sys.exit(7)
 
             def terminate(self):
                 self.terminate_calls += 1
-                raise RuntimeError("forward cleanup failed")
+                if self.fail_termination:
+                    raise RuntimeError("forward cleanup failed")
+                self.returncode = 0
 
             def kill(self):
                 raise RuntimeError("forward cleanup failed")
@@ -1786,7 +1835,7 @@ sys.exit(7)
             0.1,
         )
         forward = FailingForward()
-        backend.forwards = [forward]
+        backend.forwards = [cast(Any, forward)]
         backend._start_event_drain()
         try:
             with pytest.raises(SessionError, match="cleanup failed") as raised:
@@ -1795,7 +1844,7 @@ sys.exit(7)
             assert backend.forwards == []
             assert backend.closed
 
-            forward.terminate = lambda: setattr(forward, "returncode", 0)
+            forward.fail_termination = False
             backend.close()
             assert backend.forwards == []
             assert backend.closed
@@ -1824,8 +1873,8 @@ for event in events:
 sys.exit(7)
 """
 
-        class LocalCommand:
-            def popen(inner, host, remote_command, *extra_args):  # pylint: disable=no-self-argument,unused-argument
+        class LocalCommand(_BlockedSshCommand):
+            def popen(inner, host, remote_command, *extra_args):  # pylint: disable=no-self-argument
                 return managed_popen(
                     [sys.executable, "-c", helper_code],
                     stdin=subprocess.PIPE,
@@ -1852,7 +1901,7 @@ sys.exit(7)
             environment["XDG_RUNTIME_DIR"] = directory
             child_pid_path = Path(directory) / "child.pid"
 
-            class LocalCommand:
+            class LocalCommand(_BlockedSshCommand):
                 argv_prefix = ("local_test",)
 
                 def popen(inner, host, remote_command, *extra_args):  # pylint: disable=no-self-argument
@@ -1910,7 +1959,7 @@ sys.exit(7)
             environment = os.environ.copy()
             environment["XDG_RUNTIME_DIR"] = directory
 
-            class LocalCommand:
+            class LocalCommand(_BlockedSshCommand):
                 def popen(inner, host, remote_command, *extra_args):  # pylint: disable=no-self-argument
                     return managed_popen(
                         [sys.executable, str(helper), "control"],

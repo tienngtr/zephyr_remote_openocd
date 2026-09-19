@@ -23,33 +23,45 @@ except ImportError:  # pragma: no cover - handled as an integration prerequisite
 
 
 class TestZephyrIntegration:
+    _scratch: tempfile.TemporaryDirectory[str]
     zephyr_base: Path
     openocd_board: str
     no_openocd_board: str
     west: Path
     config: Path
+    scratch: Path
+    fake_openocd: Path
+    cache: Path
     ccache: Path
     ccache_tmp: Path
+    build_in_tree: Path
+    build_out_tree: Path
+    build_without_openocd: Path
+    app_out_tree: Path
 
     @classmethod
     def setup_class(cls):
-        cls.zephyr_base = env_path("ZEPHYR_BASE")
-        cls.openocd_board = os.environ.get("OPENOCD_TEST_BOARD")
+        zephyr_base = env_path("ZEPHYR_BASE")
+        openocd_board = os.environ.get("OPENOCD_TEST_BOARD")
         cls.no_openocd_board = os.environ.get("NON_OPENOCD_TEST_BOARD", "native_sim/native/64")
-        cls.west = env_path("WEST") or (
-            Path(shutil.which("west")) if shutil.which("west") else None
-        )
+        west_on_path = shutil.which("west")
+        west = env_path("WEST") or (Path(west_on_path) if west_on_path else None)
         missing = []
-        if cls.zephyr_base is None or not cls.zephyr_base.is_dir():
+        if zephyr_base is None or not zephyr_base.is_dir():
             missing.append("ZEPHYR_BASE")
-        if cls.west is None or not cls.west.is_file():
+        if west is None or not west.is_file():
             missing.append("WEST or west on PATH")
-        if not cls.openocd_board:
+        if not openocd_board:
             missing.append("OPENOCD_TEST_BOARD")
         if yaml is None:
             missing.append("PyYAML")
         if missing:
             pytest.skip("Zephyr integration prerequisites missing: " + ", ".join(missing))
+
+        assert zephyr_base is not None and west is not None and openocd_board is not None
+        cls.zephyr_base = zephyr_base
+        cls.west = west
+        cls.openocd_board = openocd_board
 
         cls._scratch = tempfile.TemporaryDirectory(
             prefix="zephyr_integration_", dir=ROOT / ".scratch"
