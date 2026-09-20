@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: Apache-2.0
+
+# Starter inventory for one STM32F746G Discovery board and the flash test.
+# Copy to .scratch/config/hardware.yaml, then replace every /path and placeholder.
+
+build_environments:
+  zephyr44:
+    zephyr_base: /path/to/zephyr
+    west: /path/to/zephyrproject/.venv/bin/west
+
+hosts:
+  lab:
+    ssh_host: ssh_alias
+    ssh_command: [ssh]
+    openocd_command: [/absolute/remote/path/to/openocd]
+    path_mappings:
+      /path/to/local/openocd/scripts: /absolute/remote/path/to/openocd/scripts
+
+targets:
+  stm32f746g_disco:
+    host: lab
+    build_environment: zephyr44
+    board: stm32f746g_disco
+    builds:
+      hello:
+        application: samples/hello_world
+      minimal:
+        application: samples/basic/minimal
+    # Serial device paths are interpreted on the remote host.
+    serial:
+      console:
+        device: /dev/serial/by-id/replace-with-stable-device-id
+        baud: 115200
+    profiles:
+      flash:
+        build: hello
+        operations:
+          flash:
+            # The precondition must differ from the profile's selected build.
+            precondition_build: minimal
+            quiescence_timeout: 2
+            serial:
+              endpoint: console
+              pattern: Hello World
+              timeout: 30
+            output_patterns: [Open On-Chip Debugger]
+            assert_bindto: false

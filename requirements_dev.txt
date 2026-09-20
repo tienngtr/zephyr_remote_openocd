@@ -1,0 +1,21 @@
+# Developer and test tooling only; normal module use relies on Zephyr 4.4's
+# configured Python environment and does not install this file.
+actionlint-py
+check-jsonschema
+coverage>=7.10.3
+gitlint-core>=0.19.1
+jsonschema
+mypy
+pyelftools>=0.29
+pylint>=3
+radon>=6,<7
+pytest
+pytest-cov>=7
+pytest-timeout>=2
+PyYAML>=6.0
+ruff==0.14.2
+rumdl
+shellcheck-py>=0.11.0.1
+vermin
+west==1.4.0
+yamllint
