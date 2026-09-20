@@ -1,0 +1,158 @@
+# SPDX-License-Identifier: Apache-2.0
+
+name: checks
+
+on:
+  push:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static-checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/install-dev-tools
+      - name: Run static checks
+        run: python scripts/static_check.py
+
+  self-contained-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/install-dev-tools
+      - name: Run self-contained tests with coverage
+        run: >-
+          pytest --cov --cov-config=.coveragerc --cov-report=
+      - name: Prepare self-contained coverage data
+        run: mv .coverage .coverage.self-contained-tests
+      - uses: actions/upload-artifact@v7
+        with:
+          name: coverage-self-contained-tests
+          path: .coverage.self-contained-tests
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  ssh-integration:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/install-dev-tools
+      - name: Create ephemeral SSH credentials
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          ssh-keygen -q -t ed25519 -N '' -C zro-github-ci \
+            -f ~/.ssh/zro_ci_ed25519
+          : > ~/.ssh/zro_ci_known_hosts
+      - name: Build SSH server image
+        run: docker build -t zro-ci-ssh-server:local tests/ci/ssh_server
+      - name: Start SSH server container
+        run: |
+          public_key="$(cat ~/.ssh/zro_ci_ed25519.pub)"
+          docker run --detach --name zro-ci-ssh \
+            --publish 127.0.0.1:22222:22 \
+            --env "CI_AUTHORIZED_KEY=$public_key" \
+            zro-ci-ssh-server:local
+      - name: Wait for authenticated SSH and required remote tools
+        run: |
+          deadline=$((SECONDS + 120))
+          until ssh -F tests/ci/ssh/ssh_config ci-ssh \
+            'python3 --version && openocd --version'; do
+            if (( SECONDS >= deadline )); then
+              echo 'SSH server or required remote tool did not become ready.' >&2
+              exit 1
+            fi
+            sleep 0.25
+          done
+      - name: Run SSH integration suite
+        run: >-
+          pytest tests/ssh_integration -m ssh
+          --hardware-inventory tests/ci/ssh/hardware.yaml
+          --require-external-tests
+          --cov --cov-config=.coveragerc --cov-report=
+      - name: Prepare SSH coverage data
+        run: mv .coverage .coverage.ssh-integration
+      - uses: actions/upload-artifact@v7
+        with:
+          name: coverage-ssh-integration
+          path: .coverage.ssh-integration
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+      - name: Remove SSH server container
+        if: always()
+        run: docker rm --force zro-ci-ssh || true
+
+  zephyr-integration:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/install-dev-tools
+      - name: Install Zephyr build host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes \
+            ccache device-tree-compiler gperf libssl-dev ninja-build
+      # The clean-install test requires module paths outside the project root.
+      - name: Initialize Zephyr 4.4.0 workspace
+        run: >-
+          west init -m https://github.com/zephyrproject-rtos/zephyr
+          --mr v4.4.0 -o=--depth=1
+          "$RUNNER_TEMP/zephyr-workspace"
+      - name: Update selected Zephyr modules and install dependencies
+        run: |
+          workspace="$RUNNER_TEMP/zephyr-workspace"
+          export ZEPHYR_BASE="$workspace/zephyr"
+          cd "$workspace"
+          west config manifest.project-filter -- '-.*,+cmsis,+cmsis_6,+hal_stm32'
+          west update --narrow -o=--depth=1
+          python -m pip install -r "$ZEPHYR_BASE/scripts/requirements-base.txt"
+          printf 'WEST=%s\n' "$(command -v west)" >> "$GITHUB_ENV"
+      - name: Install the Zephyr 4.4 SDK toolchain
+        run: |
+          export ZEPHYR_BASE="$RUNNER_TEMP/zephyr-workspace/zephyr"
+          west sdk install --install-base "$RUNNER_TEMP/zephyr-sdk" \
+            --gnu-toolchains arm-zephyr-eabi
+      - name: Run full Zephyr integration suite
+        env:
+          ZEPHYR_BASE: ${{ runner.temp }}/zephyr-workspace/zephyr
+          OPENOCD_TEST_BOARD: stm32f746g_disco
+        run: |
+          mkdir -p .scratch
+          pytest tests/zephyr_integration -m zephyr \
+            --require-external-tests \
+            --cov --cov-config=.coveragerc --cov-report=
+      - name: Prepare Zephyr coverage data
+        run: mv .coverage .coverage.zephyr-integration
+      - uses: actions/upload-artifact@v7
+        with:
+          name: coverage-zephyr-integration
+          path: .coverage.zephyr-integration
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  coverage:
+    needs: [self-contained-tests, ssh-integration, zephyr-integration]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install coverage.py
+        run: python -m pip install "coverage>=7.10.3"
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: coverage-*
+          path: .scratch/coverage
+          merge-multiple: true
+      - name: Combine coverage data and report
+        run: |
+          python -m coverage combine .scratch/coverage
+          python -m coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"
+          python -m coverage report

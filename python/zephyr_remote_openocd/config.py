@@ -1,0 +1,417 @@
+# SPDX-License-Identifier: Apache-2.0
+
+"""YAML user configuration loading and remote resolution."""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+from collections.abc import Mapping
+from dataclasses import dataclass
+from importlib.resources import files
+from pathlib import Path, PurePosixPath
+from types import MappingProxyType
+from typing import Literal, overload
+
+_IMPORT_ERROR: ImportError | None
+try:
+    import yaml
+    from jsonschema import Draft202012Validator
+except ImportError as error:  # pragma: no cover - setup diagnostics
+    yaml = None
+    Draft202012Validator = None
+    _IMPORT_ERROR = error
+else:
+    _IMPORT_ERROR = None
+
+
+class ConfigError(ValueError):
+    """An actionable configuration error."""
+
+
+_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+@dataclass(frozen=True)
+class PathMapping:
+    local: Path
+    remote: PurePosixPath
+
+
+@dataclass(frozen=True)
+class Preset:
+    openocd_command: tuple[str, ...] | None = None
+    ssh_command: tuple[str, ...] | None = None
+    forward_env: tuple[str, ...] | None = None
+    path_mappings: tuple[PathMapping, ...] | None = None
+
+
+@dataclass(frozen=True)
+class RemoteDefinition:
+    preset: str | None = None
+    ssh_host: str | None = None
+    openocd_command: tuple[str, ...] | None = None
+    ssh_command: tuple[str, ...] | None = None
+    forward_env: tuple[str, ...] | None = None
+    path_mappings: tuple[PathMapping, ...] | None = None
+
+
+@dataclass(frozen=True)
+class ResolvedRemote:
+    name: str
+    path: Path
+    ssh_host: str
+    openocd_command: tuple[str, ...]
+    ssh_command: tuple[str, ...]
+    forward_env: tuple[str, ...]
+    path_mappings: tuple[PathMapping, ...]
+
+    @property
+    def remote_host(self) -> str:
+        return self.ssh_host
+
+    @property
+    def remote_openocd(self) -> str:
+        return self.openocd_command[0] if self.openocd_command else ""
+
+    def printable(self) -> dict[str, object]:
+        return {
+            "path": str(self.path),
+            "name": self.name,
+            "ssh_host": self.ssh_host,
+            "openocd_command": list(self.openocd_command),
+            "ssh_command": list(self.ssh_command),
+            "forward_env": list(self.forward_env),
+            "path_mappings": [
+                {"local": str(item.local), "remote": str(item.remote)}
+                for item in self.path_mappings
+            ],
+        }
+
+
+@dataclass(frozen=True)
+class RemoteOpenOcdConfig:
+    """Parsed YAML document; remotes resolve only when selected."""
+
+    path: Path
+    default_runner: str
+    default_remote: str | None
+    presets: Mapping[str, Preset]
+    remotes: Mapping[str, RemoteDefinition]
+
+    def printable(self) -> dict[str, object]:
+        return {
+            "path": str(self.path),
+            "default_runner": self.default_runner,
+            "default_remote": self.default_remote,
+            "presets": sorted(self.presets),
+            "remotes": sorted(self.remotes),
+        }
+
+
+def _require_dependencies(config_path: Path) -> None:
+    if _IMPORT_ERROR is not None:
+        raise ConfigError(
+            f"cannot load YAML configuration {config_path}: install PyYAML and jsonschema"
+        ) from _IMPORT_ERROR
+
+
+class _StrictLoader(yaml.SafeLoader if yaml is not None else object):  # type: ignore[misc]
+    """SafeLoader that rejects duplicate and non-string mapping keys."""
+
+    def construct_mapping(self, node, deep: bool = False):
+        if not isinstance(node, yaml.MappingNode):
+            raise yaml.constructor.ConstructorError(
+                None, None, "expected a mapping", node.start_mark
+            )
+        result: dict[str, object] = {}
+        for key_node, value_node in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            if not isinstance(key, str):
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    "mapping keys must be strings",
+                    key_node.start_mark,
+                )
+            if key in result:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    f"found duplicate key {key!r}",
+                    key_node.start_mark,
+                )
+            result[key] = self.construct_object(value_node, deep=deep)
+        return result
+
+
+def default_config_path() -> Path:
+    override = os.environ.get("ZEPHYR_REMOTE_OPENOCD_CONFIG")
+    return (
+        Path(override).expanduser()
+        if override
+        else Path.home() / ".config" / "zephyr_remote_openocd" / "config.yaml"
+    )
+
+
+def _load_yaml(config_path: Path) -> dict[str, object]:
+    _require_dependencies(config_path)
+    assert yaml is not None
+    text = _read_config_text(config_path)
+    return _parse_yaml_document(text, config_path)
+
+
+def _read_config_text(config_path: Path) -> str:
+    try:
+        text = config_path.read_text(encoding="utf-8")
+    except FileNotFoundError as error:
+        try:
+            config_path.lstat()
+        except FileNotFoundError:
+            return ""
+        except OSError as inspection_error:
+            raise ConfigError(
+                f"cannot inspect configuration {config_path}: {inspection_error}"
+            ) from inspection_error
+        raise ConfigError(
+            f"configuration {config_path} does not resolve to an existing file"
+        ) from error
+    except OSError as error:
+        raise ConfigError(f"cannot read configuration {config_path}: {error}") from error
+    if not text.strip():
+        return ""
+    return text
+
+
+def _parse_yaml_document(text: str, config_path: Path) -> dict[str, object]:
+    assert yaml is not None
+    try:
+        nodes = list(yaml.compose_all(text, Loader=_StrictLoader))
+        documents = list(yaml.load_all(text, Loader=_StrictLoader))
+    except yaml.YAMLError as error:
+        raise ConfigError(f"invalid YAML configuration {config_path}: {error}") from error
+    if not documents or not text:
+        return {}
+    if len(documents) != 1:
+        raise ConfigError(f"invalid YAML configuration {config_path}: expected one document")
+    document = documents[0]
+    if document is None:
+        node = nodes[0]
+        if (
+            isinstance(node, yaml.ScalarNode)
+            and node.tag == "tag:yaml.org,2002:null"
+            and node.start_mark.index == node.end_mark.index
+        ):
+            return {}
+        raise ConfigError(f"invalid YAML configuration {config_path}: root null is not allowed")
+    if not isinstance(document, dict):
+        raise ConfigError(f"invalid YAML configuration {config_path}: root must be a mapping")
+    return document
+
+
+def _validate_schema(document: dict[str, object], config_path: Path) -> None:
+    assert Draft202012Validator is not None
+    try:
+        schema_text = (
+            files("zephyr_remote_openocd")
+            .joinpath("resources", "configuration.schema.json")
+            .read_text(encoding="utf-8")
+        )
+        schema = json.loads(schema_text)
+    except (OSError, json.JSONDecodeError) as error:
+        raise ConfigError(f"cannot read configuration schema: {error}") from error
+    schema_error = next(Draft202012Validator(schema).iter_errors(document), None)
+    if schema_error is not None:
+        location = ".".join(str(part) for part in schema_error.absolute_path)
+        suffix = f" at {location}" if location else ""
+        raise ConfigError(f"invalid configuration {config_path}{suffix}: {schema_error.message}")
+
+
+def _as_command(value: object) -> tuple[str, ...] | None:
+    if value is None:
+        return None
+    assert isinstance(value, list) and all(isinstance(item, str) for item in value)
+    return tuple(value)
+
+
+def _path_mappings(
+    value: object, location: str, config_path: Path
+) -> tuple[PathMapping, ...] | None:
+    if value is None:
+        return None
+    assert isinstance(value, dict)
+    mappings: list[PathMapping] = []
+    seen: dict[Path, PurePosixPath] = {}
+    for local_value, remote_value in value.items():
+        assert isinstance(local_value, str) and isinstance(remote_value, str)
+        try:
+            local = Path(local_value).expanduser().resolve()
+        except (OSError, RuntimeError) as error:
+            raise ConfigError(
+                f"invalid configuration {config_path} at {location}: {error}"
+            ) from error
+        remote = PurePosixPath(remote_value)
+        previous = seen.get(local)
+        if previous is not None:
+            kind = "duplicate" if previous == remote else "conflicting"
+            raise ConfigError(f"{kind} mappings for {local} in {config_path}")
+        seen[local] = remote
+        mappings.append(PathMapping(local, remote))
+    return tuple(mappings)
+
+
+@overload
+def _definition(
+    raw: dict[str, object], config_path: Path, location: str, *, remote: Literal[True]
+) -> RemoteDefinition: ...
+
+
+@overload
+def _definition(
+    raw: dict[str, object], config_path: Path, location: str, *, remote: Literal[False]
+) -> Preset: ...
+
+
+def _definition(
+    raw: dict[str, object], config_path: Path, location: str, *, remote: bool
+) -> RemoteDefinition | Preset:
+    openocd_command = _as_command(raw.get("openocd_command"))
+    ssh_command = _as_command(raw.get("ssh_command"))
+    forward_env_value = raw.get("forward_env")
+    assert forward_env_value is None or (
+        isinstance(forward_env_value, list)
+        and all(isinstance(item, str) for item in forward_env_value)
+    )
+    forward_env = tuple(forward_env_value) if forward_env_value is not None else None
+    path_mappings = _path_mappings(
+        raw.get("path_mappings"), f"{location}.path_mappings", config_path
+    )
+    if not remote:
+        return Preset(openocd_command, ssh_command, forward_env, path_mappings)
+    preset = raw.get("preset")
+    ssh_host = raw.get("ssh_host")
+    assert preset is None or isinstance(preset, str)
+    assert ssh_host is None or isinstance(ssh_host, str)
+    return RemoteDefinition(
+        preset, ssh_host, openocd_command, ssh_command, forward_env, path_mappings
+    )
+
+
+def load_config(path: Path | None = None) -> RemoteOpenOcdConfig:
+    config_path = (path or default_config_path()).expanduser()
+    document = _load_yaml(config_path)
+    _validate_schema(document, config_path)
+    default_runner = document.get("default_runner", "openocd")
+    default_remote = document.get("default_remote")
+    presets_raw = document.get("presets", {})
+    remotes_raw = document.get("remotes", {})
+    assert isinstance(default_runner, str)
+    assert default_remote is None or isinstance(default_remote, str)
+    assert isinstance(presets_raw, dict) and isinstance(remotes_raw, dict)
+    presets = {
+        name: _definition(raw, config_path, f"presets.{name}", remote=False)
+        for name, raw in presets_raw.items()
+    }
+    remotes = {
+        name: _definition(raw, config_path, f"remotes.{name}", remote=True)
+        for name, raw in remotes_raw.items()
+    }
+    return RemoteOpenOcdConfig(
+        config_path,
+        default_runner,
+        default_remote,
+        MappingProxyType(presets),
+        MappingProxyType(remotes),
+    )
+
+
+def _merge_settings(preset: Preset | None, remote: RemoteDefinition) -> Preset:
+    base = preset or Preset()
+    return Preset(
+        remote.openocd_command if remote.openocd_command is not None else base.openocd_command,
+        remote.ssh_command if remote.ssh_command is not None else base.ssh_command,
+        remote.forward_env if remote.forward_env is not None else base.forward_env,
+        remote.path_mappings if remote.path_mappings is not None else base.path_mappings,
+    )
+
+
+def _selected_remote_name(config: RemoteOpenOcdConfig, remote_name: str | None) -> str:
+    selected_name: str | None
+    if remote_name is not None:
+        selected_name = remote_name
+    else:
+        selected_name = os.environ.get("ZEPHYR_REMOTE_OPENOCD_REMOTE") or config.default_remote
+    if not selected_name:
+        raise ConfigError(
+            "no remote selected for remote_openocd; use --remote or set "
+            f"default_remote ({config.path})"
+        )
+    if not _IDENTIFIER.fullmatch(selected_name):
+        raise ConfigError(f"invalid remote name {selected_name!r} in {config.path}")
+    return selected_name
+
+
+def _remote_definition(config: RemoteOpenOcdConfig, name: str) -> RemoteDefinition:
+    definition = config.remotes.get(name)
+    if definition is None:
+        raise ConfigError(f"selected remote {name!r} does not exist in {config.path}")
+    return definition
+
+
+def _remote_preset(
+    config: RemoteOpenOcdConfig, name: str, definition: RemoteDefinition
+) -> Preset | None:
+    if definition.preset is None:
+        return None
+    preset = config.presets.get(definition.preset)
+    if preset is None:
+        raise ConfigError(
+            f"remote {name!r} references missing preset {definition.preset!r} in {config.path}"
+        )
+    return preset
+
+
+def _normalized_ssh_command(command: tuple[str, ...] | None) -> tuple[str, ...]:
+    normalized = command or ("ssh",)
+    if normalized[0] == "~" or normalized[0].startswith("~/"):
+        return (str(Path(normalized[0]).expanduser()), *normalized[1:])
+    return normalized
+
+
+def resolve_remote(
+    config: RemoteOpenOcdConfig,
+    remote_name: str | None = None,
+    *,
+    require_openocd: bool = True,
+) -> ResolvedRemote:
+    selected_name = _selected_remote_name(config, remote_name)
+    definition = _remote_definition(config, selected_name)
+    preset = _remote_preset(config, selected_name, definition)
+    values = _merge_settings(preset, definition)
+    command = values.openocd_command
+    if command is None and require_openocd:
+        raise ConfigError(
+            f"openocd_command is required for remote {selected_name!r} ({config.path})"
+        )
+    if command is None:
+        command = ()
+    ssh_command = _normalized_ssh_command(values.ssh_command)
+    return ResolvedRemote(
+        selected_name,
+        config.path,
+        definition.ssh_host or selected_name,
+        command,
+        ssh_command,
+        values.forward_env or (),
+        values.path_mappings or (),
+    )
+
+
+def require_remote_settings(config: ResolvedRemote, operation: str) -> tuple[str, str]:
+    """Return mandatory production settings or raise an actionable error."""
+    if not config.ssh_host:
+        raise ConfigError(f"ssh_host is required for remote {operation} ({config.path})")
+    if not config.openocd_command:
+        raise ConfigError(f"openocd_command is required for remote {operation} ({config.path})")
+    return config.ssh_host, config.openocd_command[0]

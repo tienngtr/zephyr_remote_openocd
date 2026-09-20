@@ -1,0 +1,11 @@
+[run]
+branch = True
+source =
+    python/zephyr_remote_openocd
+    runners
+    scripts
+patch = subprocess
+relative_files = True
+
+[report]
+show_missing = True

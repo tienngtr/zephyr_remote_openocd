@@ -1,0 +1,261 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zephyr-remote-openocd.invalid/schema/configuration.json",
+  "title": "zephyr_remote_openocd user configuration",
+  "description": "User configuration for selecting the Zephyr runner and defining reusable remote OpenOCD connections.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "default_runner": {
+      "type": "string",
+      "enum": [
+        "openocd",
+        "remote_openocd"
+      ],
+      "description": "Runner selected when no other runner is requested. Use remote_openocd to run OpenOCD through a configured remote.",
+      "default": "openocd",
+      "examples": [
+        "remote_openocd"
+      ]
+    },
+    "default_remote": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "description": "Name of the remote selected when no --remote argument or environment override is provided.",
+      "examples": [
+        "lab"
+      ]
+    },
+    "presets": {
+      "type": "object",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^[A-Za-z0-9][A-Za-z0-9._-]*$": {
+          "$ref": "#/$defs/preset",
+          "description": "One reusable group of remote connection settings."
+        }
+      },
+      "description": "Named reusable settings inherited by remotes; a remote field replaces the inherited field as a whole.",
+      "default": {}
+    },
+    "remotes": {
+      "type": "object",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^[A-Za-z0-9][A-Za-z0-9._-]*$": {
+          "$ref": "#/$defs/remote",
+          "description": "One named remote OpenOCD connection."
+        }
+      },
+      "description": "Named remote OpenOCD connections selected by command-line, environment, or default selection.",
+      "default": {}
+    }
+  },
+  "$defs": {
+    "command": {
+      "title": "Command",
+      "description": "An argv sequence passed without shell splitting; the first item is the executable and later items are fixed arguments.",
+      "type": "array",
+      "minItems": 1,
+      "prefixItems": [
+        {
+          "$ref": "#/$defs/commandExecutable",
+          "description": "Executable name or path used as the first command item."
+        }
+      ],
+      "items": {
+        "$ref": "#/$defs/commandArgument",
+        "description": "One complete command argument; it is not shell-split."
+      },
+      "examples": [
+        [
+          "ssh",
+          "-F",
+          "/path/to/ssh_config"
+        ]
+      ]
+    },
+    "commandArgument": {
+      "title": "Command argument",
+      "description": "A literal command argument. NUL characters are forbidden; empty strings are allowed after the executable.",
+      "type": "string",
+      "not": {
+        "pattern": "\\u0000"
+      }
+    },
+    "commandExecutable": {
+      "title": "Command executable",
+      "description": "The first command item: a bare executable name, an absolute path, or a ~/... home-relative path; home interpretation depends on the command.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/commandArgument"
+        },
+        {
+          "anyOf": [
+            {
+              "pattern": "^[^~/\\u0000][^/\\u0000]*$"
+            },
+            {
+              "pattern": "^/[^/\\u0000][^\\u0000]*$"
+            },
+            {
+              "pattern": "^~/[^/\\u0000][^\\u0000]*$"
+            }
+          ]
+        }
+      ]
+    },
+    "environment": {
+      "title": "Environment-variable allow-list",
+      "description": "A unique list of local environment-variable names whose values may be forwarded to remote OpenOCD.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^[^=\\u0000]+$",
+        "description": "One environment-variable name, without an equals sign or NUL character."
+      },
+      "examples": [
+        [
+          "OPENOCD_ADAPTER_SERIAL"
+        ]
+      ]
+    },
+    "localPath": {
+      "title": "Local path",
+      "description": "An absolute path or a path beginning with ~, interpreted on the contributor's local machine.",
+      "type": "string",
+      "anyOf": [
+        {
+          "pattern": "^/[^\\u0000]*$"
+        },
+        {
+          "pattern": "^~/[^\\u0000]*$"
+        },
+        {
+          "const": "~"
+        }
+      ],
+      "examples": [
+        "/work/zephyrproject/zephyr",
+        "~/zephyr-sdk/openocd/scripts"
+      ]
+    },
+    "remotePath": {
+      "title": "Remote path",
+      "description": "An absolute normalized POSIX path, or a path beginning with ~, interpreted on the remote host.",
+      "type": "string",
+      "anyOf": [
+        {
+          "const": "/"
+        },
+        {
+          "const": "~"
+        },
+        {
+          "pattern": "^/(?!\\.{1,2}(?:/|$))[^/\\u0000]+(?:/(?!\\.{1,2}(?:/|$))[^/\\u0000]+)*$"
+        },
+        {
+          "pattern": "^~/(?!\\.{1,2}(?:/|$))[^/\\u0000]+(?:/(?!\\.{1,2}(?:/|$))[^/\\u0000]+)*$"
+        }
+      ],
+      "examples": [
+        "/opt/openocd/bin/openocd",
+        "~/zephyr-sdk/openocd/scripts"
+      ]
+    },
+    "paths": {
+      "title": "Path mappings",
+      "description": "A mapping from local absolute or home-relative resource roots to normalized equivalent roots on the remote host.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/remotePath",
+        "description": "Equivalent normalized path root on the remote host."
+      },
+      "propertyNames": {
+        "$ref": "#/$defs/localPath",
+        "description": "Local path root whose contents or references are mapped to the remote destination."
+      },
+      "default": {},
+      "examples": [
+        {
+          "/work/openocd/scripts": "/opt/openocd/share/openocd/scripts"
+        }
+      ]
+    },
+    "preset": {
+      "title": "Remote preset",
+      "description": "A reusable partial set of OpenOCD, SSH, environment, and path-mapping settings inherited by a remote.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "openocd_command": {
+          "$ref": "#/$defs/command",
+          "description": "Remote OpenOCD executable and fixed arguments."
+        },
+        "ssh_command": {
+          "$ref": "#/$defs/command",
+          "description": "Local SSH executable and fixed arguments used for every remote action."
+        },
+        "forward_env": {
+          "$ref": "#/$defs/environment",
+          "description": "Environment-variable names allowed to reach remote OpenOCD."
+        },
+        "path_mappings": {
+          "$ref": "#/$defs/paths",
+          "description": "Local-to-remote resource path mappings."
+        }
+      }
+    },
+    "remote": {
+      "title": "Remote definition",
+      "description": "A named remote OpenOCD connection. Fields may inherit from a preset and direct fields replace inherited values as a whole.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "preset": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+          "description": "Name of the preset to inherit before applying fields defined on this remote.",
+          "examples": [
+            "default"
+          ]
+        },
+        "ssh_host": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
+          "not": {
+            "pattern": "\\u0000"
+          },
+          "description": "Host name or SSH configuration alias passed to the configured SSH command. If omitted, the remote name is used.",
+          "examples": [
+            "lab-board-host"
+          ]
+        },
+        "openocd_command": {
+          "$ref": "#/$defs/command",
+          "description": "Remote OpenOCD executable and fixed arguments. A production remote must provide this directly or through its preset.",
+          "examples": [
+            [
+              "~/openocd/bin/openocd"
+            ]
+          ]
+        },
+        "ssh_command": {
+          "$ref": "#/$defs/command",
+          "description": "Local SSH executable and fixed arguments. After inheritance, it defaults to [ssh]."
+        },
+        "forward_env": {
+          "$ref": "#/$defs/environment",
+          "description": "Environment-variable names whose local values may be forwarded to remote OpenOCD. After inheritance, it defaults to an empty list."
+        },
+        "path_mappings": {
+          "$ref": "#/$defs/paths",
+          "description": "Local-to-remote resource mappings. After inheritance, it defaults to an empty mapping."
+        }
+      }
+    }
+  }
+}
