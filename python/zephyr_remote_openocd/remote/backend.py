@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Production SSH/helper implementation of the session backend."""
+"""Production SSH/helper implementation of a remote session."""
 
 from __future__ import annotations
 
@@ -17,11 +17,13 @@ from typing import BinaryIO, cast
 
 from .deploy import DeploymentResult, deploy_helper
 from .model import (
+    DuplicateServiceError,
     RemoteSessionRequest,
     Service,
     SessionAllocation,
     SessionDescriptor,
     StagedEntry,
+    validated_services,
 )
 from .protocol import (
     EventOrder,
@@ -33,7 +35,7 @@ from .protocol import (
     write_start,
     write_stop,
 )
-from .session import BackendSession, SessionBackend, SessionError
+from .session import SessionError
 from .ssh import ManagedSshProcess, SshCommand
 from .staging import build_archive
 
@@ -58,40 +60,28 @@ def _raise_cleanup_errors(errors: list[BaseException]) -> None:
     raise first
 
 
-class SshHelperBackend(SessionBackend):
-    def __init__(
-        self,
-        *,
-        output_handler: Callable[[str, str, bool], None] | None = None,
-    ):
-        self.output_handler = output_handler
-
-    def create(self, request: RemoteSessionRequest) -> BackendSession:
-        deployment = deploy_helper(request.ssh_command, request.host)
-        return SshHelperSession(request, deployment, self.output_handler)
-
-    def openocd_version(self, ssh_command: SshCommand, host: str, executable) -> str:
-        deployment = deploy_helper(ssh_command, host)
-        argv = executable if isinstance(executable, (tuple, list)) else (executable,)
-        encoded = " ".join(shlex.quote(item) for item in argv)
-        command = f"python3 {shlex.quote(deployment.path)} openocd-version -- {encoded}"
-        result = ssh_command.run(host, command, timeout=30)
-        if result.returncode:
-            detail = (result.stderr or result.stdout).decode("utf-8", "replace").strip()
-            raise SessionError(
-                f"remote OpenOCD version query failed ({result.returncode}): " + detail
-            )
-        try:
-            message = decode_message(result.stdout)
-            validate_openocd_version_response(message)
-            return message["output"]
-        except (KeyError, ProtocolError, ValueError) as error:
-            raise SessionError(
-                f"invalid remote OpenOCD version response: {result.stdout!r}"
-            ) from error
+def query_remote_openocd_version(
+    ssh_command: SshCommand,
+    host: str,
+    executable: str | Iterable[str],
+) -> str:
+    deployment = deploy_helper(ssh_command, host)
+    argv = executable if isinstance(executable, (tuple, list)) else (executable,)
+    encoded = " ".join(shlex.quote(item) for item in argv)
+    command = f"python3 {shlex.quote(deployment.path)} openocd-version -- {encoded}"
+    result = ssh_command.run(host, command, timeout=30)
+    if result.returncode:
+        detail = (result.stderr or result.stdout).decode("utf-8", "replace").strip()
+        raise SessionError(f"remote OpenOCD version query failed ({result.returncode}): " + detail)
+    try:
+        message = decode_message(result.stdout)
+        validate_openocd_version_response(message)
+        return message["output"]
+    except (KeyError, ProtocolError, ValueError) as error:
+        raise SessionError(f"invalid remote OpenOCD version response: {result.stdout!r}") from error
 
 
-class SshHelperSession(BackendSession):
+class RemoteSession:
     def __init__(
         self,
         request: RemoteSessionRequest,
@@ -109,8 +99,37 @@ class SshHelperSession(BackendSession):
         self.descriptor: SessionDescriptor | None = None
         self._terminal_reason: str | None = None
         self._state_lock = threading.RLock()
-        command = f"python3 {shlex.quote(deployment.path)} control"
-        self.helper_process = request.ssh_command.popen(request.host, command)
+        self._services = list(request.services)
+
+    @property
+    def termination_returncode(self) -> int | None:
+        return self.process_returncode
+
+    @classmethod
+    def open(
+        cls,
+        request: RemoteSessionRequest,
+        *,
+        output_handler: Callable[[str, str, bool], None] | None = None,
+    ) -> RemoteSession:
+        deployment = deploy_helper(request.ssh_command, request.host)
+        session = cls(request, deployment, output_handler)
+        try:
+            session._open_helper()
+            session.stage(request.staged_files)
+            session.descriptor = session.start(request.services)
+        except BaseException as error:
+            if hasattr(session, "helper_process"):
+                try:
+                    session.close()
+                except BaseException as cleanup_error:
+                    error.add_note(f"startup failure cleanup also failed: {cleanup_error}")
+            raise
+        return session
+
+    def _open_helper(self) -> None:
+        command = f"python3 {shlex.quote(self.deployment.path)} control"
+        self.helper_process = self.request.ssh_command.popen(self.request.host, command)
         try:
             if self.helper_process.stdout is None:
                 raise SessionError("helper stdout was not captured")
@@ -294,7 +313,12 @@ class SshHelperSession(BackendSession):
         service_list = tuple(services)
         if not service_list:
             return
+        try:
+            validated_services((*self._services, *service_list))
+        except DuplicateServiceError as error:
+            raise SessionError(f"{error.subject} must remain unique") from error
         self._start_forwards(service_list, self.descriptor.remote_address)
+        self._services.extend(service_list)
 
     def poll(self) -> int | None:
         if self.reader_error is not None:

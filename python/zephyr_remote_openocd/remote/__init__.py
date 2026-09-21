@@ -2,7 +2,7 @@
 
 """Board-independent remote session API."""
 
-from .backend import SshHelperBackend
+from .backend import RemoteSession, query_remote_openocd_version
 from .model import (
     RemotePathCheck,
     RemoteProcess,
@@ -15,21 +15,19 @@ from .model import (
     StagedEntry,
     StagedFile,
 )
-from .session import BackendSession, RemoteSession, SessionBackend, SessionError
+from .session import SessionError
 
 __all__ = [
-    "BackendSession",
     "RemotePathCheck",
     "RemoteProcess",
     "RemoteSession",
     "RemoteSessionRequest",
     "Service",
     "SessionAllocation",
-    "SessionBackend",
     "SessionDescriptor",
     "SessionError",
     "SessionState",
-    "SshHelperBackend",
+    "query_remote_openocd_version",
     "StagedDirectory",
     "StagedEntry",
     "StagedFile",

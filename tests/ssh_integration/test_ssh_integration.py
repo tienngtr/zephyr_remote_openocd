@@ -19,10 +19,8 @@ from zephyr_remote_openocd.remote import (
     RemoteSessionRequest,
     Service,
     SessionError,
-    SshHelperBackend,
     StagedFile,
 )
-from zephyr_remote_openocd.remote.backend import SshHelperSession
 from zephyr_remote_openocd.remote.deploy import deploy_helper
 from zephyr_remote_openocd.remote.ssh import SshCommand
 
@@ -161,13 +159,13 @@ class TestSshTransportIntegration:
             token = "ZRO_FORWARD_READY"
             tunnel = self.ssh.popen(
                 self.host,
-                SshHelperSession._forward_ready_command(token),
+                RemoteSession._forward_ready_command(token),
                 "-o",
                 "ExitOnForwardFailure=yes",
                 "-L",
                 f"127.0.0.1:{local_port}:127.0.0.1:{remote_port}",
             )
-            assert SshHelperSession._await_forward_ready(tunnel, token, time.monotonic() + 20)
+            assert RemoteSession._await_forward_ready(tunnel, token, time.monotonic() + 20)
             wait_for_echo(local_port, b"zro_forwarding", 20)
 
             assert helper_process.stdin is not None
@@ -225,8 +223,9 @@ class TestSshTransportIntegration:
                 (StagedFile(source, PurePosixPath("nested/payload.bin")),),
                 (Service("gdb", local_port, 3333),),
             )
-            session = RemoteSession(request, SshHelperBackend())
-            descriptor = session.start()
+            session = RemoteSession.open(request)
+            assert session.descriptor is not None
+            descriptor = session.descriptor
             try:
                 address = ipaddress.ip_address(descriptor.remote_address)
                 assert address in ipaddress.ip_network("127.64.0.0/10")
@@ -257,34 +256,32 @@ class TestSshTransportIntegration:
         second_port = free_loopback_port()
         while second_port == first_port:
             second_port = free_loopback_port()
-        first = RemoteSession(
+        first = RemoteSession.open(
             RemoteSessionRequest(
                 self.host,
                 self.ssh,
                 session_echo_process(),
                 services=(Service("gdb", first_port, 3333),),
-            ),
-            SshHelperBackend(),
+            )
         )
-        second = RemoteSession(
+        second = RemoteSession.open(
             RemoteSessionRequest(
                 self.host,
                 self.ssh,
                 session_echo_process(),
                 services=(Service("gdb", second_port, 3333),),
-            ),
-            SshHelperBackend(),
+            )
         )
-        first_descriptor = first.start()
-        second_descriptor = None
+        assert first.descriptor is not None
+        first_descriptor = first.descriptor
+        second_descriptor = second.descriptor
+        assert second_descriptor is not None
         try:
-            second_descriptor = second.start()
             assert first_descriptor.remote_address != second_descriptor.remote_address
             assert first_descriptor.session_id != second_descriptor.session_id
         finally:
             second.close()
             first.close()
-        assert second_descriptor is not None
         for descriptor in (first_descriptor, second_descriptor):
             result = self.ssh.run(
                 self.host,
@@ -296,21 +293,19 @@ class TestSshTransportIntegration:
     def test_helper_ssh_loss_cleans_session(self):
         """Losing the helper SSH process cleans the session."""
         local_port = free_loopback_port()
-        session = RemoteSession(
+        session = RemoteSession.open(
             RemoteSessionRequest(
                 self.host,
                 self.ssh,
                 session_echo_process(),
                 services=(Service("gdb", local_port, 3333),),
-            ),
-            SshHelperBackend(),
+            )
         )
-        descriptor = session.start()
+        assert session.descriptor is not None
+        descriptor = session.descriptor
         try:
-            backend_session = session._session
-            assert isinstance(backend_session, SshHelperSession)
-            backend_session.helper_process.terminate()
-            backend_session.helper_process.wait(timeout=20)
+            session.helper_process.terminate()
+            session.helper_process.wait(timeout=20)
             with pytest.raises(SessionError):
                 session.wait(timeout=20)
         finally:
@@ -350,16 +345,13 @@ class TestSshTransportIntegration:
                 (StagedFile(config, PurePosixPath("environment.cfg")),),
                 (),
             )
-            session = RemoteSession(
+            session = RemoteSession.open(
                 request,
-                SshHelperBackend(
-                    output_handler=lambda stream, payload, line_end: output.append(
-                        (stream, payload, line_end)
-                    )
+                output_handler=lambda stream, payload, line_end: output.append(
+                    (stream, payload, line_end)
                 ),
             )
             try:
-                session.start()
                 assert session.wait(timeout=30) == 0
             finally:
                 session.close()

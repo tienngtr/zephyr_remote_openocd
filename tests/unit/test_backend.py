@@ -9,8 +9,69 @@ from typing import Any, cast
 
 import pytest
 from zephyr_remote_openocd.remote import backend as backend_module
-from zephyr_remote_openocd.remote.backend import SshHelperSession
+from zephyr_remote_openocd.remote.backend import RemoteSession
+from zephyr_remote_openocd.remote.deploy import DeploymentResult
+from zephyr_remote_openocd.remote.model import (
+    RemoteProcess,
+    RemoteSessionRequest,
+    SessionAllocation,
+    SessionDescriptor,
+)
 from zephyr_remote_openocd.remote.session import SessionError
+from zephyr_remote_openocd.remote.ssh import SshCommand
+
+
+def test_open_acquires_complete_session_in_order(monkeypatch):
+    request = RemoteSessionRequest("host", SshCommand(), RemoteProcess(("openocd",)))
+    deployment = DeploymentResult("/helper.py", "digest", False)
+    descriptor = SessionDescriptor(SessionAllocation("id", "/workspace"), "127.64.0.1")
+    actions = []
+
+    monkeypatch.setattr(backend_module, "deploy_helper", lambda *_args: deployment)
+
+    def open_helper(session):
+        actions.append("helper")
+        session.helper_process = object()
+
+    def start(_session, _services):
+        actions.append("start")
+        return descriptor
+
+    monkeypatch.setattr(RemoteSession, "_open_helper", open_helper)
+    monkeypatch.setattr(RemoteSession, "stage", lambda _session, _files: actions.append("stage"))
+    monkeypatch.setattr(RemoteSession, "start", start)
+
+    session = RemoteSession.open(request)
+
+    assert actions == ["helper", "stage", "start"]
+    assert session.descriptor is descriptor
+
+
+def test_open_rolls_back_failed_acquisition_once(monkeypatch):
+    request = RemoteSessionRequest("host", SshCommand(), RemoteProcess(("openocd",)))
+    deployment = DeploymentResult("/helper.py", "digest", False)
+    startup_error = RuntimeError("staging failed")
+    actions = []
+
+    monkeypatch.setattr(backend_module, "deploy_helper", lambda *_args: deployment)
+
+    def open_helper(session):
+        actions.append("helper")
+        session.helper_process = object()
+
+    def fail_stage(_session, _files):
+        actions.append("stage")
+        raise startup_error
+
+    monkeypatch.setattr(RemoteSession, "_open_helper", open_helper)
+    monkeypatch.setattr(RemoteSession, "stage", fail_stage)
+    monkeypatch.setattr(RemoteSession, "close", lambda _session: actions.append("close"))
+
+    with pytest.raises(RuntimeError) as raised:
+        RemoteSession.open(request)
+
+    assert raised.value is startup_error
+    assert actions == ["helper", "stage", "close"]
 
 
 @pytest.mark.timeout(10)
@@ -42,7 +103,7 @@ def test_close_disposes_streams_after_delayed_reader_stops(monkeypatch):
         def close_stderr(self):
             self.stderr.close()
 
-    session = cast(Any, object.__new__(SshHelperSession))
+    session = cast(Any, object.__new__(RemoteSession))
     session.closed = False
     session.forwards = []
     session.output_handler = None
@@ -75,15 +136,15 @@ def test_close_disposes_streams_after_delayed_reader_stops(monkeypatch):
             current.reader_thread.join(timeout=5)
         return result
 
-    original_stop = SshHelperSession._stop_process
+    original_stop = RemoteSession._stop_process
     stop_stream_flags = []
 
     def tracked_stop(process, *, close_streams=True):
         stop_stream_flags.append(close_streams)
         return original_stop(process, close_streams=close_streams)
 
-    monkeypatch.setattr(SshHelperSession, "_join_reader", controlled_join)
-    monkeypatch.setattr(SshHelperSession, "_stop_process", staticmethod(tracked_stop))
+    monkeypatch.setattr(RemoteSession, "_join_reader", controlled_join)
+    monkeypatch.setattr(RemoteSession, "_stop_process", staticmethod(tracked_stop))
     try:
         session.close()
     finally:
@@ -118,7 +179,7 @@ def test_poll_bounds_reader_join_after_helper_exit():
             self.join_calls += 1
             self.join_timeout = timeout
 
-    session = cast(Any, object.__new__(SshHelperSession))
+    session = cast(Any, object.__new__(RemoteSession))
     session.helper_process = Process()
     session.process_returncode = None
     session.reader_error = None
@@ -143,7 +204,7 @@ def test_poll_raises_when_ssh_forward_exits():
         def stderr_tail(self):
             return b"forward failed"
 
-    session = cast(Any, object.__new__(SshHelperSession))
+    session = cast(Any, object.__new__(RemoteSession))
     session.helper_process = Helper()
     session.process_returncode = None
     session.reader_error = None
@@ -196,7 +257,7 @@ def test_forward_readiness_timeout_does_not_block_on_partial_output(monkeypatch)
         monkeypatch.setattr(backend_module.time, "monotonic", clock.monotonic)
         monkeypatch.setattr(backend_module.selectors, "DefaultSelector", Selector)
         deadline = 0.5
-        assert not SshHelperSession._await_forward_ready(
+        assert not RemoteSession._await_forward_ready(
             cast(Any, process), "ZRO_FORWARD_ready", deadline
         )
     finally:

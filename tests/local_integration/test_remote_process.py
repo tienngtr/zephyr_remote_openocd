@@ -23,7 +23,10 @@ from unittest.mock import patch
 import pytest
 from zephyr_remote_openocd.remote import backend as backend_module
 from zephyr_remote_openocd.remote import rtt as rtt_module
-from zephyr_remote_openocd.remote.backend import SshHelperBackend, SshHelperSession
+from zephyr_remote_openocd.remote.backend import (
+    RemoteSession,
+    query_remote_openocd_version,
+)
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
 from zephyr_remote_openocd.remote.model import (
     RemoteProcess,
@@ -177,7 +180,7 @@ class TestForwardingLifecycle:
 
     @staticmethod
     def session(command):
-        session = cast(Any, object.__new__(SshHelperSession))
+        session = cast(Any, object.__new__(RemoteSession))
         session.request = RemoteSessionRequest("target", command, TEST_PROCESS)
         session.forwards = []
         session.closed = False
@@ -215,7 +218,7 @@ class TestForwardingLifecycle:
         session = self.session(command)
         service = Service("gdb", self.port(), 3333)
         with (
-            patch.object(SshHelperSession, "_await_forward_ready", return_value=True),
+            patch.object(RemoteSession, "_await_forward_ready", return_value=True),
             patch("zephyr_remote_openocd.remote.backend.socket.create_connection") as connect,
         ):
             session._start_forwards((service,), "127.64.1.1")
@@ -238,8 +241,8 @@ class TestForwardingLifecycle:
                 "remote_workspace": "/workspace",
             },
         )
-        with patch.object(SshHelperSession, "_read_event", side_effect=events):
-            SshHelperSession(
+        with patch.object(RemoteSession, "_read_event", side_effect=events):
+            _opened_session(
                 RemoteSessionRequest("target", command, TEST_PROCESS),
                 DeploymentResult("/helper.py", "digest", False),
             )
@@ -256,15 +259,15 @@ class TestForwardingLifecycle:
         startup_error = SessionError("invalid helper response")
 
         with (
-            patch.object(SshHelperSession, "_read_event", side_effect=startup_error),
+            patch.object(RemoteSession, "_read_event", side_effect=startup_error),
             patch.object(
-                SshHelperSession,
+                RemoteSession,
                 "_stop_process",
                 side_effect=RuntimeError("process cleanup failed"),
             ),
             pytest.raises(SessionError, match="invalid helper response") as raised,
         ):
-            SshHelperSession(
+            _opened_session(
                 RemoteSessionRequest("target", command, TEST_PROCESS),
                 DeploymentResult("/helper.py", "digest", False),
             )
@@ -317,7 +320,7 @@ class TestForwardingLifecycle:
         session = self.session(command)
         service = Service("gdb", 32155, 3333)
         monkeypatch.setattr(
-            SshHelperSession,
+            RemoteSession,
             "_preflight",
             staticmethod(lambda _service: "stale listener"),
         )
@@ -954,7 +957,7 @@ class TestRealProcessHelper:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "firmware.bin"
             source.write_bytes(b"firmware")
-            session = cast(Any, object.__new__(SshHelperSession))
+            session = cast(Any, object.__new__(RemoteSession))
             session.request = RemoteSessionRequest("local", LocalCommand(), TEST_PROCESS)
             session.deployment = DeploymentResult("/helper.py", "0" * 64, False)
             session.allocation = SessionAllocation("session", "/workspace")
@@ -981,7 +984,7 @@ class TestRealProcessHelper:
         )
 
         with pytest.raises(SessionError, match="invalid remote OpenOCD version response"):
-            SshHelperBackend().openocd_version(LocalCommand(), "local", ("openocd",))
+            query_remote_openocd_version(LocalCommand(), "local", ("openocd",))
 
     def test_helper_applies_requested_environment_before_child_executes(self):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
@@ -1429,7 +1432,7 @@ class TestRealProcessHelper:
                 (sys.executable, "-c", 'import sys;print("hello");sys.exit(6)'),
             )
             request = RemoteSessionRequest("local", LocalCommand(), process=remote_process)
-            backend = SshHelperSession(
+            backend = _opened_session(
                 request,
                 DeploymentResult(str(helper), "digest", False),
                 lambda stream, payload, line_end: output.append((stream, payload, line_end)),
@@ -1488,7 +1491,7 @@ class TestRealProcessHelper:
                 readiness_marker="ZRO_DESCENDANT_READY",
             )
             output = []
-            backend = SshHelperSession(
+            backend = _opened_session(
                 RemoteSessionRequest("local", LocalCommand(), process=remote_process),
                 DeploymentResult(str(helper), "digest", False),
                 lambda stream, payload, line_end: output.append((stream, payload, line_end)),
@@ -1638,7 +1641,7 @@ sys.exit({exit_code})
                     stderr=subprocess.PIPE,
                 )
 
-        backend = SshHelperSession(
+        backend = _opened_session(
             RemoteSessionRequest("local", LocalCommand(), TEST_PROCESS),
             DeploymentResult("/helper.py", "digest", False),
         )
@@ -1699,7 +1702,7 @@ sys.stdin.buffer.read()
                     stderr=subprocess.PIPE,
                 )
 
-        backend = SshHelperSession(
+        backend = _opened_session(
             RemoteSessionRequest("local", LocalCommand(), TEST_PROCESS),
             DeploymentResult("/helper.py", "digest", False),
         )
@@ -1784,7 +1787,7 @@ sys.exit(7)
             def wait(self, timeout=None):  # pylint: disable=unused-argument
                 return self.returncode
 
-        backend = SshHelperSession(
+        backend = _opened_session(
             RemoteSessionRequest("local", LocalCommand(), TEST_PROCESS),
             DeploymentResult("/helper.py", "digest", False),
         )
@@ -1836,7 +1839,7 @@ sys.exit(7)
                     stderr=subprocess.PIPE,
                 )
 
-        backend = SshHelperSession(
+        backend = _opened_session(
             RemoteSessionRequest("local", LocalCommand(), TEST_PROCESS),
             DeploymentResult("/helper.py", "digest", False),
         )
@@ -1882,7 +1885,7 @@ sys.exit(7)
                 (sys.executable, "-c", child_code, marker, str(child_pid_path)),
                 readiness_marker=marker,
             )
-            backend = SshHelperSession(
+            backend = _opened_session(
                 RemoteSessionRequest("local", LocalCommand(), process=remote_process),
                 DeploymentResult(str(helper), "digest", False),
             )
@@ -1949,7 +1952,7 @@ sys.exit(7)
             def fail_on_output(_stream, _payload, _line_end):
                 raise output_error
 
-            backend = SshHelperSession(
+            backend = _opened_session(
                 request,
                 DeploymentResult(str(helper), "digest", False),
                 fail_on_output,
@@ -1967,3 +1970,9 @@ sys.exit(7)
             finally:
                 with suppress(BaseException):
                     backend.close()
+
+
+def _opened_session(*args, **kwargs):
+    session = RemoteSession(*args, **kwargs)
+    session._open_helper()
+    return session

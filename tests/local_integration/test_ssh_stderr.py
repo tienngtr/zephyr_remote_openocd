@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from zephyr_remote_openocd.remote.backend import SshHelperSession
+from zephyr_remote_openocd.remote.backend import RemoteSession
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
 from zephyr_remote_openocd.remote.model import RemoteProcess, RemoteSessionRequest, Service
 from zephyr_remote_openocd.remote.ssh import SshCommand
@@ -80,7 +80,7 @@ def deployment() -> DeploymentResult:
 
 
 def test_control_progresses_when_configured_ssh_stderr_exceeds_pipe_capacity(tmp_path):
-    backend = SshHelperSession(request(fake_ssh_command(tmp_path)), deployment())
+    backend = _opened_session(request(fake_ssh_command(tmp_path)), deployment())
     try:
         descriptor = backend.start(())
         assert descriptor.remote_address == "127.64.0.1"
@@ -95,7 +95,7 @@ def test_forward_progresses_when_configured_ssh_stderr_exceeds_pipe_capacity(tmp
     # test usable in restricted sandboxes where socket creation is disabled.
     local_port = 45678
     service = Service("gdb", local_port, 3333)
-    backend = SshHelperSession(request(fake_ssh_command(tmp_path)), deployment())
+    backend = _opened_session(request(fake_ssh_command(tmp_path)), deployment())
     try:
         descriptor = backend.start((service,))
         assert descriptor.remote_address == "127.64.0.1"
@@ -103,3 +103,9 @@ def test_forward_progresses_when_configured_ssh_stderr_exceeds_pipe_capacity(tmp
     finally:
         backend.close()
     assert backend.closed
+
+
+def _opened_session(*args, **kwargs):
+    session = RemoteSession(*args, **kwargs)
+    session._open_helper()
+    return session

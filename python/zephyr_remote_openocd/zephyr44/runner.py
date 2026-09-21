@@ -21,7 +21,11 @@ from zephyr_remote_openocd.config import (
     require_remote_settings,
     resolve_remote,
 )
-from zephyr_remote_openocd.remote import RemoteSession, RemoteSessionRequest, SshHelperBackend
+from zephyr_remote_openocd.remote import (
+    RemoteSession,
+    RemoteSessionRequest,
+    query_remote_openocd_version,
+)
 from zephyr_remote_openocd.remote.debug import (
     DebugInputs,
     DebugPlanError,
@@ -98,7 +102,7 @@ class RemoteOpenOcdBinaryRunner(OpenOcdBinaryRunner):
             _record_runner(self, command, selected)
             return
         try:
-            selected, request, plan, backend = _build_operation(self, command, selected)
+            selected, request, plan = _build_operation(self, command, selected)
         except (
             ConfigError,
             FlashPlanError,
@@ -107,7 +111,7 @@ class RemoteOpenOcdBinaryRunner(OpenOcdBinaryRunner):
             RttClientError,
         ) as error:
             raise RuntimeError(str(error)) from error
-        _execute_operation(self, command, request, plan, backend)
+        _execute_operation(self, command, request, plan)
 
 
 def _select_remote(runner, recording):
@@ -124,27 +128,27 @@ def _select_remote(runner, recording):
 
 def _build_operation(runner, command, selected):
     selected = _prepare_remote_paths(selected)
-    backend = SshHelperBackend(output_handler=_write_output)
     if command == "flash":
-        return selected, _flash_request(runner, selected), None, backend
+        return selected, _flash_request(runner, selected), None
     if command not in {"debug", "attach", "debugserver", "rtt"}:
         raise RuntimeError(f"remote_openocd {command} is not implemented")
     version = None
     if runner.thread_info_enabled:
         version = parse_openocd_version(
-            backend.openocd_version(
+            query_remote_openocd_version(
                 SshCommand(selected.ssh_command),
                 selected.remote_host,
                 _remote_openocd(selected, command),
             )
         )
     plan = _debug_plan(runner, command, selected, version)
-    return selected, _debug_request(runner, selected, plan), plan, backend
+    return selected, _debug_request(runner, selected, plan), plan
 
 
-def _execute_operation(runner, command, request, plan, backend):
-    session = RemoteSession(request, backend)
-    descriptor = session.start()
+def _execute_operation(runner, command, request, plan):
+    session = RemoteSession.open(request, output_handler=_write_output)
+    assert session.descriptor is not None
+    descriptor = session.descriptor
     observed_returncode = None
     try:
         runner.logger.info(

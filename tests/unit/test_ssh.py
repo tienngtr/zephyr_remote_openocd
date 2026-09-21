@@ -17,7 +17,7 @@ from unittest.mock import patch
 import pytest
 from zephyr_remote_openocd.remote import backend as backend_module
 from zephyr_remote_openocd.remote import ssh as ssh_module
-from zephyr_remote_openocd.remote.backend import SshHelperSession
+from zephyr_remote_openocd.remote.backend import RemoteSession
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
 from zephyr_remote_openocd.remote.model import (
     RemoteProcess,
@@ -201,7 +201,7 @@ def test_helper_startup_timeout_does_not_block_on_partial_output(monkeypatch):
         monkeypatch.setattr(backend_module.selectors, "DefaultSelector", Selector)
 
         with pytest.raises(SessionError) as raised:
-            SshHelperSession(
+            _opened_session(
                 RemoteSessionRequest("host", Command(), RemoteProcess(("child",))),
                 DeploymentResult("/helper.py", "digest", False),
             )
@@ -318,7 +318,7 @@ def test_process_cleanup_closes_an_active_stderr_drain():
     code = "import sys,time;sys.stderr.write('x' * 8192);sys.stderr.flush();time.sleep(30)"
     process = SshCommand((sys.executable, "-c", code)).popen("host", "ignored")
     try:
-        SshHelperSession._stop_process(process)
+        RemoteSession._stop_process(process)
         assert process.poll() is not None
     finally:
         if process.poll() is None:
@@ -404,7 +404,7 @@ def test_helper_output_delivery_does_not_retain_event_history():
 
     handled = []
     command = Command()
-    backend = SshHelperSession(
+    backend = _opened_session(
         RemoteSessionRequest(
             "host",
             command,
@@ -440,7 +440,7 @@ def test_forward_diagnostic_keeps_a_useful_tail_after_nonzero_exit():
     process = SshCommand((sys.executable, "-c", code)).popen("host", "ignored")
     try:
         assert process.wait(timeout=5) == 9
-        diagnostic = SshHelperSession._forward_diagnostic(process)
+        diagnostic = RemoteSession._forward_diagnostic(process)
         assert diagnostic.endswith("forward-tail")
         assert len(diagnostic.encode()) <= SSH_STDERR_TAIL_BYTES
     finally:
@@ -515,7 +515,7 @@ class _ForwardCommand(_PopenOnlySshCommand):
 
 
 def _forward_session(command):
-    session = cast(Any, object.__new__(SshHelperSession))
+    session = cast(Any, object.__new__(RemoteSession))
     session.request = RemoteSessionRequest("host", command, RemoteProcess(("child",)))
     session.forwards = []
     session.closed = False
@@ -526,6 +526,7 @@ def _forward_session(command):
     session.reader_thread = None
     session._terminal_reason = None
     session._state_lock = threading.RLock()
+    session._services = []
     return session
 
 
@@ -572,7 +573,7 @@ def test_initial_start_forward_failure_associates_all_preflight_advisories_with_
         ),
         _ForwardProcess(7),
     )
-    backend = SshHelperSession(
+    backend = _opened_session(
         RemoteSessionRequest("host", command, RemoteProcess(("child",))),
         DeploymentResult("/helper.py", "digest", False),
     )
@@ -616,7 +617,7 @@ def test_dynamic_forward_timeout_identifies_service_and_local_port(monkeypatch):
     _patch_preflight_socket(monkeypatch, set())
     service = Service("rtt", port, 5555)
     session = _forward_session(_ForwardCommand(_ForwardProcess(None)))
-    monkeypatch.setattr(SshHelperSession, "_await_forward_ready", lambda *_args: False)
+    monkeypatch.setattr(RemoteSession, "_await_forward_ready", lambda *_args: False)
 
     try:
         with pytest.raises(SessionError) as raised:
@@ -656,3 +657,9 @@ def test_drain_startup_error_is_primary_when_process_cleanup_fails(monkeypatch):
     with pytest.raises(RuntimeError, match="stderr drain startup failed") as raised:
         SshCommand(("fake-ssh",)).popen("host", "ignored")
     assert any("process kill failed" in note for note in raised.value.__notes__)
+
+
+def _opened_session(*args, **kwargs):
+    session = RemoteSession(*args, **kwargs)
+    session._open_helper()
+    return session
