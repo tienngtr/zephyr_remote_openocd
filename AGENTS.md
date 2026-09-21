@@ -53,6 +53,9 @@ RSP traffic. Direct semihosting validation uses fixture-provided OpenOCD
 `--cmd-pre-init` commands and normal stdout/stderr relay—no proxy, filesystem
 virtualization, or GDB File-I/O. Serial observation is test-only.
 
+Let invalid input fail naturally when that is sufficient; do not add redundant
+error checks.
+
 ## Testing and Validation
 
 Use pytest `test_` names and distinct parametrized nodes for external profiles.
