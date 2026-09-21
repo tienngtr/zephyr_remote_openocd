@@ -961,7 +961,7 @@ class TestRealProcessHelper:
             session.deployment = DeploymentResult("/helper.py", "0" * 64, False)
             session.allocation = SessionAllocation("session", "/workspace")
             with pytest.raises(SessionError, match="invalid remote staging response"):
-                session.stage((StagedFile(source, PurePosixPath("firmware.bin")),))
+                session._stage((StagedFile(source, PurePosixPath("firmware.bin")),))
 
     def test_backend_wraps_invalid_utf8_version_response(self, monkeypatch):
         class LocalCommand(_BlockedSshCommand):
@@ -1437,8 +1437,8 @@ class TestRealProcessHelper:
                 lambda stream, payload, line_end: output.append((stream, payload, line_end)),
             )
             try:
-                backend.stage(())
-                descriptor = backend.start(())
+                backend._stage(())
+                descriptor = backend._start_process(())
                 assert ipaddress.ip_address(descriptor.remote_address) in LOOPBACK_RANGE
                 assert backend.wait_for_openocd_exit(5) == 6
                 assert [
@@ -1496,7 +1496,7 @@ class TestRealProcessHelper:
                 lambda stream, payload, line_end: output.append((stream, payload, line_end)),
             )
             try:
-                backend.start(())
+                backend._start_process(())
                 backend.close()
             finally:
                 with suppress(BaseException):
@@ -1890,7 +1890,7 @@ sys.exit(7)
             child_pid = None
             child_pidfd = None
             try:
-                backend.start(())
+                backend._start_process(())
                 child_pid = int(child_pid_path.read_text(encoding="ascii"))
                 child_pidfd = os.pidfd_open(child_pid)
 
@@ -1955,8 +1955,8 @@ sys.exit(7)
                 fail_on_output,
             )
             try:
-                backend.stage(())
-                backend.start(())
+                backend._stage(())
+                backend._start_process(())
                 with pytest.raises(SessionError) as raised:
                     backend.wait_for_openocd_exit(5)
                 assert raised.value.__cause__ is output_error

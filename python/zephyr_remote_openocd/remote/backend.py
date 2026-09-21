@@ -121,8 +121,8 @@ class RemoteSession:
         session = cls(request, deployment, output_handler)
         session._open_helper()
         try:
-            session.stage(request.staged_files)
-            session.descriptor = session.start(request.services)
+            session._stage(request.staged_files)
+            session.descriptor = session._start_process(request.services)
         except BaseException as error:
             try:
                 session.close()
@@ -195,7 +195,7 @@ class RemoteSession:
         finally:
             selector.close()
 
-    def stage(self, files: Iterable[StagedEntry]):
+    def _stage(self, files: Iterable[StagedEntry]):
         archive = build_archive(files)
         try:
             command = (
@@ -277,7 +277,7 @@ class RemoteSession:
         except (OSError, ValueError):
             return ""
 
-    def start(self, services: Iterable[Service]) -> SessionDescriptor:
+    def _start_process(self, services: Iterable[Service]) -> SessionDescriptor:
         service_list = tuple(services)
         process = self.request.process
         if self.helper_process.stdin is None:
@@ -288,9 +288,9 @@ class RemoteSession:
             service_list,
         )
         address = self._await_process_ready()
+        self._start_event_drain()
         if service_list:
             self._start_forwards(service_list, address)
-        self._start_event_drain()
         self.descriptor = SessionDescriptor(self.allocation, address)
         return self.descriptor
 

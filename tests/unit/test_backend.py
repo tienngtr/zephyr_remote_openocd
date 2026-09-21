@@ -35,18 +35,20 @@ def test_open_acquires_complete_session_in_order(monkeypatch):
         actions.append("helper")
         session.helper_process = object()
 
-    def start(_session, _services):
+    def start_process(_session, _services):
         actions.append("start")
         return descriptor
 
     monkeypatch.setattr(RemoteSession, "_open_helper", open_helper)
-    monkeypatch.setattr(RemoteSession, "stage", lambda _session, _files: actions.append("stage"))
-    monkeypatch.setattr(RemoteSession, "start", start)
+    monkeypatch.setattr(RemoteSession, "_stage", lambda _session, _files: actions.append("stage"))
+    monkeypatch.setattr(RemoteSession, "_start_process", start_process)
 
     session = RemoteSession.open(request)
 
     assert actions == ["helper", "stage", "start"]
     assert session.descriptor is descriptor
+    assert not hasattr(session, "stage")
+    assert not hasattr(session, "start")
 
 
 def test_open_rolls_back_failed_acquisition_once(monkeypatch):
@@ -66,7 +68,7 @@ def test_open_rolls_back_failed_acquisition_once(monkeypatch):
         raise startup_error
 
     monkeypatch.setattr(RemoteSession, "_open_helper", open_helper)
-    monkeypatch.setattr(RemoteSession, "stage", fail_stage)
+    monkeypatch.setattr(RemoteSession, "_stage", fail_stage)
     monkeypatch.setattr(RemoteSession, "close", lambda _session: actions.append("close"))
 
     with pytest.raises(RuntimeError) as raised:

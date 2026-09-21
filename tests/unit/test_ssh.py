@@ -414,7 +414,7 @@ def test_helper_output_delivery_does_not_retain_event_history():
         lambda stream, payload, line_end: handled.append((stream, payload, line_end)),
     )
     try:
-        backend.start(())
+        backend._start_process(())
         assert backend.reader_thread is not None
         backend.reader_thread.join(timeout=10)
         assert not backend.reader_thread.is_alive()
@@ -498,6 +498,12 @@ class _HelperProcess:
     def kill(self):
         self.returncode = -9
 
+    def close_stderr(self):
+        pass
+
+    def stderr_tail(self):
+        return b""
+
 
 class _ForwardCommand(_PopenOnlySshCommand):
     processes: Iterator[Any]
@@ -580,7 +586,7 @@ def test_initial_start_forward_failure_associates_all_preflight_advisories_with_
     )
     try:
         with pytest.raises(SessionError) as raised:
-            backend.start((first, second))
+            backend._start_process((first, second))
 
         message = str(raised.value)
         assert f"127.0.0.1:{first_port} for tcl" in message
@@ -595,6 +601,60 @@ def test_initial_start_forward_failure_associates_all_preflight_advisories_with_
     finally:
         with suppress(BaseException):
             backend.close()
+
+
+@pytest.mark.timeout(10)
+def test_initial_forward_failure_consumes_terminal_openocd_event(monkeypatch):
+    terminal_seen = threading.Event()
+    forward_error = SessionError("initial forwarding failed")
+    sessions = []
+    helper = _HelperProcess(
+        encode_message(
+            "SESSION_CREATED",
+            helper="fake",
+            session_id="session",
+            remote_workspace="/workspace",
+        )
+        + encode_message("PROCESS_READY", remote_address="127.64.0.1", child_pid=1)
+        + encode_message("SESSION_CLOSED", reason="process_exit", returncode=6)
+    )
+    helper.returncode = 0
+    command = _ForwardCommand(helper)
+    request = RemoteSessionRequest(
+        "host",
+        command,
+        RemoteProcess(("child",)),
+        services=(Service("gdb", 3333, 3333),),
+    )
+    deployment = DeploymentResult("/helper.py", "digest", False)
+    dispatch = RemoteSession._dispatch
+
+    monkeypatch.setattr(backend_module, "deploy_helper", lambda *_args: deployment)
+    monkeypatch.setattr(RemoteSession, "_stage", lambda _session, _files: None)
+
+    def observe_terminal(session, event):
+        dispatch(session, event)
+        if event["type"] == "SESSION_CLOSED":
+            terminal_seen.set()
+
+    def fail_forwards(session, _services, _address):
+        sessions.append(session)
+        assert terminal_seen.wait(5)
+        raise forward_error
+
+    monkeypatch.setattr(RemoteSession, "_dispatch", observe_terminal)
+    monkeypatch.setattr(RemoteSession, "_start_forwards", fail_forwards)
+
+    with pytest.raises(SessionError) as raised:
+        RemoteSession.open(request)
+
+    assert raised.value is forward_error
+    assert not getattr(raised.value, "__notes__", ())
+    assert len(sessions) == 1
+    session = sessions[0]
+    assert session.closed
+    assert session.openocd_returncode == 6
+    assert session._terminal_reason == "process_exit"
 
 
 def test_dynamic_forward_failure_identifies_service_and_local_port(monkeypatch):

@@ -82,7 +82,7 @@ def deployment() -> DeploymentResult:
 def test_control_progresses_when_configured_ssh_stderr_exceeds_pipe_capacity(tmp_path):
     backend = _opened_session(request(fake_ssh_command(tmp_path)), deployment())
     try:
-        descriptor = backend.start(())
+        descriptor = backend._start_process(())
         assert descriptor.remote_address == "127.64.0.1"
     finally:
         backend.close()
@@ -97,7 +97,7 @@ def test_forward_progresses_when_configured_ssh_stderr_exceeds_pipe_capacity(tmp
     service = Service("gdb", local_port, 3333)
     backend = _opened_session(request(fake_ssh_command(tmp_path)), deployment())
     try:
-        descriptor = backend.start((service,))
+        descriptor = backend._start_process((service,))
         assert descriptor.remote_address == "127.64.0.1"
         assert len(backend.forwards) == 1
     finally:
