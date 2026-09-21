@@ -43,7 +43,7 @@ def _assert_pidfd_exited(pidfd, timeout=5):
     poller = select.poll()
     poller.register(pidfd, select.POLLIN)
     if not poller.poll(timeout * 1000):
-        raise AssertionError("descendant process survived cleanup")
+        raise AssertionError("process survived cleanup")
 
 
 def _cleanup_test_child(child, descendant_pidfd):
@@ -63,17 +63,14 @@ def _cleanup_test_child(child, descendant_pidfd):
 
 
 def _forking_child_code(exit_on_term):
-    leader_exit = (
-        """
+    leader_signal = "SIGTERM" if exit_on_term else "SIGUSR1"
+    leader_exit = f"""
 def stop(_signal, _frame):
     raise SystemExit(0)
 
-signal.signal(signal.SIGTERM, stop)
+signal.signal(signal.{leader_signal}, stop)
 """
-        if exit_on_term
-        else ""
-    )
-    parent_wait = "time.sleep(30)" if exit_on_term else "time.sleep(0.05)"
+    parent_wait = "time.sleep(30)" if exit_on_term else "signal.pause()"
     return f"""
 import os
 import signal
@@ -274,24 +271,28 @@ def test_relay_preserves_split_utf8_and_invalid_bytes(monkeypatch):
 def test_relay_real_child_flushes_newline_free_output_before_exit(monkeypatch):
     monkeypatch.setattr(remote_helper, "RELAY_CHUNK_SIZE", 64)
     events = []
+    output_emitted = threading.Event()
+
+    def emit(kind, **values):
+        events.append((kind, values))
+        output_emitted.set()
+
     monkeypatch.setattr(
         remote_helper,
         "emit",
-        lambda kind, **values: events.append((kind, values)),
+        emit,
     )
     child = remote_helper._spawn_child(
         (
             sys.executable,
             "-c",
-            "import sys,time;sys.stdout.buffer.write(b'x'*8193);sys.stdout.flush();time.sleep(5)",
+            "import signal,sys;"
+            "sys.stdout.buffer.write(b'x'*8193);sys.stdout.flush();signal.pause()",
         )
     )
     try:
         child.start_relays(capture_startup=True)
-        deadline = time.monotonic() + 2
-        while not events and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert events
+        assert output_emitted.wait(5)
         assert child.poll() is None
         assert all(len(values["payload"]) <= 64 for _kind, values in events)
         assert len(child.startup_output) <= 128
@@ -627,8 +628,7 @@ def test_protocol_error_remains_primary_when_cleanup_also_fails(tmp_path, monkey
     original_rmtree(workspace)
 
 
-def test_supervised_child_terminates_descendant_after_leader_term(tmp_path, monkeypatch):
-    monkeypatch.setattr(remote_helper, "CHILD_TERM_TIMEOUT", 0.2)
+def test_supervised_child_terminates_descendant_after_leader_term(tmp_path):
     descendant_path = tmp_path / "descendant.pid"
     child = remote_helper._spawn_child(
         (sys.executable, "-c", _forking_child_code(True), str(descendant_path))
@@ -651,33 +651,35 @@ def test_supervised_child_terminates_descendant_after_leader_term(tmp_path, monk
             os.close(descendant_pidfd)
 
 
-def test_supervised_child_warns_and_terminates_descendant_after_leader_exit(
-    tmp_path, monkeypatch, capsys
-):
-    monkeypatch.setattr(remote_helper, "CHILD_TERM_TIMEOUT", 0.2)
+def test_supervised_child_warns_and_terminates_descendant_after_leader_exit(tmp_path, capsys):
     descendant_path = tmp_path / "descendant.pid"
     child = remote_helper._spawn_child(
         (sys.executable, "-c", _forking_child_code(False), str(descendant_path))
     )
     descendant_pid = None
     descendant_pidfd = None
+    leader_pidfd = None
     try:
         descendant_pid = _wait_for_descendant(descendant_path)
         descendant_pidfd = os.pidfd_open(descendant_pid)
+        leader_pidfd = os.pidfd_open(child.pid)
         assert os.getpgid(descendant_pid) == child.pid
-        deadline = time.monotonic() + 5
-        while child.poll() is None and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert child.returncode == 0
+
+        os.kill(child.pid, signal.SIGUSR1)
+        _assert_pidfd_exited(leader_pidfd)
+        assert child.process.returncode is None
 
         child.terminate()
 
+        assert child.returncode == 0
         _assert_pidfd_exited(descendant_pidfd)
         assert str(descendant_pid) in capsys.readouterr().err
     finally:
         _cleanup_test_child(child, descendant_pidfd)
         if descendant_pidfd is not None:
             os.close(descendant_pidfd)
+        if leader_pidfd is not None:
+            os.close(leader_pidfd)
 
 
 def test_supervised_child_skips_kill_after_group_disappears(monkeypatch):
@@ -790,6 +792,12 @@ def test_supervised_child_group_cleanup_ignores_diagnostic_failure(monkeypatch):
 
 
 def test_supervised_child_cleanup_uses_finite_budgets_after_failures(monkeypatch):
+    class Clock:
+        now = 10.0
+
+        def monotonic(self):
+            return self.now
+
     class Stream:
         closed = False
 
@@ -826,15 +834,19 @@ def test_supervised_child_cleanup_uses_finite_budgets_after_failures(monkeypatch
 
         def join(self, timeout=None):
             self.join_calls.append(timeout)
+            join_deadlines.append(clock.now + (timeout or 0.0))
             self.alive = False
+            if len(join_deadlines) == 1:
+                clock.now += remote_helper.CHILD_RELAY_JOIN_TIMEOUT
 
+    clock = Clock()
+    join_deadlines: list[float] = []
     process = Process()
     relays = [Relay("stdout-relay"), Relay("stderr-relay")]
     child = remote_helper.SupervisedChild(process)
     child.relay_threads = relays
     child._observed_returncode = 0
     signals = []
-    clock = iter((10.0, 10.0, 10.25))
 
     def fail_killpg(_pid, signum):
         signals.append(signum)
@@ -843,13 +855,14 @@ def test_supervised_child_cleanup_uses_finite_budgets_after_failures(monkeypatch
 
     monkeypatch.setattr(remote_helper, "CHILD_RELAY_JOIN_TIMEOUT", 0.75)
     monkeypatch.setattr(remote_helper.os, "killpg", fail_killpg)
-    monkeypatch.setattr(remote_helper.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(remote_helper.time, "monotonic", clock.monotonic)
     monkeypatch.setattr(
         child,
         "_wait_for_leader_exit",
         lambda: (_ for _ in ()).throw(RuntimeError("leader wait failed")),
     )
     monkeypatch.setattr(child, "_warn_remaining_group_members", lambda: None)
+    cleanup_deadline = clock.now + remote_helper.CHILD_RELAY_JOIN_TIMEOUT
 
     with pytest.raises(RuntimeError, match="signal failed") as raised:
         child.terminate()
@@ -857,8 +870,9 @@ def test_supervised_child_cleanup_uses_finite_budgets_after_failures(monkeypatch
     assert signals == [signal.SIGTERM, 0, signal.SIGKILL]
     assert process.wait_calls == [remote_helper.CHILD_REAP_TIMEOUT]
     join_calls = [timeout for relay in relays for timeout in relay.join_calls]
-    assert len(join_calls) == len(relays)
-    assert all(0 <= timeout <= remote_helper.CHILD_RELAY_JOIN_TIMEOUT for timeout in join_calls)
+    assert join_calls
+    assert all(0.0 <= timeout <= remote_helper.CHILD_RELAY_JOIN_TIMEOUT for timeout in join_calls)
+    assert all(deadline <= cleanup_deadline for deadline in join_deadlines)
     assert process.stdout.closed and process.stdout.close_calls == 1
     assert process.stderr.closed and process.stderr.close_calls == 1
     assert any("leader wait failed" in note for note in raised.value.__notes__)

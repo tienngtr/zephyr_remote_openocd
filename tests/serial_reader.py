@@ -50,13 +50,15 @@ try:
    break
  deadline=time.monotonic()+timeout; data=bytearray(); pattern=re.compile(pattern_text)
  emit('ARMED')
- while time.monotonic()<deadline:
-  ready,_,_=select.select([fd],[],[],min(0.2,max(0,deadline-time.monotonic())))
+ while True:
+  remaining=max(0,deadline-time.monotonic())
+  ready,_,_=select.select([fd],[],[],min(0.2,remaining))
   if fd in ready:
    try: data.extend(os.read(fd,65536))
    except BlockingIOError: pass
    if pattern.search(data.decode('utf-8','replace')):
     emit('MATCH',data=base64.b64encode(data).decode('ascii'));sys.exit(0)
+  if time.monotonic()>=deadline: break
  emit('TIMEOUT',data=base64.b64encode(data).decode('ascii'));sys.exit(2)
 except Exception as exc:
  emit('ERROR',message=str(exc));sys.exit(3)

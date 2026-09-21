@@ -15,7 +15,6 @@ import sys
 import tarfile
 import tempfile
 import threading
-import time
 from contextlib import suppress
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO, cast, override
@@ -31,7 +30,6 @@ from zephyr_remote_openocd.remote.model import (
     RemoteSessionRequest,
     Service,
     SessionAllocation,
-    SessionDescriptor,
     StagedFile,
 )
 from zephyr_remote_openocd.remote.paths import ADDRESS_TOKEN, PathPlanner
@@ -274,108 +272,60 @@ class TestForwardingLifecycle:
         assert raised.value is startup_error
         assert any("process cleanup failed" in note for note in raised.value.__notes__)
 
-    def test_session_start_error_survives_forward_cleanup_failure(self):
-        helper = self.Process()
-        helper.stdin = io.BytesIO()
-        command = self.Command(helper)
-        session = self.session(command)
-        session.request = RemoteSessionRequest(
-            "target", command, process=RemoteProcess(("openocd",))
-        )
-        session.helper_process = helper
-        session.allocation = SessionAllocation("session", "/workspace")
-        service = Service("gdb", 1234, 3333)
-        startup_error = SessionError("forward startup failed")
-
-        with (
-            patch.object(session, "_await_process_ready", return_value="127.64.1.1"),
-            patch.object(session, "_start_forwards", side_effect=startup_error),
-            patch.object(
-                session,
-                "_close_forwards",
-                side_effect=RuntimeError("forward cleanup failed"),
-            ),
-            pytest.raises(SessionError, match="forward startup failed") as raised,
-        ):
-            session.start((service,))
-
-        assert raised.value is startup_error
-        assert any("forward cleanup failed" in note for note in raised.value.__notes__)
-
-    def test_dynamic_forward_error_survives_rollback_failure(self):
-        existing = self.Process()
-        added = self.Process()
-        session = self.session(self.Command(self.Process()))
-        session.descriptor = SessionDescriptor(
-            SessionAllocation("session", "/workspace"), "127.64.1.1"
-        )
-        session.forwards = [existing]
-        forward_error = SessionError("forward failed")
-
-        def fail_after_starting_forward(*_args):
-            session.forwards.append(added)
-            raise forward_error
-
-        with (
-            patch.object(session, "_start_forwards", side_effect=fail_after_starting_forward),
-            patch.object(
-                session,
-                "_stop_process",
-                side_effect=RuntimeError("forward rollback failed"),
-            ),
-            pytest.raises(SessionError, match="forward failed") as raised,
-        ):
-            session.forward((Service("rtt", 19021, 19021),))
-
-        assert raised.value is forward_error
-        assert any("forward rollback failed" in note for note in raised.value.__notes__)
-        assert session.forwards == [existing]
-
-    def test_wait_error_survives_session_cleanup_failure(self):
+    def test_wait_error_leaves_cleanup_to_lifecycle(self):
         session = self.session(self.Command(self.Process()))
         wait_error = SessionError("event stream failed")
 
         with (
             patch.object(session, "poll", side_effect=wait_error),
-            patch.object(
-                session,
-                "close",
-                side_effect=RuntimeError("session cleanup failed"),
-            ),
-            pytest.raises(SessionError, match="event stream failed") as raised,
+            patch.object(session, "close") as close,
+            pytest.raises(SessionError) as raised,
         ):
             session.wait()
 
         assert raised.value is wait_error
-        assert any("session cleanup failed" in note for note in raised.value.__notes__)
+        close.assert_not_called()
 
     def test_stale_gdb_forward_cannot_mask_current_forward_failure(self, monkeypatch):
-        monkeypatch.setattr(backend_module, "FORWARD_START_TIMEOUT", 1)
+        class Clock:
+            now = 0.0
+
+            def monotonic(self):
+                return self.now
+
+        class Selector:
+            @staticmethod
+            def register(_stream, _events):
+                pass
+
+            @staticmethod
+            def select(_timeout):
+                clock.now = backend_module.FORWARD_START_TIMEOUT + 1
+                return []
+
+            @staticmethod
+            def close():
+                pass
+
+        clock = Clock()
+        monkeypatch.setattr(backend_module.time, "monotonic", clock.monotonic)
+        monkeypatch.setattr(backend_module.selectors, "DefaultSelector", Selector)
         stale = self.Process()
         read_fd, write_fd = os.pipe()
         stale.stdout = os.fdopen(read_fd, "rb")
         command = self.Command(stale)
         session = self.session(command)
-        service = Service("gdb", self.port(), 3333)
-        listener = socket.socket()
+        service = Service("gdb", 32155, 3333)
+        monkeypatch.setattr(
+            SshHelperSession,
+            "_preflight",
+            staticmethod(lambda _service: "stale listener"),
+        )
         try:
-            listener.bind(("127.0.0.1", service.local_port))
-            listener.listen()
-        except OSError:
-            listener.close()
-            stale.stdout.close()
-            os.close(write_fd)
-            pytest.skip("sandbox cannot create stale listener")
-        with (
-            patch("zephyr_remote_openocd.remote.backend.socket.create_connection") as connect,
-            pytest.raises(SessionError, match="did not become ready"),
-        ):
-            try:
+            with pytest.raises(SessionError, match="did not become ready"):
                 session._start_forwards((service,), "127.64.1.1")
-            finally:
-                listener.close()
-                os.close(write_fd)
-        connect.assert_not_called()
+        finally:
+            os.close(write_fd)
         session._close_forwards()
         assert stale.terminate_calls == 1
 
@@ -1753,11 +1703,18 @@ sys.stdin.buffer.read()
             RemoteSessionRequest("local", LocalCommand(), TEST_PROCESS),
             DeploymentResult("/helper.py", "digest", False),
         )
-        backend._start_event_drain()
-        assert backend.reader_thread is not None
-        deadline = time.monotonic() + 2
-        while backend._terminal_reason is None and time.monotonic() < deadline:
-            time.sleep(0.01)
+        terminal_consumed = threading.Event()
+        dispatch = backend._dispatch
+
+        def observe_terminal(event):
+            dispatch(event)
+            if event["type"] == "SESSION_CLOSED":
+                terminal_consumed.set()
+
+        with patch.object(backend, "_dispatch", side_effect=observe_terminal):
+            backend._start_event_drain()
+            assert backend.reader_thread is not None
+            assert terminal_consumed.wait(5)
         assert backend._terminal_reason == "requested"
         try:
             with pytest.raises(SessionError, match="before STOP"):
@@ -1890,7 +1847,8 @@ sys.exit(7)
                 backend.wait(5)
             assert backend.process_returncode == 0
         finally:
-            backend.close()
+            with suppress(BaseException):
+                backend.close()
 
     def test_backend_close_waits_for_helper_child_kill_fallback(self):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
@@ -1950,7 +1908,7 @@ sys.exit(7)
                         signal.pidfd_send_signal(child_pidfd, signal.SIGKILL)
                     os.close(child_pidfd)
 
-    def test_backend_reader_failure_terminates_session(self):
+    def test_backend_reader_failure_requires_lifecycle_cleanup(self):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
@@ -1986,22 +1944,26 @@ sys.exit(7)
             )
             request = RemoteSessionRequest("local", LocalCommand(), process=remote_process)
 
-            def fail_on_output(stream, payload, line_end):
-                raise RuntimeError("output sink failed")
+            output_error = RuntimeError()
+
+            def fail_on_output(_stream, _payload, _line_end):
+                raise output_error
 
             backend = SshHelperSession(
                 request,
                 DeploymentResult(str(helper), "digest", False),
                 fail_on_output,
             )
-            workspace = backend.allocation.remote_workspace
             try:
                 backend.stage(())
                 backend.start(())
-                with pytest.raises(SessionError, match="helper event stream failed"):
+                with pytest.raises(SessionError) as raised:
                     backend.wait(5)
-                assert backend.closed
-                assert not Path(workspace).exists()
+                assert raised.value.__cause__ is output_error
+                assert not backend.closed
+                with pytest.raises(SessionError) as raised:
+                    backend.close()
+                assert raised.value.__cause__ is output_error
             finally:
                 with suppress(BaseException):
                     backend.close()

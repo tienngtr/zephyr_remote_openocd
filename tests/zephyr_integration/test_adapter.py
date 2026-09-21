@@ -196,6 +196,31 @@ def test_gdb_operation_does_not_duplicate_observed_process_failure(runner_api):
     backend_session.close.assert_called_once_with()
 
 
+def test_gdb_operation_preserves_process_failure_when_cleanup_fails(runner_api):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
+    runner = Mock()
+    backend = Mock()
+    backend_session = Mock()
+    cleanup_error = RuntimeError("cleanup failed")
+    backend_session.start.return_value = SessionDescriptor(
+        SessionAllocation("session", "/workspace"), "127.0.0.1"
+    )
+    backend_session.poll.return_value = 7
+    backend_session.close.side_effect = cleanup_error
+    backend.create.return_value = backend_session
+    request = RemoteSessionRequest("host", SshCommand(), TEST_PROCESS)
+    plan = _debug_plan(gdb_argv=("gdb",))
+
+    with pytest.raises(RuntimeError, match="remote OpenOCD failed with exit status 7") as raised:
+        runner_module._execute_operation(runner, "debug", request, plan, backend)
+
+    assert raised.value.__cause__ is cleanup_error
+    assert len(getattr(raised.value, "__notes__", ())) == 1
+    backend_session.poll.assert_called_once_with()
+    backend_session.close.assert_called_once_with()
+
+
 def test_gdb_requirement_failure_closes_started_session(runner_api):
     from zephyr_remote_openocd.zephyr44 import runner as runner_module
 

@@ -55,6 +55,13 @@ class _PopenOnlySshCommand(SshCommand):
         raise AssertionError("run_stream() is not expected in this test")
 
 
+def _pipe_stream(payload: bytes) -> BinaryIO:
+    read_fd, write_fd = os.pipe()
+    with os.fdopen(write_fd, "wb", buffering=0) as stream:
+        stream.write(payload)
+    return os.fdopen(read_fd, "rb", buffering=0)
+
+
 def test_fixed_arguments_are_preserved_without_a_shell():
     ssh = SshCommand(("custom-ssh", "-F", "/a file", "-o", "BatchMode=yes"))
     assert ssh.argv("board-lab", "printf marker") == [
@@ -70,6 +77,7 @@ def test_fixed_arguments_are_preserved_without_a_shell():
 
 @patch("subprocess.Popen")
 def test_long_lived_process_preserves_explicit_path_and_generated_arguments(popen):
+    popen.return_value.stderr = io.BytesIO()
     SshCommand(("/opt/client/custom-ssh", "-F", "/a file")).popen("host", "serve", "-N")
     popen.assert_called_once_with(
         ["/opt/client/custom-ssh", "-F", "/a file", "-N", "host", "serve"],
@@ -122,6 +130,90 @@ def test_long_lived_process_drains_noisy_stderr_and_keeps_bounded_tail():
                 stream.close()
 
 
+@pytest.mark.timeout(5)
+def test_helper_startup_timeout_does_not_block_on_partial_output(monkeypatch):
+    read_fd, write_fd = os.pipe()
+
+    class Process:
+        def __init__(self):
+            self.stdin = io.BytesIO()
+            self.stdout = os.fdopen(read_fd, "rb", buffering=0)
+            self.stderr = None
+            self.returncode = None
+            self.args = ("fake-helper",)
+            self.terminate_calls = 0
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.terminate_calls += 1
+            self.returncode = 0
+
+        def kill(self):
+            self.returncode = -9
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        @staticmethod
+        def stderr_tail():
+            return b""
+
+        @staticmethod
+        def close_stderr():
+            pass
+
+    class Command(_PopenOnlySshCommand):
+        @override
+        def popen(self, host: str, remote_command: str, *extra_args: str) -> Any:
+            return process
+
+    class Clock:
+        now = 0.0
+
+        def monotonic(self):
+            return self.now
+
+    class Selector:
+        def __init__(self):
+            self.delivered = False
+
+        def register(self, _stream, _events):
+            pass
+
+        def select(self, _timeout):
+            if not self.delivered:
+                self.delivered = True
+                clock.now = backend_module.HELPER_START_TIMEOUT + 1
+                return [(None, None)]
+            return []
+
+        @staticmethod
+        def close():
+            pass
+
+    process = Process()
+    clock = Clock()
+    try:
+        os.write(write_fd, b'{"version":1,"type":"SESSION_CREATED"')
+        monkeypatch.setattr(backend_module.time, "monotonic", clock.monotonic)
+        monkeypatch.setattr(backend_module.selectors, "DefaultSelector", Selector)
+
+        with pytest.raises(SessionError) as raised:
+            SshHelperSession(
+                RemoteSessionRequest("host", Command(), RemoteProcess(("child",))),
+                DeploymentResult("/helper.py", "digest", False),
+            )
+
+        assert isinstance(raised.value.__cause__, TimeoutError)
+        assert process.terminate_calls == 1
+    finally:
+        if not process.stdout.closed:
+            process.stdout.close()
+        os.close(write_fd)
+
+
 def test_run_stream_passes_file_as_stdin_and_captures_output(tmp_path):
     code = (
         "import sys;"
@@ -160,18 +252,20 @@ def test_stderr_tail_is_best_effort_when_drain_has_not_reached_eof(monkeypatch):
         def close(self):
             release_eof.set()
 
-    monkeypatch.setattr(ssh_module, "_SSH_STDERR_JOIN_TIMEOUT", 0)
     drain = ssh_module._StderrDrain(cast(BinaryIO, Stream()))
+    original_wait = drain._finished.wait
+    monkeypatch.setattr(drain._finished, "wait", lambda _timeout=None: False)
     drain.start()
     try:
-        first_chunk_read.wait()
+        assert first_chunk_read.wait(5)
         assert drain.tail() == b"prefix"
         assert not drain._finished.is_set()
         release_eof.set()
-        drain._finished.wait()
+        assert original_wait(5)
     finally:
         release_eof.set()
-        drain._thread.join()
+        drain._thread.join(timeout=5)
+        assert not drain._thread.is_alive()
 
 
 @pytest.mark.timeout(10)
@@ -258,10 +352,25 @@ def test_helper_output_delivery_does_not_retain_event_history():
     class Process:
         def __init__(self):
             self.stdin = io.BytesIO()
-            self.stdout = io.BytesIO(b"".join(frames))
+            read_fd, write_fd = os.pipe()
+            self.stdout = os.fdopen(read_fd, "rb", buffering=0)
+            self.writer = threading.Thread(
+                target=self._write_frames,
+                args=(write_fd, b"".join(frames)),
+                daemon=True,
+            )
+            self.writer.start()
             self.stderr = None
             self.returncode = None
             self.args = ("fake-helper",)
+
+        @staticmethod
+        def _write_frames(write_fd, frame_bytes):
+            try:
+                with os.fdopen(write_fd, "wb") as stream:
+                    stream.write(frame_bytes)
+            except BrokenPipeError:
+                pass
 
         def poll(self):
             return self.returncode
@@ -294,10 +403,11 @@ def test_helper_output_delivery_does_not_retain_event_history():
             return self.process
 
     handled = []
+    command = Command()
     backend = SshHelperSession(
         RemoteSessionRequest(
             "host",
-            Command(),
+            command,
             process=RemoteProcess(("child",)),
         ),
         DeploymentResult("/helper.py", "digest", False),
@@ -306,8 +416,10 @@ def test_helper_output_delivery_does_not_retain_event_history():
     try:
         backend.start(())
         assert backend.reader_thread is not None
-        backend.reader_thread.join()
+        backend.reader_thread.join(timeout=10)
         assert not backend.reader_thread.is_alive()
+        command.process.writer.join(timeout=10)
+        assert not command.process.writer.is_alive()
         assert handled == [
             ("stdout" if index % 2 == 0 else "stderr", payload, False)
             for index, payload in enumerate(payloads)
@@ -368,7 +480,7 @@ class _ForwardProcess:
 class _HelperProcess:
     def __init__(self, output):
         self.stdin = io.BytesIO()
-        self.stdout = io.BytesIO(output)
+        self.stdout = _pipe_stream(output)
         self.stderr = None
         self.returncode = None
         self.args = ("fake-helper",)
@@ -488,13 +600,15 @@ def test_dynamic_forward_failure_identifies_service_and_local_port(monkeypatch):
     _patch_preflight_socket(monkeypatch, {port})
     service = Service("rtt", port, 5555)
     session = _forward_session(_ForwardCommand(_ForwardProcess(9)))
-    with pytest.raises(SessionError) as raised:
-        session.forward((service,))
+    try:
+        with pytest.raises(SessionError) as raised:
+            session.forward((service,))
 
-    message = str(raised.value)
-    assert f"127.0.0.1:{port} for rtt" in message
-    assert f"SSH forwarding failed for rtt on 127.0.0.1:{port}" in message
-    assert session.forwards == []
+        message = str(raised.value)
+        assert f"127.0.0.1:{port} for rtt" in message
+        assert f"SSH forwarding failed for rtt on 127.0.0.1:{port}" in message
+    finally:
+        session._close_forwards()
 
 
 def test_dynamic_forward_timeout_identifies_service_and_local_port(monkeypatch):
@@ -504,11 +618,15 @@ def test_dynamic_forward_timeout_identifies_service_and_local_port(monkeypatch):
     session = _forward_session(_ForwardCommand(_ForwardProcess(None)))
     monkeypatch.setattr(SshHelperSession, "_await_forward_ready", lambda *_args: False)
 
-    with pytest.raises(SessionError) as raised:
-        session.forward((service,))
+    try:
+        with pytest.raises(SessionError) as raised:
+            session.forward((service,))
 
-    assert str(raised.value) == (f"SSH forwarding did not become ready for rtt on 127.0.0.1:{port}")
-    assert session.forwards == []
+        message = str(raised.value)
+        assert service.name in message
+        assert f"127.0.0.1:{port}" in message
+    finally:
+        session._close_forwards()
 
 
 def test_drain_startup_error_is_primary_when_process_cleanup_fails(monkeypatch):

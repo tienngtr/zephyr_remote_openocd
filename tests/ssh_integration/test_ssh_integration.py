@@ -158,15 +158,16 @@ class TestSshTransportIntegration:
                 pytest.fail(helper_process.stderr_tail().decode(errors="replace"))
             remote_port = int(line)
             local_port = free_loopback_port()
+            token = "ZRO_FORWARD_READY"
             tunnel = self.ssh.popen(
                 self.host,
-                "true",
-                "-N",
+                SshHelperSession._forward_ready_command(token),
                 "-o",
                 "ExitOnForwardFailure=yes",
                 "-L",
                 f"127.0.0.1:{local_port}:127.0.0.1:{remote_port}",
             )
+            assert SshHelperSession._await_forward_ready(tunnel, token, time.monotonic() + 20)
             wait_for_echo(local_port, b"zro_forwarding", 20)
 
             assert helper_process.stdin is not None
@@ -174,6 +175,10 @@ class TestSshTransportIntegration:
             helper_process.wait(timeout=20)
             with pytest.raises(AssertionError):
                 wait_for_echo(local_port, b"must_not_echo", 1)
+
+            assert tunnel.stdin is not None
+            tunnel.stdin.close()
+            assert tunnel.wait(timeout=20) == 0
         finally:
             stop_and_close(helper_process)
             stop_and_close(tunnel)

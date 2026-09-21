@@ -157,16 +157,25 @@ def _execute_operation(runner, command, request, plan, backend):
         if observed_returncode:
             raise RuntimeError(f"remote OpenOCD failed with exit status {observed_returncode}")
     except BaseException as error:
+        primary_error = error
+        if observed_returncode is None and (returncode := session.termination_returncode):
+            observed_returncode = returncode
+            primary_error = RuntimeError(
+                f"remote OpenOCD failed with exit status {observed_returncode}"
+            )
+            primary_error.add_note(f"session cleanup also failed: {error}")
         try:
             late_returncode = session.close()
         except BaseException as cleanup_error:
-            error.add_note(f"session cleanup also failed: {cleanup_error}")
+            primary_error.add_note(f"session cleanup also failed: {cleanup_error}")
         else:
             if late_returncode and late_returncode != observed_returncode:
-                error.add_note(
+                primary_error.add_note(
                     f"remote OpenOCD also exited with status {late_returncode} during cleanup"
                 )
-        raise
+        if primary_error is error:
+            raise
+        raise primary_error from error
     else:
         late_returncode = session.close()
         if late_returncode:

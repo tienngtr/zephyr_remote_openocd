@@ -62,10 +62,7 @@ class RemoteSession:
             raise SessionError(f"cannot start session in {self.state.name} state")
         try:
             self._session = self.backend.create(self.request)
-            self.state = SessionState.CREATED
             self._session.stage(self.request.staged_files)
-            self.state = SessionState.STAGED
-            self.state = SessionState.STARTING
             self.descriptor = self._session.start(self.request.services)
             self.state = SessionState.READY
             return self.descriptor
@@ -107,8 +104,7 @@ class RemoteSession:
                 self.state = SessionState.FAILED
                 raise
             else:
-                if self.state not in {SessionState.STOPPING, SessionState.CLOSED}:
-                    self.state = SessionState.CLOSED if result == 0 else SessionState.FAILED
+                self.state = SessionState.CLOSED if result == 0 else SessionState.FAILED
         return result
 
     def wait(self, timeout: float | None = None) -> int:
@@ -143,7 +139,6 @@ class RemoteSession:
     def close(self) -> int | None:
         if self.state in {SessionState.CLOSED, SessionState.FAILED}:
             return self.termination_returncode
-        self.state = SessionState.STOPPING
         result = self.termination_returncode
         try:
             if self._session is not None:

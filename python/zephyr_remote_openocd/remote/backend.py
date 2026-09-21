@@ -42,6 +42,7 @@ from .staging import build_archive
 # cleanup. Keep the control transport alive through that fallback and remote
 # process scheduling/transport overhead.
 HELPER_STOP_TIMEOUT = 15.0
+HELPER_START_TIMEOUT = 10.0
 FORWARD_START_TIMEOUT = 10.0
 _PROCESS_TERM_TIMEOUT = 5.0
 _PROCESS_KILL_TIMEOUT = 1.0
@@ -114,7 +115,7 @@ class SshHelperSession(BackendSession):
             if self.helper_process.stdout is None:
                 raise SessionError("helper stdout was not captured")
             self._order = EventOrder()
-            created = self._read_event()
+            created = self._read_event(time.monotonic() + HELPER_START_TIMEOUT)
             if created["type"] != "SESSION_CREATED":
                 raise ProtocolError("helper did not begin with SESSION_CREATED")
             self.allocation = SessionAllocation(created["session_id"], created["remote_workspace"])
@@ -125,18 +126,51 @@ class SshHelperSession(BackendSession):
                 error.add_note(f"helper startup cleanup also failed: {cleanup_error}")
             raise
 
-    def _read_event(self) -> dict:
+    def _read_event(self, deadline: float | None = None) -> dict:
+        stream = cast(BinaryIO, self.helper_process.stdout)
         try:
-            message = read_message(cast(BinaryIO, self.helper_process.stdout))
+            message = (
+                read_message(stream)
+                if deadline is None
+                else self._read_initial_message(stream, deadline)
+            )
         except EOFError as error:
             diagnostic = self.helper_process.stderr_tail()
             raise SessionError(
                 "remote helper terminated: " + diagnostic.decode("utf-8", "replace")
             ) from error
+        except TimeoutError as error:
+            diagnostic = self.helper_process.stderr_tail()
+            suffix = ": " + diagnostic.decode("utf-8", "replace").strip() if diagnostic else ""
+            raise SessionError("remote helper startup timed out" + suffix) from error
         self._order.accept(message)
         if message["type"] == "ERROR":
             raise SessionError(f"remote helper error: {message.get('message', 'unknown error')}")
         return message
+
+    @staticmethod
+    def _read_initial_message(stream: BinaryIO, deadline: float) -> dict:
+        descriptor = stream.fileno()
+        pending = bytearray()
+        selector = selectors.DefaultSelector()
+        try:
+            selector.register(stream, selectors.EVENT_READ)
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("remote helper startup timed out")
+                if not selector.select(remaining):
+                    continue
+                chunk = os.read(descriptor, 1)
+                if not chunk:
+                    if pending:
+                        return decode_message(bytes(pending))
+                    raise EOFError("helper control channel closed")
+                pending.extend(chunk)
+                if chunk == b"\n":
+                    return decode_message(bytes(pending))
+        finally:
+            selector.close()
 
     def stage(self, files: Iterable[StagedEntry]):
         archive = build_archive(files)
@@ -232,14 +266,7 @@ class SshHelperSession(BackendSession):
         )
         address = self._await_process_ready()
         if service_list:
-            try:
-                self._start_forwards(service_list, address)
-            except BaseException as error:
-                try:
-                    self._close_forwards()
-                except BaseException as cleanup_error:
-                    error.add_note(f"forward startup cleanup also failed: {cleanup_error}")
-                raise
+            self._start_forwards(service_list, address)
         self._start_event_drain()
         self.descriptor = SessionDescriptor(self.allocation, address)
         return self.descriptor
@@ -267,18 +294,7 @@ class SshHelperSession(BackendSession):
         service_list = tuple(services)
         if not service_list:
             return
-        before = len(self.forwards)
-        try:
-            self._start_forwards(service_list, self.descriptor.remote_address)
-        except BaseException as error:
-            added = self.forwards[before:]
-            del self.forwards[before:]
-            for process in added:
-                try:
-                    self._stop_process(process)
-                except BaseException as cleanup_error:
-                    error.add_note(f"forward rollback also failed: {cleanup_error}")
-            raise
+        self._start_forwards(service_list, self.descriptor.remote_address)
 
     def poll(self) -> int | None:
         if self.reader_error is not None:
@@ -340,43 +356,27 @@ class SshHelperSession(BackendSession):
                     f"SSH forwarding did not become ready for {service.name} on "
                     f"127.0.0.1:{service.local_port}"
                 )
-                detail = ""
-                try:
-                    self._stop_process(process, close_streams=False)
-                    detail = self._forward_diagnostic(process)
-                except BaseException as cleanup_error:
-                    error.add_note(f"forward cleanup also failed: {cleanup_error}")
-                try:
-                    self._stop_process(process)
-                except BaseException as cleanup_error:
-                    error.add_note(f"forward cleanup also failed: {cleanup_error}")
+                detail = self._forward_diagnostic(process)
                 suffix = f": {detail}" if detail else ""
                 error.args = (error.args[0] + suffix,)
                 raise error
 
     def wait(self, timeout: float | None = None) -> int:
-        try:
-            deadline = None if timeout is None else time.monotonic() + timeout
-            while True:
-                result = self.poll()
-                if result is not None:
-                    break
-                if deadline is not None and time.monotonic() >= deadline:
-                    raise subprocess.TimeoutExpired(self.helper_process.args, timeout or 0.0)
-                time.sleep(0.05)
-            if self.reader_thread is not None:
-                self.reader_thread.join(timeout=2)
-            if self.reader_error is not None:
-                raise SessionError(
-                    f"helper event stream failed: {self.reader_error}"
-                ) from self.reader_error
-            return result
-        except BaseException as error:
-            try:
-                self.close()
-            except BaseException as cleanup_error:
-                error.add_note(f"session cleanup also failed: {cleanup_error}")
-            raise
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            result = self.poll()
+            if result is not None:
+                break
+            if deadline is not None and time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(self.helper_process.args, timeout or 0.0)
+            time.sleep(0.05)
+        if self.reader_thread is not None:
+            self.reader_thread.join(timeout=2)
+        if self.reader_error is not None:
+            raise SessionError(
+                f"helper event stream failed: {self.reader_error}"
+            ) from self.reader_error
+        return result
 
     def _dispatch(self, event: dict) -> None:
         if event["type"] == "CHILD_OUTPUT" and self.output_handler is not None:

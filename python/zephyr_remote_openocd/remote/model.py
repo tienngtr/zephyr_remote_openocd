@@ -16,11 +16,7 @@ from .ssh import SshCommand
 
 class SessionState(Enum):
     NEW = auto()
-    CREATED = auto()
-    STAGED = auto()
-    STARTING = auto()
     READY = auto()
-    STOPPING = auto()
     CLOSED = auto()
     FAILED = auto()
 
