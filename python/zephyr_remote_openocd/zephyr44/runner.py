@@ -161,26 +161,17 @@ def _execute_operation(runner, command, request, plan):
         if observed_returncode:
             raise RuntimeError(f"remote OpenOCD failed with exit status {observed_returncode}")
     except BaseException as error:
-        primary_error = error
-        if observed_returncode is None and (returncode := session.openocd_returncode):
-            observed_returncode = returncode
-            primary_error = RuntimeError(
-                f"remote OpenOCD failed with exit status {observed_returncode}"
-            )
-            primary_error.add_note(f"session cleanup also failed: {error}")
         try:
             session.close()
         except BaseException as cleanup_error:
-            primary_error.add_note(f"session cleanup also failed: {cleanup_error}")
+            error.add_note(f"session cleanup also failed: {cleanup_error}")
         else:
             late_returncode = session.openocd_returncode
             if late_returncode and late_returncode != observed_returncode:
-                primary_error.add_note(
+                error.add_note(
                     f"remote OpenOCD also exited with status {late_returncode} during cleanup"
                 )
-        if primary_error is error:
-            raise
-        raise primary_error from error
+        raise
     else:
         session.close()
         late_returncode = session.openocd_returncode
@@ -211,7 +202,7 @@ def _execute_rtt(runner, plan, session):
     runner.run_client(list(plan.gdb_argv))
     session.forward((plan.rtt_service,))
     _report_rtt_service(runner, plan)
-    return run_rtt_client(plan.rtt_service.local_port, session.poll)
+    return run_rtt_client(plan.rtt_service.local_port, session.check_openocd_exit)
 
 
 def _execute_server(runner, command, plan, session):

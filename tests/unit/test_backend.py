@@ -76,6 +76,29 @@ def test_open_rolls_back_failed_acquisition_once(monkeypatch):
     assert actions == ["helper", "stage", "close"]
 
 
+def test_open_helper_failure_does_not_start_whole_session_cleanup(monkeypatch):
+    request = RemoteSessionRequest("host", SshCommand(), RemoteProcess(("openocd",)))
+    deployment = DeploymentResult("/helper.py", "digest", False)
+    startup_error = RuntimeError("helper startup failed")
+    actions = []
+
+    monkeypatch.setattr(backend_module, "deploy_helper", lambda *_args: deployment)
+
+    def fail_open_helper(_session):
+        actions.append("helper cleanup")
+        raise startup_error
+
+    monkeypatch.setattr(RemoteSession, "_open_helper", fail_open_helper)
+    monkeypatch.setattr(RemoteSession, "close", lambda _session: actions.append("session cleanup"))
+
+    with pytest.raises(RuntimeError) as raised:
+        RemoteSession.open(request)
+
+    assert raised.value is startup_error
+    assert not getattr(raised.value, "__notes__", ())
+    assert actions == ["helper cleanup"]
+
+
 def test_closed_session_exposes_only_cached_openocd_result():
     session = cast(Any, object.__new__(RemoteSession))
     session.closed = True
@@ -102,6 +125,7 @@ def test_only_process_exit_terminal_event_sets_openocd_result():
     session._state_lock = threading.RLock()
     session._state_changed = threading.Condition(session._state_lock)
     session._terminal_reason = None
+    session._stop_requested = False
     session._openocd_returncode = None
 
     session._dispatch({"type": "SESSION_CLOSED", "reason": "requested", "returncode": None})
@@ -115,6 +139,24 @@ def test_only_process_exit_terminal_event_sets_openocd_result():
         }
     )
     assert session.openocd_returncode == OPENOCD_FAILURE_RC
+
+
+def test_unexpected_requested_terminal_event_fails_status_observation():
+    session = cast(Any, object.__new__(RemoteSession))
+    session.closed = False
+    session.output_handler = None
+    session.reader_error = None
+    session.forwards = []
+    session._state_lock = threading.RLock()
+    session._state_changed = threading.Condition(session._state_lock)
+    session._terminal_reason = None
+    session._stop_requested = False
+    session._openocd_returncode = None
+
+    session._dispatch({"type": "SESSION_CLOSED", "reason": "requested", "returncode": None})
+
+    with pytest.raises(SessionError, match="before STOP"):
+        session.wait_for_openocd_exit(timeout=0)
 
 
 @pytest.mark.timeout(10)
@@ -212,6 +254,7 @@ def test_close_attempts_all_cleanup_once_and_preserves_first_failure():
     session.closed = False
     first_error = RuntimeError("forward cleanup failed")
     later_error = RuntimeError("helper cleanup failed")
+    later_error.add_note("helper cleanup also failed: stream close failed")
     actions = []
 
     def close_forwards():
@@ -229,7 +272,10 @@ def test_close_attempts_all_cleanup_once_and_preserves_first_failure():
         session.close()
 
     assert raised.value is first_error
-    assert raised.value.__notes__ == ["additional cleanup failure: helper cleanup failed"]
+    assert raised.value.__notes__ == [
+        "additional cleanup failure: helper cleanup failed",
+        "additional cleanup failure detail: helper cleanup also failed: stream close failed",
+    ]
     assert actions == ["forwards", "helper"]
     assert session.closed
     assert session.close() is None

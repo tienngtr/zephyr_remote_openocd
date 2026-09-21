@@ -15,6 +15,7 @@ from unittest.mock import Mock
 
 import pytest
 from zephyr_remote_openocd.config import ConfigError, PathMapping, ResolvedRemote
+from zephyr_remote_openocd.remote import RemoteSession
 from zephyr_remote_openocd.remote.debug import DebugPlan
 from zephyr_remote_openocd.remote.model import (
     RemoteProcess,
@@ -159,7 +160,12 @@ def test_gdb_operation_reports_process_failure_observed_during_close(runner_api,
         SessionAllocation("session", "/workspace"), "127.0.0.1"
     )
     backend_session.check_openocd_exit.return_value = None
-    backend_session.openocd_returncode = 7
+
+    def close():
+        backend_session.openocd_returncode = 7
+
+    backend_session.openocd_returncode = None
+    backend_session.close.side_effect = close
     monkeypatch.setattr(runner_module.RemoteSession, "open", Mock(return_value=backend_session))
     request = RemoteSessionRequest("host", SshCommand(), TEST_PROCESS)
     plan = _debug_plan(gdb_argv=("gdb",))
@@ -203,7 +209,7 @@ def test_gdb_operation_preserves_process_failure_when_cleanup_fails(runner_api, 
     backend_session.descriptor = SessionDescriptor(
         SessionAllocation("session", "/workspace"), "127.0.0.1"
     )
-    backend_session.openocd_returncode = None
+    backend_session.openocd_returncode = 7
     backend_session.check_openocd_exit.return_value = 7
     backend_session.close.side_effect = cleanup_error
     monkeypatch.setattr(runner_module.RemoteSession, "open", Mock(return_value=backend_session))
@@ -213,8 +219,7 @@ def test_gdb_operation_preserves_process_failure_when_cleanup_fails(runner_api, 
     with pytest.raises(RuntimeError, match="remote OpenOCD failed with exit status 7") as raised:
         runner_module._execute_operation(runner, "debug", request, plan)
 
-    assert raised.value.__cause__ is cleanup_error
-    assert len(getattr(raised.value, "__notes__", ())) == 1
+    assert any("cleanup failed" in note for note in raised.value.__notes__)
     backend_session.check_openocd_exit.assert_called_once_with()
     backend_session.close.assert_called_once_with()
 
@@ -263,7 +268,7 @@ def test_gdb_failure_survives_session_cleanup_failure(runner_api, monkeypatch):
     backend_session.close.assert_called_once_with()
 
 
-def test_gdb_failure_notes_process_failure_observed_during_close(runner_api, monkeypatch):
+def test_gdb_failure_survives_background_recorded_process_failure(runner_api, monkeypatch):
     from zephyr_remote_openocd.zephyr44 import runner as runner_module
 
     runner = Mock()
@@ -292,7 +297,7 @@ def test_rtt_execution_defers_forward_until_after_gdb(runner_api, monkeypatch):
     calls = []
     runner = Mock()
     runner.run_client.side_effect = lambda _argv: calls.append("gdb")
-    session = Mock()
+    session = Mock(spec=RemoteSession)
     session.forward.side_effect = lambda _services: calls.append("forward")
     rtt_service = Service("rtt", 19021, 19021)
     plan = _debug_plan(gdb_argv=("gdb", "--batch"), rtt_service=rtt_service)
@@ -308,6 +313,7 @@ def test_rtt_execution_defers_forward_until_after_gdb(runner_api, monkeypatch):
 
     assert calls == ["gdb", "forward", "rtt"]
     session.forward.assert_called_once_with((rtt_service,))
+    client.assert_called_once_with(rtt_service.local_port, session.check_openocd_exit)
     session.close.assert_not_called()
     assert returncode == 3
 

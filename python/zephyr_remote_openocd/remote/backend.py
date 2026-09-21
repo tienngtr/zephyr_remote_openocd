@@ -58,6 +58,8 @@ def _raise_cleanup_errors(errors: list[BaseException]) -> None:
     first, *additional = errors
     for error in additional:
         first.add_note(f"additional cleanup failure: {error}")
+        for note in getattr(error, "__notes__", ()):
+            first.add_note(f"additional cleanup failure detail: {note}")
     raise first
 
 
@@ -99,6 +101,7 @@ class RemoteSession:
         self.reader_thread: threading.Thread | None = None
         self.descriptor: SessionDescriptor | None = None
         self._terminal_reason: str | None = None
+        self._stop_requested = False
         self._state_lock = threading.RLock()
         self._state_changed = threading.Condition(self._state_lock)
         self._services = list(request.services)
@@ -116,16 +119,15 @@ class RemoteSession:
     ) -> RemoteSession:
         deployment = deploy_helper(request.ssh_command, request.host)
         session = cls(request, deployment, output_handler)
+        session._open_helper()
         try:
-            session._open_helper()
             session.stage(request.staged_files)
             session.descriptor = session.start(request.services)
         except BaseException as error:
-            if hasattr(session, "helper_process"):
-                try:
-                    session.close()
-                except BaseException as cleanup_error:
-                    error.add_note(f"startup failure cleanup also failed: {cleanup_error}")
+            try:
+                session.close()
+            except BaseException as cleanup_error:
+                error.add_note(f"startup failure cleanup also failed: {cleanup_error}")
             raise
         return session
 
@@ -418,6 +420,10 @@ class RemoteSession:
                 self._terminal_reason = event["reason"]
                 if event["reason"] == "process_exit":
                     self._openocd_returncode = int(event["returncode"])
+                elif not self._stop_requested:
+                    self.reader_error = SessionError(
+                        "helper reported SESSION_CLOSED(reason='requested') before STOP"
+                    )
                 self._state_changed.notify_all()
 
     def _drain_events(self) -> None:
@@ -630,6 +636,8 @@ class RemoteSession:
                         write_stop(cast(BinaryIO, helper.stdin))
                     except BaseException as error:
                         logical_error = error
+                    else:
+                        self._stop_requested = True
 
                 with self._state_lock:
                     request_stop()
