@@ -12,8 +12,6 @@ from importlib.resources import files
 from .protocol import ProtocolError, decode_message, validate_deployment_response
 from .ssh import SshCommand
 
-PROTOCOL_VERSION = 1
-
 BOOTSTRAP = r'''import fcntl,hashlib,json,os,pathlib,sys,tempfile,time
 data=sys.stdin.buffer.read()
 digest=hashlib.sha256(data).hexdigest()

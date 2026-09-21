@@ -29,6 +29,8 @@ from tests.support import env_path
 
 pytestmark = pytest.mark.zephyr
 
+TEST_PROCESS = RemoteProcess(("test-process",))
+
 
 def _debug_plan(
     *,
@@ -160,13 +162,36 @@ def test_gdb_operation_reports_process_failure_observed_during_close(runner_api)
     backend_session.poll.return_value = None
     backend_session.close.return_value = 7
     backend.create.return_value = backend_session
-    request = RemoteSessionRequest("host", SshCommand())
+    request = RemoteSessionRequest("host", SshCommand(), TEST_PROCESS)
     plan = _debug_plan(gdb_argv=("gdb",))
 
     with pytest.raises(RuntimeError, match="remote OpenOCD failed with exit status 7"):
         runner_module._execute_operation(runner, "debug", request, plan, backend)
 
     runner.run_client.assert_called_once_with(["gdb"])
+    backend_session.poll.assert_called_once_with()
+    backend_session.close.assert_called_once_with()
+
+
+def test_gdb_operation_does_not_duplicate_observed_process_failure(runner_api):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
+    runner = Mock()
+    backend = Mock()
+    backend_session = Mock()
+    backend_session.start.return_value = SessionDescriptor(
+        SessionAllocation("session", "/workspace"), "127.0.0.1"
+    )
+    backend_session.poll.return_value = 7
+    backend_session.close.return_value = 7
+    backend.create.return_value = backend_session
+    request = RemoteSessionRequest("host", SshCommand(), TEST_PROCESS)
+    plan = _debug_plan(gdb_argv=("gdb",))
+
+    with pytest.raises(RuntimeError, match="remote OpenOCD failed with exit status 7") as raised:
+        runner_module._execute_operation(runner, "debug", request, plan, backend)
+
+    assert not getattr(raised.value, "__notes__", ())
     backend_session.poll.assert_called_once_with()
     backend_session.close.assert_called_once_with()
 
@@ -182,7 +207,7 @@ def test_gdb_requirement_failure_closes_started_session(runner_api):
         SessionAllocation("session", "/workspace"), "127.0.0.1"
     )
     backend.create.return_value = backend_session
-    request = RemoteSessionRequest("host", SshCommand())
+    request = RemoteSessionRequest("host", SshCommand(), TEST_PROCESS)
     plan = _debug_plan(gdb_argv=("gdb",))
 
     with pytest.raises(FileNotFoundError, match="gdb is unavailable"):
@@ -204,7 +229,7 @@ def test_gdb_failure_survives_session_cleanup_failure(runner_api):
     )
     backend_session.close.side_effect = RuntimeError("cleanup failed")
     backend.create.return_value = backend_session
-    request = RemoteSessionRequest("host", SshCommand())
+    request = RemoteSessionRequest("host", SshCommand(), TEST_PROCESS)
     plan = _debug_plan(gdb_argv=("gdb",))
 
     with pytest.raises(RuntimeError, match="GDB client failed") as raised:
@@ -228,7 +253,7 @@ def test_gdb_failure_notes_process_failure_observed_during_close(runner_api):
     )
     backend_session.close.return_value = 7
     backend.create.return_value = backend_session
-    request = RemoteSessionRequest("host", SshCommand())
+    request = RemoteSessionRequest("host", SshCommand(), TEST_PROCESS)
     plan = _debug_plan(gdb_argv=("gdb",))
 
     with pytest.raises(RuntimeError, match="GDB client failed") as raised:

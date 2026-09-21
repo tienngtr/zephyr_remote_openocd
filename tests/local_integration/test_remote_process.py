@@ -22,6 +22,7 @@ from typing import Any, BinaryIO, cast, override
 from unittest.mock import patch
 
 import pytest
+from zephyr_remote_openocd.remote import backend as backend_module
 from zephyr_remote_openocd.remote import rtt as rtt_module
 from zephyr_remote_openocd.remote.backend import SshHelperBackend, SshHelperSession
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
@@ -51,6 +52,8 @@ from zephyr_remote_openocd.remote.staging import build_archive
 from tests.process_support import read_line, read_lines
 from tests.support import ROOT
 
+TEST_PROCESS = RemoteProcess(("test-process",))
+
 
 class _BlockedSshCommand(SshCommand):
     """SSH test double that fails unless a test overrides the operation."""
@@ -67,7 +70,7 @@ class _BlockedSshCommand(SshCommand):
         raise AssertionError("run() is not expected in this test")
 
     @override
-    def popen(self, host: str, remote_command: str | None, *extra_args: str) -> ManagedSshProcess:
+    def popen(self, host: str, remote_command: str, *extra_args: str) -> ManagedSshProcess:
         raise AssertionError("popen() is not expected in this test")
 
     @override
@@ -163,7 +166,7 @@ class TestForwardingLifecycle:
 
     class Command(_BlockedSshCommand):
         process: Any
-        calls: list[tuple[str, str | None, tuple[str, ...]]]
+        calls: list[tuple[str, str, tuple[str, ...]]]
 
         def __init__(self, process):
             super().__init__()
@@ -177,8 +180,7 @@ class TestForwardingLifecycle:
     @staticmethod
     def session(command):
         session = cast(Any, object.__new__(SshHelperSession))
-        session.request = RemoteSessionRequest("target", command)
-        session.forward_start_timeout = 1
+        session.request = RemoteSessionRequest("target", command, TEST_PROCESS)
         session.forwards = []
         session.closed = False
         session.output_handler = None
@@ -221,7 +223,7 @@ class TestForwardingLifecycle:
             session._start_forwards((service,), "127.64.1.1")
         connect.assert_not_called()
         remote_command = command.calls[0][1]
-        assert remote_command is not None and remote_command.startswith("python3 -c ")
+        assert remote_command.startswith("python3 -c ")
         assert "-N" not in command.calls[0][2]
         session._close_forwards()
         assert process.terminate_calls == 1
@@ -240,9 +242,8 @@ class TestForwardingLifecycle:
         )
         with patch.object(SshHelperSession, "_read_event", side_effect=events):
             SshHelperSession(
-                RemoteSessionRequest("target", command),
+                RemoteSessionRequest("target", command, TEST_PROCESS),
                 DeploymentResult("/helper.py", "digest", False),
-                1,
             )
 
         assert len(command.calls) == 1
@@ -266,9 +267,8 @@ class TestForwardingLifecycle:
             pytest.raises(SessionError, match="invalid helper response") as raised,
         ):
             SshHelperSession(
-                RemoteSessionRequest("target", command),
+                RemoteSessionRequest("target", command, TEST_PROCESS),
                 DeploymentResult("/helper.py", "digest", False),
-                1,
             )
 
         assert raised.value is startup_error
@@ -349,7 +349,8 @@ class TestForwardingLifecycle:
         assert raised.value is wait_error
         assert any("session cleanup failed" in note for note in raised.value.__notes__)
 
-    def test_stale_gdb_forward_cannot_mask_current_forward_failure(self):
+    def test_stale_gdb_forward_cannot_mask_current_forward_failure(self, monkeypatch):
+        monkeypatch.setattr(backend_module, "FORWARD_START_TIMEOUT", 1)
         stale = self.Process()
         read_fd, write_fd = os.pipe()
         stale.stdout = os.fdopen(read_fd, "rb")
@@ -536,7 +537,8 @@ class TestForwardingLifecycle:
         session.reader_error = None
         session.reader_thread = None
 
-        assert session.poll() == 9
+        with pytest.raises(SessionError):
+            session.poll()
 
 
 class TestRttClient:
@@ -707,7 +709,7 @@ class TestRttClient:
             def is_alive(self):
                 return self.alive
 
-            def join(self):
+            def join(self, timeout=None):
                 session.process_returncode = 0
                 self.alive = False
 
@@ -1003,7 +1005,7 @@ class TestRealProcessHelper:
             source = Path(directory) / "firmware.bin"
             source.write_bytes(b"firmware")
             session = cast(Any, object.__new__(SshHelperSession))
-            session.request = RemoteSessionRequest("local", LocalCommand())
+            session.request = RemoteSessionRequest("local", LocalCommand(), TEST_PROCESS)
             session.deployment = DeploymentResult("/helper.py", "0" * 64, False)
             session.allocation = SessionAllocation("session", "/workspace")
             with pytest.raises(SessionError, match="invalid remote staging response"):
@@ -1480,7 +1482,6 @@ class TestRealProcessHelper:
             backend = SshHelperSession(
                 request,
                 DeploymentResult(str(helper), "digest", False),
-                0.1,
                 lambda stream, payload, line_end: output.append((stream, payload, line_end)),
             )
             try:
@@ -1540,7 +1541,6 @@ class TestRealProcessHelper:
             backend = SshHelperSession(
                 RemoteSessionRequest("local", LocalCommand(), process=remote_process),
                 DeploymentResult(str(helper), "digest", False),
-                0.1,
                 lambda stream, payload, line_end: output.append((stream, payload, line_end)),
             )
             try:
@@ -1689,9 +1689,8 @@ sys.exit({exit_code})
                 )
 
         backend = SshHelperSession(
-            RemoteSessionRequest("local", LocalCommand()),
+            RemoteSessionRequest("local", LocalCommand(), TEST_PROCESS),
             DeploymentResult("/helper.py", "digest", False),
-            0.1,
         )
         backend._start_event_drain()
         try:
@@ -1751,9 +1750,8 @@ sys.stdin.buffer.read()
                 )
 
         backend = SshHelperSession(
-            RemoteSessionRequest("local", LocalCommand()),
+            RemoteSessionRequest("local", LocalCommand(), TEST_PROCESS),
             DeploymentResult("/helper.py", "digest", False),
-            0.1,
         )
         backend._start_event_drain()
         assert backend.reader_thread is not None
@@ -1830,9 +1828,8 @@ sys.exit(7)
                 return self.returncode
 
         backend = SshHelperSession(
-            RemoteSessionRequest("local", LocalCommand()),
+            RemoteSessionRequest("local", LocalCommand(), TEST_PROCESS),
             DeploymentResult("/helper.py", "digest", False),
-            0.1,
         )
         forward = FailingForward()
         backend.forwards = [cast(Any, forward)]
@@ -1852,7 +1849,7 @@ sys.exit(7)
             with suppress(BaseException):
                 backend.close()
 
-    def test_backend_does_not_mask_helper_failure_after_close_event(self):
+    def test_backend_reports_helper_failure_after_close_event(self):
         helper_code = """
 import json
 import sys
@@ -1883,14 +1880,15 @@ sys.exit(7)
                 )
 
         backend = SshHelperSession(
-            RemoteSessionRequest("local", LocalCommand()),
+            RemoteSessionRequest("local", LocalCommand(), TEST_PROCESS),
             DeploymentResult("/helper.py", "digest", False),
-            0.1,
         )
         try:
             backend._start_event_drain()
             backend.helper_process.wait(timeout=5)
-            assert backend.wait(5) == 7
+            with pytest.raises(SessionError):
+                backend.wait(5)
+            assert backend.process_returncode == 0
         finally:
             backend.close()
 
@@ -1929,7 +1927,6 @@ sys.exit(7)
             backend = SshHelperSession(
                 RemoteSessionRequest("local", LocalCommand(), process=remote_process),
                 DeploymentResult(str(helper), "digest", False),
-                0.1,
             )
             workspace = Path(backend.allocation.remote_workspace)
             child_pid = None
@@ -1995,7 +1992,6 @@ sys.exit(7)
             backend = SshHelperSession(
                 request,
                 DeploymentResult(str(helper), "digest", False),
-                0.1,
                 fail_on_output,
             )
             workspace = backend.allocation.remote_workspace

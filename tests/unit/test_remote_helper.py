@@ -373,17 +373,19 @@ def test_new_workspace_removes_partial_directory_on_initialization_failure(tmp_p
     monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
     path_type = type(tmp_path)
     original_mkdir = path_type.mkdir
+    failure = OSError("injected staging-directory failure")
 
     def fail_staging_directory(path, *args, **kwargs):
         if path.name == "staged":
-            raise OSError("injected staging-directory failure")
+            raise failure
         return original_mkdir(path, *args, **kwargs)
 
     monkeypatch.setattr(path_type, "mkdir", fail_staging_directory)
 
-    with pytest.raises(OSError, match="injected staging-directory failure"):
+    with pytest.raises(OSError) as raised:
         remote_helper.new_workspace()
 
+    assert raised.value is failure
     assert tuple(tmp_path.iterdir()) == ()
 
 
@@ -391,15 +393,18 @@ def test_control_session_cleans_up_when_announcement_fails(tmp_path, monkeypatch
     monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
     session_id, workspace, lock = remote_helper.new_workspace()
 
+    failure = BrokenPipeError("injected announcement failure")
+
     def fail_announce(_session):
-        raise BrokenPipeError("injected announcement failure")
+        raise failure
 
     monkeypatch.setattr(remote_helper.ControlSession, "announce", fail_announce)
     session = remote_helper.ControlSession(session_id, workspace, lock)
 
-    with pytest.raises(BrokenPipeError, match="injected announcement failure"):
+    with pytest.raises(BrokenPipeError) as raised:
         session.run()
 
+    assert raised.value is failure
     assert not workspace.exists()
     assert lock.closed
 
@@ -409,11 +414,12 @@ def test_control_session_cleanup_attempts_all_resources_once(tmp_path):
         def __init__(self):
             self.terminate_calls = 0
             self.fail = True
+            self.failure = RuntimeError("child cleanup failed")
 
         def terminate(self):
             self.terminate_calls += 1
             if self.fail:
-                raise RuntimeError("child cleanup failed")
+                raise self.failure
 
     class Lock:
         def __init__(self):
@@ -429,9 +435,10 @@ def test_control_session_cleanup_attempts_all_resources_once(tmp_path):
     session = remote_helper.ControlSession("session", workspace, lock)
     session.child = child
 
-    with pytest.raises(RuntimeError, match="child cleanup failed"):
+    with pytest.raises(RuntimeError) as raised:
         session.cleanup()
 
+    assert raised.value is child.failure
     assert child.terminate_calls == 1
     assert lock.close_calls == 1
     assert not workspace.exists()
@@ -439,6 +446,44 @@ def test_control_session_cleanup_attempts_all_resources_once(tmp_path):
     session.cleanup()
     assert child.terminate_calls == 1
     assert lock.close_calls == 1
+
+
+def test_control_session_ignores_signal_while_cleaning(tmp_path):
+    class Child:
+        def __init__(self):
+            self.terminate_calls = 0
+            self.session = None
+            self.reenter = True
+
+        def terminate(self):
+            self.terminate_calls += 1
+            if self.reenter:
+                self.reenter = False
+                assert self.session is not None
+                self.session.handle_signal()
+
+    class Lock:
+        def __init__(self):
+            self.close_calls = 0
+
+        def close(self):
+            self.close_calls += 1
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    child = Child()
+    lock = Lock()
+    session = remote_helper.ControlSession("session", workspace, lock)
+    child.session = session
+    session.child = child
+
+    assert session.cleanup()
+
+    assert child.terminate_calls == 1
+    assert lock.close_calls == 1
+    assert session.stopping
+    assert not workspace.exists()
+    assert not session.cleanup()
 
 
 def test_control_session_natural_exit_cleans_before_close_event(tmp_path, monkeypatch):

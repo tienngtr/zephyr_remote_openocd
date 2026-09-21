@@ -48,6 +48,33 @@ while True:
             c.sendall(data)
 """
 
+REMOTE_SESSION_ECHO = """
+import socket
+import sys
+
+listener = socket.socket()
+listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+listener.bind((sys.argv[1], int(sys.argv[2])))
+listener.listen()
+print("ZRO_TEST_READY", flush=True)
+while True:
+    connection, _ = listener.accept()
+    with connection:
+        while True:
+            data = connection.recv(65536)
+            if not data:
+                break
+            connection.sendall(data)
+"""
+
+
+def session_echo_process() -> RemoteProcess:
+    return RemoteProcess(
+        ("python3", "-c", REMOTE_SESSION_ECHO, "{address}", "3333"),
+        readiness_marker="ZRO_TEST_READY",
+        literal_prefix=3,
+    )
+
 
 def assert_remote_marker(ssh: SshCommand, host: str):
     result = ssh.run(host, "printf zro_ssh_marker", timeout=20)
@@ -133,7 +160,7 @@ class TestSshTransportIntegration:
             local_port = free_loopback_port()
             tunnel = self.ssh.popen(
                 self.host,
-                None,
+                "true",
                 "-N",
                 "-o",
                 "ExitOnForwardFailure=yes",
@@ -176,8 +203,8 @@ class TestSshTransportIntegration:
         )
         assert failed.returncode == 7
 
-    def test_protocol_v1_fake_helper_vertical_slice(self):
-        """Permanent fake-workload coverage for the production transport path."""
+    def test_protocol_v1_helper_vertical_slice(self):
+        """Exercise the production transport path with an explicit test process."""
         first = deploy_helper(self.ssh, self.host)
         second = deploy_helper(self.ssh, self.host)
         assert first.path == second.path
@@ -189,6 +216,7 @@ class TestSshTransportIntegration:
             request = RemoteSessionRequest(
                 self.host,
                 self.ssh,
+                session_echo_process(),
                 (StagedFile(source, PurePosixPath("nested/payload.bin")),),
                 (Service("gdb", local_port, 3333),),
             )
@@ -211,14 +239,14 @@ class TestSshTransportIntegration:
                 )
                 assert check.returncode == 0, check.stderr.decode(errors="replace")
                 assert check.stdout.strip() == b"0o700 263"
-                wait_for_echo(local_port, b"fake_helper_round_trip", 20)
+                wait_for_echo(local_port, b"helper_round_trip", 20)
             finally:
                 workspace = descriptor.remote_workspace
                 session.close()
             gone = self.ssh.run(self.host, f"test ! -e {shlex.quote(workspace)}", timeout=20)
             assert gone.returncode == 0, gone.stderr.decode(errors="replace")
 
-    def test_concurrent_fake_sessions_isolate_identical_remote_ports(self):
+    def test_concurrent_sessions_isolate_identical_remote_ports(self):
         """Regression coverage for independent-session service-port isolation."""
         first_port = free_loopback_port()
         second_port = free_loopback_port()
@@ -228,6 +256,7 @@ class TestSshTransportIntegration:
             RemoteSessionRequest(
                 self.host,
                 self.ssh,
+                session_echo_process(),
                 services=(Service("gdb", first_port, 3333),),
             ),
             SshHelperBackend(),
@@ -236,6 +265,7 @@ class TestSshTransportIntegration:
             RemoteSessionRequest(
                 self.host,
                 self.ssh,
+                session_echo_process(),
                 services=(Service("gdb", second_port, 3333),),
             ),
             SshHelperBackend(),
@@ -258,13 +288,14 @@ class TestSshTransportIntegration:
             )
             assert result.returncode == 0, result.stderr.decode(errors="replace")
 
-    def test_helper_ssh_loss_cleans_fake_session(self):
-        """Losing the helper SSH process cleans the fake session."""
+    def test_helper_ssh_loss_cleans_session(self):
+        """Losing the helper SSH process cleans the session."""
         local_port = free_loopback_port()
         session = RemoteSession(
             RemoteSessionRequest(
                 self.host,
                 self.ssh,
+                session_echo_process(),
                 services=(Service("gdb", local_port, 3333),),
             ),
             SshHelperBackend(),
@@ -310,9 +341,9 @@ class TestSshTransportIntegration:
             request = RemoteSessionRequest(
                 self.host,
                 self.ssh,
+                process,
                 (StagedFile(config, PurePosixPath("environment.cfg")),),
                 (),
-                process,
             )
             session = RemoteSession(
                 request,

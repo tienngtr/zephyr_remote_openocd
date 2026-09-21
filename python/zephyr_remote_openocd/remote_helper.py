@@ -171,9 +171,6 @@ def stage(workspace):
                     raise ValueError(f"archive path escapes staging directory: {relative}")
                 validated.append((member, relative, target, kind))
             if any(
-                kind == "file" and any(kinds.get(parent) == "file" for parent in path.parents)
-                for path, kind in kinds.items()
-            ) or any(
                 kind == "file" and any(path in other.parents for other in kinds)
                 for path, kind in kinds.items()
             ):
@@ -218,41 +215,6 @@ def random_address():
             int(RANGE.network_address) + 1 + secrets.randbelow(RANGE.num_addresses - 2)
         )
     )
-
-
-def fake_child(address, ports):
-    listeners = []
-    try:
-        for port in ports:
-            listener = socket.socket()
-            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            listener.bind((address, port))
-            listener.listen()
-            listeners.append(listener)
-        print("ZRO_FAKE_READY", flush=True)
-        print("fake service ready", file=sys.stderr, flush=True)
-        selector = selectors.DefaultSelector()
-        for listener in listeners:
-            selector.register(listener, selectors.EVENT_READ)
-        while True:
-            for key, _ in selector.select():
-                selected_listener = key.fileobj
-                if not isinstance(selected_listener, socket.socket):
-                    raise TypeError("selector returned a non-socket listener")
-                connection, _ = selected_listener.accept()
-                threading.Thread(target=echo, args=(connection,), daemon=True).start()
-    finally:
-        for listener in listeners:
-            listener.close()
-
-
-def echo(connection):
-    with connection:
-        while True:
-            data = connection.recv(65536)
-            if not data:
-                return
-            connection.sendall(data)
 
 
 class _MarkerMatcher:
@@ -982,12 +944,14 @@ class ControlSession:
             raise cleanup_error
 
     def handle_signal(self, *_):
-        self.cleanup()
+        if not self.cleanup():
+            return
         raise SystemExit(0)
 
-    def cleanup(self):
+    def cleanup(self) -> bool:
         if self.stopping:
-            return
+            return False
+        self.stopping = True
         errors = []
         if self.child is not None:
             try:
@@ -1005,9 +969,9 @@ class ControlSession:
             self.workspace_lock.close()
         except BaseException as error:
             errors.append(error)
-        self.stopping = True
         if errors:
             _raise_cleanup_errors(errors)
+        return True
 
 
 def control():
@@ -1025,9 +989,6 @@ def main():
     staging.add_argument("workspace")
     version = sub.add_parser("openocd-version")
     version.add_argument("executable", nargs="+")
-    fake = sub.add_parser("fake-child")
-    fake.add_argument("address")
-    fake.add_argument("ports", type=int, nargs="+")
     args = parser.parse_args()
     if args.command == "control":
         control()
@@ -1036,7 +997,7 @@ def main():
     elif args.command == "openocd-version":
         openocd_version(args.executable)
     else:
-        fake_child(args.address, args.ports)
+        raise AssertionError(f"unsupported command: {args.command}")
 
 
 if __name__ == "__main__":

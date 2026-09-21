@@ -509,8 +509,7 @@ The generic subsystem receives structured data, conceptually:
 RemoteSessionRequest(
     host=...,
     ssh_command=...,
-    openocd_argv=...,
-    environment=...,
+    process=RemoteProcess(...),
     staged_files=...,
     services=...,
 )
@@ -825,8 +824,6 @@ the configuration, credentials, and agent behavior provided by that client.
 
 Correctness shall depend only on the subset of functionality required from the configured OpenSSH-compatible client.
 
-Optional capabilities are treated separately.
-
 Conceptually:
 
 ```text
@@ -834,20 +831,13 @@ required:
     execute remote command
     stdin/stdout streaming
     TCP forwarding
-
-optional:
-    client-supported connection sharing
 ```
-
-The transport implementation shall not make optional client capabilities prerequisites for correct operation.
 
 ---
 
-## 32. Optional Connection Sharing
+## 32. SSH Connection Sharing
 
-Client-supported connection sharing could be considered as a future
-performance optimization. It is not part of the current session design or
-required SSH-client behavior.
+Connection sharing is not part of the current design.
 
 ---
 
@@ -869,25 +859,6 @@ Advantages:
 Disadvantages:
 
 - may perform multiple authentications when no agent or multiplexing is available.
-
-### 33.2 Retained alternative: one control session plus generic forwarding tunnel
-
-A long-lived SSH connection may provide a generic forwarding facility while simultaneously running the helper.
-
-Local Python proxies can then route service connections through that tunnel after the remote session address is known.
-
-Advantages:
-
-- can reduce authentication/session count;
-
-Disadvantages:
-
-- more local proxy logic.
-
-This alternative remains available if normal use shows that repeated
-authentication is unacceptable.
-
----
 
 ## 34. Staging Transport
 
@@ -980,10 +951,10 @@ group is the helper's ownership boundary for generic cleanup hygiene, including
 processes that outlive the OpenOCD leader.
 
 The helper's `ControlSession` owns the workspace, control selector, command
-dispatch, signal handlers, and final cleanup. A `SupervisedChild` owns each
-OpenOCD (or fake test child) process, output relays, readiness observation,
-termination, and stream closure. This keeps process resources attached to one
-owner across success, failure, EOF, and signal paths.
+dispatch, signal handlers, and final cleanup. A `SupervisedChild` owns the
+configured OpenOCD process, output relays, readiness observation, termination,
+and stream closure. This keeps process resources attached to one owner across
+success, failure, EOF, and signal paths.
 
 Cleanup sends `SIGTERM` to the owned group and waits a bounded grace period for
 the leader. It then checks whether the group still exists. If so, the helper
@@ -1205,8 +1176,6 @@ Selected for the current architecture:
 - default SSH command `ssh`;
 - SSH command may contain fixed arguments;
 - all SSH operations use the configured client abstraction;
-- client-supported connection sharing may be considered as a performance
-  optimization;
 - the SSH client continues to use its normal configuration;
 - unprivileged remote helper;
 - explicit path mappings with staging fallback;

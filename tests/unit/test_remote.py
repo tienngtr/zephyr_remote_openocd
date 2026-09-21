@@ -70,6 +70,8 @@ from zephyr_remote_openocd.remote.session import (
 from zephyr_remote_openocd.remote.ssh import SshCommand
 from zephyr_remote_openocd.remote.staging import StagingError, build_archive
 
+TEST_PROCESS = RemoteProcess(("test-process",))
+
 
 class TestProtocol:
     def test_round_trip_and_rejections(self):
@@ -341,7 +343,7 @@ def test_deployment_wraps_invalid_utf8_response():
             return subprocess.CompletedProcess(remote_command, 0, b"\xff", b"")
 
         @override
-        def popen(self, host: str, remote_command: str | None, *extra_args: str) -> Any:
+        def popen(self, host: str, remote_command: str, *extra_args: str) -> Any:
             raise AssertionError("popen() is not expected in this test")
 
         @override
@@ -646,13 +648,19 @@ class _FakeBackend(SessionBackend):
 
 class TestSession:
     def request(self):
-        return RemoteSessionRequest("host", SshCommand(), services=(Service("gdb", 1234, 3333),))
+        return RemoteSessionRequest(
+            "host",
+            SshCommand(),
+            TEST_PROCESS,
+            services=(Service("gdb", 1234, 3333),),
+        )
 
-    def test_success_context_and_helper_loss(self):
+    def test_success_and_helper_loss(self):
         backend = _FakeBackend()
         session = RemoteSession(self.request(), backend)
-        with session:
-            assert session.state.name == "READY"
+        session.start()
+        assert session.state.name == "READY"
+        session.close()
         assert session.state.name == "CLOSED"
         session = RemoteSession(self.request(), backend := _FakeBackend())
         session.start()
@@ -673,36 +681,6 @@ class TestSession:
         assert session.termination_returncode == 7
         assert session.state is SessionState.FAILED
 
-    @pytest.mark.parametrize(
-        ("body_failed", "cleanup_failed"),
-        ((False, False), (False, True), (True, False), (True, True)),
-    )
-    def test_context_body_and_cleanup_failure_matrix(self, body_failed, cleanup_failed):
-        backend = _FakeBackend()
-        session = RemoteSession(self.request(), backend)
-        body_error = RuntimeError("body failed")
-        cleanup_error = RuntimeError("cleanup failed")
-        if cleanup_failed:
-            backend.session.close_error = cleanup_error
-        expected_error = body_error if body_failed else cleanup_error if cleanup_failed else None
-
-        def run_context():
-            with session:
-                if body_failed:
-                    raise body_error
-
-        if expected_error is None:
-            run_context()
-        else:
-            with pytest.raises(RuntimeError) as raised:
-                run_context()
-            assert raised.value is expected_error
-            if body_failed and cleanup_failed:
-                assert any(str(cleanup_error) in note for note in raised.value.__notes__)
-
-        assert backend.session.actions.count(("close",)) == 1
-        assert session.state is SessionState.CLOSED
-
     @pytest.mark.parametrize("failure", ("stage_error", "start_error"))
     def test_start_failure_closes_backend_and_preserves_error(self, failure):
         backend = _FakeBackend()
@@ -710,7 +688,7 @@ class TestSession:
         setattr(backend.session, failure, error)
         session = RemoteSession(self.request(), backend)
 
-        with pytest.raises(RuntimeError, match=failure) as raised:
+        with pytest.raises(RuntimeError) as raised:
             session.start()
 
         assert raised.value is error
@@ -763,6 +741,7 @@ class TestSession:
             RemoteSessionRequest(
                 "host",
                 SshCommand(),
+                TEST_PROCESS,
                 services=services,
             )
 
@@ -770,9 +749,11 @@ class TestSession:
         backend = _FakeBackend()
         session = RemoteSession(self.request(), backend)
         session.start()
-        backend.session.forward_error = RuntimeError("forward failed")
-        with pytest.raises(RuntimeError, match="forward failed"):
+        forward_error = RuntimeError("forward failed")
+        backend.session.forward_error = forward_error
+        with pytest.raises(RuntimeError) as raised:
             session.forward((Service("rtt", 5555, 5555),))
+        assert raised.value is forward_error
         assert session.state == SessionState.FAILED
         assert backend.session.actions[-1] == ("close",)
 
@@ -784,7 +765,7 @@ class TestSession:
         backend.session.forward_error = forward_error
         backend.session.close_error = RuntimeError("cleanup failed")
 
-        with pytest.raises(RuntimeError, match="forward failed") as raised:
+        with pytest.raises(RuntimeError) as raised:
             session.forward((Service("rtt", 5555, 5555),))
 
         assert raised.value is forward_error
@@ -796,19 +777,26 @@ class TestSession:
         backend = _FakeBackend()
         session = RemoteSession(self.request(), backend)
         session.start()
-        backend.session.poll_error = RuntimeError("reader failed")
-        with pytest.raises(RuntimeError, match="reader failed"):
+        poll_error = RuntimeError("reader failed")
+        backend.session.poll_error = poll_error
+        backend.session.close_returncode = 7
+        with pytest.raises(RuntimeError) as raised:
             session.poll()
+        assert raised.value is poll_error
         assert session.state == SessionState.FAILED
-        assert backend.session.actions[-1] == ("close",)
+        assert session.termination_returncode == 7
+        assert session.close() == 7
+        assert backend.session.actions.count(("close",)) == 1
 
     def test_wait_failure_closes_session_and_marks_failed(self):
         backend = _FakeBackend()
         session = RemoteSession(self.request(), backend)
         session.start()
-        backend.session.wait_error = RuntimeError("reader failed")
-        with pytest.raises(RuntimeError, match="reader failed"):
+        wait_error = RuntimeError("reader failed")
+        backend.session.wait_error = wait_error
+        with pytest.raises(RuntimeError) as raised:
             session.wait()
+        assert raised.value is wait_error
         assert session.state == SessionState.FAILED
         assert backend.session.actions[-1] == ("close",)
 
@@ -819,7 +807,7 @@ class TestSession:
         cleanup_error = RuntimeError("cleanup failed")
         backend.session.close_error = cleanup_error
 
-        with pytest.raises(RuntimeError, match="cleanup failed") as raised:
+        with pytest.raises(RuntimeError) as raised:
             session.close()
 
         assert raised.value is cleanup_error

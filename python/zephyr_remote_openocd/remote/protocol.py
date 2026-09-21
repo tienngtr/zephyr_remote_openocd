@@ -273,7 +273,6 @@ _EVENT_TRANSITIONS = {
 _EVENT_NEXT_STATE = {
     "SESSION_CREATED": "created",
     "PROCESS_READY": "active",
-    "CHILD_OUTPUT": "active",
     "SESSION_CLOSED": "closed",
     "ERROR": "closed",
 }

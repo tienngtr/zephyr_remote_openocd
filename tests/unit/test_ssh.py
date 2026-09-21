@@ -161,7 +161,7 @@ def test_stderr_tail_is_best_effort_when_drain_has_not_reached_eof(monkeypatch):
             release_eof.set()
 
     monkeypatch.setattr(ssh_module, "_SSH_STDERR_JOIN_TIMEOUT", 0)
-    drain = ssh_module._StderrDrain(Stream())
+    drain = ssh_module._StderrDrain(cast(BinaryIO, Stream()))
     drain.start()
     try:
         first_chunk_read.wait()
@@ -199,7 +199,7 @@ def test_stderr_tail_waits_for_delayed_eof_with_a_bounded_timeout(monkeypatch):
             release_suffix.set()
 
     monkeypatch.setattr(ssh_module, "_SSH_STDERR_JOIN_TIMEOUT", 1.0)
-    drain = ssh_module._StderrDrain(Stream())
+    drain = ssh_module._StderrDrain(cast(BinaryIO, Stream()))
     wait_timeouts = []
     original_wait = drain._finished.wait
 
@@ -290,7 +290,7 @@ def test_helper_output_delivery_does_not_retain_event_history():
             object.__setattr__(self, "process", Process())
 
         @override
-        def popen(self, host: str, remote_command: str | None, *extra_args: str) -> Any:
+        def popen(self, host: str, remote_command: str, *extra_args: str) -> Any:
             return self.process
 
     handled = []
@@ -301,7 +301,6 @@ def test_helper_output_delivery_does_not_retain_event_history():
             process=RemoteProcess(("child",)),
         ),
         DeploymentResult("/helper.py", "digest", False),
-        1,
         lambda stream, payload, line_end: handled.append((stream, payload, line_end)),
     )
     try:
@@ -390,7 +389,7 @@ class _HelperProcess:
 
 class _ForwardCommand(_PopenOnlySshCommand):
     processes: Iterator[Any]
-    calls: list[tuple[str, str | None, tuple[str, ...]]]
+    calls: list[tuple[str, str, tuple[str, ...]]]
 
     def __init__(self, *processes):
         super().__init__()
@@ -398,15 +397,14 @@ class _ForwardCommand(_PopenOnlySshCommand):
         object.__setattr__(self, "calls", [])
 
     @override
-    def popen(self, host: str, remote_command: str | None, *extra_args: str) -> Any:
+    def popen(self, host: str, remote_command: str, *extra_args: str) -> Any:
         self.calls.append((host, remote_command, extra_args))
         return next(self.processes)
 
 
-def _forward_session(command, *, timeout=1):
+def _forward_session(command):
     session = cast(Any, object.__new__(SshHelperSession))
-    session.request = RemoteSessionRequest("host", command)
-    session.forward_start_timeout = timeout
+    session.request = RemoteSessionRequest("host", command, RemoteProcess(("child",)))
     session.forwards = []
     session.closed = False
     session.descriptor = SessionDescriptor(SessionAllocation("session", "/workspace"), "127.64.0.1")
@@ -463,9 +461,8 @@ def test_initial_start_forward_failure_associates_all_preflight_advisories_with_
         _ForwardProcess(7),
     )
     backend = SshHelperSession(
-        RemoteSessionRequest("host", command),
+        RemoteSessionRequest("host", command, RemoteProcess(("child",))),
         DeploymentResult("/helper.py", "digest", False),
-        1,
     )
     try:
         with pytest.raises(SessionError) as raised:

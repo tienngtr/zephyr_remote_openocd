@@ -70,14 +70,7 @@ class RemoteSession:
             self.state = SessionState.READY
             return self.descriptor
         except BaseException as error:
-            self.state = SessionState.FAILED
-            if self._session is not None:
-                try:
-                    self._session.close()
-                except BaseException as cleanup_error:
-                    # Preserve the startup failure while retaining cleanup
-                    # diagnostics for callers.
-                    error.add_note(f"startup failure cleanup also failed: {cleanup_error}")
+            self._fail_and_close(error, "startup failure cleanup also failed")
             raise
 
     def forward(self, services: Iterable[Service]) -> None:
@@ -95,11 +88,7 @@ class RemoteSession:
             self._session.forward(additions)
             self._services.extend(additions)
         except BaseException as error:
-            self.state = SessionState.FAILED
-            try:
-                self._session.close()
-            except BaseException as cleanup_error:
-                error.add_note(f"forward failure cleanup also failed: {cleanup_error}")
+            self._fail_and_close(error, "forward failure cleanup also failed")
             raise
 
     def poll(self) -> int | None:
@@ -108,11 +97,7 @@ class RemoteSession:
         try:
             result = self._session.poll()
         except BaseException as error:
-            self.state = SessionState.FAILED
-            try:
-                self._session.close()
-            except BaseException as cleanup_error:
-                error.add_note(f"session cleanup failed: {cleanup_error}")
+            self._fail_and_close(error, "session cleanup failed")
             raise
         if result is not None:
             self.termination_returncode = result
@@ -132,11 +117,7 @@ class RemoteSession:
         try:
             result = self._session.wait(timeout)
         except BaseException as error:
-            self.state = SessionState.FAILED
-            try:
-                self._session.close()
-            except BaseException as cleanup_error:
-                error.add_note(f"session cleanup failed: {cleanup_error}")
+            self._fail_and_close(error, "session cleanup failed")
             raise
         self.termination_returncode = result
         try:
@@ -147,8 +128,20 @@ class RemoteSession:
         self.state = SessionState.CLOSED if result == 0 else SessionState.FAILED
         return result
 
+    def _fail_and_close(self, error: BaseException, cleanup_note: str) -> None:
+        self.state = SessionState.FAILED
+        if self._session is None:
+            return
+        try:
+            result = self._session.close()
+        except BaseException as cleanup_error:
+            error.add_note(f"{cleanup_note}: {cleanup_error}")
+        else:
+            if result is not None:
+                self.termination_returncode = result
+
     def close(self) -> int | None:
-        if self.state is SessionState.CLOSED:
+        if self.state in {SessionState.CLOSED, SessionState.FAILED}:
             return self.termination_returncode
         self.state = SessionState.STOPPING
         result = self.termination_returncode
@@ -164,15 +157,3 @@ class RemoteSession:
         else:
             self.state = SessionState.FAILED if result not in (None, 0) else SessionState.CLOSED
         return result
-
-    def __enter__(self):
-        self.start()
-        return self
-
-    def __exit__(self, _exc_type, exc_value, _traceback):
-        try:
-            self.close()
-        except BaseException as cleanup_error:
-            if exc_value is None:
-                raise
-            exc_value.add_note(f"session cleanup also failed: {cleanup_error}")

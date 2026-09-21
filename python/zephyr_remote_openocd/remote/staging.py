@@ -54,8 +54,6 @@ def _validate_manifest(
             raise StagingError("duplicate staged destination")
         paths[destination] = "directory" if isinstance(item, StagedDirectory) else "file"
     for path, kind in paths.items():
-        if kind == "file" and any(paths.get(parent) == "file" for parent in path.parents):
-            raise StagingError(f"staged file ancestor conflict: {path}")
         if kind == "file" and any(path in other.parents for other in paths):
             raise StagingError(f"staged file ancestor conflict: {path}")
     return (

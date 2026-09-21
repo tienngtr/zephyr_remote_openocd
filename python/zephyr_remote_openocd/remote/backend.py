@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import os
 import secrets
 import selectors
 import shlex
@@ -16,7 +17,6 @@ from typing import BinaryIO, cast
 
 from .deploy import DeploymentResult, deploy_helper
 from .model import (
-    RemoteProcess,
     RemoteSessionRequest,
     Service,
     SessionAllocation,
@@ -42,6 +42,7 @@ from .staging import build_archive
 # cleanup. Keep the control transport alive through that fallback and remote
 # process scheduling/transport overhead.
 HELPER_STOP_TIMEOUT = 15.0
+FORWARD_START_TIMEOUT = 10.0
 _PROCESS_TERM_TIMEOUT = 5.0
 _PROCESS_KILL_TIMEOUT = 1.0
 
@@ -60,17 +61,13 @@ class SshHelperBackend(SessionBackend):
     def __init__(
         self,
         *,
-        forward_start_timeout: float = 10.0,
         output_handler: Callable[[str, str, bool], None] | None = None,
     ):
-        self.forward_start_timeout = forward_start_timeout
         self.output_handler = output_handler
 
     def create(self, request: RemoteSessionRequest) -> BackendSession:
         deployment = deploy_helper(request.ssh_command, request.host)
-        return SshHelperSession(
-            request, deployment, self.forward_start_timeout, self.output_handler
-        )
+        return SshHelperSession(request, deployment, self.output_handler)
 
     def openocd_version(self, ssh_command: SshCommand, host: str, executable) -> str:
         deployment = deploy_helper(ssh_command, host)
@@ -98,12 +95,10 @@ class SshHelperSession(BackendSession):
         self,
         request: RemoteSessionRequest,
         deployment: DeploymentResult,
-        forward_start_timeout: float,
         output_handler: Callable[[str, str, bool], None] | None = None,
     ):
         self.request = request
         self.deployment = deployment
-        self.forward_start_timeout = forward_start_timeout
         self.forwards: list[ManagedSshProcess] = []
         self.closed = False
         self.output_handler = output_handler
@@ -197,6 +192,8 @@ class SshHelperSession(BackendSession):
         """Wait for the readiness sentinel from this exact SSH process."""
         if process.stdout is None:
             return False
+        token_bytes = token.encode()
+        pending = b""
         selector = selectors.DefaultSelector()
         try:
             selector.register(process.stdout, selectors.EVENT_READ)
@@ -204,11 +201,14 @@ class SshHelperSession(BackendSession):
                 remaining = max(0.0, deadline - time.monotonic())
                 if not selector.select(min(0.05, remaining)):
                     continue
-                line = process.stdout.readline()
-                if not line:
+                chunk = os.read(process.stdout.fileno(), 4096)
+                if not chunk:
                     return False
-                if line.decode("utf-8", "replace").rstrip("\r\n") == token:
-                    return True
+                pending += chunk
+                while b"\n" in pending:
+                    line, pending = pending.split(b"\n", 1)
+                    if line.rstrip(b"\r") == token_bytes:
+                        return True
             return False
         finally:
             selector.close()
@@ -222,9 +222,7 @@ class SshHelperSession(BackendSession):
 
     def start(self, services: Iterable[Service]) -> SessionDescriptor:
         service_list = tuple(services)
-        if self.request.process is None and not service_list:
-            raise SessionError("at least one service is required for a fake session")
-        process = self.request.process or self._fake_process(service_list)
+        process = self.request.process
         if self.helper_process.stdin is None:
             raise SessionError("helper stdin was not captured")
         write_start(
@@ -235,12 +233,7 @@ class SshHelperSession(BackendSession):
         address = self._await_process_ready()
         if service_list:
             try:
-                advisories = None
-                if self.request.process is None:
-                    advisories = [
-                        message for service in service_list if (message := self._preflight(service))
-                    ]
-                self._start_forwards(service_list, address, advisories)
+                self._start_forwards(service_list, address)
             except BaseException as error:
                 try:
                     self._close_forwards()
@@ -250,19 +243,6 @@ class SshHelperSession(BackendSession):
         self._start_event_drain()
         self.descriptor = SessionDescriptor(self.allocation, address)
         return self.descriptor
-
-    def _fake_process(self, services: tuple[Service, ...]):
-        return RemoteProcess(
-            (
-                "python3",
-                self.deployment.path,
-                "fake-child",
-                "{address}",
-                *(str(service.remote_port) for service in services),
-            ),
-            readiness_marker="ZRO_FAKE_READY",
-            literal_prefix=3,
-        )
 
     def _await_process_ready(self) -> str:
         while True:
@@ -305,29 +285,33 @@ class SshHelperSession(BackendSession):
             raise SessionError(
                 f"helper event stream failed: {self.reader_error}"
             ) from self.reader_error
-        if self.process_returncode is not None:
-            helper_status = self.helper_process.poll()
-            if helper_status is None:
-                return self.process_returncode
-            return helper_status if helper_status else self.process_returncode
         helper_status = self.helper_process.poll()
-        if (
-            helper_status is not None
-            and self.reader_thread is not None
-            and self.reader_thread.is_alive()
-        ):
-            self.reader_thread.join()
-            return self.poll()
-        if helper_status is not None:
-            return helper_status or 1
-        if any(process.poll() is not None for process in self.forwards):
-            return 1
-        return None
+        if helper_status is None:
+            if self.process_returncode is not None:
+                return self.process_returncode
+            for process in self.forwards:
+                forward_status = process.poll()
+                if forward_status is not None:
+                    detail = self._forward_diagnostic(process)
+                    suffix = f": {detail}" if detail else ""
+                    raise SessionError(
+                        f"SSH forwarding exited with status {forward_status}{suffix}"
+                    )
+            return None
+        if self.reader_thread is not None and self.reader_thread.is_alive():
+            self._join_reader()
+        if self.reader_error is not None:
+            raise SessionError(
+                f"helper event stream failed: {self.reader_error}"
+            ) from self.reader_error
+        if helper_status:
+            raise SessionError(f"remote helper exited with status {helper_status}")
+        if self.process_returncode is not None:
+            return self.process_returncode
+        raise SessionError("remote helper exited without a process-exit terminal event")
 
-    def _start_forwards(self, service_list, address, advisories=None):
-        advisories = advisories or [
-            message for service in service_list if (message := self._preflight(service))
-        ]
+    def _start_forwards(self, service_list, address):
+        advisories = [message for service in service_list if (message := self._preflight(service))]
         for service in service_list:
             spec = f"127.0.0.1:{service.local_port}:{address}:{service.remote_port}"
             token = "ZRO_FORWARD_" + secrets.token_hex(16)
@@ -340,7 +324,7 @@ class SshHelperSession(BackendSession):
                 spec,
             )
             self.forwards.append(process)
-            deadline = time.monotonic() + self.forward_start_timeout
+            deadline = time.monotonic() + FORWARD_START_TIMEOUT
             connected = self._await_forward_ready(process, token, deadline)
             if process.poll() is not None:
                 detail = self._forward_diagnostic(process)
@@ -412,8 +396,6 @@ class SshHelperSession(BackendSession):
             while True:
                 event = self._read_event()
                 self._dispatch(event)
-        except EOFError:
-            return
         except SessionError as error:
             if isinstance(error.__cause__, EOFError):
                 return
@@ -568,7 +550,6 @@ class SshHelperSession(BackendSession):
                 return self._terminal_reason
 
         terminal_before_stop = terminal_reason()
-        stop_requested = False
         helper_status = helper.poll()
         reader_thread = self.reader_thread
 
@@ -589,7 +570,7 @@ class SshHelperSession(BackendSession):
 
                 def request_stop() -> None:
                     nonlocal logical_error
-                    nonlocal stop_requested, terminal_before_stop
+                    nonlocal terminal_before_stop
                     terminal_before_stop = terminal_reason()
                     if terminal_before_stop == "requested":
                         logical_error = SessionError(
@@ -598,7 +579,6 @@ class SshHelperSession(BackendSession):
                         return
                     if terminal_before_stop == "process_exit":
                         return
-                    stop_requested = True
                     try:
                         write_stop(cast(BinaryIO, helper.stdin))
                     except BaseException as error:
@@ -647,7 +627,7 @@ class SshHelperSession(BackendSession):
             logical_error = logical_error or reader_failure
 
         terminal = terminal_reason()
-        if stop_requested and logical_error is None:
+        if logical_error is None:
             if terminal not in {"requested", "process_exit"}:
                 status = helper.poll()
                 logical_error = SessionError(
@@ -660,12 +640,6 @@ class SshHelperSession(BackendSession):
                 logical_error = SessionError(
                     f"remote helper exited with status {helper.poll()} after {terminal} shutdown"
                 )
-
-        # If close was called after a natural process-exit terminal event,
-        # preserve that already-observed outcome.  It is the result returned
-        # by wait()/poll(), rather than a requested STOP transaction.
-        if not stop_requested and terminal is None and logical_error is None:
-            logical_error = SessionError("helper exited without a terminal SESSION_CLOSED event")
 
         if logical_error is not None:
             for cleanup_error in cleanup_errors:

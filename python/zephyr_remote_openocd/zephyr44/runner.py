@@ -145,6 +145,7 @@ def _build_operation(runner, command, selected):
 def _execute_operation(runner, command, request, plan, backend):
     session = RemoteSession(request, backend)
     descriptor = session.start()
+    observed_returncode = None
     try:
         runner.logger.info(
             "Remote OpenOCD session %s workspace=%s bindto=%s",
@@ -152,16 +153,16 @@ def _execute_operation(runner, command, request, plan, backend):
             descriptor.remote_workspace,
             descriptor.remote_address,
         )
-        returncode = _execute_started_operation(runner, command, plan, session)
-        if returncode:
-            raise RuntimeError(f"remote OpenOCD failed with exit status {returncode}")
+        observed_returncode = _execute_started_operation(runner, command, plan, session)
+        if observed_returncode:
+            raise RuntimeError(f"remote OpenOCD failed with exit status {observed_returncode}")
     except BaseException as error:
         try:
             late_returncode = session.close()
         except BaseException as cleanup_error:
             error.add_note(f"session cleanup also failed: {cleanup_error}")
         else:
-            if late_returncode:
+            if late_returncode and late_returncode != observed_returncode:
                 error.add_note(
                     f"remote OpenOCD also exited with status {late_returncode} during cleanup"
                 )
@@ -332,9 +333,9 @@ def _flash_request(runner, selected):
     return RemoteSessionRequest(
         selected.remote_host,
         SshCommand(selected.ssh_command),
+        plan.process,
         plan.staged_files,
         (),
-        plan.process,
     )
 
 
@@ -450,9 +451,9 @@ def _debug_request(runner, selected, plan):
     return RemoteSessionRequest(
         selected.remote_host,
         SshCommand(selected.ssh_command),
+        plan.process,
         plan.staged_files,
         plan.services,
-        plan.process,
     )
 
 

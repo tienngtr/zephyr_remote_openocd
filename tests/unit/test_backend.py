@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import io
+import os
 import threading
 from typing import Any, cast
 
 import pytest
+from zephyr_remote_openocd.remote import backend as backend_module
 from zephyr_remote_openocd.remote.backend import SshHelperSession
+from zephyr_remote_openocd.remote.session import SessionError
 
 
 @pytest.mark.timeout(10)
@@ -93,3 +96,82 @@ def test_close_disposes_streams_after_delayed_reader_stops(monkeypatch):
     assert session.helper_process.stdout.closed
     assert session.helper_process.stderr.closed
     assert session.closed
+
+
+@pytest.mark.timeout(10)
+def test_poll_bounds_reader_join_after_helper_exit():
+    class Process:
+        def poll(self):
+            return 0
+
+    class Reader:
+        def __init__(self):
+            self.join_calls = 0
+            self.join_timeout = None
+
+        def is_alive(self):
+            return True
+
+        def join(self, timeout=None):
+            self.join_calls += 1
+            self.join_timeout = timeout
+
+    session = cast(Any, object.__new__(SshHelperSession))
+    session.helper_process = Process()
+    session.process_returncode = None
+    session.reader_error = None
+    session.reader_thread = Reader()
+    session.forwards = []
+
+    with pytest.raises(SessionError):
+        session.poll()
+    assert session.reader_thread.join_calls == 1
+    assert session.reader_thread.join_timeout is not None
+
+
+def test_poll_raises_when_ssh_forward_exits():
+    class Helper:
+        def poll(self):
+            return None
+
+    class Forward:
+        def poll(self):
+            return 9
+
+        def stderr_tail(self):
+            return b"forward failed"
+
+    session = cast(Any, object.__new__(SshHelperSession))
+    session.helper_process = Helper()
+    session.process_returncode = None
+    session.reader_error = None
+    session.forwards = [Forward()]
+
+    with pytest.raises(SessionError):
+        session.poll()
+
+
+@pytest.mark.timeout(5)
+def test_forward_readiness_timeout_does_not_block_on_partial_output(monkeypatch):
+    read_fd, write_fd = os.pipe()
+
+    class Process:
+        def __init__(self):
+            self.stdout = os.fdopen(read_fd, "rb", buffering=0)
+
+        @staticmethod
+        def poll():
+            return None
+
+    process = Process()
+    try:
+        os.write(write_fd, b"ZRO_FORWARD_")
+        clock = iter((0.0, 0.0, 1.0))
+        monkeypatch.setattr(backend_module.time, "monotonic", lambda: next(clock))
+        deadline = 0.5
+        assert not SshHelperSession._await_forward_ready(
+            cast(Any, process), "ZRO_FORWARD_ready", deadline
+        )
+    finally:
+        process.stdout.close()
+        os.close(write_fd)

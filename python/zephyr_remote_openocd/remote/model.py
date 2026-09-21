@@ -83,9 +83,9 @@ class Service:
 class RemoteSessionRequest:
     host: str
     ssh_command: SshCommand
+    process: RemoteProcess
     staged_files: tuple[StagedEntry, ...] = field(default_factory=tuple)
     services: tuple[Service, ...] = field(default_factory=tuple)
-    process: RemoteProcess | None = None
 
     def __post_init__(self) -> None:
         if not self.host:
