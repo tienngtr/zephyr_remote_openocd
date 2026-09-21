@@ -190,7 +190,7 @@ def test_close_disposes_streams_after_delayed_reader_stops(monkeypatch):
     monkeypatch.setattr(RemoteSession, "_join_reader", controlled_join)
     monkeypatch.setattr(RemoteSession, "_stop_process", staticmethod(tracked_stop))
     try:
-        session.close()
+        assert session.close() is None
     finally:
         release_reader.set()
         assert reader_stopped.wait(5)
@@ -203,6 +203,37 @@ def test_close_disposes_streams_after_delayed_reader_stops(monkeypatch):
     assert session.helper_process.stdout.closed
     assert session.helper_process.stderr.closed
     assert session.closed
+    assert session.close() is None
+    assert join_results == [False, True]
+
+
+def test_close_attempts_all_cleanup_once_and_preserves_first_failure():
+    session = cast(Any, object.__new__(RemoteSession))
+    session.closed = False
+    first_error = RuntimeError("forward cleanup failed")
+    later_error = RuntimeError("helper cleanup failed")
+    actions = []
+
+    def close_forwards():
+        actions.append("forwards")
+        raise first_error
+
+    def close_helper():
+        actions.append("helper")
+        return later_error, []
+
+    session._close_forwards = close_forwards
+    session._close_helper = close_helper
+
+    with pytest.raises(RuntimeError) as raised:
+        session.close()
+
+    assert raised.value is first_error
+    assert raised.value.__notes__ == ["additional cleanup failure: helper cleanup failed"]
+    assert actions == ["forwards", "helper"]
+    assert session.closed
+    assert session.close() is None
+    assert actions == ["forwards", "helper"]
 
 
 @pytest.mark.timeout(10)

@@ -701,9 +701,9 @@ class RemoteSession:
 
         return logical_error, cleanup_errors
 
-    def close(self) -> int | None:
+    def close(self) -> None:
         if self.closed:
-            return self._openocd_returncode
+            return
 
         forward_errors: list[BaseException] = []
         try:
@@ -718,13 +718,11 @@ class RemoteSession:
         except BaseException as error:
             helper_error = error
 
-        errors: list[BaseException] = []
+        errors = forward_errors
         if helper_error is not None:
             errors.append(helper_error)
         elif helper_cleanup_errors:
             errors.extend(helper_cleanup_errors)
-        errors.extend(forward_errors)
         self.closed = True
         if errors:
             _raise_cleanup_errors(errors)
-        return self._openocd_returncode

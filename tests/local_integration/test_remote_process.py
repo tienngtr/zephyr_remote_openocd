@@ -1647,15 +1647,13 @@ sys.exit({exit_code})
         backend._start_event_drain()
         try:
             if expected is None:
-                close_result = backend.close()
+                assert backend.close() is None
                 assert backend.closed
                 assert backend._terminal_reason in {"requested", "process_exit"}
                 if backend._terminal_reason == "process_exit":
                     assert backend._openocd_returncode == 7
-                    assert close_result == 7
                 else:
                     assert backend._openocd_returncode is None
-                    assert close_result is None
             else:
                 with pytest.raises(SessionError, match=expected) as raised:
                     backend.close()
@@ -1726,7 +1724,7 @@ sys.stdin.buffer.read()
             with suppress(BaseException):
                 backend.close()
 
-    def test_backend_close_keeps_helper_failure_primary_over_forward_cleanup(self):
+    def test_backend_close_preserves_first_forward_failure_and_notes_helper_failure(self):
         helper_code = """
 import json
 import sys
@@ -1794,9 +1792,9 @@ sys.exit(7)
         backend.forwards = [cast(Any, forward)]
         backend._start_event_drain()
         try:
-            with pytest.raises(SessionError, match="cleanup failed") as raised:
+            with pytest.raises(RuntimeError, match="forward cleanup failed") as raised:
                 backend.close()
-            assert any("forward cleanup failed" in note for note in raised.value.__notes__)
+            assert any("cleanup failed" in note for note in raised.value.__notes__)
             assert backend.forwards == []
             assert backend.closed
 

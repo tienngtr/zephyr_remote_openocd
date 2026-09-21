@@ -159,7 +159,7 @@ def test_gdb_operation_reports_process_failure_observed_during_close(runner_api,
         SessionAllocation("session", "/workspace"), "127.0.0.1"
     )
     backend_session.check_openocd_exit.return_value = None
-    backend_session.close.return_value = 7
+    backend_session.openocd_returncode = 7
     monkeypatch.setattr(runner_module.RemoteSession, "open", Mock(return_value=backend_session))
     request = RemoteSessionRequest("host", SshCommand(), TEST_PROCESS)
     plan = _debug_plan(gdb_argv=("gdb",))
@@ -181,7 +181,7 @@ def test_gdb_operation_does_not_duplicate_observed_process_failure(runner_api, m
         SessionAllocation("session", "/workspace"), "127.0.0.1"
     )
     backend_session.check_openocd_exit.return_value = 7
-    backend_session.close.return_value = 7
+    backend_session.openocd_returncode = 7
     monkeypatch.setattr(runner_module.RemoteSession, "open", Mock(return_value=backend_session))
     request = RemoteSessionRequest("host", SshCommand(), TEST_PROCESS)
     plan = _debug_plan(gdb_argv=("gdb",))
@@ -203,6 +203,7 @@ def test_gdb_operation_preserves_process_failure_when_cleanup_fails(runner_api, 
     backend_session.descriptor = SessionDescriptor(
         SessionAllocation("session", "/workspace"), "127.0.0.1"
     )
+    backend_session.openocd_returncode = None
     backend_session.check_openocd_exit.return_value = 7
     backend_session.close.side_effect = cleanup_error
     monkeypatch.setattr(runner_module.RemoteSession, "open", Mock(return_value=backend_session))
@@ -227,6 +228,7 @@ def test_gdb_requirement_failure_closes_started_session(runner_api, monkeypatch)
     backend_session.descriptor = SessionDescriptor(
         SessionAllocation("session", "/workspace"), "127.0.0.1"
     )
+    backend_session.openocd_returncode = None
     monkeypatch.setattr(runner_module.RemoteSession, "open", Mock(return_value=backend_session))
     request = RemoteSessionRequest("host", SshCommand(), TEST_PROCESS)
     plan = _debug_plan(gdb_argv=("gdb",))
@@ -247,6 +249,7 @@ def test_gdb_failure_survives_session_cleanup_failure(runner_api, monkeypatch):
     backend_session.descriptor = SessionDescriptor(
         SessionAllocation("session", "/workspace"), "127.0.0.1"
     )
+    backend_session.openocd_returncode = None
     backend_session.close.side_effect = RuntimeError("cleanup failed")
     monkeypatch.setattr(runner_module.RemoteSession, "open", Mock(return_value=backend_session))
     request = RemoteSessionRequest("host", SshCommand(), TEST_PROCESS)
@@ -270,7 +273,7 @@ def test_gdb_failure_notes_process_failure_observed_during_close(runner_api, mon
     backend_session.descriptor = SessionDescriptor(
         SessionAllocation("session", "/workspace"), "127.0.0.1"
     )
-    backend_session.close.return_value = 7
+    backend_session.openocd_returncode = 7
     monkeypatch.setattr(runner_module.RemoteSession, "open", Mock(return_value=backend_session))
     request = RemoteSessionRequest("host", SshCommand(), TEST_PROCESS)
     plan = _debug_plan(gdb_argv=("gdb",))
