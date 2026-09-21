@@ -37,6 +37,8 @@ executed.
 | AC-CONC-001 | Automated | [`TestSshTransportIntegration.test_concurrent_sessions_isolate_identical_remote_ports`](../../tests/ssh_integration/test_ssh_integration.py) |
 | AC-LIFE-001 | Automated | [`TestRealProcessHelper.test_output_exit_status_and_workspace_cleanup`](../../tests/local_integration/test_remote_process.py); [`TestSshTransportIntegration.test_protocol_v1_helper_vertical_slice`](../../tests/ssh_integration/test_ssh_integration.py) |
 | AC-LIFE-002 | Automated | [`TestRealProcessHelper.test_helper_eof_cleans_child_and_workspace`](../../tests/local_integration/test_remote_process.py); [`TestSshTransportIntegration.test_helper_ssh_loss_cleans_session`](../../tests/ssh_integration/test_ssh_integration.py) |
+| AC-LIFE-003 | Planned | Stage 1/2 lifecycle-result coverage |
+| AC-LIFE-004 | Planned | Stage 2 failure-precedence coverage |
 | AC-PLAT-001 | Both | Linux [Zephyr](../../tests/zephyr_integration/) and [SSH](../../tests/ssh_integration/) integration plus [real hardware](../../tests/hardware/) fixtures |
 | AC-SSH-001 | Automated | [SSH unit tests](../../tests/unit/test_ssh.py); [`TestConfiguredSshIntegration.test_configured_ssh_and_fixed_arguments`](../../tests/ssh_integration/test_ssh_integration.py) |
 | AC-SSH-002 | Automated | [SSH command tests](../../tests/unit/test_ssh.py); [`TestConfiguredSshIntegration`](../../tests/ssh_integration/test_ssh_integration.py) fixed-argument and alternate-name cases; [`TestSshTransportIntegration.test_forwarding_and_session_lifecycle_use_configured_client`](../../tests/ssh_integration/test_ssh_integration.py) |

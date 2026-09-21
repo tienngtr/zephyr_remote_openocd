@@ -54,6 +54,17 @@ fragment that merely matches a marker prefix does not make the process ready.
 process group, removes the workspace, emits `SESSION_CLOSED` with
 `reason: "requested"` and `returncode: null`, and exits.
 
+`SESSION_CLOSED` with `reason: "process_exit"` and an integer `returncode` is
+the sole wire source of an OpenOCD result. `SESSION_CLOSED` with
+`reason: "requested"` and `returncode: null` confirms requested shutdown but
+produces no OpenOCD result. The helper's Unix process status, SSH/control
+transport status, and forwarding-process status are independent health
+observations and are never OpenOCD results.
+
+After local `STOP` initiation, either terminal form may legitimately occur:
+OpenOCD may terminate naturally before requested termination takes effect, or
+the requested shutdown may complete first. Protocol version 1 is unchanged.
+
 ## Persistent events
 
 | Event | Required fields | Meaning |

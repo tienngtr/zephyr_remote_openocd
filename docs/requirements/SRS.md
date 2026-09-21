@@ -1027,35 +1027,42 @@ helper wire validation SHALL reject duplicate values before process startup.
 
 ### REQ-FUNC-HELP-009
 
-A client-requested persistent-helper shutdown SHALL be considered successful
-after local `STOP` initiation when the helper emits a valid terminal
-`SESSION_CLOSED` event with either `reason: "requested"` and
-`returncode: null`, or `reason: "process_exit"` and the child's integer
-return code. The client SHALL preserve the child return code from the
-process-exit terminal event. In either case, the helper SHALL exit with status
-zero. A helper `ERROR`, malformed or invalid terminal event, missing terminal
-event, nonzero helper exit, or shutdown transport failure SHALL fail the local
-close operation. Cleanup SHALL attempt all owned mechanical cleanup in one
-pass. The primary operation or shutdown failure SHALL be preserved when later
-cleanup also fails. Cleanup SHALL NOT be required to preserve partially
-cleaned resources solely so that a later `close()` can resume from an
-intermediate state. Repeated `close()` calls SHOULD be safe, but successful
-continuation of a previously failed cleanup transaction is not a required
-capability.
+When the helper reports natural OpenOCD termination through the valid
+persistent-helper protocol, the client SHALL preserve the reported integer
+exit status as the OpenOCD result. Helper-process status, SSH/control-
+transport status, forwarding-process status, protocol failures, and cleanup
+failures SHALL NOT be represented as OpenOCD exit statuses. Client-requested
+termination that completes without a natural OpenOCD termination result SHALL
+NOT synthesize an OpenOCD exit status.
 
-Remote OpenOCD SHALL run in its own process group and session. The helper SHALL
-treat that process group as the ownership boundary for cleanup. Loss or
-termination of the controlling remote session SHALL terminate OpenOCD and any
-remaining processes in that group. Cleanup SHALL send `SIGTERM` to the group,
-wait a bounded grace period for the OpenOCD leader, check whether the group
-still exists, send `SIGKILL` to a remaining group, reap the leader, and release
-owned relay resources. If the helper can identify non-leader group members
-during cleanup, it SHALL emit a diagnostic warning before terminating them, and
-the local client SHALL show that warning through its user-facing diagnostic
-path after bounded SSH stderr capture. Failure to show this warning SHALL NOT
-make otherwise successful process-group cleanup fail.
-Descendant detection SHALL be best-effort and SHALL NOT be required for
-successful process-group cleanup.
+### REQ-FUNC-HELP-010
+
+Session shutdown SHALL make one bounded attempt to release all locally and
+remotely owned session resources. All applicable cleanup actions SHALL be
+attempted even when an earlier cleanup action fails. Repeated shutdown
+requests SHALL be harmless. Successful continuation or retry of a partially
+failed cleanup transaction SHALL NOT be required.
+
+### REQ-FUNC-HELP-011
+
+When an operation failure has already been established, later cleanup failures,
+session/infrastructure failures, or OpenOCD-result observations SHALL NOT
+replace that failure. Later failures and relevant OpenOCD results SHOULD remain
+available as diagnostic information. When no earlier failure exists, helper,
+protocol, SSH/control, forwarding, or required-shutdown failure SHALL fail the
+operation. Such failures SHALL remain distinct from OpenOCD exit status.
+
+### REQ-FUNC-HELP-012
+
+Remote OpenOCD SHALL execute within a helper-owned process-group boundary.
+Loss or termination of the controlling session SHALL trigger bounded cleanup
+of that owned process group and associated session resources. Cleanup SHALL
+attempt to terminate the complete owned process group and release the OpenOCD
+leader and owned relay resources. Diagnosis of surviving descendants when
+observable SHOULD be provided, but failure of best-effort descendant
+inspection SHALL NOT by itself make otherwise successful process-group
+cleanup fail. The exact signal, wait, inspection, escalation, reaping, and
+relay-cleanup algorithm belongs in the SAD.
 
 ---
 
@@ -1376,6 +1383,16 @@ Normal termination removes the corresponding remote OpenOCD process and temporar
 ### AC-LIFE-002
 
 Loss of the controlling SSH session terminates the corresponding remote OpenOCD process.
+
+### AC-LIFE-003
+
+A natural nonzero OpenOCD exit is reported as the OpenOCD result and is not
+replaced by helper, SSH, forwarding, or cleanup process statuses.
+
+### AC-LIFE-004
+
+When an operation has already failed, a subsequent cleanup failure does not
+replace that operation failure and remains available diagnostically.
 
 ### AC-PLAT-001
 

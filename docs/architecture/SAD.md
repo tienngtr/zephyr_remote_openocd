@@ -946,6 +946,21 @@ Persistent fallback data older than 24 hours may be cleaned opportunistically.
 
 ## 38. Process Supervision
 
+The lifecycle has four ownership levels:
+
+- The operation or runner owns when the `RemoteSession` lifetime ends.
+- `RemoteSession` owns whole-session local resource management, including the
+  helper SSH process, protocol reader, forwarding SSH processes, remote
+  workspace transaction, and staging orchestration.
+- `ManagedSshProcess` owns one local SSH subprocess and its stderr drain.
+- The remote `ControlSession` owns remote session state and workspace, while
+  `SupervisedChild` owns the OpenOCD process group and its output relays.
+
+`RemoteSession` is the sole local whole-session resource owner. It is acquired
+once through `RemoteSession.open()`, which returns only a usable session, and
+is released once through cleanup-only `RemoteSession.close()`. A session is
+one-shot and cannot be reopened or restarted.
+
 OpenOCD executes in a helper-supervised process group and session. The process
 group is the helper's ownership boundary for generic cleanup hygiene, including
 processes that outlive the OpenOCD leader.
@@ -977,14 +992,16 @@ helper terminates OpenOCD
 cleanup
 ```
 
-For a client-requested stop, local cleanup is successful only after the
-helper has emitted a valid `SESSION_CLOSED` event with `reason: "requested"`
-and `returncode: null` and has exited with status zero. Protocol, helper, or
-transport failures remain visible to the caller; later mechanical cleanup
-failures are retained as diagnostics. Local shutdown attempts all remaining
-mechanical cleanup once and then marks the session closed. A later `close()` is
-harmless, but does not resume a partially failed cleanup transaction or retain
-resources solely for that purpose.
+For a client-requested stop, protocol completion accepts a valid terminal
+`SESSION_CLOSED` event with either `reason: "requested"` and
+`returncode: null`, or `reason: "process_exit"` and an integer return code.
+The latter also records that value as `openocd_returncode`. Successful local
+cleanup additionally requires the helper to exit with status zero. Protocol,
+helper, or transport failures remain visible to the caller; later mechanical
+cleanup failures are retained as diagnostics. Local shutdown attempts all
+remaining mechanical cleanup once and then marks the session closed. A later
+`close()` is harmless, but does not resume a partially failed cleanup
+transaction or retain resources solely for that purpose.
 
 Unexpected controlling-session loss follows the same cleanup path.
 Each session holds an advisory lock in its workspace. When allocating a new
@@ -995,46 +1012,32 @@ active sessions.
 
 ---
 
-## 39. Local Runner State Machine
+## 39. Local Session Lifecycle
 
 ```text
-NEW
- |
- v
-CONFIGURE
- |
- v
-CREATE_REMOTE_SESSION
- |
- v
-STAGE
- |
- v
-START_REMOTE_OPENOCD
- |
- v
-WAIT_READY
- |
- v
-START_FORWARDING
- |
- v
-START_LOCAL_CLIENT
- |
- v
-RUNNING
- |
- v
-STOP_REMOTE
- |
- v
-CLEANUP
- |
- v
-DONE
+prepare operation
+       |
+RemoteSession.open()
+       |
+       +-- deploy helper
+       +-- create control session
+       +-- stage files
+       +-- start OpenOCD
+       +-- wait for readiness
+       +-- establish initial forwarding
+       |
+usable RemoteSession
+       |
+run local operation
+       |
+RemoteSession.close()
+       |
+done
 ```
 
-Flash omits local-client stages when unnecessary.
+The public lifecycle does not require state enumeration. Flash and other
+operations may omit local-client work while retaining the same session
+acquisition and cleanup boundary.
 
 ---
 
@@ -1077,6 +1080,36 @@ Application console output is not interpreted or rewritten.
 ---
 
 ## 42. Error Handling
+
+Foreground control flow establishes failure precedence. The protocol reader
+records facts and wakes waiters; it does not close the session, terminate
+forwarding, choose the primary failure, translate helper status into an
+OpenOCD status, or perform runner-level error arbitration.
+
+`openocd_returncode` is populated only by the natural OpenOCD termination
+event. `check_openocd_exit()` is non-blocking, and
+`wait_for_openocd_exit()` waits for that event without implying cleanup.
+Forwarding-process health may be checked with bounded local polling while
+waiting; no watcher thread or remote/network polling is required.
+
+The first already-established foreground operation failure remains primary.
+If no earlier failure exists, a helper, protocol, SSH/control, forwarding, or
+required cleanup failure becomes the operation failure. A later OpenOCD result
+or session/infrastructure failure is retained as diagnostic information when it
+cannot replace the primary failure. The following table defines the required
+outcomes:
+
+| Foreground state | Later observation | Primary outcome |
+| --- | --- | --- |
+| Operation succeeds | No OpenOCD failure; cleanup succeeds | Success |
+| Operation succeeds | Cleanup discovers OpenOCD `N != 0`; cleanup succeeds | OpenOCD failure `N` |
+| Operation succeeds | Cleanup fails; no OpenOCD failure | Cleanup failure |
+| Operation succeeds | Cleanup fails and discovers OpenOCD `N != 0` | Cleanup failure; `N` diagnostic |
+| Operation already failed | Cleanup succeeds | Operation failure |
+| Operation already failed | Cleanup discovers OpenOCD `N != 0` | Operation failure; `N` diagnostic |
+| Operation already failed | Cleanup fails | Operation failure; cleanup diagnostic |
+| OpenOCD `N != 0` already foreground-observed | Cleanup subsequently fails | OpenOCD failure `N`; cleanup diagnostic |
+| OpenOCD `N != 0` already foreground-observed | Helper/forward failure follows | OpenOCD failure `N`; later failure diagnostic |
 
 ### Configuration
 
@@ -1184,6 +1217,14 @@ Selected for the current architecture:
 - per-session remote loopback isolation;
 - structured RTT handling;
 - semihosting console via OpenOCD stdout/stderr;
+- one concrete local `RemoteSession` owner;
+- one-shot session acquisition through `RemoteSession.open()`;
+- no generic `SessionBackend`/`BackendSession` layer;
+- cleanup-only `RemoteSession.close()`;
+- OpenOCD result stored separately as `openocd_returncode`;
+- foreground-controlled error precedence;
+- condition-driven terminal-event synchronization;
+- bounded local forwarding-process health polling;
 - no persistent artifact cache;
 - fail-fast cleanup after SSH loss.
 
