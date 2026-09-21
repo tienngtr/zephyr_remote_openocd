@@ -121,8 +121,10 @@ temporary investigations belong in `.scratch/agents/`.
 
 Commit, push, or create/update a pull request only with explicit authorization;
 pushing and PR actions always need separate authorization. If authorized, make
-coherent validated commits with gitlint-compliant messages. Review the complete
-diff, exclude unrelated changes, and never rewrite history unless authorized.
+coherent validated commits with gitlint-compliant messages: use an imperative
+subject of at most 72 characters, a blank line, and a concise body explaining
+the change with lines of at most 80 characters. Review the complete diff,
+exclude unrelated changes, and never rewrite history unless authorized.
 
 Never commit credentials, hosts, device paths, capability values, expected lab
 output, populated inventories, generated builds, or `.scratch/` artifacts. Use
