@@ -526,6 +526,7 @@ def _forward_session(command):
     session.reader_thread = None
     session._terminal_reason = None
     session._state_lock = threading.RLock()
+    session._state_changed = threading.Condition(session._state_lock)
     session._services = []
     return session
 

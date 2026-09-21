@@ -100,6 +100,7 @@ def test_only_process_exit_terminal_event_sets_openocd_result():
     session = cast(Any, object.__new__(RemoteSession))
     session.output_handler = None
     session._state_lock = threading.RLock()
+    session._state_changed = threading.Condition(session._state_lock)
     session._terminal_reason = None
     session._openocd_returncode = None
 
@@ -153,6 +154,7 @@ def test_close_disposes_streams_after_delayed_reader_stops(monkeypatch):
     session._openocd_returncode = None
     session.reader_error = None
     session._state_lock = threading.RLock()
+    session._state_changed = threading.Condition(session._state_lock)
     session._terminal_reason = None
 
     def consume_terminal_event():
@@ -204,38 +206,41 @@ def test_close_disposes_streams_after_delayed_reader_stops(monkeypatch):
 
 
 @pytest.mark.timeout(10)
-def test_poll_bounds_reader_join_after_helper_exit():
-    class Process:
-        def poll(self):
-            return 0
+def test_wait_for_openocd_exit_wakes_on_terminal_event(monkeypatch):
+    waiting = threading.Event()
 
-    class Reader:
-        def __init__(self):
-            self.join_calls = 0
-            self.join_timeout = None
-
-        def is_alive(self):
-            return True
-
-        def join(self, timeout=None):
-            self.join_calls += 1
-            self.join_timeout = timeout
+    class ObservableCondition(threading.Condition):
+        def wait(self, timeout=None):
+            waiting.set()
+            return super().wait(timeout)
 
     session = cast(Any, object.__new__(RemoteSession))
-    session.helper_process = Process()
     session.closed = False
     session._openocd_returncode = None
     session.reader_error = None
-    session.reader_thread = Reader()
     session.forwards = []
+    session.output_handler = None
+    session._state_lock = threading.RLock()
+    session._state_changed = ObservableCondition(session._state_lock)
+    results = []
 
-    with pytest.raises(SessionError):
-        session.check_openocd_exit()
-    assert session.reader_thread.join_calls == 1
-    assert session.reader_thread.join_timeout is not None
+    monkeypatch.setattr(
+        backend_module.time,
+        "sleep",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("sleep is not event-driven")),
+    )
+
+    waiter = threading.Thread(target=lambda: results.append(session.wait_for_openocd_exit()))
+    waiter.start()
+    assert waiting.wait(5)
+    session._dispatch({"type": "SESSION_CLOSED", "reason": "process_exit", "returncode": 0})
+    waiter.join(timeout=5)
+
+    assert not waiter.is_alive()
+    assert results == [0]
 
 
-def test_poll_raises_when_ssh_forward_exits():
+def test_check_openocd_exit_raises_when_ssh_forward_exits():
     class Helper:
         def poll(self):
             return None
@@ -253,9 +258,56 @@ def test_poll_raises_when_ssh_forward_exits():
     session._openocd_returncode = None
     session.reader_error = None
     session.forwards = [Forward()]
+    session._state_changed = threading.Condition()
 
     with pytest.raises(SessionError):
         session.check_openocd_exit()
+
+
+@pytest.mark.timeout(10)
+def test_wait_for_openocd_exit_observes_forward_failure():
+    waiting = threading.Event()
+    failed = threading.Event()
+
+    class ObservableCondition(threading.Condition):
+        def wait(self, timeout=None):
+            waiting.set()
+            return super().wait(timeout)
+
+    class Forward:
+        def poll(self):
+            return 13 if failed.is_set() else None
+
+        def stderr_tail(self):
+            return b"forward failed"
+
+    session = cast(Any, object.__new__(RemoteSession))
+    session.closed = False
+    session._openocd_returncode = None
+    session.reader_error = None
+    session.forwards = [Forward()]
+    session._state_lock = threading.RLock()
+    session._state_changed = ObservableCondition(session._state_lock)
+    errors = []
+
+    def wait_for_exit():
+        try:
+            session.wait_for_openocd_exit()
+        except BaseException as error:
+            errors.append(error)
+
+    waiter = threading.Thread(target=wait_for_exit)
+    waiter.start()
+    assert waiting.wait(5)
+    failed.set()
+    with session._state_changed:
+        session._state_changed.notify_all()
+    waiter.join(timeout=5)
+
+    assert not waiter.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], SessionError)
+    assert "forward failed" in str(errors[0])
 
 
 @pytest.mark.timeout(5)

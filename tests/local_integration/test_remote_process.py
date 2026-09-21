@@ -191,6 +191,7 @@ class TestForwardingLifecycle:
         session._order = EventOrder()
         session._terminal_reason = None
         session._state_lock = threading.RLock()
+        session._state_changed = threading.Condition(session._state_lock)
         return session
 
     @staticmethod
@@ -280,7 +281,7 @@ class TestForwardingLifecycle:
         wait_error = SessionError("event stream failed")
 
         with (
-            patch.object(session, "poll", side_effect=wait_error),
+            patch.object(session, "check_openocd_exit", side_effect=wait_error),
             patch.object(session, "close") as close,
             pytest.raises(SessionError) as raised,
         ):
@@ -483,14 +484,14 @@ class TestForwardingLifecycle:
         with pytest.raises(SessionError, match="helper event stream failed: protocol failed"):
             session.check_openocd_exit()
 
-    def test_poll_preserves_helper_exit_before_process_exit_event(self):
+    def test_check_preserves_reader_recorded_helper_exit(self):
         session = self.session(self.Command(self.Process(returncode=9)))
         session.helper_process = session.request.ssh_command.process
         session._openocd_returncode = None
-        session.reader_error = None
+        session.reader_error = SessionError("remote helper exited with status 9")
         session.reader_thread = None
 
-        with pytest.raises(SessionError):
+        with pytest.raises(SessionError, match="remote helper exited with status 9"):
             session.check_openocd_exit()
 
 
@@ -649,22 +650,13 @@ class TestRttClient:
     def test_eof_drains_pending_session_closed_status(self):
         class Connection:
             def recv(self, _size):
-                session.helper_process.returncode = 0
+                session._dispatch(
+                    {"type": "SESSION_CLOSED", "reason": "process_exit", "returncode": 0}
+                )
                 return b""
 
             def close(self):
                 pass
-
-        class Reader:
-            def __init__(self):
-                self.alive = True
-
-            def is_alive(self):
-                return self.alive
-
-            def join(self, timeout=None):
-                session._openocd_returncode = 0
-                self.alive = False
 
         session = TestForwardingLifecycle.session(
             TestForwardingLifecycle.Command(TestForwardingLifecycle.Process())
@@ -672,14 +664,21 @@ class TestRttClient:
         session.helper_process = session.request.ssh_command.process
         session._openocd_returncode = None
         session.reader_error = None
-        session.reader_thread = Reader()
         connection = Connection()
         with (
             tempfile.TemporaryFile("w+b") as stream,
             patch.object(rtt_module, "_connect", return_value=(connection, b"connected")),
             patch.object(rtt_module.select, "select", return_value=([connection], [], [])),
         ):
-            assert run_rtt_client(5555, session.poll, stdin=stream, stdout=stream) == 0
+            assert (
+                run_rtt_client(
+                    5555,
+                    session.check_openocd_exit,
+                    stdin=stream,
+                    stdout=stream,
+                )
+                == 0
+            )
 
     def test_immediate_forwarded_channel_failure_is_authoritative(self):
         def server(listener):

@@ -46,6 +46,7 @@ from .staging import build_archive
 HELPER_STOP_TIMEOUT = 15.0
 HELPER_START_TIMEOUT = 10.0
 FORWARD_START_TIMEOUT = 10.0
+FORWARD_HEALTH_INTERVAL = 0.25
 _PROCESS_TERM_TIMEOUT = 5.0
 _PROCESS_KILL_TIMEOUT = 1.0
 
@@ -99,6 +100,7 @@ class RemoteSession:
         self.descriptor: SessionDescriptor | None = None
         self._terminal_reason: str | None = None
         self._state_lock = threading.RLock()
+        self._state_changed = threading.Condition(self._state_lock)
         self._services = list(request.services)
 
     @property
@@ -325,34 +327,27 @@ class RemoteSession:
     def check_openocd_exit(self) -> int | None:
         if self.closed:
             return self._openocd_returncode
-        if self.reader_error is not None:
-            raise SessionError(
-                f"helper event stream failed: {self.reader_error}"
-            ) from self.reader_error
-        helper_status = self.helper_process.poll()
-        if helper_status is None:
-            if self._openocd_returncode is not None:
-                return self._openocd_returncode
-            for process in self.forwards:
-                forward_status = process.poll()
-                if forward_status is not None:
-                    detail = self._forward_diagnostic(process)
-                    suffix = f": {detail}" if detail else ""
-                    raise SessionError(
-                        f"SSH forwarding exited with status {forward_status}{suffix}"
-                    )
-            return None
-        if self.reader_thread is not None and self.reader_thread.is_alive():
-            self._join_reader()
-        if self.reader_error is not None:
-            raise SessionError(
-                f"helper event stream failed: {self.reader_error}"
-            ) from self.reader_error
-        if helper_status:
-            raise SessionError(f"remote helper exited with status {helper_status}")
-        if self._openocd_returncode is not None:
+        result = self._recorded_openocd_exit()
+        if result is not None:
+            return result
+        self._check_forward_health()
+        return self._recorded_openocd_exit()
+
+    def _recorded_openocd_exit(self) -> int | None:
+        with self._state_changed:
+            if self.reader_error is not None:
+                raise SessionError(
+                    f"helper event stream failed: {self.reader_error}"
+                ) from self.reader_error
             return self._openocd_returncode
-        raise SessionError("remote helper exited without a process-exit terminal event")
+
+    def _check_forward_health(self) -> None:
+        for process in self.forwards:
+            forward_status = process.poll()
+            if forward_status is not None:
+                detail = self._forward_diagnostic(process)
+                suffix = f": {detail}" if detail else ""
+                raise SessionError(f"SSH forwarding exited with status {forward_status}{suffix}")
 
     def _start_forwards(self, service_list, address):
         advisories = [message for service in service_list if (message := self._preflight(service))]
@@ -398,17 +393,18 @@ class RemoteSession:
         while True:
             result = self.check_openocd_exit()
             if result is not None:
-                break
-            if deadline is not None and time.monotonic() >= deadline:
+                return result
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
                 raise subprocess.TimeoutExpired(self.helper_process.args, timeout or 0.0)
-            time.sleep(0.05)
-        if self.reader_thread is not None:
-            self.reader_thread.join(timeout=2)
-        if self.reader_error is not None:
-            raise SessionError(
-                f"helper event stream failed: {self.reader_error}"
-            ) from self.reader_error
-        return result
+            health_wait = FORWARD_HEALTH_INTERVAL if self.forwards else remaining
+            wait_timeout = (
+                health_wait if remaining is None else min(remaining, health_wait or remaining)
+            )
+            with self._state_changed:
+                if self.reader_error is not None or self._openocd_returncode is not None:
+                    continue
+                self._state_changed.wait(wait_timeout)
 
     def _dispatch(self, event: dict) -> None:
         if event["type"] == "CHILD_OUTPUT" and self.output_handler is not None:
@@ -418,22 +414,40 @@ class RemoteSession:
                 event["line_end"],
             )
         elif event["type"] == "SESSION_CLOSED":
-            with self._state_lock:
+            with self._state_changed:
                 self._terminal_reason = event["reason"]
                 if event["reason"] == "process_exit":
                     self._openocd_returncode = int(event["returncode"])
+                self._state_changed.notify_all()
 
     def _drain_events(self) -> None:
         try:
             while True:
                 event = self._read_event()
                 self._dispatch(event)
-        except SessionError as error:
-            if isinstance(error.__cause__, EOFError):
-                return
-            self.reader_error = error
         except BaseException as error:
-            self.reader_error = error
+            with self._state_changed:
+                if isinstance(error.__cause__, EOFError):
+                    helper_status = self.helper_process.poll()
+                    if self._terminal_reason is not None and helper_status in (0, None):
+                        return
+                    if self._terminal_reason is None:
+                        detail = (
+                            "remote helper exited without a terminal event"
+                            if helper_status is None
+                            else f"remote helper exited with status {helper_status} "
+                            "without a terminal event"
+                        )
+                    else:
+                        detail = (
+                            f"remote helper exited with status {helper_status} "
+                            f"after {self._terminal_reason} shutdown"
+                        )
+                    failure = SessionError(detail)
+                    failure.__cause__ = error.__cause__
+                    error = failure
+                self.reader_error = error
+                self._state_changed.notify_all()
 
     @staticmethod
     def _stop_process(process: ManagedSshProcess, *, close_streams: bool = True) -> None:
@@ -540,7 +554,8 @@ class RemoteSession:
         return not reader.is_alive()
 
     def _helper_reader_failure(self) -> BaseException | None:
-        reader_error = self.reader_error
+        with self._state_changed:
+            reader_error = self.reader_error
         if reader_error is None:
             return None
         failure = SessionError(f"helper event stream failed: {reader_error}")
@@ -654,8 +669,13 @@ class RemoteSession:
 
         self._emit_helper_diagnostic()
 
+        with self._state_changed:
+            reader_eof = isinstance(
+                self.reader_error.__cause__ if self.reader_error is not None else None,
+                EOFError,
+            )
         reader_failure = self._helper_reader_failure()
-        if reader_failure is not None:
+        if reader_failure is not None and not reader_eof:
             logical_error = logical_error or reader_failure
 
         terminal = terminal_reason()
@@ -672,6 +692,8 @@ class RemoteSession:
                 logical_error = SessionError(
                     f"remote helper exited with status {helper.poll()} after {terminal} shutdown"
                 )
+        if logical_error is None and reader_failure is not None:
+            logical_error = reader_failure
 
         if logical_error is not None:
             for cleanup_error in cleanup_errors:
