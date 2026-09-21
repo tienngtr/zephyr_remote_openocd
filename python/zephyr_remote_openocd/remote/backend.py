@@ -35,7 +35,7 @@ from .protocol import (
     write_start,
     write_stop,
 )
-from .session import SessionError
+from .session import SessionClosedError, SessionError
 from .ssh import ManagedSshProcess, SshCommand
 from .staging import build_archive
 
@@ -93,7 +93,7 @@ class RemoteSession:
         self.forwards: list[ManagedSshProcess] = []
         self.closed = False
         self.output_handler = output_handler
-        self.process_returncode: int | None = None
+        self._openocd_returncode: int | None = None
         self.reader_error: BaseException | None = None
         self.reader_thread: threading.Thread | None = None
         self.descriptor: SessionDescriptor | None = None
@@ -102,8 +102,8 @@ class RemoteSession:
         self._services = list(request.services)
 
     @property
-    def termination_returncode(self) -> int | None:
-        return self.process_returncode
+    def openocd_returncode(self) -> int | None:
+        return self._openocd_returncode
 
     @classmethod
     def open(
@@ -308,7 +308,9 @@ class RemoteSession:
         self.reader_thread.start()
 
     def forward(self, services: Iterable[Service]) -> None:
-        if self.closed or self.descriptor is None:
+        if self.closed:
+            raise SessionClosedError("remote session is closed")
+        if self.descriptor is None:
             raise SessionError("remote session is not ready for additional forwarding")
         service_list = tuple(services)
         if not service_list:
@@ -320,15 +322,17 @@ class RemoteSession:
         self._start_forwards(service_list, self.descriptor.remote_address)
         self._services.extend(service_list)
 
-    def poll(self) -> int | None:
+    def check_openocd_exit(self) -> int | None:
+        if self.closed:
+            return self._openocd_returncode
         if self.reader_error is not None:
             raise SessionError(
                 f"helper event stream failed: {self.reader_error}"
             ) from self.reader_error
         helper_status = self.helper_process.poll()
         if helper_status is None:
-            if self.process_returncode is not None:
-                return self.process_returncode
+            if self._openocd_returncode is not None:
+                return self._openocd_returncode
             for process in self.forwards:
                 forward_status = process.poll()
                 if forward_status is not None:
@@ -346,8 +350,8 @@ class RemoteSession:
             ) from self.reader_error
         if helper_status:
             raise SessionError(f"remote helper exited with status {helper_status}")
-        if self.process_returncode is not None:
-            return self.process_returncode
+        if self._openocd_returncode is not None:
+            return self._openocd_returncode
         raise SessionError("remote helper exited without a process-exit terminal event")
 
     def _start_forwards(self, service_list, address):
@@ -385,10 +389,14 @@ class RemoteSession:
                 error.args = (error.args[0] + suffix,)
                 raise error
 
-    def wait(self, timeout: float | None = None) -> int:
+    def wait_for_openocd_exit(self, timeout: float | None = None) -> int:
+        if self.closed:
+            if self._openocd_returncode is None:
+                raise SessionClosedError("remote session closed without a natural OpenOCD exit")
+            return self._openocd_returncode
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
-            result = self.poll()
+            result = self.check_openocd_exit()
             if result is not None:
                 break
             if deadline is not None and time.monotonic() >= deadline:
@@ -413,7 +421,7 @@ class RemoteSession:
             with self._state_lock:
                 self._terminal_reason = event["reason"]
                 if event["reason"] == "process_exit":
-                    self.process_returncode = int(event["returncode"])
+                    self._openocd_returncode = int(event["returncode"])
 
     def _drain_events(self) -> None:
         try:
@@ -673,7 +681,7 @@ class RemoteSession:
 
     def close(self) -> int | None:
         if self.closed:
-            return self.process_returncode
+            return self._openocd_returncode
 
         forward_errors: list[BaseException] = []
         try:
@@ -697,4 +705,4 @@ class RemoteSession:
         self.closed = True
         if errors:
             _raise_cleanup_errors(errors)
-        return self.process_returncode
+        return self._openocd_returncode

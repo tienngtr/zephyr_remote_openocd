@@ -185,7 +185,7 @@ class TestForwardingLifecycle:
         session.forwards = []
         session.closed = False
         session.output_handler = None
-        session.process_returncode = None
+        session._openocd_returncode = None
         session.reader_error = None
         session.reader_thread = None
         session._order = EventOrder()
@@ -284,7 +284,7 @@ class TestForwardingLifecycle:
             patch.object(session, "close") as close,
             pytest.raises(SessionError) as raised,
         ):
-            session.wait()
+            session.wait_for_openocd_exit()
 
         assert raised.value is wait_error
         close.assert_not_called()
@@ -451,7 +451,7 @@ class TestForwardingLifecycle:
     def test_poll_reports_consumed_status_while_helper_remains_alive(self, returncode):
         session = self.session(self.Command(self.Process()))
         session.helper_process = session.request.ssh_command.process
-        session.process_returncode = None
+        session._openocd_returncode = None
         session.reader_error = None
         event_consumed = threading.Event()
         release_reader = threading.Event()
@@ -469,7 +469,7 @@ class TestForwardingLifecycle:
         try:
             assert session.reader_thread.is_alive()
             assert session.helper_process.poll() is None
-            assert session.poll() == returncode
+            assert session.check_openocd_exit() == returncode
         finally:
             release_reader.set()
             session.reader_thread.join()
@@ -477,21 +477,21 @@ class TestForwardingLifecycle:
     def test_poll_preserves_reader_error_before_known_process_exit(self):
         session = self.session(self.Command(self.Process()))
         session.helper_process = session.request.ssh_command.process
-        session.process_returncode = 7
+        session._openocd_returncode = 7
         session.reader_error = RuntimeError("protocol failed")
 
         with pytest.raises(SessionError, match="helper event stream failed: protocol failed"):
-            session.poll()
+            session.check_openocd_exit()
 
     def test_poll_preserves_helper_exit_before_process_exit_event(self):
         session = self.session(self.Command(self.Process(returncode=9)))
         session.helper_process = session.request.ssh_command.process
-        session.process_returncode = None
+        session._openocd_returncode = None
         session.reader_error = None
         session.reader_thread = None
 
         with pytest.raises(SessionError):
-            session.poll()
+            session.check_openocd_exit()
 
 
 class TestRttClient:
@@ -663,14 +663,14 @@ class TestRttClient:
                 return self.alive
 
             def join(self, timeout=None):
-                session.process_returncode = 0
+                session._openocd_returncode = 0
                 self.alive = False
 
         session = TestForwardingLifecycle.session(
             TestForwardingLifecycle.Command(TestForwardingLifecycle.Process())
         )
         session.helper_process = session.request.ssh_command.process
-        session.process_returncode = None
+        session._openocd_returncode = None
         session.reader_error = None
         session.reader_thread = Reader()
         connection = Connection()
@@ -1441,7 +1441,7 @@ class TestRealProcessHelper:
                 backend.stage(())
                 descriptor = backend.start(())
                 assert ipaddress.ip_address(descriptor.remote_address) in LOOPBACK_RANGE
-                assert backend.wait(5) == 6
+                assert backend.wait_for_openocd_exit(5) == 6
                 assert [
                     (payload, line_end)
                     for stream, payload, line_end in output
@@ -1652,10 +1652,10 @@ sys.exit({exit_code})
                 assert backend.closed
                 assert backend._terminal_reason in {"requested", "process_exit"}
                 if backend._terminal_reason == "process_exit":
-                    assert backend.process_returncode == 7
+                    assert backend._openocd_returncode == 7
                     assert close_result == 7
                 else:
-                    assert backend.process_returncode is None
+                    assert backend._openocd_returncode is None
                     assert close_result is None
             else:
                 with pytest.raises(SessionError, match=expected) as raised:
@@ -1847,8 +1847,8 @@ sys.exit(7)
             backend._start_event_drain()
             backend.helper_process.wait(timeout=5)
             with pytest.raises(SessionError):
-                backend.wait(5)
-            assert backend.process_returncode == 0
+                backend.wait_for_openocd_exit(5)
+            assert backend._openocd_returncode == 0
         finally:
             with suppress(BaseException):
                 backend.close()
@@ -1961,7 +1961,7 @@ sys.exit(7)
                 backend.stage(())
                 backend.start(())
                 with pytest.raises(SessionError) as raised:
-                    backend.wait(5)
+                    backend.wait_for_openocd_exit(5)
                 assert raised.value.__cause__ is output_error
                 assert not backend.closed
                 with pytest.raises(SessionError) as raised:

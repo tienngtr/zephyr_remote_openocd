@@ -17,8 +17,10 @@ from zephyr_remote_openocd.remote.model import (
     SessionAllocation,
     SessionDescriptor,
 )
-from zephyr_remote_openocd.remote.session import SessionError
+from zephyr_remote_openocd.remote.session import SessionClosedError, SessionError
 from zephyr_remote_openocd.remote.ssh import SshCommand
+
+OPENOCD_FAILURE_RC = 7
 
 
 def test_open_acquires_complete_session_in_order(monkeypatch):
@@ -74,6 +76,46 @@ def test_open_rolls_back_failed_acquisition_once(monkeypatch):
     assert actions == ["helper", "stage", "close"]
 
 
+def test_closed_session_exposes_only_cached_openocd_result():
+    session = cast(Any, object.__new__(RemoteSession))
+    session.closed = True
+    session._openocd_returncode = None
+
+    assert session.openocd_returncode is None
+    assert session.check_openocd_exit() is None
+    with pytest.raises(SessionClosedError):
+        session.wait_for_openocd_exit()
+    with pytest.raises(SessionClosedError):
+        session.forward(())
+
+    completed = cast(Any, object.__new__(RemoteSession))
+    completed.closed = True
+    completed._openocd_returncode = OPENOCD_FAILURE_RC
+    assert completed.openocd_returncode == OPENOCD_FAILURE_RC
+    assert completed.check_openocd_exit() == OPENOCD_FAILURE_RC
+    assert completed.wait_for_openocd_exit() == OPENOCD_FAILURE_RC
+
+
+def test_only_process_exit_terminal_event_sets_openocd_result():
+    session = cast(Any, object.__new__(RemoteSession))
+    session.output_handler = None
+    session._state_lock = threading.RLock()
+    session._terminal_reason = None
+    session._openocd_returncode = None
+
+    session._dispatch({"type": "SESSION_CLOSED", "reason": "requested", "returncode": None})
+    assert session.openocd_returncode is None
+
+    session._dispatch(
+        {
+            "type": "SESSION_CLOSED",
+            "reason": "process_exit",
+            "returncode": OPENOCD_FAILURE_RC,
+        }
+    )
+    assert session.openocd_returncode == OPENOCD_FAILURE_RC
+
+
 @pytest.mark.timeout(10)
 def test_close_disposes_streams_after_delayed_reader_stops(monkeypatch):
     release_reader = threading.Event()
@@ -108,7 +150,7 @@ def test_close_disposes_streams_after_delayed_reader_stops(monkeypatch):
     session.forwards = []
     session.output_handler = None
     session.helper_process = Process()
-    session.process_returncode = None
+    session._openocd_returncode = None
     session.reader_error = None
     session._state_lock = threading.RLock()
     session._terminal_reason = None
@@ -181,13 +223,14 @@ def test_poll_bounds_reader_join_after_helper_exit():
 
     session = cast(Any, object.__new__(RemoteSession))
     session.helper_process = Process()
-    session.process_returncode = None
+    session.closed = False
+    session._openocd_returncode = None
     session.reader_error = None
     session.reader_thread = Reader()
     session.forwards = []
 
     with pytest.raises(SessionError):
-        session.poll()
+        session.check_openocd_exit()
     assert session.reader_thread.join_calls == 1
     assert session.reader_thread.join_timeout is not None
 
@@ -206,12 +249,13 @@ def test_poll_raises_when_ssh_forward_exits():
 
     session = cast(Any, object.__new__(RemoteSession))
     session.helper_process = Helper()
-    session.process_returncode = None
+    session.closed = False
+    session._openocd_returncode = None
     session.reader_error = None
     session.forwards = [Forward()]
 
     with pytest.raises(SessionError):
-        session.poll()
+        session.check_openocd_exit()
 
 
 @pytest.mark.timeout(5)

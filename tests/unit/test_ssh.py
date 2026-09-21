@@ -424,7 +424,7 @@ def test_helper_output_delivery_does_not_retain_event_history():
             ("stdout" if index % 2 == 0 else "stderr", payload, False)
             for index, payload in enumerate(payloads)
         ]
-        assert backend.poll() == 0
+        assert backend.check_openocd_exit() == 0
         assert "events" not in vars(backend)
     finally:
         backend.close()
@@ -521,7 +521,7 @@ def _forward_session(command):
     session.closed = False
     session.descriptor = SessionDescriptor(SessionAllocation("session", "/workspace"), "127.64.0.1")
     session.output_handler = None
-    session.process_returncode = None
+    session._openocd_returncode = None
     session.reader_error = None
     session.reader_thread = None
     session._terminal_reason = None

@@ -15,7 +15,7 @@ from .model import (
     StagedEntry,
     StagedFile,
 )
-from .session import SessionError
+from .session import SessionClosedError, SessionError
 
 __all__ = [
     "RemotePathCheck",
@@ -25,6 +25,7 @@ __all__ = [
     "Service",
     "SessionAllocation",
     "SessionDescriptor",
+    "SessionClosedError",
     "SessionError",
     "SessionState",
     "query_remote_openocd_version",

@@ -5,3 +5,7 @@
 
 class SessionError(RuntimeError):
     pass
+
+
+class SessionClosedError(SessionError):
+    pass

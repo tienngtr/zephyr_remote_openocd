@@ -307,7 +307,7 @@ class TestSshTransportIntegration:
             session.helper_process.terminate()
             session.helper_process.wait(timeout=20)
             with pytest.raises(SessionError):
-                session.wait(timeout=20)
+                session.wait_for_openocd_exit(timeout=20)
         finally:
             session.close()
         result = self.ssh.run(
@@ -352,7 +352,7 @@ class TestSshTransportIntegration:
                 ),
             )
             try:
-                assert session.wait(timeout=30) == 0
+                assert session.wait_for_openocd_exit(timeout=30) == 0
             finally:
                 session.close()
             assert any(

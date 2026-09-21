@@ -162,7 +162,7 @@ def _execute_operation(runner, command, request, plan):
             raise RuntimeError(f"remote OpenOCD failed with exit status {observed_returncode}")
     except BaseException as error:
         primary_error = error
-        if observed_returncode is None and (returncode := session.termination_returncode):
+        if observed_returncode is None and (returncode := session.openocd_returncode):
             observed_returncode = returncode
             primary_error = RuntimeError(
                 f"remote OpenOCD failed with exit status {observed_returncode}"
@@ -199,7 +199,7 @@ def _execute_gdb_client(runner, plan, session):
     assert plan is not None and plan.gdb_argv is not None
     runner.require(plan.gdb_argv[0])
     runner.run_client(list(plan.gdb_argv))
-    return session.poll()
+    return session.check_openocd_exit()
 
 
 def _execute_rtt(runner, plan, session):
@@ -220,7 +220,7 @@ def _execute_server(runner, command, plan, session):
             "Remote OpenOCD GDB server available at 127.0.0.1:%s",
             gdb.local_port,
         )
-    return session.wait()
+    return session.wait_for_openocd_exit()
 
 
 def _report_rtt_service(runner, plan):

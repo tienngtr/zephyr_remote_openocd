@@ -138,14 +138,14 @@ def test_gdb_execution_reports_session_status(runner_api):
 
     runner = Mock()
     session = Mock()
-    session.poll.return_value = 7
+    session.check_openocd_exit.return_value = 7
     plan = _debug_plan(gdb_argv=("gdb", "zephyr.elf"))
 
     returncode = runner_module._execute_gdb_client(runner, plan, session)
 
     runner.require.assert_called_once_with("gdb")
     runner.run_client.assert_called_once_with(["gdb", "zephyr.elf"])
-    session.poll.assert_called_once_with()
+    session.check_openocd_exit.assert_called_once_with()
     session.close.assert_not_called()
     assert returncode == 7
 
@@ -158,7 +158,7 @@ def test_gdb_operation_reports_process_failure_observed_during_close(runner_api,
     backend_session.descriptor = SessionDescriptor(
         SessionAllocation("session", "/workspace"), "127.0.0.1"
     )
-    backend_session.poll.return_value = None
+    backend_session.check_openocd_exit.return_value = None
     backend_session.close.return_value = 7
     monkeypatch.setattr(runner_module.RemoteSession, "open", Mock(return_value=backend_session))
     request = RemoteSessionRequest("host", SshCommand(), TEST_PROCESS)
@@ -168,7 +168,7 @@ def test_gdb_operation_reports_process_failure_observed_during_close(runner_api,
         runner_module._execute_operation(runner, "debug", request, plan)
 
     runner.run_client.assert_called_once_with(["gdb"])
-    backend_session.poll.assert_called_once_with()
+    backend_session.check_openocd_exit.assert_called_once_with()
     backend_session.close.assert_called_once_with()
 
 
@@ -180,7 +180,7 @@ def test_gdb_operation_does_not_duplicate_observed_process_failure(runner_api, m
     backend_session.descriptor = SessionDescriptor(
         SessionAllocation("session", "/workspace"), "127.0.0.1"
     )
-    backend_session.poll.return_value = 7
+    backend_session.check_openocd_exit.return_value = 7
     backend_session.close.return_value = 7
     monkeypatch.setattr(runner_module.RemoteSession, "open", Mock(return_value=backend_session))
     request = RemoteSessionRequest("host", SshCommand(), TEST_PROCESS)
@@ -190,7 +190,7 @@ def test_gdb_operation_does_not_duplicate_observed_process_failure(runner_api, m
         runner_module._execute_operation(runner, "debug", request, plan)
 
     assert not getattr(raised.value, "__notes__", ())
-    backend_session.poll.assert_called_once_with()
+    backend_session.check_openocd_exit.assert_called_once_with()
     backend_session.close.assert_called_once_with()
 
 
@@ -203,7 +203,7 @@ def test_gdb_operation_preserves_process_failure_when_cleanup_fails(runner_api, 
     backend_session.descriptor = SessionDescriptor(
         SessionAllocation("session", "/workspace"), "127.0.0.1"
     )
-    backend_session.poll.return_value = 7
+    backend_session.check_openocd_exit.return_value = 7
     backend_session.close.side_effect = cleanup_error
     monkeypatch.setattr(runner_module.RemoteSession, "open", Mock(return_value=backend_session))
     request = RemoteSessionRequest("host", SshCommand(), TEST_PROCESS)
@@ -214,7 +214,7 @@ def test_gdb_operation_preserves_process_failure_when_cleanup_fails(runner_api, 
 
     assert raised.value.__cause__ is cleanup_error
     assert len(getattr(raised.value, "__notes__", ())) == 1
-    backend_session.poll.assert_called_once_with()
+    backend_session.check_openocd_exit.assert_called_once_with()
     backend_session.close.assert_called_once_with()
 
 
@@ -314,7 +314,7 @@ def test_debugserver_execution_reports_gdb_service_and_waits(runner_api):
 
     runner = Mock()
     session = Mock()
-    session.wait.return_value = 5
+    session.wait_for_openocd_exit.return_value = 5
     gdb_service = Service("gdb", 3333, 3333)
     plan = _debug_plan(services=(gdb_service,))
 
@@ -322,7 +322,7 @@ def test_debugserver_execution_reports_gdb_service_and_waits(runner_api):
 
     runner.logger.info.assert_called_once()
     assert 3333 in runner.logger.info.call_args.args
-    session.wait.assert_called_once_with()
+    session.wait_for_openocd_exit.assert_called_once_with()
     assert returncode == 5
 
 
