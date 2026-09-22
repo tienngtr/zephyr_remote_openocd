@@ -170,17 +170,22 @@ def test_unexpected_requested_terminal_event_fails_status_observation():
 
 
 @pytest.mark.timeout(10)
-def test_close_disposes_streams_after_delayed_reader_stops(monkeypatch):
+def test_close_keeps_reader_owned_stdout_open_until_reader_stops(monkeypatch):
     release_reader = threading.Event()
     reader_started = threading.Event()
     reader_stopped = threading.Event()
+
+    class ReaderOwnedStream(io.BytesIO):
+        def close(self):
+            assert reader_stopped.is_set()
+            super().close()
 
     class Process:
         def __init__(self):
             self.args = ("fake-helper",)
             self.returncode = 0
             self.stdin = io.BytesIO()
-            self.stdout = io.BytesIO()
+            self.stdout = ReaderOwnedStream()
             self.stderr = io.BytesIO()
 
         def poll(self):
@@ -220,27 +225,21 @@ def test_close_disposes_streams_after_delayed_reader_stops(monkeypatch):
     session.reader_thread.start()
     assert reader_started.wait(5)
 
-    join_results: list[bool] = []
+    join_attempts = 0
 
     def controlled_join(current, timeout=2.0):
-        result = len(join_results) == 1
-        join_results.append(result)
-        if result:
-            release_reader.set()
-            assert reader_stopped.wait(5)
-            assert current.reader_thread is not None
-            current.reader_thread.join(timeout=5)
-        return result
-
-    original_stop = RemoteSession._stop_process
-    stop_stream_flags = []
-
-    def tracked_stop(process, *, close_streams=True):
-        stop_stream_flags.append(close_streams)
-        return original_stop(process, close_streams=close_streams)
+        nonlocal join_attempts
+        del timeout
+        join_attempts += 1
+        if join_attempts == 1:
+            return False
+        release_reader.set()
+        assert reader_stopped.wait(5)
+        assert current.reader_thread is not None
+        current.reader_thread.join(timeout=5)
+        return not current.reader_thread.is_alive()
 
     monkeypatch.setattr(RemoteSession, "_join_reader", controlled_join)
-    monkeypatch.setattr(RemoteSession, "_stop_process", staticmethod(tracked_stop))
     try:
         assert session.close() is None
     finally:
@@ -248,15 +247,12 @@ def test_close_disposes_streams_after_delayed_reader_stops(monkeypatch):
         assert reader_stopped.wait(5)
         session.reader_thread.join(timeout=5)
 
-    assert join_results == [False, True]
-    assert stop_stream_flags == [False, True]
     assert session.reader_thread is not None and not session.reader_thread.is_alive()
     assert session.helper_process.stdin.closed
     assert session.helper_process.stdout.closed
     assert session.helper_process.stderr.closed
     assert session.closed
     assert session.close() is None
-    assert join_results == [False, True]
 
 
 def test_close_attempts_all_cleanup_once_and_preserves_first_failure():
