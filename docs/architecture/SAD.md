@@ -122,7 +122,8 @@ zephyr_remote_openocd/
 
             remote/
                 model.py, paths.py, staging.py, ssh.py
-                services.py, session.py, protocol.py
+                services.py, session.py, forwarding.py
+                helper_client.py, cleanup.py, protocol.py
                 backend.py, deploy.py, debug.py, flash.py, rtt.py
 
             remote_helper.py
@@ -946,15 +947,24 @@ Persistent fallback data older than 24 hours may be cleaned opportunistically.
 
 ## 38. Process Supervision
 
-The lifecycle has four ownership levels:
+The lifecycle has distinct operation, session, subsystem, process, and remote
+ownership boundaries:
 
 - The operation or runner owns when the `RemoteSession` lifetime ends.
-- `RemoteSession` owns whole-session local resource management, including the
-  helper SSH process, protocol reader, forwarding SSH processes, remote
-  workspace transaction, and staging orchestration.
+- `RemoteSession` is the sole whole-session coordinator and transitive owner
+  of local session resources. It owns staging orchestration, cleanup ordering
+  between subsystems, and cross-subsystem failure precedence.
+- `_HelperClient` owns the helper control connection, its protocol reader,
+  helper-local synchronized lifecycle state, output delivery, and helper
+  shutdown transaction.
+- `_ForwardManager` owns the forwarding SSH processes, readiness and health
+  checks, and forwarding cleanup transaction.
 - `ManagedSshProcess` owns one local SSH subprocess and its stderr drain.
 - The remote `ControlSession` owns remote session state and workspace, while
   `SupervisedChild` owns the OpenOCD process group and its output relays.
+
+`RemoteSession.close()` invokes subsystem cleanup in the required order and
+decides which failure is primary across helper and forwarding cleanup.
 
 ### 38.1 Local SSH subprocess ownership
 
@@ -981,18 +991,22 @@ explicit closed flag keep repeated cleanup attempts harmless. The drain thread
 is a daemon so an uncooperative inherited writer cannot hold local process
 shutdown open indefinitely.
 
-This separation is intentional: `RemoteSession` decides when subprocess
-cleanup occurs, `ManagedSshProcess` exposes process control and diagnostic
-access, and `_StderrDrain` alone owns stderr consumption and disposal. Removing
-the wrapper, drain thread, bounded tail, or bounded reader shutdown would
-either introduce dual ownership, permit pipe backpressure to stall the
-session, lose actionable SSH diagnostics, or make cleanup potentially
-unbounded. No additional transport abstraction is warranted.
+This separation is intentional: `_HelperClient` and `_ForwardManager`
+perform process cleanup within their own subsystem transactions,
+`RemoteSession.close()` orders those transactions, `ManagedSshProcess`
+exposes per-process control and diagnostic access, and `_StderrDrain` alone
+owns stderr consumption and disposal. Removing the wrapper, drain thread,
+bounded tail, or bounded reader shutdown would either introduce dual ownership,
+permit pipe backpressure to stall the session, lose actionable SSH
+diagnostics, or make cleanup potentially unbounded. The per-process wrapper
+does not replace the helper and forwarding resource owners.
 
-`RemoteSession` is the sole local whole-session resource owner. It is acquired
-once through `RemoteSession.open()`, which returns only a usable session, and
-is released once through cleanup-only `RemoteSession.close()`. A session is
-one-shot and cannot be reopened or restarted.
+`RemoteSession` is the sole local whole-session coordinator and transitive
+resource owner. It is acquired once through `RemoteSession.open()`, which
+returns only a usable session, and is released once through cleanup-only
+`RemoteSession.close()`. The helper client and forward manager own their
+respective resources and cleanup transactions beneath this boundary. A session
+is one-shot and cannot be reopened or restarted.
 
 OpenOCD executes in a helper-supervised process group and session. The process
 group is the helper's ownership boundary for generic cleanup hygiene, including
@@ -1194,7 +1208,10 @@ python/zephyr_remote_openocd/
         ssh.py
         services.py
         session.py
+        forwarding.py
         helper_client.py
+        cleanup.py
+        backend.py
 
     helper/
         protocol.py
