@@ -204,16 +204,12 @@ def _finalize_operation(session, operation_error, foreground_returncode):
                 cleanup_error,
             )
         if openocd_returncode not in (None, 0) and openocd_returncode != foreground_returncode:
-            operation_error.add_note(
-                f"remote OpenOCD also exited with status {openocd_returncode} during cleanup"
-            )
+            operation_error.add_note(f"remote OpenOCD also exited with status {openocd_returncode}")
         raise operation_error
 
     if cleanup_error is not None:
         if openocd_returncode not in (None, 0):
-            cleanup_error.add_note(
-                f"remote OpenOCD also exited with status {openocd_returncode} during cleanup"
-            )
+            cleanup_error.add_note(f"remote OpenOCD also exited with status {openocd_returncode}")
         raise cleanup_error
 
     if openocd_returncode not in (None, 0):
