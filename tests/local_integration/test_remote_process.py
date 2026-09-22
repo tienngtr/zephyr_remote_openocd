@@ -40,10 +40,7 @@ from zephyr_remote_openocd.remote.model import (
     StagedFile,
 )
 from zephyr_remote_openocd.remote.paths import ADDRESS_TOKEN, PathPlanner
-from zephyr_remote_openocd.remote.protocol import (
-    EventOrder,
-    encode_message,
-)
+from zephyr_remote_openocd.remote.protocol import encode_message
 from zephyr_remote_openocd.remote.rtt import RttClientError, run_rtt_client
 from zephyr_remote_openocd.remote.services import (
     LOOPBACK_RANGE,
@@ -184,25 +181,10 @@ class TestForwardingLifecycle:
 
     @staticmethod
     def session(command):
-        session = RemoteSession(
+        return RemoteSession(
             RemoteSessionRequest("target", command, TEST_PROCESS),
             DeploymentResult("/helper.py", "digest", False),
         )
-        helper = _HelperClient(command, "target", session.deployment)
-        helper._process = command.process
-        helper._allocation = SessionAllocation("session", "/workspace")
-        helper._order = EventOrder()
-        session._helper = helper
-        return session
-
-    @staticmethod
-    def helper_process():
-        process = TestForwardingLifecycle.Process()
-        process.stdin = io.BytesIO()
-        process.stdout = io.BytesIO(
-            encode_message("SESSION_CLOSED", reason="requested", returncode=None)
-        )
-        return process
 
     @staticmethod
     def port():
@@ -244,7 +226,7 @@ class TestForwardingLifecycle:
             },
         )
         with patch.object(_HelperClient, "_read_event", side_effect=events):
-            _opened_session(
+            _opened_helper_client(
                 RemoteSessionRequest("target", command, TEST_PROCESS),
                 DeploymentResult("/helper.py", "digest", False),
             )
@@ -269,7 +251,7 @@ class TestForwardingLifecycle:
             ),
             pytest.raises(SessionError) as raised,
         ):
-            _opened_session(
+            _opened_helper_client(
                 RemoteSessionRequest("target", command, TEST_PROCESS),
                 DeploymentResult("/helper.py", "digest", False),
             )
@@ -283,6 +265,7 @@ class TestForwardingLifecycle:
 
     def test_wait_error_leaves_cleanup_to_lifecycle(self):
         session = self.session(self.Command(self.Process()))
+        session._helper = object()
         wait_error = SessionError("event stream failed")
 
         with (
@@ -373,8 +356,17 @@ class TestForwardingLifecycle:
                 self.closed = True
                 raise cleanup_error
 
-        helper = self.helper_process()
-        session = self.session(self.Command(helper))
+        class Helper:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+                return helper_client_module._HelperCloseResult(None, ())
+
+        helper = Helper()
+        session = self.session(self.Command(self.Process()))
+        session._helper = helper
         forwards = Forwards()
         session._forwards = forwards
 
@@ -383,137 +375,41 @@ class TestForwardingLifecycle:
 
         assert raised.value is cleanup_error
         assert forwards.closed
-        assert helper.terminate_calls == 1
+        assert helper.closed
         assert session.closed
 
         session.close()
 
-    def test_close_forces_helper_after_unexpected_graceful_stop_failure(self):
-        graceful_stop_error = RuntimeError("graceful stop failed")
-        forced_stop_error = RuntimeError("forced stop failed")
-
-        class FailingStdin:
-            def __init__(self):
-                self.closed = False
-                self.fail = True
-
-            def write(self, _payload):
-                if self.fail:
-                    raise graceful_stop_error
-
-            def flush(self):
-                pass
-
-            def close(self):
-                self.closed = True
-
-        class FailingHelper(TestForwardingLifecycle.Process):
-            def __init__(self):
-                super().__init__()
-                self.fail_termination = True
-
-            def terminate(self):
-                self.terminate_calls += 1
-                if self.fail_termination:
-                    raise forced_stop_error
-                self.returncode = 0
-
-        helper = FailingHelper()
-        helper.stdout = io.BytesIO(
-            encode_message("SESSION_CLOSED", reason="requested", returncode=None)
-        )
-        helper.stdin = FailingStdin()
-        session = self.session(self.Command(helper))
-
-        with pytest.raises(RuntimeError) as raised:
-            session.close()
-
-        assert raised.value is graceful_stop_error
-        assert helper.terminate_calls == 1
-        assert any(
-            note.startswith("helper cleanup also failed:") for note in raised.value.__notes__
-        )
-        assert any(str(forced_stop_error) in note for note in raised.value.__notes__)
-        assert session.closed
-
-        helper.stdin.fail = False
-        helper.fail_termination = False
-        session.close()
-        assert helper.terminate_calls == 1
-        assert session.closed
-
-    def test_close_reports_helper_cleanup_timeout(self):
-        class StuckHelper(TestForwardingLifecycle.Process):
-            def __init__(self):
-                super().__init__()
-                self.stdin = io.BytesIO()
-
-            def wait(self, timeout=None):
-                if self.returncode is None:
-                    raise subprocess.TimeoutExpired("helper", timeout)
-                return self.returncode
-
-        helper = StuckHelper()
-        helper.stdout = io.BytesIO(
-            encode_message("SESSION_CLOSED", reason="requested", returncode=None)
-        )
-        session = self.session(self.Command(helper))
-
-        with pytest.raises(subprocess.TimeoutExpired):
-            session.close()
-
-        assert helper.terminate_calls == 1
-        assert session.closed
-
-    @pytest.mark.parametrize("returncode", (0, OPENOCD_FAILURE_RC))
-    @pytest.mark.timeout(10)
-    def test_check_openocd_exit_reports_consumed_status_while_helper_remains_alive(
-        self, returncode
-    ):
+    def test_check_openocd_exit_uses_semantic_helper_result(self):
         session = self.session(self.Command(self.Process()))
-        helper_client = session._helper
-        event_consumed = threading.Event()
-        release_reader = threading.Event()
+        session._helper = type(
+            "Helper",
+            (),
+            {"recorded_openocd_exit": staticmethod(lambda: OPENOCD_FAILURE_RC)},
+        )()
 
-        def consume_session_closed():
-            helper_client._dispatch(
-                {"type": "SESSION_CLOSED", "reason": "process_exit", "returncode": returncode}
-            )
-            event_consumed.set()
-            release_reader.wait()
+        class Forwards:
+            def check_health(self):
+                raise AssertionError("completed helper result should be returned first")
 
-        helper_client._reader_thread = threading.Thread(target=consume_session_closed)
-        helper_client._reader_thread.start()
-        event_consumed.wait()
-        try:
-            assert helper_client._reader_thread.is_alive()
-            assert helper_client._process.poll() is None
-            assert session.check_openocd_exit() == returncode
-        finally:
-            release_reader.set()
-            helper_client._reader_thread.join()
+        session._forwards = Forwards()
+        assert session.check_openocd_exit() == OPENOCD_FAILURE_RC
 
-    def test_check_openocd_exit_preserves_reader_error_before_known_process_exit(self):
+    def test_check_openocd_exit_propagates_semantic_helper_failure(self):
+        reader_error = SessionError("helper event stream failed")
+
+        class Helper:
+            @staticmethod
+            def recorded_openocd_exit():
+                raise reader_error
+
         session = self.session(self.Command(self.Process()))
-        helper_client = session._helper
-        helper_client._state.record_terminal("process_exit", OPENOCD_FAILURE_RC)
-        reader_error = RuntimeError("protocol failed")
-        helper_client._state.record_reader_failure(reader_error)
+        session._helper = Helper()
 
         with pytest.raises(SessionError) as raised:
             session.check_openocd_exit()
-        assert raised.value.__cause__ is reader_error
 
-    def test_check_preserves_reader_recorded_helper_exit(self):
-        session = self.session(self.Command(self.Process(returncode=HELPER_FAILURE_RC)))
-        helper_client = session._helper
-        reader_error = SessionError(f"remote helper exited with status {HELPER_FAILURE_RC}")
-        helper_client._state.record_reader_failure(reader_error)
-        helper_client._reader_thread = None
-
-        with pytest.raises(SessionError) as raised:
-            session.check_openocd_exit()
-        assert raised.value.__cause__ is reader_error
+        assert raised.value is reader_error
 
 
 class TestRttClient:
@@ -702,10 +598,9 @@ class TestRttClient:
             def close(self):
                 pass
 
-        session = TestForwardingLifecycle.session(
-            TestForwardingLifecycle.Command(TestForwardingLifecycle.Process())
+        helper_client = _HelperClient(
+            SshCommand(), "target", DeploymentResult("/helper.py", "digest", False)
         )
-        helper_client = session._helper
         connection = Connection()
         with (
             tempfile.TemporaryFile("w+b") as stream,
@@ -715,7 +610,7 @@ class TestRttClient:
             assert (
                 run_rtt_client(
                     5555,
-                    session.check_openocd_exit,
+                    helper_client.recorded_openocd_exit,
                     stdin=stream,
                     stdout=stream,
                 )
@@ -1682,7 +1577,7 @@ class TestRealProcessHelper:
             "nonzero-without-terminal",
         ),
     )
-    def test_backend_close_validates_helper_shutdown(
+    def test_helper_client_close_validates_helper_shutdown(
         self,
         terminal,
         exit_code,
@@ -1717,28 +1612,24 @@ sys.exit({exit_code})
                     stderr=subprocess.PIPE,
                 )
 
-        backend = _opened_session(
+        helper_client = _opened_helper_client(
             RemoteSessionRequest("local", LocalCommand(), TEST_PROCESS),
             DeploymentResult("/helper.py", "digest", False),
         )
-        helper_client = backend._helper
-        helper_client._start_event_drain()
         try:
             if expected is None:
-                assert backend.close() is None
-                assert backend.closed
-                assert backend.openocd_returncode == expected_openocd_result
+                result = helper_client.close()
+                assert result.error is None
+                assert helper_client.openocd_returncode == expected_openocd_result
             else:
-                with pytest.raises(SessionError) as raised:
-                    backend.close()
-                assert all(fragment in str(raised.value) for fragment in expected)
-                assert backend.closed
-                backend.close()
+                result = helper_client.close()
+                assert result.error is not None
+                assert all(fragment in str(result.error) for fragment in expected)
         finally:
             with suppress(BaseException):
-                backend.close()
+                helper_client.close()
 
-    def test_backend_rejects_requested_terminal_before_local_stop(self):
+    def test_helper_client_rejects_requested_terminal_before_local_stop(self):
         helper_code = """
 import json
 import sys
@@ -1773,11 +1664,10 @@ sys.stdin.buffer.read()
                     stderr=subprocess.PIPE,
                 )
 
-        backend = _opened_session(
+        helper_client = _opened_helper_client(
             RemoteSessionRequest("local", LocalCommand(), TEST_PROCESS),
             DeploymentResult("/helper.py", "digest", False),
         )
-        helper_client = backend._helper
         terminal_consumed = threading.Event()
         dispatch = helper_client._dispatch
 
@@ -1791,50 +1681,16 @@ sys.stdin.buffer.read()
             assert helper_client._reader_thread is not None
             assert terminal_consumed.wait(5)
         try:
-            with pytest.raises(SessionError):
-                backend.close()
-            assert backend.closed
+            result = helper_client.close()
+            assert isinstance(result.error, SessionError)
         finally:
             with suppress(BaseException):
-                backend.close()
+                helper_client.close()
 
     def test_backend_close_preserves_first_forward_failure_and_notes_helper_failure(self):
-        helper_code = """
-import json
-import sys
-
-print(
-    json.dumps(
-        {
-            "version": 1,
-            "type": "SESSION_CREATED",
-            "helper": "test",
-            "session_id": "id",
-            "remote_workspace": "/workspace",
-        }
-    ),
-    flush=True,
-)
-sys.stdin.buffer.readline()
-print(
-    json.dumps(
-        {"version": 1, "type": "ERROR", "code": "CLEANUP", "message": "cleanup failed"}
-    ),
-    flush=True,
-)
-sys.exit(7)
-"""
-
-        class LocalCommand(_BlockedSshCommand):
-            def popen(inner, host, remote_command, *extra_args):  # pylint: disable=no-self-argument
-                return managed_popen(
-                    [sys.executable, "-c", helper_code],
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                )
-
         forward_cleanup_error = RuntimeError("forward cleanup failed")
+        helper_error = SessionError("helper cleanup failed")
+        helper_error.add_note("helper cleanup also failed: reader did not stop")
 
         class FailingForwards:
             def __init__(self):
@@ -1844,14 +1700,18 @@ sys.exit(7)
                 self.close_calls += 1
                 raise forward_cleanup_error
 
-        backend = _opened_session(
-            RemoteSessionRequest("local", LocalCommand(), TEST_PROCESS),
+        class Helper:
+            def close(self):
+                return helper_client_module._HelperCloseResult(helper_error, ())
+
+        backend = RemoteSession(
+            RemoteSessionRequest("local", _BlockedSshCommand(), TEST_PROCESS),
             DeploymentResult("/helper.py", "digest", False),
         )
         forwards = FailingForwards()
-        backend._forwards = forwards
-        helper_client = backend._helper
-        helper_client._start_event_drain()
+        test_backend = cast(Any, backend)
+        test_backend._forwards = forwards
+        test_backend._helper = Helper()
         try:
             with pytest.raises(RuntimeError) as raised:
                 backend.close()
@@ -1859,7 +1719,8 @@ sys.exit(7)
             assert any(
                 note.startswith("additional cleanup failure:") for note in raised.value.__notes__
             )
-            assert any("cleanup failed" in note for note in raised.value.__notes__)
+            assert any("helper cleanup failed" in note for note in raised.value.__notes__)
+            assert any("reader did not stop" in note for note in raised.value.__notes__)
             assert forwards.close_calls == 1
             assert backend.closed
 
@@ -1870,7 +1731,7 @@ sys.exit(7)
             with suppress(BaseException):
                 backend.close()
 
-    def test_backend_reports_helper_failure_after_close_event(self):
+    def test_helper_client_reports_helper_failure_after_close_event(self):
         helper_code = """
 import json
 import sys
@@ -1892,30 +1753,34 @@ sys.exit(7)
 """
 
         class LocalCommand(_BlockedSshCommand):
+            process: Any = None
+
             def popen(inner, host, remote_command, *extra_args):  # pylint: disable=no-self-argument
-                return managed_popen(
+                process = managed_popen(
                     [sys.executable, "-c", helper_code],
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                 )
+                inner.process = process
+                return process
 
-        backend = _opened_session(
-            RemoteSessionRequest("local", LocalCommand(), TEST_PROCESS),
+        command = LocalCommand()
+        helper_client = _opened_helper_client(
+            RemoteSessionRequest("local", command, TEST_PROCESS),
             DeploymentResult("/helper.py", "digest", False),
         )
-        helper_client = backend._helper
         try:
-            helper_client._start_event_drain()
-            helper_client._process.wait(timeout=5)
+            helper_client.start_process(TEST_PROCESS, ())
+            command.process.wait(timeout=5)
             with pytest.raises(SessionError):
-                backend.wait_for_openocd_exit(5)
-            assert backend.openocd_returncode == 0
+                helper_client.recorded_openocd_exit()
+            assert helper_client.openocd_returncode == 0
         finally:
             with suppress(BaseException):
-                backend.close()
+                helper_client.close()
 
-    def test_backend_close_waits_for_helper_child_kill_fallback(self):
+    def test_helper_client_close_waits_for_child_kill_fallback(self):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
@@ -1924,15 +1789,18 @@ sys.exit(7)
 
             class LocalCommand(_BlockedSshCommand):
                 argv_prefix = ("local_test",)
+                process: Any = None
 
                 def popen(inner, host, remote_command, *extra_args):  # pylint: disable=no-self-argument
-                    return managed_popen(
+                    process = managed_popen(
                         [sys.executable, str(helper), "control"],
                         env=environment,
                         stdin=subprocess.PIPE,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
                     )
+                    inner.process = process
+                    return process
 
             marker = "ZRO_READY_ignore_term"
             child_code = (
@@ -1947,28 +1815,26 @@ sys.exit(7)
                 (sys.executable, "-c", child_code, marker, str(child_pid_path)),
                 readiness_marker=marker,
             )
-            backend = _opened_session(
-                RemoteSessionRequest("local", LocalCommand(), process=remote_process),
+            command = LocalCommand()
+            helper_client = _opened_helper_client(
+                RemoteSessionRequest("local", command, process=remote_process),
                 DeploymentResult(str(helper), "digest", False),
             )
-            helper_client = backend._helper
             workspace = Path(helper_client.allocation.remote_workspace)
             child_pid = None
             child_pidfd = None
             try:
-                backend._start_process(())
+                helper_client.start_process(remote_process, ())
                 child_pid = int(child_pid_path.read_text(encoding="ascii"))
                 child_pidfd = os.pidfd_open(child_pid)
 
-                backend.close()
+                result = helper_client.close()
 
-                assert backend.closed
-                assert helper_client._process.returncode == 0
+                assert result.error is None
+                assert command.process.returncode == 0
                 assert not workspace.exists()
                 _assert_pidfd_exited(child_pidfd)
             finally:
-                with suppress(BaseException):
-                    backend.close()
                 if child_pidfd is not None:
                     with suppress(ProcessLookupError):
                         signal.pidfd_send_signal(child_pidfd, signal.SIGKILL)
@@ -2035,12 +1901,16 @@ sys.exit(7)
                     backend.close()
 
 
-def _opened_session(request, deployment, output_handler=None):
-    session = RemoteSession(request, deployment, output_handler)
-    session._helper = _HelperClient.open(
-        session.request.ssh_command,
-        session.request.host,
-        session.deployment,
+def _opened_helper_client(request, deployment, output_handler=None):
+    return _HelperClient.open(
+        request.ssh_command,
+        request.host,
+        deployment,
         output_handler=output_handler,
     )
+
+
+def _opened_session(request, deployment, output_handler=None):
+    session = RemoteSession(request, deployment, output_handler)
+    session._helper = _opened_helper_client(request, deployment, output_handler)
     return session

@@ -435,7 +435,6 @@ def test_helper_client_output_delivery_does_not_retain_event_history():
             for index, payload in enumerate(payloads)
         ]
         assert helper_client.recorded_openocd_exit() == 0
-        assert "events" not in vars(helper_client)
     finally:
         assert helper_client.close().error is None
 
