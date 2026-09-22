@@ -309,7 +309,9 @@ class TestSshTransportIntegration:
             with pytest.raises(SessionError):
                 session.wait_for_openocd_exit(timeout=20)
         finally:
-            session.close()
+            with pytest.raises(SessionError, match="did not produce SESSION_CLOSED"):
+                session.close()
+        assert session.closed
         result = self.ssh.run(
             self.host,
             f"test ! -e {shlex.quote(descriptor.remote_workspace)}",
