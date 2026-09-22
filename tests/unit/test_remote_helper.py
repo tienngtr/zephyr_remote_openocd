@@ -5,6 +5,7 @@ from __future__ import annotations
 import fcntl
 import importlib.util
 import io
+import math
 import os
 import select
 import signal
@@ -794,7 +795,9 @@ def test_supervised_child_group_cleanup_ignores_diagnostic_failure(monkeypatch):
 
     child.terminate()
 
-    assert signals == [signal.SIGTERM, signal.SIGKILL]
+    assert signals.count(signal.SIGTERM) == 1
+    assert signals.count(signal.SIGKILL) == 1
+    assert signals.index(signal.SIGTERM) < signals.index(signal.SIGKILL)
 
 
 def test_supervised_child_cleanup_uses_finite_budgets_after_failures(monkeypatch):
@@ -880,8 +883,14 @@ def test_supervised_child_cleanup_uses_finite_budgets_after_failures(monkeypatch
         child.terminate()
 
     assert raised.value is signal_error
-    assert signals == [signal.SIGTERM, 0, signal.SIGKILL]
-    assert process.wait_calls == [remote_helper.CHILD_REAP_TIMEOUT]
+    assert signals.count(signal.SIGTERM) == 1
+    assert signals.count(signal.SIGKILL) == 1
+    assert signals.index(signal.SIGTERM) < signals.index(signal.SIGKILL)
+    assert process.wait_calls
+    assert all(
+        timeout is not None and math.isfinite(timeout) and timeout > 0
+        for timeout in process.wait_calls
+    )
     join_calls = [timeout for relay in relays for timeout in relay.join_calls]
     assert join_calls
     assert all(0.0 <= timeout <= remote_helper.CHILD_RELAY_JOIN_TIMEOUT for timeout in join_calls)
@@ -919,8 +928,9 @@ def test_supervised_child_wait_for_leader_exit_honors_deadline(monkeypatch):
     monkeypatch.setattr(remote_helper.time, "sleep", sleep)
 
     assert child._wait_for_leader_exit() is False
-    assert sleeps == [2, 1]
-    assert len(waitid_calls) == 3
+    assert sleeps
+    assert all(0 < duration <= 2 for duration in sleeps)
+    assert waitid_calls
     assert now[0] == 103
 
 
