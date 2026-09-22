@@ -10,6 +10,7 @@ import json
 import os
 import socket
 import subprocess
+import threading
 from pathlib import PurePosixPath
 from unittest.mock import Mock
 
@@ -339,6 +340,71 @@ def test_operation_failure_precedence(
             assert not notes
 
     session.close.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
+    "reader_records_before_operation_failure",
+    (True, False),
+    ids=("reader-first", "foreground-first"),
+)
+def test_background_openocd_result_does_not_replace_foreground_failure(
+    runner_api,
+    monkeypatch,
+    reader_records_before_operation_failure,
+):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
+    reader_ready = threading.Event()
+    reader_can_record = threading.Event()
+    reader_recorded = threading.Event()
+    operation_error = RuntimeError("foreground operation failed")
+
+    class Session:
+        descriptor = SessionDescriptor(SessionAllocation("session", "/workspace"), "127.64.0.1")
+
+        def __init__(self):
+            self.openocd_returncode = None
+            self.close_calls = 0
+
+        def close(self):
+            self.close_calls += 1
+            reader_can_record.set()
+            assert reader_recorded.wait(5)
+
+    session = Session()
+
+    def record_openocd_failure():
+        reader_ready.set()
+        reader_can_record.wait()
+        session.openocd_returncode = OPENOCD_FAILURE_RC
+        reader_recorded.set()
+
+    reader = threading.Thread(target=record_openocd_failure)
+    reader.start()
+    assert reader_ready.wait(5)
+
+    def fail_operation(*_args):
+        if reader_records_before_operation_failure:
+            reader_can_record.set()
+            assert reader_recorded.wait(5)
+        raise operation_error
+
+    monkeypatch.setattr(runner_module.RemoteSession, "open", Mock(return_value=session))
+    monkeypatch.setattr(runner_module, "_execute_started_operation", fail_operation)
+    request = RemoteSessionRequest("host", SshCommand(), TEST_PROCESS)
+
+    try:
+        with pytest.raises(RuntimeError) as raised:
+            runner_module._execute_operation(Mock(), "debug", request, None)
+    finally:
+        reader_can_record.set()
+        assert reader_recorded.wait(5)
+        reader.join(timeout=5)
+
+    assert raised.value is operation_error
+    assert any(str(OPENOCD_FAILURE_RC) in note for note in raised.value.__notes__)
+    assert session.close_calls == 1
+    assert not reader.is_alive()
 
 
 def test_rtt_execution_defers_forward_until_after_gdb(runner_api, monkeypatch):
