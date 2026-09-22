@@ -149,7 +149,8 @@ def _execute_operation(runner, command, request, plan):
     session = RemoteSession.open(request, output_handler=_write_output)
     assert session.descriptor is not None
     descriptor = session.descriptor
-    observed_returncode = None
+    operation_error = None
+    foreground_returncode = None
     try:
         runner.logger.info(
             "Remote OpenOCD session %s workspace=%s bindto=%s",
@@ -157,26 +158,56 @@ def _execute_operation(runner, command, request, plan):
             descriptor.remote_workspace,
             descriptor.remote_address,
         )
-        observed_returncode = _execute_started_operation(runner, command, plan, session)
-        if observed_returncode:
-            raise RuntimeError(f"remote OpenOCD failed with exit status {observed_returncode}")
+        foreground_returncode = _execute_started_operation(runner, command, plan, session)
     except BaseException as error:
-        try:
-            session.close()
-        except BaseException as cleanup_error:
-            error.add_note(f"session cleanup also failed: {cleanup_error}")
-        else:
-            late_returncode = session.openocd_returncode
-            if late_returncode and late_returncode != observed_returncode:
-                error.add_note(
-                    f"remote OpenOCD also exited with status {late_returncode} during cleanup"
-                )
-        raise
-    else:
+        operation_error = error
+    _finalize_operation(session, operation_error, foreground_returncode)
+
+
+def _finalize_operation(session, operation_error, foreground_returncode):
+    """Close one session and apply the lifecycle failure-precedence matrix."""
+    if operation_error is None and foreground_returncode not in (None, 0):
+        operation_error = _openocd_failure(foreground_returncode)
+
+    cleanup_error = None
+    try:
         session.close()
-        late_returncode = session.openocd_returncode
-        if late_returncode:
-            raise RuntimeError(f"remote OpenOCD failed with exit status {late_returncode}")
+    except BaseException as error:
+        cleanup_error = error
+
+    openocd_returncode = session.openocd_returncode
+    if operation_error is not None:
+        if cleanup_error is not None:
+            _add_failure_diagnostic(
+                operation_error,
+                "session cleanup also failed",
+                cleanup_error,
+            )
+        if openocd_returncode not in (None, 0) and openocd_returncode != foreground_returncode:
+            operation_error.add_note(
+                f"remote OpenOCD also exited with status {openocd_returncode} during cleanup"
+            )
+        raise operation_error
+
+    if cleanup_error is not None:
+        if openocd_returncode not in (None, 0):
+            cleanup_error.add_note(
+                f"remote OpenOCD also exited with status {openocd_returncode} during cleanup"
+            )
+        raise cleanup_error
+
+    if openocd_returncode not in (None, 0):
+        raise _openocd_failure(openocd_returncode)
+
+
+def _openocd_failure(returncode):
+    return RuntimeError(f"remote OpenOCD failed with exit status {returncode}")
+
+
+def _add_failure_diagnostic(primary, prefix, secondary):
+    primary.add_note(f"{prefix}: {secondary}")
+    for note in getattr(secondary, "__notes__", ()):
+        primary.add_note(f"{prefix} detail: {note}")
 
 
 def _execute_started_operation(runner, command, plan, session):
