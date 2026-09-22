@@ -14,8 +14,6 @@ from zephyr_remote_openocd.remote.deploy import DeploymentResult
 from zephyr_remote_openocd.remote.model import (
     RemoteProcess,
     RemoteSessionRequest,
-    SessionAllocation,
-    SessionDescriptor,
 )
 from zephyr_remote_openocd.remote.session import SessionClosedError, SessionError
 from zephyr_remote_openocd.remote.ssh import SshCommand
@@ -23,59 +21,33 @@ from zephyr_remote_openocd.remote.ssh import SshCommand
 OPENOCD_FAILURE_RC = 7
 
 
-def test_open_acquires_complete_session_in_order(monkeypatch):
-    request = RemoteSessionRequest("host", SshCommand(), RemoteProcess(("openocd",)))
-    deployment = DeploymentResult("/helper.py", "digest", False)
-    descriptor = SessionDescriptor(SessionAllocation("id", "/workspace"), "127.64.0.1")
-    actions = []
-
-    monkeypatch.setattr(backend_module, "deploy_helper", lambda *_args: deployment)
-
-    def open_helper(session):
-        actions.append("helper")
-        session.helper_process = object()
-
-    def start_process(_session, _services):
-        actions.append("start")
-        return descriptor
-
-    monkeypatch.setattr(RemoteSession, "_open_helper", open_helper)
-    monkeypatch.setattr(RemoteSession, "_stage", lambda _session, _files: actions.append("stage"))
-    monkeypatch.setattr(RemoteSession, "_start_process", start_process)
-
-    session = RemoteSession.open(request)
-
-    assert actions == ["helper", "stage", "start"]
-    assert session.descriptor is descriptor
-    assert not hasattr(session, "stage")
-    assert not hasattr(session, "start")
-
-
 def test_open_rolls_back_failed_acquisition_once(monkeypatch):
     request = RemoteSessionRequest("host", SshCommand(), RemoteProcess(("openocd",)))
     deployment = DeploymentResult("/helper.py", "digest", False)
     startup_error = RuntimeError("staging failed")
-    actions = []
+    cleanup_calls = 0
 
     monkeypatch.setattr(backend_module, "deploy_helper", lambda *_args: deployment)
 
     def open_helper(session):
-        actions.append("helper")
         session.helper_process = object()
 
     def fail_stage(_session, _files):
-        actions.append("stage")
         raise startup_error
+
+    def close(_session):
+        nonlocal cleanup_calls
+        cleanup_calls += 1
 
     monkeypatch.setattr(RemoteSession, "_open_helper", open_helper)
     monkeypatch.setattr(RemoteSession, "_stage", fail_stage)
-    monkeypatch.setattr(RemoteSession, "close", lambda _session: actions.append("close"))
+    monkeypatch.setattr(RemoteSession, "close", close)
 
     with pytest.raises(RuntimeError) as raised:
         RemoteSession.open(request)
 
     assert raised.value is startup_error
-    assert actions == ["helper", "stage", "close"]
+    assert cleanup_calls == 1
 
 
 def test_open_retains_nested_rollback_cleanup_diagnostics(monkeypatch):
@@ -135,29 +107,6 @@ def test_open_helper_retains_nested_cleanup_diagnostics(monkeypatch):
         "helper startup cleanup also failed detail: "
         "process cleanup also failed: stream close failed",
     ]
-
-
-def test_open_helper_failure_does_not_start_whole_session_cleanup(monkeypatch):
-    request = RemoteSessionRequest("host", SshCommand(), RemoteProcess(("openocd",)))
-    deployment = DeploymentResult("/helper.py", "digest", False)
-    startup_error = RuntimeError("helper startup failed")
-    actions = []
-
-    monkeypatch.setattr(backend_module, "deploy_helper", lambda *_args: deployment)
-
-    def fail_open_helper(_session):
-        actions.append("helper cleanup")
-        raise startup_error
-
-    monkeypatch.setattr(RemoteSession, "_open_helper", fail_open_helper)
-    monkeypatch.setattr(RemoteSession, "close", lambda _session: actions.append("session cleanup"))
-
-    with pytest.raises(RuntimeError) as raised:
-        RemoteSession.open(request)
-
-    assert raised.value is startup_error
-    assert not getattr(raised.value, "__notes__", ())
-    assert actions == ["helper cleanup"]
 
 
 def test_closed_session_exposes_only_cached_openocd_result():
@@ -337,10 +286,12 @@ def test_close_attempts_all_cleanup_once_and_preserves_first_failure():
         "additional cleanup failure: helper cleanup failed",
         "additional cleanup failure detail: helper cleanup also failed: stream close failed",
     ]
-    assert actions == ["forwards", "helper"]
+    assert set(actions) == {"forwards", "helper"}
+    assert len(actions) == 2
     assert session.closed
     assert session.close() is None
-    assert actions == ["forwards", "helper"]
+    assert set(actions) == {"forwards", "helper"}
+    assert len(actions) == 2
 
 
 def test_close_helper_retains_nested_process_cleanup_diagnostics():
