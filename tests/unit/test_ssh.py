@@ -28,7 +28,7 @@ from zephyr_remote_openocd.remote.model import (
     SessionDescriptor,
 )
 from zephyr_remote_openocd.remote.protocol import encode_message
-from zephyr_remote_openocd.remote.session import SessionError
+from zephyr_remote_openocd.remote.session import SessionError, _SessionState
 from zephyr_remote_openocd.remote.ssh import SSH_STDERR_TAIL_BYTES, SshCommand
 
 
@@ -535,12 +535,8 @@ def _forward_session(command):
     session.closed = False
     session.descriptor = SessionDescriptor(SessionAllocation("session", "/workspace"), "127.64.0.1")
     session.output_handler = None
-    session._openocd_returncode = None
-    session.reader_error = None
+    session._state = _SessionState()
     session.reader_thread = None
-    session._terminal_reason = None
-    session._state_lock = threading.RLock()
-    session._state_changed = threading.Condition(session._state_lock)
     session._services = []
     return session
 
@@ -661,7 +657,6 @@ def test_initial_forward_failure_consumes_terminal_openocd_event(monkeypatch):
     session = sessions[0]
     assert session.closed
     assert session.openocd_returncode == 6
-    assert session._terminal_reason == "process_exit"
 
 
 def test_dynamic_forward_failure_identifies_service_and_local_port(monkeypatch):

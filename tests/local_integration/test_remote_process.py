@@ -46,6 +46,7 @@ from zephyr_remote_openocd.remote.services import (
 )
 from zephyr_remote_openocd.remote.session import (
     SessionError,
+    _SessionState,
 )
 from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand
 from zephyr_remote_openocd.remote.staging import build_archive
@@ -187,13 +188,9 @@ class TestForwardingLifecycle:
         session.forwards = []
         session.closed = False
         session.output_handler = None
-        session._openocd_returncode = None
-        session.reader_error = None
+        session._state = _SessionState()
         session.reader_thread = None
         session._order = EventOrder()
-        session._terminal_reason = None
-        session._state_lock = threading.RLock()
-        session._state_changed = threading.Condition(session._state_lock)
         return session
 
     @staticmethod
@@ -471,8 +468,6 @@ class TestForwardingLifecycle:
     ):
         session = self.session(self.Command(self.Process()))
         session.helper_process = session.request.ssh_command.process
-        session._openocd_returncode = None
-        session.reader_error = None
         event_consumed = threading.Event()
         release_reader = threading.Event()
 
@@ -497,9 +492,9 @@ class TestForwardingLifecycle:
     def test_check_openocd_exit_preserves_reader_error_before_known_process_exit(self):
         session = self.session(self.Command(self.Process()))
         session.helper_process = session.request.ssh_command.process
-        session._openocd_returncode = OPENOCD_FAILURE_RC
+        session._state.record_terminal("process_exit", OPENOCD_FAILURE_RC)
         reader_error = RuntimeError("protocol failed")
-        session.reader_error = reader_error
+        session._state.record_reader_failure(reader_error)
 
         with pytest.raises(SessionError) as raised:
             session.check_openocd_exit()
@@ -508,9 +503,8 @@ class TestForwardingLifecycle:
     def test_check_preserves_reader_recorded_helper_exit(self):
         session = self.session(self.Command(self.Process(returncode=HELPER_FAILURE_RC)))
         session.helper_process = session.request.ssh_command.process
-        session._openocd_returncode = None
         reader_error = SessionError(f"remote helper exited with status {HELPER_FAILURE_RC}")
-        session.reader_error = reader_error
+        session._state.record_reader_failure(reader_error)
         session.reader_thread = None
 
         with pytest.raises(SessionError) as raised:
@@ -708,8 +702,6 @@ class TestRttClient:
             TestForwardingLifecycle.Command(TestForwardingLifecycle.Process())
         )
         session.helper_process = session.request.ssh_command.process
-        session._openocd_returncode = None
-        session.reader_error = None
         connection = Connection()
         with (
             tempfile.TemporaryFile("w+b") as stream,
@@ -1570,7 +1562,7 @@ class TestRealProcessHelper:
             )
 
     @pytest.mark.parametrize(
-        ("terminal", "exit_code", "expected"),
+        ("terminal", "exit_code", "expected", "expected_openocd_result"),
         (
             (
                 json.dumps(
@@ -1584,6 +1576,7 @@ class TestRealProcessHelper:
                 ),
                 0,
                 None,
+                None,
             ),
             (
                 json.dumps(
@@ -1597,6 +1590,7 @@ class TestRealProcessHelper:
                 ),
                 0,
                 None,
+                OPENOCD_FAILURE_RC,
             ),
             (
                 '{"version":1,"type":"SESSION_CLOSED","reason":"requested",'
@@ -1605,12 +1599,14 @@ class TestRealProcessHelper:
                 '"message":"cleanup failed"}',
                 0,
                 ("unexpected ERROR event in closed state",),
+                None,
             ),
             (
                 '{"version":1,"type":"SESSION_CLOSED","reason":"requested",'
                 '"returncode":null}\nnot-json',
                 0,
                 ("malformed protocol message",),
+                None,
             ),
             (
                 json.dumps(
@@ -1619,6 +1615,7 @@ class TestRealProcessHelper:
                 ),
                 7,
                 ("remote helper error",),
+                None,
             ),
             (
                 json.dumps(
@@ -1632,6 +1629,7 @@ class TestRealProcessHelper:
                 ),
                 7,
                 ("status 7", "requested shutdown"),
+                None,
             ),
             (
                 json.dumps(
@@ -1645,6 +1643,7 @@ class TestRealProcessHelper:
                 ),
                 0,
                 ("invalid required fields for SESSION_CLOSED",),
+                None,
             ),
             (
                 json.dumps(
@@ -1658,8 +1657,9 @@ class TestRealProcessHelper:
                 ),
                 7,
                 ("status 7", "process_exit shutdown"),
+                OPENOCD_FAILURE_RC,
             ),
-            (None, 7, ("did not produce SESSION_CLOSED",)),
+            (None, 7, ("did not produce SESSION_CLOSED",), None),
         ),
         ids=(
             "requested-success",
@@ -1673,7 +1673,13 @@ class TestRealProcessHelper:
             "nonzero-without-terminal",
         ),
     )
-    def test_backend_close_validates_helper_shutdown(self, terminal, exit_code, expected):
+    def test_backend_close_validates_helper_shutdown(
+        self,
+        terminal,
+        exit_code,
+        expected,
+        expected_openocd_result,
+    ):
         terminal_line = "" if terminal is None else terminal + "\n"
         helper_code = f"""
 import json
@@ -1711,11 +1717,7 @@ sys.exit({exit_code})
             if expected is None:
                 assert backend.close() is None
                 assert backend.closed
-                assert backend._terminal_reason in {"requested", "process_exit"}
-                if backend._terminal_reason == "process_exit":
-                    assert backend._openocd_returncode == 7
-                else:
-                    assert backend._openocd_returncode is None
+                assert backend.openocd_returncode == expected_openocd_result
             else:
                 with pytest.raises(SessionError) as raised:
                     backend.close()
@@ -1777,7 +1779,6 @@ sys.stdin.buffer.read()
             backend._start_event_drain()
             assert backend.reader_thread is not None
             assert terminal_consumed.wait(5)
-        assert backend._terminal_reason == "requested"
         try:
             with pytest.raises(SessionError):
                 backend.close()
@@ -1914,7 +1915,7 @@ sys.exit(7)
             backend.helper_process.wait(timeout=5)
             with pytest.raises(SessionError):
                 backend.wait_for_openocd_exit(5)
-            assert backend._openocd_returncode == 0
+            assert backend.openocd_returncode == 0
         finally:
             with suppress(BaseException):
                 backend.close()

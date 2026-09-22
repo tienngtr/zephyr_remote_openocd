@@ -35,7 +35,7 @@ from .protocol import (
     write_start,
     write_stop,
 )
-from .session import SessionClosedError, SessionError
+from .session import SessionClosedError, SessionError, _SessionState
 from .ssh import ManagedSshProcess, SshCommand
 from .staging import build_archive
 
@@ -105,19 +105,14 @@ class RemoteSession:
         self.forwards: list[ManagedSshProcess] = []
         self.closed = False
         self.output_handler = output_handler
-        self._openocd_returncode: int | None = None
-        self.reader_error: BaseException | None = None
+        self._state = _SessionState()
         self.reader_thread: threading.Thread | None = None
         self.descriptor: SessionDescriptor | None = None
-        self._terminal_reason: str | None = None
-        self._stop_requested = False
-        self._state_lock = threading.RLock()
-        self._state_changed = threading.Condition(self._state_lock)
         self._services = list(request.services)
 
     @property
     def openocd_returncode(self) -> int | None:
-        return self._openocd_returncode
+        return self._state.openocd_returncode
 
     @classmethod
     def open(
@@ -337,7 +332,7 @@ class RemoteSession:
 
     def check_openocd_exit(self) -> int | None:
         if self.closed:
-            return self._openocd_returncode
+            return self._state.openocd_returncode
         result = self._recorded_openocd_exit()
         if result is not None:
             return result
@@ -345,12 +340,7 @@ class RemoteSession:
         return self._recorded_openocd_exit()
 
     def _recorded_openocd_exit(self) -> int | None:
-        with self._state_changed:
-            if self.reader_error is not None:
-                raise SessionError(
-                    f"helper event stream failed: {self.reader_error}"
-                ) from self.reader_error
-            return self._openocd_returncode
+        return self._state.recorded_openocd_exit()
 
     def _check_forward_health(self) -> None:
         for process in self.forwards:
@@ -397,9 +387,10 @@ class RemoteSession:
 
     def wait_for_openocd_exit(self, timeout: float | None = None) -> int:
         if self.closed:
-            if self._openocd_returncode is None:
+            result = self._state.openocd_returncode
+            if result is None:
                 raise SessionClosedError("remote session closed without a natural OpenOCD exit")
-            return self._openocd_returncode
+            return result
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
             result = self.check_openocd_exit()
@@ -412,10 +403,9 @@ class RemoteSession:
             wait_timeout = (
                 health_wait if remaining is None else min(remaining, health_wait or remaining)
             )
-            with self._state_changed:
-                if self.reader_error is not None or self._openocd_returncode is not None:
-                    continue
-                self._state_changed.wait(wait_timeout)
+            if self._state.has_result_or_reader_failure():
+                continue
+            self._state.wait_for_change(wait_timeout)
 
     def _dispatch(self, event: dict) -> None:
         if event["type"] == "CHILD_OUTPUT" and self.output_handler is not None:
@@ -425,15 +415,7 @@ class RemoteSession:
                 event["line_end"],
             )
         elif event["type"] == "SESSION_CLOSED":
-            with self._state_changed:
-                self._terminal_reason = event["reason"]
-                if event["reason"] == "process_exit":
-                    self._openocd_returncode = int(event["returncode"])
-                elif not self._stop_requested:
-                    self.reader_error = SessionError(
-                        "helper reported SESSION_CLOSED(reason='requested') before STOP"
-                    )
-                self._state_changed.notify_all()
+            self._state.record_terminal(event["reason"], event["returncode"])
 
     def _drain_events(self) -> None:
         try:
@@ -441,28 +423,27 @@ class RemoteSession:
                 event = self._read_event()
                 self._dispatch(event)
         except BaseException as error:
-            with self._state_changed:
-                if isinstance(error.__cause__, EOFError):
-                    helper_status = self.helper_process.poll()
-                    if self._terminal_reason is not None and helper_status in (0, None):
-                        return
-                    if self._terminal_reason is None:
-                        detail = (
-                            "remote helper exited without a terminal event"
-                            if helper_status is None
-                            else f"remote helper exited with status {helper_status} "
-                            "without a terminal event"
-                        )
-                    else:
-                        detail = (
-                            f"remote helper exited with status {helper_status} "
-                            f"after {self._terminal_reason} shutdown"
-                        )
-                    failure = SessionError(detail)
-                    failure.__cause__ = error.__cause__
-                    error = failure
-                self.reader_error = error
-                self._state_changed.notify_all()
+            terminal_reason = self._state.terminal_reason
+            if isinstance(error.__cause__, EOFError):
+                helper_status = self.helper_process.poll()
+                if terminal_reason is not None and helper_status in (0, None):
+                    return
+                if terminal_reason is None:
+                    detail = (
+                        "remote helper exited without a terminal event"
+                        if helper_status is None
+                        else f"remote helper exited with status {helper_status} "
+                        "without a terminal event"
+                    )
+                else:
+                    detail = (
+                        f"remote helper exited with status {helper_status} "
+                        f"after {terminal_reason} shutdown"
+                    )
+                failure = SessionError(detail)
+                failure.__cause__ = error.__cause__
+                error = failure
+            self._state.record_reader_failure(error)
 
     @staticmethod
     def _stop_process(process: ManagedSshProcess, *, close_streams: bool = True) -> None:
@@ -569,13 +550,7 @@ class RemoteSession:
         return not reader.is_alive()
 
     def _helper_reader_failure(self) -> BaseException | None:
-        with self._state_changed:
-            reader_error = self.reader_error
-        if reader_error is None:
-            return None
-        failure = SessionError(f"helper event stream failed: {reader_error}")
-        failure.__cause__ = reader_error
-        return failure
+        return self._state.reader_failure()
 
     def _emit_helper_diagnostic(self) -> None:
         """Surface the bounded helper stderr tail without changing close status."""
@@ -608,8 +583,7 @@ class RemoteSession:
         cleanup_errors: list[BaseException] = []
 
         def terminal_reason() -> str | None:
-            with self._state_lock:
-                return self._terminal_reason
+            return self._state.terminal_reason
 
         terminal_before_stop = terminal_reason()
         helper_status = helper.poll()
@@ -628,26 +602,19 @@ class RemoteSession:
                 logical_error = SessionError("helper stdin was not captured")
             else:
 
-                def request_stop() -> None:
+                def write_requested_stop() -> None:
                     nonlocal logical_error
-                    nonlocal terminal_before_stop
-                    terminal_before_stop = terminal_reason()
+                    write_stop(cast(BinaryIO, helper.stdin))
+
+                try:
+                    terminal_before_stop = self._state.request_stop(write_requested_stop)
+                except BaseException as error:
+                    logical_error = error
+                else:
                     if terminal_before_stop == "requested":
                         logical_error = SessionError(
                             "helper reported SESSION_CLOSED(reason='requested') before STOP"
                         )
-                        return
-                    if terminal_before_stop == "process_exit":
-                        return
-                    try:
-                        write_stop(cast(BinaryIO, helper.stdin))
-                    except BaseException as error:
-                        logical_error = error
-                    else:
-                        self._stop_requested = True
-
-                with self._state_lock:
-                    request_stop()
                 try:
                     helper.stdin.close()
                 except BaseException as error:
@@ -684,11 +651,7 @@ class RemoteSession:
 
         self._emit_helper_diagnostic()
 
-        with self._state_changed:
-            reader_eof = isinstance(
-                self.reader_error.__cause__ if self.reader_error is not None else None,
-                EOFError,
-            )
+        reader_eof = self._state.reader_failure_has_eof_cause()
         reader_failure = self._helper_reader_failure()
         if reader_failure is not None and not reader_eof:
             logical_error = logical_error or reader_failure
