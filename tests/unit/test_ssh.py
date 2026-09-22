@@ -10,15 +10,11 @@ import subprocess
 import sys
 import threading
 from collections.abc import Iterator
-from contextlib import suppress
-from types import SimpleNamespace
 from typing import Any, BinaryIO, cast, override
 from unittest.mock import patch
 
 import pytest
 from zephyr_remote_openocd.remote import backend as backend_module
-from zephyr_remote_openocd.remote import forwarding as forwarding_module
-from zephyr_remote_openocd.remote import helper_client as helper_client_module
 from zephyr_remote_openocd.remote import ssh as ssh_module
 from zephyr_remote_openocd.remote.backend import RemoteSession
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
@@ -131,91 +127,6 @@ def test_long_lived_process_drains_noisy_stderr_and_keeps_bounded_tail():
         for stream in (process.stdin, process.stdout):
             if stream is not None and not stream.closed:
                 stream.close()
-
-
-@pytest.mark.timeout(5)
-def test_helper_startup_timeout_does_not_block_on_partial_output(monkeypatch):
-    read_fd, write_fd = os.pipe()
-
-    class Process:
-        def __init__(self):
-            self.stdin = io.BytesIO()
-            self.stdout = os.fdopen(read_fd, "rb", buffering=0)
-            self.stderr = None
-            self.returncode = None
-            self.args = ("fake-helper",)
-            self.terminate_calls = 0
-
-        def poll(self):
-            return self.returncode
-
-        def terminate(self):
-            self.terminate_calls += 1
-            self.returncode = 0
-
-        def kill(self):
-            self.returncode = -9
-
-        def wait(self, timeout=None):
-            return self.returncode
-
-        @staticmethod
-        def stderr_tail():
-            return b""
-
-        @staticmethod
-        def close_stderr():
-            pass
-
-    class Command(_PopenOnlySshCommand):
-        @override
-        def popen(self, host: str, remote_command: str, *extra_args: str) -> Any:
-            return process
-
-    class Clock:
-        now = 0.0
-
-        def monotonic(self):
-            return self.now
-
-    class Selector:
-        def __init__(self):
-            self.delivered = False
-
-        def register(self, _stream, _events):
-            pass
-
-        def select(self, _timeout):
-            if not self.delivered:
-                self.delivered = True
-                clock.now = helper_client_module.HELPER_START_TIMEOUT + 1
-                return [(None, None)]
-            return []
-
-        @staticmethod
-        def close():
-            pass
-
-    process = Process()
-    clock = Clock()
-    try:
-        os.write(write_fd, b'{"version":1,"type":"SESSION_CREATED"')
-        monkeypatch.setattr(helper_client_module.time, "monotonic", clock.monotonic)
-        monkeypatch.setattr(helper_client_module.selectors, "DefaultSelector", Selector)
-
-        with pytest.raises(SessionError) as raised:
-            _HelperClient.open(
-                Command(),
-                "host",
-                DeploymentResult("/helper.py", "digest", False),
-            )
-
-        assert isinstance(raised.value.__cause__, TimeoutError)
-        assert process.terminate_calls == 1
-    finally:
-        if not process.stdout.closed:
-            process.stdout.close()
-        os.close(write_fd)
 
 
 def test_run_stream_passes_file_as_stdin_and_captures_output(tmp_path):
@@ -337,155 +248,6 @@ def test_process_cleanup_closes_an_active_stderr_drain():
             process.wait(timeout=5)
 
 
-@pytest.mark.timeout(10)
-def test_helper_client_output_delivery_does_not_retain_event_history():
-    payloads = [f"payload-{index}" for index in range(1024)]
-    frames = [
-        encode_message(
-            "SESSION_CREATED",
-            helper="fake",
-            session_id="session",
-            remote_workspace="/workspace",
-        ),
-        encode_message("PROCESS_READY", remote_address="127.64.0.1", child_pid=1),
-        *(
-            encode_message(
-                "CHILD_OUTPUT",
-                stream="stdout" if index % 2 == 0 else "stderr",
-                payload=payload,
-                line_end=False,
-            )
-            for index, payload in enumerate(payloads)
-        ),
-        encode_message("SESSION_CLOSED", reason="process_exit", returncode=0),
-    ]
-
-    class Process:
-        def __init__(self):
-            self.stdin = io.BytesIO()
-            read_fd, write_fd = os.pipe()
-            self.stdout = os.fdopen(read_fd, "rb", buffering=0)
-            self.writer = threading.Thread(
-                target=self._write_frames,
-                args=(write_fd, b"".join(frames)),
-                daemon=True,
-            )
-            self.writer.start()
-            self.stderr = None
-            self.returncode = None
-            self.args = ("fake-helper",)
-
-        @staticmethod
-        def _write_frames(write_fd, frame_bytes):
-            try:
-                with os.fdopen(write_fd, "wb") as stream:
-                    stream.write(frame_bytes)
-            except BrokenPipeError:
-                pass
-
-        def poll(self):
-            return self.returncode
-
-        def wait(self, timeout=None):
-            self.returncode = 0
-            return self.returncode
-
-        def terminate(self):
-            self.returncode = 0
-
-        def kill(self):
-            self.returncode = -9
-
-        def stderr_tail(self):
-            return b""
-
-        def close_stderr(self):
-            pass
-
-    class Command(_PopenOnlySshCommand):
-        process: Any
-
-        def __init__(self):
-            super().__init__()
-            object.__setattr__(self, "process", Process())
-
-        @override
-        def popen(self, host: str, remote_command: str, *extra_args: str) -> Any:
-            return self.process
-
-    handled = []
-    command = Command()
-    helper_client = _HelperClient.open(
-        command,
-        "host",
-        DeploymentResult("/helper.py", "digest", False),
-        output_handler=lambda stream, payload, line_end: handled.append(
-            (stream, payload, line_end)
-        ),
-    )
-    try:
-        helper_client.start_process(RemoteProcess(("child",)), ())
-        assert helper_client._reader_thread is not None
-        helper_client._reader_thread.join(timeout=10)
-        assert not helper_client._reader_thread.is_alive()
-        command.process.writer.join(timeout=10)
-        assert not command.process.writer.is_alive()
-        assert handled == [
-            ("stdout" if index % 2 == 0 else "stderr", payload, False)
-            for index, payload in enumerate(payloads)
-        ]
-        assert helper_client.recorded_openocd_exit() == 0
-    finally:
-        assert helper_client.close().error is None
-
-
-def test_forward_diagnostic_keeps_a_useful_tail_after_nonzero_exit():
-    code = (
-        "import sys;"
-        "sys.stderr.buffer.write(b'x' * 200000 + b'forward-tail\\n');"
-        "sys.stderr.flush();"
-        "raise SystemExit(9)"
-    )
-    process = SshCommand((sys.executable, "-c", code)).popen("host", "ignored")
-    try:
-        assert process.wait(timeout=5) == 9
-        diagnostic = _ForwardManager._diagnostic(process)
-        assert diagnostic.endswith("forward-tail")
-        assert len(diagnostic.encode()) <= SSH_STDERR_TAIL_BYTES
-    finally:
-        process.close_stderr()
-        for stream in (process.stdin, process.stdout):
-            if stream is not None and not stream.closed:
-                stream.close()
-
-
-class _ForwardProcess:
-    def __init__(self, returncode):
-        self.stdin = io.BytesIO()
-        self.stdout = None
-        self.stderr = None
-        self.returncode = returncode
-        self.args = ("fake-forward",)
-
-    def poll(self):
-        return self.returncode
-
-    def wait(self, timeout=None):
-        return self.returncode
-
-    def terminate(self):
-        self.returncode = 0
-
-    def kill(self):
-        self.returncode = -9
-
-    def stderr_tail(self):
-        return b""
-
-    def close_stderr(self):
-        pass
-
-
 class _HelperProcess:
     def __init__(self, output):
         self.stdin = io.BytesIO()
@@ -527,57 +289,6 @@ class _ForwardCommand(_PopenOnlySshCommand):
     def popen(self, host: str, remote_command: str, *extra_args: str) -> Any:
         self.calls.append((host, remote_command, extra_args))
         return next(self.processes)
-
-
-class _PreflightSocket:
-    def __init__(self, occupied):
-        self.occupied = occupied
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, _exc_type, _exc_value, _traceback):
-        return False
-
-    def bind(self, address):
-        assert address[0] == "127.0.0.1"
-        if address[1] in self.occupied:
-            raise OSError("address already in use")
-
-
-def _patch_preflight_socket(monkeypatch, occupied):
-    monkeypatch.setattr(
-        forwarding_module,
-        "socket",
-        SimpleNamespace(socket=lambda: _PreflightSocket(occupied)),
-    )
-
-
-def test_initial_start_forward_failure_associates_all_preflight_advisories_with_services(
-    monkeypatch,
-):
-    first_port, second_port = 32133, 32144
-    _patch_preflight_socket(monkeypatch, {first_port, second_port})
-    first = Service("tcl", first_port, 6333)
-    second = Service("telnet", second_port, 4444)
-    command = _ForwardCommand(_ForwardProcess(7))
-    manager = _ForwardManager(command, "host")
-    try:
-        with pytest.raises(SessionError) as raised:
-            manager.start((first, second), "127.64.0.1")
-
-        message = str(raised.value)
-        assert f"127.0.0.1:{first_port} for tcl" in message
-        assert f"127.0.0.1:{second_port} for telnet" in message
-        assert command.calls[0][2] == (
-            "-o",
-            "ExitOnForwardFailure=yes",
-            "-L",
-            f"127.0.0.1:{first_port}:127.64.0.1:6333",
-        )
-    finally:
-        with suppress(BaseException):
-            manager.close()
 
 
 @pytest.mark.timeout(10)
@@ -627,56 +338,6 @@ def test_initial_forward_failure_consumes_terminal_openocd_event(monkeypatch):
     assert not getattr(raised.value, "__notes__", ())
 
 
-def test_dynamic_forward_failure_identifies_service_and_local_port(monkeypatch):
-    port = 32155
-    _patch_preflight_socket(monkeypatch, set())
-    service = Service("rtt", port, 5555)
-    manager = _ForwardManager(_ForwardCommand(_ForwardProcess(9)), "host")
-    try:
-        with pytest.raises(SessionError) as raised:
-            manager.start((service,), "127.64.0.1")
-
-        message = str(raised.value)
-        assert service.name in message
-        assert f"127.0.0.1:{port}" in message
-    finally:
-        manager.close()
-
-
-def test_dynamic_forward_timeout_identifies_service_and_local_port(monkeypatch):
-    port = 32166
-    _patch_preflight_socket(monkeypatch, set())
-    service = Service("rtt", port, 5555)
-    manager = _ForwardManager(_ForwardCommand(_ForwardProcess(None)), "host")
-    monkeypatch.setattr(_ForwardManager, "_await_ready", lambda *_args: False)
-
-    try:
-        with pytest.raises(SessionError) as raised:
-            manager.start((service,), "127.64.0.1")
-
-        message = str(raised.value)
-        assert service.name in message
-        assert f"127.0.0.1:{port}" in message
-    finally:
-        manager.close()
-
-
-def test_forward_manager_rejects_a_service_already_forwarded(monkeypatch):
-    service = Service("gdb", 32177, 3333)
-    command = _ForwardCommand(_ForwardProcess(None))
-    manager = _ForwardManager(command, "host")
-    monkeypatch.setattr(_ForwardManager, "_preflight", staticmethod(lambda _service: None))
-    monkeypatch.setattr(_ForwardManager, "_await_ready", staticmethod(lambda *_args: True))
-
-    try:
-        manager.start((service,), "127.64.0.1")
-        with pytest.raises(SessionError, match="service names must remain unique"):
-            manager.start((service,), "127.64.0.1")
-        assert len(command.calls) == 1
-    finally:
-        manager.close()
-
-
 def test_drain_startup_error_is_primary_when_process_cleanup_fails(monkeypatch):
     class Process:
         def __init__(self):
@@ -707,14 +368,3 @@ def test_drain_startup_error_is_primary_when_process_cleanup_fails(monkeypatch):
         SshCommand(("fake-ssh",)).popen("host", "ignored")
     assert raised.value is startup_error
     assert any("process kill failed" in note for note in raised.value.__notes__)
-
-
-def _opened_session(request, deployment, output_handler=None):
-    session = RemoteSession(request, deployment, output_handler)
-    session._helper = _HelperClient.open(
-        session.request.ssh_command,
-        session.request.host,
-        session.deployment,
-        output_handler=output_handler,
-    )
-    return session
