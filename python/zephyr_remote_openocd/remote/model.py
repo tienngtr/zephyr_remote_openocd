@@ -7,18 +7,10 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from enum import Enum, auto
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from .ssh import SshCommand
-
-
-class SessionState(Enum):
-    NEW = auto()
-    READY = auto()
-    CLOSED = auto()
-    FAILED = auto()
 
 
 class DuplicateServiceError(ValueError):
