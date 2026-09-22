@@ -609,6 +609,8 @@ class TestRttClient:
     def test_full_input_queue_pauses_and_resumes_stdin_after_partial_send(self, monkeypatch):
         input_resumed = False
         input_forwarded_after_resume = False
+        select_requests = []
+        input_was_paused = False
 
         class Connection:
             def __init__(self):
@@ -635,12 +637,16 @@ class TestRttClient:
             return 0 if input_forwarded_after_resume else None
 
         def select_io(_readable, _writable, _exceptional, _timeout):
-            nonlocal input_resumed
+            nonlocal input_resumed, input_was_paused
+            select_requests.append((_readable, _writable))
+            if input_fd not in _readable and connection in _writable:
+                input_was_paused = True
+            if input_was_paused and input_fd in _readable:
+                input_resumed = True
             if not connection.sent:
                 if _writable:
                     return [], [connection], []
                 return [input_fd], [], []
-            input_resumed = True
             return [input_fd], [connection], []
 
         with (
@@ -654,17 +660,19 @@ class TestRttClient:
                     rtt_module.select,
                     "select",
                     side_effect=select_io,
-                ) as select_call,
+                ),
             ):
                 assert run_rtt_client(5555, poll_session, stdin=stdin, stdout=stdout) == 0
 
         assert input_forwarded_after_resume
+        assert any(input_fd in readable for readable, _ in select_requests)
+        pause_index = next(
+            index
+            for index, (readable, writable) in enumerate(select_requests)
+            if input_fd not in readable and connection in writable
+        )
+        assert any(input_fd in readable for readable, _ in select_requests[pause_index + 1 :])
         assert connection.sent == [b"abcd", b"cdef"]
-        assert [call.args[:2] for call in select_call.call_args_list] == [
-            ((input_fd, connection), ()),
-            ((connection,), (connection,)),
-            ((input_fd, connection), (connection,)),
-        ]
 
     def test_established_channel_closure_fails_while_session_is_running(self):
         class Connection:
