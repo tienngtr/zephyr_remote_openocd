@@ -105,12 +105,11 @@ def test_forward_progresses_when_configured_ssh_stderr_exceeds_pipe_capacity(tmp
     assert backend.closed
 
 
-def _opened_session(*args, **kwargs):
-    session = RemoteSession(*args, **kwargs)
+def _opened_session(request, deployment):
+    session = RemoteSession(request, deployment)
     session._helper = _HelperClient.open(
         session.request.ssh_command,
         session.request.host,
         session.deployment,
-        output_handler=session._output_handler,
     )
     return session

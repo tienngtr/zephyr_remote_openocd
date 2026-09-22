@@ -338,7 +338,7 @@ def test_process_cleanup_closes_an_active_stderr_drain():
 
 
 @pytest.mark.timeout(10)
-def test_helper_output_delivery_does_not_retain_event_history():
+def test_helper_client_output_delivery_does_not_retain_event_history():
     payloads = [f"payload-{index}" for index in range(1024)]
     frames = [
         encode_message(
@@ -415,30 +415,29 @@ def test_helper_output_delivery_does_not_retain_event_history():
 
     handled = []
     command = Command()
-    backend = _opened_session(
-        RemoteSessionRequest(
-            "host",
-            command,
-            process=RemoteProcess(("child",)),
-        ),
+    helper_client = _HelperClient.open(
+        command,
+        "host",
         DeploymentResult("/helper.py", "digest", False),
-        lambda stream, payload, line_end: handled.append((stream, payload, line_end)),
+        output_handler=lambda stream, payload, line_end: handled.append(
+            (stream, payload, line_end)
+        ),
     )
     try:
-        backend._start_process(())
-        assert backend._helper._reader_thread is not None
-        backend._helper._reader_thread.join(timeout=10)
-        assert not backend._helper._reader_thread.is_alive()
+        helper_client.start_process(RemoteProcess(("child",)), ())
+        assert helper_client._reader_thread is not None
+        helper_client._reader_thread.join(timeout=10)
+        assert not helper_client._reader_thread.is_alive()
         command.process.writer.join(timeout=10)
         assert not command.process.writer.is_alive()
         assert handled == [
             ("stdout" if index % 2 == 0 else "stderr", payload, False)
             for index, payload in enumerate(payloads)
         ]
-        assert backend.check_openocd_exit() == 0
-        assert "events" not in vars(backend)
+        assert helper_client.recorded_openocd_exit() == 0
+        assert "events" not in vars(helper_client)
     finally:
-        backend.close()
+        assert helper_client.close().error is None
 
 
 def test_forward_diagnostic_keeps_a_useful_tail_after_nonzero_exit():
@@ -711,12 +710,12 @@ def test_drain_startup_error_is_primary_when_process_cleanup_fails(monkeypatch):
     assert any("process kill failed" in note for note in raised.value.__notes__)
 
 
-def _opened_session(*args, **kwargs):
-    session = RemoteSession(*args, **kwargs)
+def _opened_session(request, deployment, output_handler=None):
+    session = RemoteSession(request, deployment, output_handler)
     session._helper = _HelperClient.open(
         session.request.ssh_command,
         session.request.host,
         session.deployment,
-        output_handler=session._output_handler,
+        output_handler=output_handler,
     )
     return session

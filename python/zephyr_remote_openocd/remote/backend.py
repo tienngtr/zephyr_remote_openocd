@@ -57,7 +57,6 @@ class RemoteSession:
         self.request = request
         self.deployment = deployment
         self._forwards = _ForwardManager(request.ssh_command, request.host)
-        self._output_handler = output_handler
         self._helper: _HelperClient | None = None
         self.closed = False
         self.descriptor: SessionDescriptor | None = None
