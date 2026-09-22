@@ -22,6 +22,7 @@ from zephyr_remote_openocd.remote import (
     StagedFile,
 )
 from zephyr_remote_openocd.remote.deploy import deploy_helper
+from zephyr_remote_openocd.remote.forwarding import _ForwardManager
 from zephyr_remote_openocd.remote.ssh import SshCommand
 
 from tests.process_support import read_line
@@ -159,13 +160,13 @@ class TestSshTransportIntegration:
             token = "ZRO_FORWARD_READY"
             tunnel = self.ssh.popen(
                 self.host,
-                RemoteSession._forward_ready_command(token),
+                _ForwardManager._ready_command(token),
                 "-o",
                 "ExitOnForwardFailure=yes",
                 "-L",
                 f"127.0.0.1:{local_port}:127.0.0.1:{remote_port}",
             )
-            assert RemoteSession._await_forward_ready(tunnel, token, time.monotonic() + 20)
+            assert _ForwardManager._await_ready(tunnel, token, time.monotonic() + 20)
             wait_for_echo(local_port, b"zro_forwarding", 20)
 
             assert helper_process.stdin is not None
@@ -321,11 +322,26 @@ class TestSshTransportIntegration:
 
     def test_owned_forward_loss_is_reported_and_session_cleans_up(self):
         """An established session reports loss of its own SSH forward."""
+
+        class RecordingSshCommand(SshCommand):
+            forwards: list
+
+            def __post_init__(self):
+                super().__post_init__()
+                object.__setattr__(self, "forwards", [])
+
+            def popen(self, host, remote_command, *extra_args):
+                process = super().popen(host, remote_command, *extra_args)
+                if "-L" in extra_args:
+                    self.forwards.append(process)
+                return process
+
         local_port = free_loopback_port()
+        ssh = RecordingSshCommand(self.ssh_settings.ssh_command)
         session = RemoteSession.open(
             RemoteSessionRequest(
                 self.host,
-                self.ssh,
+                ssh,
                 session_echo_process(),
                 services=(Service("gdb", local_port, 3333),),
             )
@@ -333,7 +349,7 @@ class TestSshTransportIntegration:
         assert session.descriptor is not None
         descriptor = session.descriptor
         try:
-            forward = session.forwards[0]
+            forward = ssh.forwards[0]
             forward.terminate()
             forward.wait(timeout=20)
 

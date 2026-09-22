@@ -10,6 +10,8 @@ import time
 from dataclasses import dataclass
 from typing import BinaryIO, cast
 
+from .cleanup import _add_failure_note, _raise_cleanup_errors
+
 # SSH diagnostics must never be allowed to fill the OS pipe, but retaining a
 # small tail keeps connection and forwarding failures actionable.  This limit
 # applies per long-lived SSH process and is deliberately independent of the
@@ -17,6 +19,8 @@ from typing import BinaryIO, cast
 SSH_STDERR_TAIL_BYTES = 64 * 1024
 _SSH_STDERR_READ_BYTES = 8192
 _SSH_STDERR_JOIN_TIMEOUT = 1.0
+_PROCESS_TERM_TIMEOUT = 5.0
+_PROCESS_KILL_TIMEOUT = 1.0
 
 
 class _StderrDrain:
@@ -170,6 +174,89 @@ class ManagedSshProcess:
 
     def close_stderr(self) -> None:
         self._drain.close()
+
+
+def _stop_process(process: ManagedSshProcess, *, close_streams: bool = True) -> None:
+    """Stop and dispose one managed SSH process without hiding cleanup errors."""
+    primary_error: BaseException | None = None
+    cleanup_errors: list[BaseException] = []
+    graceful_timeout: BaseException | None = None
+    process_dead = False
+
+    def record_process_error(error: BaseException) -> None:
+        nonlocal primary_error
+        if primary_error is None:
+            primary_error = error
+        else:
+            cleanup_errors.append(error)
+
+    try:
+        process_dead = process.poll() is not None
+    except BaseException as error:
+        record_process_error(error)
+
+    if not process_dead:
+        termination_failed = False
+        try:
+            process.terminate()
+        except BaseException as error:
+            termination_failed = True
+            record_process_error(error)
+        if termination_failed:
+            try:
+                process_dead = process.poll() is not None
+            except BaseException as error:
+                record_process_error(error)
+        else:
+            try:
+                process.wait(timeout=_PROCESS_TERM_TIMEOUT)
+                process_dead = True
+            except subprocess.TimeoutExpired as error:
+                graceful_timeout = error
+            except BaseException as error:
+                record_process_error(error)
+
+        if not process_dead:
+            kill_failed = False
+            try:
+                process.kill()
+            except BaseException as error:
+                kill_failed = True
+                record_process_error(error)
+            if not kill_failed:
+                try:
+                    process.wait(timeout=_PROCESS_KILL_TIMEOUT)
+                    process_dead = True
+                except BaseException as error:
+                    record_process_error(error)
+            if not process_dead:
+                try:
+                    process_dead = process.poll() is not None
+                except BaseException as error:
+                    record_process_error(error)
+
+    if not process_dead and primary_error is None:
+        record_process_error(RuntimeError("process did not exit during cleanup"))
+    if graceful_timeout is not None and primary_error is not None:
+        cleanup_errors.append(graceful_timeout)
+
+    try:
+        process.close_stderr()
+    except BaseException as error:
+        cleanup_errors.append(error)
+    if close_streams:
+        for stream in (process.stdin, process.stdout):
+            if stream is None or stream.closed:
+                continue
+            try:
+                stream.close()
+            except BaseException as error:
+                cleanup_errors.append(error)
+    if primary_error is not None:
+        for cleanup_failure in cleanup_errors:
+            _add_failure_note(primary_error, "process cleanup also failed", cleanup_failure)
+        raise primary_error
+    _raise_cleanup_errors(cleanup_errors)
 
 
 @dataclass(frozen=True)

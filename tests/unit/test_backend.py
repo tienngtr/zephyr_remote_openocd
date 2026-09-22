@@ -9,8 +9,10 @@ from typing import Any, cast
 
 import pytest
 from zephyr_remote_openocd.remote import backend as backend_module
+from zephyr_remote_openocd.remote import forwarding as forwarding_module
 from zephyr_remote_openocd.remote.backend import RemoteSession
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
+from zephyr_remote_openocd.remote.forwarding import _ForwardManager
 from zephyr_remote_openocd.remote.model import (
     RemoteProcess,
     RemoteSessionRequest,
@@ -95,7 +97,7 @@ def test_open_helper_retains_nested_cleanup_diagnostics(monkeypatch):
         raise cleanup_error
 
     monkeypatch.setattr(SshCommand, "popen", lambda *_args: Process())
-    monkeypatch.setattr(RemoteSession, "_stop_process", staticmethod(fail_stop))
+    monkeypatch.setattr(backend_module, "_stop_process", fail_stop)
 
     session = RemoteSession(request, deployment)
 
@@ -237,7 +239,7 @@ def test_close_keeps_reader_owned_stdout_open_until_reader_stops():
 
     session = cast(Any, object.__new__(RemoteSession))
     session.closed = False
-    session.forwards = []
+    session._forwards = _ForwardManager(SshCommand(), "host")
     session.output_handler = None
     session.helper_process = Process()
     session._state = _SessionState()
@@ -271,7 +273,7 @@ def test_close_attempts_all_cleanup_once_and_preserves_first_failure():
         actions.append("helper")
         return later_error, []
 
-    session._close_forwards = close_forwards
+    session._forwards = type("Forwards", (), {"close": staticmethod(close_forwards)})()
     session._close_helper = close_helper
 
     with pytest.raises(RuntimeError) as raised:
@@ -355,11 +357,7 @@ def test_session_state_wakes_on_terminal_event():
     assert results == [0]
 
 
-def test_check_openocd_exit_raises_when_ssh_forward_exits():
-    class Helper:
-        def poll(self):
-            return None
-
+def test_forward_manager_raises_when_ssh_forward_exits():
     class Forward:
         def poll(self):
             return FORWARD_FAILURE_RC
@@ -367,32 +365,20 @@ def test_check_openocd_exit_raises_when_ssh_forward_exits():
         def stderr_tail(self):
             return b"forward failed"
 
-    session = cast(Any, object.__new__(RemoteSession))
-    session.helper_process = Helper()
-    session.closed = False
-    session._state = _SessionState()
-    session.forwards = [Forward()]
+    manager = _ForwardManager(SshCommand(), "host")
+    manager._processes = [cast(Any, Forward())]
 
     with pytest.raises(SessionError):
-        session.check_openocd_exit()
+        manager.check_health()
 
 
 @pytest.mark.timeout(10)
 def test_wait_for_openocd_exit_observes_forward_failure():
-    class Forward:
-        failed = False
-
-        def poll(self):
-            return FORWARD_FAILURE_RC if self.failed else None
-
-        def stderr_tail(self):
-            return b"forward failed"
-
     class State:
         openocd_returncode = None
 
-        def __init__(self, forward):
-            self.forward = forward
+        def __init__(self, forwards):
+            self.forwards = forwards
             self.wait_timeouts = []
 
         @staticmethod
@@ -405,13 +391,23 @@ def test_wait_for_openocd_exit_observes_forward_failure():
 
         def wait_for_change(self, timeout):
             self.wait_timeouts.append(timeout)
-            self.forward.failed = True
+            self.forwards.failed = True
+
+    class Forwards:
+        has_forwards = True
+
+        def __init__(self):
+            self.failed = False
+
+        def check_health(self):
+            if self.failed:
+                raise SessionError(f"SSH forwarding exited with status {FORWARD_FAILURE_RC}")
 
     session = cast(Any, object.__new__(RemoteSession))
     session.closed = False
-    forward = Forward()
-    session._state = State(forward)
-    session.forwards = [forward]
+    forwards = Forwards()
+    session._state = State(forwards)
+    session._forwards = forwards
 
     with pytest.raises(SessionError):
         session.wait_for_openocd_exit()
@@ -459,12 +455,10 @@ def test_forward_readiness_timeout_does_not_block_on_partial_output(monkeypatch)
                 pass
 
         clock = Clock()
-        monkeypatch.setattr(backend_module.time, "monotonic", clock.monotonic)
-        monkeypatch.setattr(backend_module.selectors, "DefaultSelector", Selector)
+        monkeypatch.setattr(forwarding_module.time, "monotonic", clock.monotonic)
+        monkeypatch.setattr(forwarding_module.selectors, "DefaultSelector", Selector)
         deadline = 0.5
-        assert not RemoteSession._await_forward_ready(
-            cast(Any, process), "ZRO_FORWARD_ready", deadline
-        )
+        assert not _ForwardManager._await_ready(cast(Any, process), "ZRO_FORWARD_ready", deadline)
     finally:
         process.stdout.close()
         os.close(write_fd)

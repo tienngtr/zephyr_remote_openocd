@@ -17,19 +17,19 @@ from unittest.mock import patch
 
 import pytest
 from zephyr_remote_openocd.remote import backend as backend_module
+from zephyr_remote_openocd.remote import forwarding as forwarding_module
 from zephyr_remote_openocd.remote import ssh as ssh_module
 from zephyr_remote_openocd.remote.backend import RemoteSession
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
+from zephyr_remote_openocd.remote.forwarding import _ForwardManager
 from zephyr_remote_openocd.remote.model import (
     RemoteProcess,
     RemoteSessionRequest,
     Service,
-    SessionAllocation,
-    SessionDescriptor,
 )
 from zephyr_remote_openocd.remote.protocol import encode_message
-from zephyr_remote_openocd.remote.session import SessionError, _SessionState
-from zephyr_remote_openocd.remote.ssh import SSH_STDERR_TAIL_BYTES, SshCommand
+from zephyr_remote_openocd.remote.session import SessionError
+from zephyr_remote_openocd.remote.ssh import SSH_STDERR_TAIL_BYTES, SshCommand, _stop_process
 
 
 class _PopenOnlySshCommand(SshCommand):
@@ -326,7 +326,7 @@ def test_process_cleanup_closes_an_active_stderr_drain():
     code = "import sys,time;sys.stderr.write('x' * 8192);sys.stderr.flush();time.sleep(30)"
     process = SshCommand((sys.executable, "-c", code)).popen("host", "ignored")
     try:
-        RemoteSession._stop_process(process)
+        _stop_process(process)
         assert process.poll() is not None
     finally:
         if process.poll() is None:
@@ -448,7 +448,7 @@ def test_forward_diagnostic_keeps_a_useful_tail_after_nonzero_exit():
     process = SshCommand((sys.executable, "-c", code)).popen("host", "ignored")
     try:
         assert process.wait(timeout=5) == 9
-        diagnostic = RemoteSession._forward_diagnostic(process)
+        diagnostic = _ForwardManager._diagnostic(process)
         assert diagnostic.endswith("forward-tail")
         assert len(diagnostic.encode()) <= SSH_STDERR_TAIL_BYTES
     finally:
@@ -528,19 +528,6 @@ class _ForwardCommand(_PopenOnlySshCommand):
         return next(self.processes)
 
 
-def _forward_session(command):
-    session = cast(Any, object.__new__(RemoteSession))
-    session.request = RemoteSessionRequest("host", command, RemoteProcess(("child",)))
-    session.forwards = []
-    session.closed = False
-    session.descriptor = SessionDescriptor(SessionAllocation("session", "/workspace"), "127.64.0.1")
-    session.output_handler = None
-    session._state = _SessionState()
-    session.reader_thread = None
-    session._services = []
-    return session
-
-
 class _PreflightSocket:
     def __init__(self, occupied):
         self.occupied = occupied
@@ -559,7 +546,7 @@ class _PreflightSocket:
 
 def _patch_preflight_socket(monkeypatch, occupied):
     monkeypatch.setattr(
-        backend_module,
+        forwarding_module,
         "socket",
         SimpleNamespace(socket=lambda: _PreflightSocket(occupied)),
     )
@@ -572,30 +559,16 @@ def test_initial_start_forward_failure_associates_all_preflight_advisories_with_
     _patch_preflight_socket(monkeypatch, {first_port, second_port})
     first = Service("tcl", first_port, 6333)
     second = Service("telnet", second_port, 4444)
-    command = _ForwardCommand(
-        _HelperProcess(
-            encode_message(
-                "SESSION_CREATED",
-                helper="fake",
-                session_id="session",
-                remote_workspace="/workspace",
-            )
-            + encode_message("PROCESS_READY", remote_address="127.64.0.1", child_pid=1)
-        ),
-        _ForwardProcess(7),
-    )
-    backend = _opened_session(
-        RemoteSessionRequest("host", command, RemoteProcess(("child",))),
-        DeploymentResult("/helper.py", "digest", False),
-    )
+    command = _ForwardCommand(_ForwardProcess(7))
+    manager = _ForwardManager(command, "host")
     try:
         with pytest.raises(SessionError) as raised:
-            backend._start_process((first, second))
+            manager.start((first, second), "127.64.0.1")
 
         message = str(raised.value)
         assert f"127.0.0.1:{first_port} for tcl" in message
         assert f"127.0.0.1:{second_port} for telnet" in message
-        assert command.calls[1][2] == (
+        assert command.calls[0][2] == (
             "-o",
             "ExitOnForwardFailure=yes",
             "-L",
@@ -603,14 +576,13 @@ def test_initial_start_forward_failure_associates_all_preflight_advisories_with_
         )
     finally:
         with suppress(BaseException):
-            backend.close()
+            manager.close()
 
 
 @pytest.mark.timeout(10)
 def test_initial_forward_failure_consumes_terminal_openocd_event(monkeypatch):
     terminal_seen = threading.Event()
     forward_error = SessionError("initial forwarding failed")
-    sessions = []
     helper = _HelperProcess(
         encode_message(
             "SESSION_CREATED",
@@ -640,57 +612,68 @@ def test_initial_forward_failure_consumes_terminal_openocd_event(monkeypatch):
         if event["type"] == "SESSION_CLOSED":
             terminal_seen.set()
 
-    def fail_forwards(session, _services, _address):
-        sessions.append(session)
+    def fail_forwards(_manager, _services, _address):
         assert terminal_seen.wait(5)
         raise forward_error
 
     monkeypatch.setattr(RemoteSession, "_dispatch", observe_terminal)
-    monkeypatch.setattr(RemoteSession, "_start_forwards", fail_forwards)
+    monkeypatch.setattr(_ForwardManager, "start", fail_forwards)
 
     with pytest.raises(SessionError) as raised:
         RemoteSession.open(request)
 
     assert raised.value is forward_error
     assert not getattr(raised.value, "__notes__", ())
-    assert len(sessions) == 1
-    session = sessions[0]
-    assert session.closed
-    assert session.openocd_returncode == 6
 
 
 def test_dynamic_forward_failure_identifies_service_and_local_port(monkeypatch):
     port = 32155
     _patch_preflight_socket(monkeypatch, set())
     service = Service("rtt", port, 5555)
-    session = _forward_session(_ForwardCommand(_ForwardProcess(9)))
+    manager = _ForwardManager(_ForwardCommand(_ForwardProcess(9)), "host")
     try:
         with pytest.raises(SessionError) as raised:
-            session.forward((service,))
+            manager.start((service,), "127.64.0.1")
 
         message = str(raised.value)
         assert service.name in message
         assert f"127.0.0.1:{port}" in message
     finally:
-        session._close_forwards()
+        manager.close()
 
 
 def test_dynamic_forward_timeout_identifies_service_and_local_port(monkeypatch):
     port = 32166
     _patch_preflight_socket(monkeypatch, set())
     service = Service("rtt", port, 5555)
-    session = _forward_session(_ForwardCommand(_ForwardProcess(None)))
-    monkeypatch.setattr(RemoteSession, "_await_forward_ready", lambda *_args: False)
+    manager = _ForwardManager(_ForwardCommand(_ForwardProcess(None)), "host")
+    monkeypatch.setattr(_ForwardManager, "_await_ready", lambda *_args: False)
 
     try:
         with pytest.raises(SessionError) as raised:
-            session.forward((service,))
+            manager.start((service,), "127.64.0.1")
 
         message = str(raised.value)
         assert service.name in message
         assert f"127.0.0.1:{port}" in message
     finally:
-        session._close_forwards()
+        manager.close()
+
+
+def test_forward_manager_rejects_a_service_already_forwarded(monkeypatch):
+    service = Service("gdb", 32177, 3333)
+    command = _ForwardCommand(_ForwardProcess(None))
+    manager = _ForwardManager(command, "host")
+    monkeypatch.setattr(_ForwardManager, "_preflight", staticmethod(lambda _service: None))
+    monkeypatch.setattr(_ForwardManager, "_await_ready", staticmethod(lambda *_args: True))
+
+    try:
+        manager.start((service,), "127.64.0.1")
+        with pytest.raises(SessionError, match="service names must remain unique"):
+            manager.start((service,), "127.64.0.1")
+        assert len(command.calls) == 1
+    finally:
+        manager.close()
 
 
 def test_drain_startup_error_is_primary_when_process_cleanup_fails(monkeypatch):

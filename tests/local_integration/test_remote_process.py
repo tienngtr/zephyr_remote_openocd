@@ -22,12 +22,14 @@ from unittest.mock import patch
 
 import pytest
 from zephyr_remote_openocd.remote import backend as backend_module
+from zephyr_remote_openocd.remote import forwarding as forwarding_module
 from zephyr_remote_openocd.remote import rtt as rtt_module
 from zephyr_remote_openocd.remote.backend import (
     RemoteSession,
     query_remote_openocd_version,
 )
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
+from zephyr_remote_openocd.remote.forwarding import _ForwardManager
 from zephyr_remote_openocd.remote.model import (
     RemoteProcess,
     RemoteSessionRequest,
@@ -185,7 +187,7 @@ class TestForwardingLifecycle:
     def session(command):
         session = cast(Any, object.__new__(RemoteSession))
         session.request = RemoteSessionRequest("target", command, TEST_PROCESS)
-        session.forwards = []
+        session._forwards = _ForwardManager(command, "target")
         session.closed = False
         session.output_handler = None
         session._state = _SessionState()
@@ -218,15 +220,15 @@ class TestForwardingLifecycle:
         session = self.session(command)
         service = Service("gdb", self.port(), 3333)
         with (
-            patch.object(RemoteSession, "_await_forward_ready", return_value=True),
-            patch("zephyr_remote_openocd.remote.backend.socket.create_connection") as connect,
+            patch.object(_ForwardManager, "_await_ready", return_value=True),
+            patch("zephyr_remote_openocd.remote.forwarding.socket.create_connection") as connect,
         ):
-            session._start_forwards((service,), "127.64.1.1")
+            session._forwards.start((service,), "127.64.1.1")
         connect.assert_not_called()
         remote_command = command.calls[0][1]
         assert remote_command.startswith("python3 -c ")
         assert "-N" not in command.calls[0][2]
-        session._close_forwards()
+        session._forwards.close()
         assert process.terminate_calls == 1
 
     def test_helper_control_connection_injects_no_optional_ssh_arguments(self):
@@ -261,7 +263,7 @@ class TestForwardingLifecycle:
         with (
             patch.object(RemoteSession, "_read_event", side_effect=startup_error),
             patch.object(
-                RemoteSession,
+                backend_module,
                 "_stop_process",
                 side_effect=RuntimeError("process cleanup failed"),
             ),
@@ -307,7 +309,7 @@ class TestForwardingLifecycle:
 
             @staticmethod
             def select(_timeout):
-                clock.now = backend_module.FORWARD_START_TIMEOUT + 1
+                clock.now = forwarding_module.FORWARD_START_TIMEOUT + 1
                 return []
 
             @staticmethod
@@ -315,8 +317,8 @@ class TestForwardingLifecycle:
                 pass
 
         clock = Clock()
-        monkeypatch.setattr(backend_module.time, "monotonic", clock.monotonic)
-        monkeypatch.setattr(backend_module.selectors, "DefaultSelector", Selector)
+        monkeypatch.setattr(forwarding_module.time, "monotonic", clock.monotonic)
+        monkeypatch.setattr(forwarding_module.selectors, "DefaultSelector", Selector)
         stale = self.Process()
         read_fd, write_fd = os.pipe()
         stale.stdout = os.fdopen(read_fd, "rb")
@@ -324,63 +326,68 @@ class TestForwardingLifecycle:
         session = self.session(command)
         service = Service("gdb", 32155, 3333)
         monkeypatch.setattr(
-            RemoteSession,
+            _ForwardManager,
             "_preflight",
             staticmethod(lambda _service: "stale listener"),
         )
         try:
             with pytest.raises(SessionError) as raised:
-                session._start_forwards((service,), "127.64.1.1")
+                session._forwards.start((service,), "127.64.1.1")
             message = str(raised.value)
             assert service.name in message
             assert f"127.0.0.1:{service.local_port}" in message
         finally:
             os.close(write_fd)
-        session._close_forwards()
+        session._forwards.close()
         assert stale.terminate_calls == 1
 
-    def test_forward_cleanup_closes_all_forwards_idempotently(self):
-        first = self.Process()
-        second = self.Process()
-        session = self.session(self.Command(first))
-        session.forwards = [first, second]
-        session._close_forwards()
-        session._close_forwards()
-        assert second.terminate_calls == 1
-        assert first.terminate_calls == 1
+    def test_forward_manager_cleanup_attempts_all_forwards_once(self):
+        cleanup_error = RuntimeError("forward cleanup failed")
+
+        class FailingProcess(TestForwardingLifecycle.Process):
+            def terminate(self):
+                self.terminate_calls += 1
+                raise cleanup_error
+
+        failed = FailingProcess()
+        healthy = self.Process()
+        manager = _ForwardManager(self.Command(failed), "target")
+        manager._processes = [cast(Any, failed), cast(Any, healthy)]
+
+        with pytest.raises(RuntimeError) as raised:
+            manager.close()
+
+        assert raised.value is cleanup_error
+        assert healthy.terminate_calls == 1
+        assert not manager.has_forwards
+        manager.close()
+        assert failed.terminate_calls == 1
 
     def test_close_attempts_helper_and_all_forwards_after_cleanup_failure(self):
         cleanup_error = RuntimeError("forward cleanup failed")
 
-        class FailingProcess(TestForwardingLifecycle.Process):
-            def __init__(self):
-                super().__init__()
-                self.fail_termination = True
+        class Forwards:
+            closed = False
 
-            def terminate(self):
-                self.terminate_calls += 1
-                if self.fail_termination:
-                    raise cleanup_error
-                self.returncode = 0
+            def close(self):
+                self.closed = True
+                raise cleanup_error
 
-        failed = FailingProcess()
-        healthy = self.Process()
         helper = self.helper_process()
         session = self.session(self.Command(helper))
         session.helper_process = helper
-        session.forwards = [failed, healthy]
+        forwards = Forwards()
+        session._forwards = forwards
 
         with pytest.raises(RuntimeError) as raised:
             session.close()
 
         assert raised.value is cleanup_error
-        assert healthy.terminate_calls == 1
+        assert forwards.closed
         assert helper.terminate_calls == 1
-        assert session.forwards == []
         assert session.closed
 
         session.close()
-        assert failed.terminate_calls == 1
 
     def test_close_forces_helper_after_unexpected_graceful_stop_failure(self):
         graceful_stop_error = RuntimeError("graceful stop failed")
@@ -1824,38 +1831,21 @@ sys.exit(7)
                 )
 
         forward_cleanup_error = RuntimeError("forward cleanup failed")
-        forward_kill_error = RuntimeError("forward kill failed")
 
-        class FailingForward:
+        class FailingForwards:
             def __init__(self):
-                self.returncode = None
-                self.terminate_calls = 0
-                self.fail_termination = True
-                self.stdin = None
-                self.stdout = None
-                self.stderr = None
+                self.close_calls = 0
 
-            def poll(self):
-                return self.returncode
-
-            def terminate(self):
-                self.terminate_calls += 1
-                if self.fail_termination:
-                    raise forward_cleanup_error
-                self.returncode = 0
-
-            def kill(self):
-                raise forward_kill_error
-
-            def wait(self, timeout=None):  # pylint: disable=unused-argument
-                return self.returncode
+            def close(self):
+                self.close_calls += 1
+                raise forward_cleanup_error
 
         backend = _opened_session(
             RemoteSessionRequest("local", LocalCommand(), TEST_PROCESS),
             DeploymentResult("/helper.py", "digest", False),
         )
-        forward = FailingForward()
-        backend.forwards = [cast(Any, forward)]
+        forwards = FailingForwards()
+        backend._forwards = forwards
         backend._start_event_drain()
         try:
             with pytest.raises(RuntimeError) as raised:
@@ -1865,12 +1855,11 @@ sys.exit(7)
                 note.startswith("additional cleanup failure:") for note in raised.value.__notes__
             )
             assert any("cleanup failed" in note for note in raised.value.__notes__)
-            assert backend.forwards == []
+            assert forwards.close_calls == 1
             assert backend.closed
 
-            forward.fail_termination = False
             backend.close()
-            assert backend.forwards == []
+            assert forwards.close_calls == 1
             assert backend.closed
         finally:
             with suppress(BaseException):

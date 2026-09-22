@@ -99,7 +99,6 @@ def test_forward_progresses_when_configured_ssh_stderr_exceeds_pipe_capacity(tmp
     try:
         descriptor = backend._start_process((service,))
         assert descriptor.remote_address == "127.64.0.1"
-        assert len(backend.forwards) == 1
     finally:
         backend.close()
     assert backend.closed

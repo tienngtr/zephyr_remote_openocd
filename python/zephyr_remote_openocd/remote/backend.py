@@ -5,25 +5,26 @@
 from __future__ import annotations
 
 import os
-import secrets
 import selectors
 import shlex
-import socket
 import subprocess
 import threading
 import time
 from collections.abc import Callable, Iterable
 from typing import BinaryIO, cast
 
+from .cleanup import _add_failure_note, _raise_cleanup_errors
 from .deploy import DeploymentResult, deploy_helper
+from .forwarding import (
+    FORWARD_HEALTH_INTERVAL,
+    _ForwardManager,
+)
 from .model import (
-    DuplicateServiceError,
     RemoteSessionRequest,
     Service,
     SessionAllocation,
     SessionDescriptor,
     StagedEntry,
-    validated_services,
 )
 from .protocol import (
     EventOrder,
@@ -36,7 +37,7 @@ from .protocol import (
     write_stop,
 )
 from .session import SessionClosedError, SessionError, _SessionState
-from .ssh import ManagedSshProcess, SshCommand
+from .ssh import SshCommand, _stop_process
 from .staging import build_archive
 
 # The helper gives a supervised child five seconds to exit after SIGTERM,
@@ -45,31 +46,6 @@ from .staging import build_archive
 # process scheduling/transport overhead.
 HELPER_STOP_TIMEOUT = 15.0
 HELPER_START_TIMEOUT = 10.0
-FORWARD_START_TIMEOUT = 10.0
-FORWARD_HEALTH_INTERVAL = 0.25
-_PROCESS_TERM_TIMEOUT = 5.0
-_PROCESS_KILL_TIMEOUT = 1.0
-
-
-def _add_failure_note(
-    primary: BaseException,
-    prefix: str,
-    secondary: BaseException,
-) -> None:
-    """Retain an exception and its existing diagnostics on another failure."""
-    primary.add_note(f"{prefix}: {secondary}")
-    for note in getattr(secondary, "__notes__", ()):
-        primary.add_note(f"{prefix} detail: {note}")
-
-
-def _raise_cleanup_errors(errors: list[BaseException]) -> None:
-    """Raise the first cleanup error after retaining subsequent diagnostics."""
-    if not errors:
-        return
-    first, *additional = errors
-    for error in additional:
-        _add_failure_note(first, "additional cleanup failure", error)
-    raise first
 
 
 def query_remote_openocd_version(
@@ -102,13 +78,12 @@ class RemoteSession:
     ):
         self.request = request
         self.deployment = deployment
-        self.forwards: list[ManagedSshProcess] = []
+        self._forwards = _ForwardManager(request.ssh_command, request.host)
         self.closed = False
         self.output_handler = output_handler
         self._state = _SessionState()
         self.reader_thread: threading.Thread | None = None
         self.descriptor: SessionDescriptor | None = None
-        self._services = list(request.services)
 
     @property
     def openocd_returncode(self) -> int | None:
@@ -148,7 +123,7 @@ class RemoteSession:
             self.allocation = SessionAllocation(created["session_id"], created["remote_workspace"])
         except BaseException as error:
             try:
-                self._stop_process(self.helper_process)
+                _stop_process(self.helper_process)
             except BaseException as cleanup_error:
                 _add_failure_note(error, "helper startup cleanup also failed", cleanup_error)
             raise
@@ -231,56 +206,6 @@ class RemoteSession:
         except (ProtocolError, ValueError) as error:
             raise SessionError(f"invalid remote staging response: {result.stdout!r}") from error
 
-    @staticmethod
-    def _preflight(service: Service) -> str | None:
-        try:
-            with socket.socket() as listener:
-                listener.bind(("127.0.0.1", service.local_port))
-            return None
-        except OSError as error:
-            return (
-                f"local port 127.0.0.1:{service.local_port} for {service.name} "
-                f"appears unavailable: {error}"
-            )
-
-    @staticmethod
-    def _forward_ready_command(token: str) -> str:
-        code = f"import sys; print({token!r}, flush=True); sys.stdin.buffer.read()"
-        return "python3 -c " + shlex.quote(code)
-
-    @staticmethod
-    def _await_forward_ready(process: ManagedSshProcess, token: str, deadline: float) -> bool:
-        """Wait for the readiness sentinel from this exact SSH process."""
-        if process.stdout is None:
-            return False
-        token_bytes = token.encode()
-        pending = b""
-        selector = selectors.DefaultSelector()
-        try:
-            selector.register(process.stdout, selectors.EVENT_READ)
-            while process.poll() is None and time.monotonic() < deadline:
-                remaining = max(0.0, deadline - time.monotonic())
-                if not selector.select(min(0.05, remaining)):
-                    continue
-                chunk = os.read(process.stdout.fileno(), 4096)
-                if not chunk:
-                    return False
-                pending += chunk
-                while b"\n" in pending:
-                    line, pending = pending.split(b"\n", 1)
-                    if line.rstrip(b"\r") == token_bytes:
-                        return True
-            return False
-        finally:
-            selector.close()
-
-    @staticmethod
-    def _forward_diagnostic(process: ManagedSshProcess) -> str:
-        try:
-            return process.stderr_tail().decode("utf-8", "replace").strip()
-        except (OSError, ValueError):
-            return ""
-
     def _start_process(self, services: Iterable[Service]) -> SessionDescriptor:
         service_list = tuple(services)
         process = self.request.process
@@ -294,7 +219,7 @@ class RemoteSession:
         address = self._await_process_ready()
         self._start_event_drain()
         if service_list:
-            self._start_forwards(service_list, address)
+            self._forwards.start(service_list, address)
         self.descriptor = SessionDescriptor(self.allocation, address)
         return self.descriptor
 
@@ -323,12 +248,7 @@ class RemoteSession:
         service_list = tuple(services)
         if not service_list:
             return
-        try:
-            validated_services((*self._services, *service_list))
-        except DuplicateServiceError as error:
-            raise SessionError(f"{error.subject} must remain unique") from error
-        self._start_forwards(service_list, self.descriptor.remote_address)
-        self._services.extend(service_list)
+        self._forwards.start(service_list, self.descriptor.remote_address)
 
     def check_openocd_exit(self) -> int | None:
         if self.closed:
@@ -336,54 +256,11 @@ class RemoteSession:
         result = self._recorded_openocd_exit()
         if result is not None:
             return result
-        self._check_forward_health()
+        self._forwards.check_health()
         return self._recorded_openocd_exit()
 
     def _recorded_openocd_exit(self) -> int | None:
         return self._state.recorded_openocd_exit()
-
-    def _check_forward_health(self) -> None:
-        for process in self.forwards:
-            forward_status = process.poll()
-            if forward_status is not None:
-                detail = self._forward_diagnostic(process)
-                suffix = f": {detail}" if detail else ""
-                raise SessionError(f"SSH forwarding exited with status {forward_status}{suffix}")
-
-    def _start_forwards(self, service_list, address):
-        advisories = [message for service in service_list if (message := self._preflight(service))]
-        for service in service_list:
-            spec = f"127.0.0.1:{service.local_port}:{address}:{service.remote_port}"
-            token = "ZRO_FORWARD_" + secrets.token_hex(16)
-            process = self.request.ssh_command.popen(
-                self.request.host,
-                self._forward_ready_command(token),
-                "-o",
-                "ExitOnForwardFailure=yes",
-                "-L",
-                spec,
-            )
-            self.forwards.append(process)
-            deadline = time.monotonic() + FORWARD_START_TIMEOUT
-            connected = self._await_forward_ready(process, token, deadline)
-            if process.poll() is not None:
-                detail = self._forward_diagnostic(process)
-                prefix = "; ".join(advisories)
-                raise SessionError(
-                    (prefix + "; " if prefix else "")
-                    + f"SSH forwarding failed for {service.name} on "
-                    f"127.0.0.1:{service.local_port} ({process.returncode}): "
-                    f"{detail}"
-                )
-            if not connected:
-                error = SessionError(
-                    f"SSH forwarding did not become ready for {service.name} on "
-                    f"127.0.0.1:{service.local_port}"
-                )
-                detail = self._forward_diagnostic(process)
-                suffix = f": {detail}" if detail else ""
-                error.args = (error.args[0] + suffix,)
-                raise error
 
     def wait_for_openocd_exit(self, timeout: float | None = None) -> int:
         if self.closed:
@@ -399,7 +276,7 @@ class RemoteSession:
             remaining = None if deadline is None else deadline - time.monotonic()
             if remaining is not None and remaining <= 0:
                 raise subprocess.TimeoutExpired(self.helper_process.args, timeout or 0.0)
-            health_wait = FORWARD_HEALTH_INTERVAL if self.forwards else remaining
+            health_wait = FORWARD_HEALTH_INTERVAL if self._forwards.has_forwards else remaining
             wait_timeout = (
                 health_wait if remaining is None else min(remaining, health_wait or remaining)
             )
@@ -444,103 +321,6 @@ class RemoteSession:
                 failure.__cause__ = error.__cause__
                 error = failure
             self._state.record_reader_failure(error)
-
-    @staticmethod
-    def _stop_process(process: ManagedSshProcess, *, close_streams: bool = True) -> None:
-        primary_error: BaseException | None = None
-        cleanup_errors: list[BaseException] = []
-        graceful_timeout: BaseException | None = None
-        process_dead = False
-
-        def record_process_error(error: BaseException) -> None:
-            nonlocal primary_error
-            if primary_error is None:
-                primary_error = error
-            else:
-                cleanup_errors.append(error)
-
-        try:
-            process_dead = process.poll() is not None
-        except BaseException as error:
-            record_process_error(error)
-
-        if not process_dead:
-            termination_failed = False
-            try:
-                process.terminate()
-            except BaseException as error:
-                termination_failed = True
-                record_process_error(error)
-            if termination_failed:
-                try:
-                    process_dead = process.poll() is not None
-                except BaseException as error:
-                    record_process_error(error)
-            else:
-                try:
-                    process.wait(timeout=_PROCESS_TERM_TIMEOUT)
-                    process_dead = True
-                except subprocess.TimeoutExpired as error:
-                    # A graceful timeout is the expected trigger for the kill
-                    # fallback.  It becomes diagnostic only if that fallback
-                    # also fails.
-                    graceful_timeout = error
-                except BaseException as error:
-                    record_process_error(error)
-
-            if not process_dead:
-                kill_failed = False
-                try:
-                    process.kill()
-                except BaseException as error:
-                    kill_failed = True
-                    record_process_error(error)
-                if not kill_failed:
-                    try:
-                        process.wait(timeout=_PROCESS_KILL_TIMEOUT)
-                        process_dead = True
-                    except BaseException as error:
-                        record_process_error(error)
-                if not process_dead:
-                    try:
-                        process_dead = process.poll() is not None
-                    except BaseException as error:
-                        record_process_error(error)
-
-        if not process_dead and primary_error is None:
-            record_process_error(RuntimeError("process did not exit during cleanup"))
-        if graceful_timeout is not None and primary_error is not None:
-            cleanup_errors.append(graceful_timeout)
-
-        try:
-            process.close_stderr()
-        except BaseException as error:
-            cleanup_errors.append(error)
-        if close_streams:
-            streams = [process.stdin, process.stdout]
-            for stream in streams:
-                if stream is None or stream.closed:
-                    continue
-                try:
-                    stream.close()
-                except BaseException as error:
-                    cleanup_errors.append(error)
-        if primary_error is not None:
-            for cleanup_failure in cleanup_errors:
-                _add_failure_note(primary_error, "process cleanup also failed", cleanup_failure)
-            raise primary_error
-        _raise_cleanup_errors(cleanup_errors)
-
-    def _close_forwards(self) -> None:
-        pending = self.forwards
-        self.forwards = []
-        errors = []
-        for process in pending:
-            try:
-                self._stop_process(process)
-            except BaseException as error:
-                errors.append(error)
-        _raise_cleanup_errors(errors)
 
     def _join_reader(self, timeout: float = 2.0) -> bool:
         reader = self.reader_thread
@@ -633,7 +413,7 @@ class RemoteSession:
         reader_stopped = self._join_reader()
 
         try:
-            self._stop_process(helper, close_streams=reader_stopped)
+            _stop_process(helper, close_streams=reader_stopped)
         except BaseException as error:
             cleanup_errors.append(error)
 
@@ -642,7 +422,7 @@ class RemoteSession:
             reader_stopped = self._join_reader()
             if reader_stopped and not initially_stopped:
                 try:
-                    self._stop_process(helper, close_streams=True)
+                    _stop_process(helper, close_streams=True)
                 except BaseException as error:
                     cleanup_errors.append(error)
             if not reader_stopped:
@@ -685,7 +465,7 @@ class RemoteSession:
 
         forward_errors: list[BaseException] = []
         try:
-            self._close_forwards()
+            self._forwards.close()
         except BaseException as error:
             forward_errors.append(error)
 
