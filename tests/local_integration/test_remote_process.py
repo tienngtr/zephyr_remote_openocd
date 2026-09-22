@@ -1431,15 +1431,17 @@ class TestRealProcessHelper:
                 (sys.executable, "-c", 'import sys;print("hello");sys.exit(6)'),
             )
             request = RemoteSessionRequest("local", LocalCommand(), process=remote_process)
-            backend = _opened_session(
-                request,
-                DeploymentResult(str(helper), "digest", False),
-                lambda stream, payload, line_end: output.append((stream, payload, line_end)),
-            )
+            deployment = DeploymentResult(str(helper), "digest", False)
+            with patch.object(backend_module, "deploy_helper", return_value=deployment):
+                backend = RemoteSession.open(
+                    request,
+                    output_handler=lambda stream, payload, line_end: output.append(
+                        (stream, payload, line_end)
+                    ),
+                )
             try:
-                backend._stage(())
-                descriptor = backend._start_process(())
-                assert ipaddress.ip_address(descriptor.remote_address) in LOOPBACK_RANGE
+                assert backend.descriptor is not None
+                assert ipaddress.ip_address(backend.descriptor.remote_address) in LOOPBACK_RANGE
                 assert backend.wait_for_openocd_exit(5) == 6
                 assert [
                     (payload, line_end)
