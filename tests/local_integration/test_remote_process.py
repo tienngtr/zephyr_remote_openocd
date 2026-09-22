@@ -54,6 +54,8 @@ from tests.process_support import read_line, read_lines
 from tests.support import ROOT
 
 TEST_PROCESS = RemoteProcess(("test-process",))
+OPENOCD_FAILURE_RC = 7
+HELPER_FAILURE_RC = 9
 
 
 class _BlockedSshCommand(SshCommand):
@@ -445,9 +447,11 @@ class TestForwardingLifecycle:
         assert helper.terminate_calls == 1
         assert session.closed
 
-    @pytest.mark.parametrize("returncode", (0, 7))
+    @pytest.mark.parametrize("returncode", (0, OPENOCD_FAILURE_RC))
     @pytest.mark.timeout(10)
-    def test_poll_reports_consumed_status_while_helper_remains_alive(self, returncode):
+    def test_check_openocd_exit_reports_consumed_status_while_helper_remains_alive(
+        self, returncode
+    ):
         session = self.session(self.Command(self.Process()))
         session.helper_process = session.request.ssh_command.process
         session._openocd_returncode = None
@@ -473,23 +477,26 @@ class TestForwardingLifecycle:
             release_reader.set()
             session.reader_thread.join()
 
-    def test_poll_preserves_reader_error_before_known_process_exit(self):
+    def test_check_openocd_exit_preserves_reader_error_before_known_process_exit(self):
         session = self.session(self.Command(self.Process()))
         session.helper_process = session.request.ssh_command.process
-        session._openocd_returncode = 7
+        session._openocd_returncode = OPENOCD_FAILURE_RC
         session.reader_error = RuntimeError("protocol failed")
 
         with pytest.raises(SessionError, match="helper event stream failed: protocol failed"):
             session.check_openocd_exit()
 
     def test_check_preserves_reader_recorded_helper_exit(self):
-        session = self.session(self.Command(self.Process(returncode=9)))
+        session = self.session(self.Command(self.Process(returncode=HELPER_FAILURE_RC)))
         session.helper_process = session.request.ssh_command.process
         session._openocd_returncode = None
-        session.reader_error = SessionError("remote helper exited with status 9")
+        session.reader_error = SessionError(f"remote helper exited with status {HELPER_FAILURE_RC}")
         session.reader_thread = None
 
-        with pytest.raises(SessionError, match="remote helper exited with status 9"):
+        with pytest.raises(
+            SessionError,
+            match=rf"remote helper exited with status {HELPER_FAILURE_RC}",
+        ):
             session.check_openocd_exit()
 
 

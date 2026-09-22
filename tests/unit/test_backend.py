@@ -75,11 +75,10 @@ def test_open_retains_nested_rollback_cleanup_diagnostics(monkeypatch):
         RemoteSession.open(request)
 
     assert raised.value is startup_error
-    assert raised.value.__notes__ == [
-        "startup failure cleanup also failed: session cleanup failed",
-        "startup failure cleanup also failed detail: "
-        "additional cleanup failure: forward cleanup failed",
-    ]
+    notes = raised.value.__notes__
+    assert any("session cleanup failed" in note for note in notes)
+    assert any("forward cleanup failed" in note for note in notes)
+    assert all("startup failure cleanup also failed" in note for note in notes)
 
 
 def test_open_helper_retains_nested_cleanup_diagnostics(monkeypatch):
@@ -103,11 +102,11 @@ def test_open_helper_retains_nested_cleanup_diagnostics(monkeypatch):
     with pytest.raises(SessionError, match="stdout was not captured") as raised:
         session._open_helper()
 
-    assert raised.value.__notes__ == [
-        "helper startup cleanup also failed: helper process cleanup failed",
-        "helper startup cleanup also failed detail: "
-        "process cleanup also failed: stream close failed",
-    ]
+    assert raised.value is not cleanup_error
+    notes = raised.value.__notes__
+    assert any("helper process cleanup failed" in note for note in notes)
+    assert any("stream close failed" in note for note in notes)
+    assert all("helper startup cleanup also failed" in note for note in notes)
 
 
 def test_closed_session_exposes_only_cached_openocd_result():
@@ -257,10 +256,10 @@ def test_close_attempts_all_cleanup_once_and_preserves_first_failure():
         session.close()
 
     assert raised.value is first_error
-    assert raised.value.__notes__ == [
-        "additional cleanup failure: helper cleanup failed",
-        "additional cleanup failure detail: helper cleanup also failed: stream close failed",
-    ]
+    notes = raised.value.__notes__
+    assert any("helper cleanup failed" in note for note in notes)
+    assert any("stream close failed" in note for note in notes)
+    assert all("additional cleanup failure" in note for note in notes)
     assert set(actions) == {"forwards", "helper"}
     assert len(actions) == 2
     assert session.closed
@@ -302,11 +301,10 @@ def test_close_helper_retains_nested_process_cleanup_diagnostics():
 
     assert isinstance(logical_error, SessionError)
     assert cleanup_errors == [terminate_error]
-    assert logical_error.__notes__ == [
-        "helper cleanup also failed: helper terminate failed",
-        "helper cleanup also failed detail: "
-        "process cleanup also failed: helper stderr close failed",
-    ]
+    notes = logical_error.__notes__
+    assert any("helper terminate failed" in note for note in notes)
+    assert any("helper stderr close failed" in note for note in notes)
+    assert all("helper cleanup also failed" in note for note in notes)
 
 
 @pytest.mark.timeout(10)

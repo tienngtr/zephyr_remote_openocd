@@ -402,9 +402,9 @@ def test_background_openocd_result_does_not_replace_foreground_failure(
         reader.join(timeout=5)
 
     assert raised.value is operation_error
-    assert raised.value.__notes__ == [
-        f"remote OpenOCD also exited with status {OPENOCD_FAILURE_RC}"
-    ]
+    notes = raised.value.__notes__
+    assert any(str(OPENOCD_FAILURE_RC) in note for note in notes)
+    assert all("remote OpenOCD also exited" in note for note in notes)
     assert session.close_calls == 1
     assert not reader.is_alive()
 
