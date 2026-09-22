@@ -956,6 +956,39 @@ The lifecycle has four ownership levels:
 - The remote `ControlSession` owns remote session state and workspace, while
   `SupervisedChild` owns the OpenOCD process group and its output relays.
 
+### 38.1 Local SSH subprocess ownership
+
+`ManagedSshProcess` remains a narrow ownership wrapper rather than a session
+abstraction. It delegates process status and termination to the underlying
+SSH subprocess and owns exactly one `_StderrDrain`. Standard input and output
+remain available to the session protocol or forwarding-readiness owner, while
+the stderr pipe is detached from the subprocess object and transferred to the
+drain so that it has only one local owner.
+
+The per-process drain thread is required because a long-lived SSH client may
+emit more diagnostic data than an operating-system pipe can hold while its
+stdout still carries protocol or readiness data. The drain retains only a
+bounded byte tail. A lock protects that tail because failure observation may
+read it while the drain thread is still appending data.
+
+Shutdown waits for drain completion and thread exit within one shared bounded
+budget before closing the stderr stream. Closing a buffered pipe while another
+thread is blocked in `read()` can itself block on the stream's internal lock.
+If the SSH process or a descendant still holds the write side and EOF does not
+arrive, cleanup therefore reports failure and retains the stream rather than
+turning stream disposal into an unbounded wait. Close serialization and an
+explicit closed flag keep repeated cleanup attempts harmless. The drain thread
+is a daemon so an uncooperative inherited writer cannot hold local process
+shutdown open indefinitely.
+
+This separation is intentional: `RemoteSession` decides when subprocess
+cleanup occurs, `ManagedSshProcess` exposes process control and diagnostic
+access, and `_StderrDrain` alone owns stderr consumption and disposal. Removing
+the wrapper, drain thread, bounded tail, or bounded reader shutdown would
+either introduce dual ownership, permit pipe backpressure to stall the
+session, lose actionable SSH diagnostics, or make cleanup potentially
+unbounded. No additional transport abstraction is warranted.
+
 `RemoteSession` is the sole local whole-session resource owner. It is acquired
 once through `RemoteSession.open()`, which returns only a usable session, and
 is released once through cleanup-only `RemoteSession.close()`. A session is
