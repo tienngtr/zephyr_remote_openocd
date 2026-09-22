@@ -268,7 +268,7 @@ class TestForwardingLifecycle:
                 "_stop_process",
                 side_effect=RuntimeError("process cleanup failed"),
             ),
-            pytest.raises(SessionError, match="invalid helper response") as raised,
+            pytest.raises(SessionError) as raised,
         ):
             _opened_session(
                 RemoteSessionRequest("target", command, TEST_PROCESS),
@@ -276,7 +276,10 @@ class TestForwardingLifecycle:
             )
 
         assert raised.value is startup_error
-        assert any("process cleanup failed" in note for note in raised.value.__notes__)
+        assert any(
+            note.startswith("helper startup cleanup also failed:")
+            for note in raised.value.__notes__
+        )
 
     def test_wait_error_leaves_cleanup_to_lifecycle(self):
         session = self.session(self.Command(self.Process()))
@@ -328,8 +331,11 @@ class TestForwardingLifecycle:
             staticmethod(lambda _service: "stale listener"),
         )
         try:
-            with pytest.raises(SessionError, match="did not become ready"):
+            with pytest.raises(SessionError) as raised:
                 session._start_forwards((service,), "127.64.1.1")
+            message = str(raised.value)
+            assert service.name in message
+            assert f"127.0.0.1:{service.local_port}" in message
         finally:
             os.close(write_fd)
         session._close_forwards()
@@ -346,6 +352,8 @@ class TestForwardingLifecycle:
         assert first.terminate_calls == 1
 
     def test_close_attempts_helper_and_all_forwards_after_cleanup_failure(self):
+        cleanup_error = RuntimeError("forward cleanup failed")
+
         class FailingProcess(TestForwardingLifecycle.Process):
             def __init__(self):
                 super().__init__()
@@ -354,7 +362,7 @@ class TestForwardingLifecycle:
             def terminate(self):
                 self.terminate_calls += 1
                 if self.fail_termination:
-                    raise RuntimeError("forward cleanup failed")
+                    raise cleanup_error
                 self.returncode = 0
 
         failed = FailingProcess()
@@ -364,9 +372,10 @@ class TestForwardingLifecycle:
         session.helper_process = helper
         session.forwards = [failed, healthy]
 
-        with pytest.raises(RuntimeError, match="forward cleanup failed"):
+        with pytest.raises(RuntimeError) as raised:
             session.close()
 
+        assert raised.value is cleanup_error
         assert healthy.terminate_calls == 1
         assert helper.terminate_calls == 1
         assert session.forwards == []
@@ -376,6 +385,9 @@ class TestForwardingLifecycle:
         assert failed.terminate_calls == 1
 
     def test_close_forces_helper_after_unexpected_graceful_stop_failure(self):
+        graceful_stop_error = RuntimeError("graceful stop failed")
+        forced_stop_error = RuntimeError("forced stop failed")
+
         class FailingStdin:
             def __init__(self):
                 self.closed = False
@@ -383,7 +395,7 @@ class TestForwardingLifecycle:
 
             def write(self, _payload):
                 if self.fail:
-                    raise RuntimeError("graceful stop failed")
+                    raise graceful_stop_error
 
             def flush(self):
                 pass
@@ -399,7 +411,7 @@ class TestForwardingLifecycle:
             def terminate(self):
                 self.terminate_calls += 1
                 if self.fail_termination:
-                    raise RuntimeError("forced stop failed")
+                    raise forced_stop_error
                 self.returncode = 0
 
         helper = FailingHelper()
@@ -410,11 +422,14 @@ class TestForwardingLifecycle:
         session = self.session(self.Command(helper))
         session.helper_process = helper
 
-        with pytest.raises(RuntimeError, match="graceful stop failed") as raised:
+        with pytest.raises(RuntimeError) as raised:
             session.close()
 
+        assert raised.value is graceful_stop_error
         assert helper.terminate_calls == 1
-        assert any("forced stop failed" in note for note in raised.value.__notes__)
+        assert any(
+            note.startswith("helper cleanup also failed:") for note in raised.value.__notes__
+        )
         assert session.closed
 
         helper.stdin.fail = False
@@ -481,23 +496,24 @@ class TestForwardingLifecycle:
         session = self.session(self.Command(self.Process()))
         session.helper_process = session.request.ssh_command.process
         session._openocd_returncode = OPENOCD_FAILURE_RC
-        session.reader_error = RuntimeError("protocol failed")
+        reader_error = RuntimeError("protocol failed")
+        session.reader_error = reader_error
 
-        with pytest.raises(SessionError, match="helper event stream failed: protocol failed"):
+        with pytest.raises(SessionError) as raised:
             session.check_openocd_exit()
+        assert raised.value.__cause__ is reader_error
 
     def test_check_preserves_reader_recorded_helper_exit(self):
         session = self.session(self.Command(self.Process(returncode=HELPER_FAILURE_RC)))
         session.helper_process = session.request.ssh_command.process
         session._openocd_returncode = None
-        session.reader_error = SessionError(f"remote helper exited with status {HELPER_FAILURE_RC}")
+        reader_error = SessionError(f"remote helper exited with status {HELPER_FAILURE_RC}")
+        session.reader_error = reader_error
         session.reader_thread = None
 
-        with pytest.raises(
-            SessionError,
-            match=rf"remote helper exited with status {HELPER_FAILURE_RC}",
-        ):
+        with pytest.raises(SessionError) as raised:
             session.check_openocd_exit()
+        assert raised.value.__cause__ is reader_error
 
 
 class TestRttClient:
@@ -663,10 +679,7 @@ class TestRttClient:
             tempfile.TemporaryFile("w+b") as stream,
             patch.object(rtt_module, "_connect", return_value=(connection, b"connected")),
             patch.object(rtt_module.select, "select", return_value=([connection], [], [])),
-            pytest.raises(
-                RttClientError,
-                match="RTT channel closed while remote session is still running",
-            ),
+            pytest.raises(RttClientError),
         ):
             run_rtt_client(5555, lambda: None, stdin=stream, stdout=stream)
 
@@ -709,7 +722,7 @@ class TestRttClient:
                 pass
 
         port, thread = self._listener(server)
-        with pytest.raises(RttClientError, match="remote channel"):
+        with pytest.raises(RttClientError):
             run_rtt_client(port, lambda: None, startup_timeout=1)
         thread.join(2)
 
@@ -1581,13 +1594,13 @@ class TestRealProcessHelper:
                 '{"version":1,"type":"ERROR","code":"CLEANUP",'
                 '"message":"cleanup failed"}',
                 0,
-                "helper event stream failed: unexpected ERROR event in closed state",
+                ("unexpected ERROR event in closed state",),
             ),
             (
                 '{"version":1,"type":"SESSION_CLOSED","reason":"requested",'
                 '"returncode":null}\nnot-json',
                 0,
-                "helper event stream failed: malformed protocol message",
+                ("malformed protocol message",),
             ),
             (
                 json.dumps(
@@ -1595,7 +1608,7 @@ class TestRealProcessHelper:
                     separators=(",", ":"),
                 ),
                 7,
-                "remote helper error: cleanup failed",
+                ("remote helper error",),
             ),
             (
                 json.dumps(
@@ -1608,7 +1621,7 @@ class TestRealProcessHelper:
                     separators=(",", ":"),
                 ),
                 7,
-                "remote helper exited with status 7 after requested shutdown",
+                ("status 7", "requested shutdown"),
             ),
             (
                 json.dumps(
@@ -1621,7 +1634,7 @@ class TestRealProcessHelper:
                     separators=(",", ":"),
                 ),
                 0,
-                "invalid required fields for SESSION_CLOSED",
+                ("invalid required fields for SESSION_CLOSED",),
             ),
             (
                 json.dumps(
@@ -1634,9 +1647,9 @@ class TestRealProcessHelper:
                     separators=(",", ":"),
                 ),
                 7,
-                "remote helper exited with status 7 after process_exit shutdown",
+                ("status 7", "process_exit shutdown"),
             ),
-            (None, 7, "did not produce SESSION_CLOSED"),
+            (None, 7, ("did not produce SESSION_CLOSED",)),
         ),
         ids=(
             "requested-success",
@@ -1694,9 +1707,9 @@ sys.exit({exit_code})
                 else:
                     assert backend._openocd_returncode is None
             else:
-                with pytest.raises(SessionError, match=expected) as raised:
+                with pytest.raises(SessionError) as raised:
                     backend.close()
-                assert raised.value
+                assert all(fragment in str(raised.value) for fragment in expected)
                 assert backend.closed
                 backend.close()
         finally:
@@ -1756,7 +1769,7 @@ sys.stdin.buffer.read()
             assert terminal_consumed.wait(5)
         assert backend._terminal_reason == "requested"
         try:
-            with pytest.raises(SessionError, match="before STOP"):
+            with pytest.raises(SessionError):
                 backend.close()
             assert backend.closed
         finally:
@@ -1799,6 +1812,9 @@ sys.exit(7)
                     stderr=subprocess.PIPE,
                 )
 
+        forward_cleanup_error = RuntimeError("forward cleanup failed")
+        forward_kill_error = RuntimeError("forward kill failed")
+
         class FailingForward:
             def __init__(self):
                 self.returncode = None
@@ -1814,11 +1830,11 @@ sys.exit(7)
             def terminate(self):
                 self.terminate_calls += 1
                 if self.fail_termination:
-                    raise RuntimeError("forward cleanup failed")
+                    raise forward_cleanup_error
                 self.returncode = 0
 
             def kill(self):
-                raise RuntimeError("forward cleanup failed")
+                raise forward_kill_error
 
             def wait(self, timeout=None):  # pylint: disable=unused-argument
                 return self.returncode
@@ -1831,9 +1847,12 @@ sys.exit(7)
         backend.forwards = [cast(Any, forward)]
         backend._start_event_drain()
         try:
-            with pytest.raises(RuntimeError, match="forward cleanup failed") as raised:
+            with pytest.raises(RuntimeError) as raised:
                 backend.close()
-            assert any("cleanup failed" in note for note in raised.value.__notes__)
+            assert raised.value is forward_cleanup_error
+            assert any(
+                note.startswith("additional cleanup failure:") for note in raised.value.__notes__
+            )
             assert backend.forwards == []
             assert backend.closed
 

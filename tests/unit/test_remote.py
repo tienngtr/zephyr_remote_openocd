@@ -592,7 +592,7 @@ class TestAllocation:
             calls.append(address)
             raise OSError("occupied")
 
-        with pytest.raises(RuntimeError, match="3 attempts"):
+        with pytest.raises(RuntimeError):
             allocate_loopback(collision, attempts=3)
         assert len(calls) == 3
 

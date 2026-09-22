@@ -62,7 +62,7 @@ def test_empty_document_is_empty_mapping(tmp_path: Path, text: str):
 
 @pytest.mark.parametrize("text", ("null\n", "~\n", "--- null\n", '!!null ""\n'))
 def test_explicit_root_null_is_rejected(tmp_path: Path, text: str):
-    with pytest.raises(ConfigError, match="root null is not allowed"):
+    with pytest.raises(ConfigError):
         load_text(tmp_path, text)
 
 

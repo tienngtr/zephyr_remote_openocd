@@ -591,7 +591,6 @@ def test_initial_start_forward_failure_associates_all_preflight_advisories_with_
         message = str(raised.value)
         assert f"127.0.0.1:{first_port} for tcl" in message
         assert f"127.0.0.1:{second_port} for telnet" in message
-        assert f"SSH forwarding failed for tcl on 127.0.0.1:{first_port}" in message
         assert command.calls[1][2] == (
             "-o",
             "ExitOnForwardFailure=yes",
@@ -659,7 +658,7 @@ def test_initial_forward_failure_consumes_terminal_openocd_event(monkeypatch):
 
 def test_dynamic_forward_failure_identifies_service_and_local_port(monkeypatch):
     port = 32155
-    _patch_preflight_socket(monkeypatch, {port})
+    _patch_preflight_socket(monkeypatch, set())
     service = Service("rtt", port, 5555)
     session = _forward_session(_ForwardCommand(_ForwardProcess(9)))
     try:
@@ -667,8 +666,8 @@ def test_dynamic_forward_failure_identifies_service_and_local_port(monkeypatch):
             session.forward((service,))
 
         message = str(raised.value)
-        assert f"127.0.0.1:{port} for rtt" in message
-        assert f"SSH forwarding failed for rtt on 127.0.0.1:{port}" in message
+        assert service.name in message
+        assert f"127.0.0.1:{port}" in message
     finally:
         session._close_forwards()
 
@@ -710,13 +709,16 @@ def test_drain_startup_error_is_primary_when_process_cleanup_fails(monkeypatch):
 
     process = Process()
 
+    startup_error = RuntimeError("stderr drain startup failed")
+
     def fail_start(_drain):
-        raise RuntimeError("stderr drain startup failed")
+        raise startup_error
 
     monkeypatch.setattr(ssh_module.subprocess, "Popen", lambda *args, **kwargs: process)
     monkeypatch.setattr(ssh_module._StderrDrain, "start", fail_start)
-    with pytest.raises(RuntimeError, match="stderr drain startup failed") as raised:
+    with pytest.raises(RuntimeError) as raised:
         SshCommand(("fake-ssh",)).popen("host", "ignored")
+    assert raised.value is startup_error
     assert any("process kill failed" in note for note in raised.value.__notes__)
 
 

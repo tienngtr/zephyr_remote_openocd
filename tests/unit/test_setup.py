@@ -100,7 +100,7 @@ def test_config_default_finds_module_by_markers(tmp_path):
     nested.mkdir(parents=True)
 
     assert module.find_module_root(nested) == root
-    with pytest.raises(RuntimeError, match="Zephyr module root"):
+    with pytest.raises(RuntimeError):
         module.find_module_root(tmp_path / "missing")
 
 

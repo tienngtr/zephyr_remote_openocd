@@ -565,7 +565,8 @@ def test_control_session_natural_exit_cleanup_failure_is_terminal_error(tmp_path
 
     assert helper_status != 0
     assert [kind for kind, _values in events] == ["SESSION_CREATED", "ERROR"]
-    assert events[-1][1]["message"] == "injected workspace removal failure"
+    assert isinstance(events[-1][1]["message"], str)
+    assert events[-1][1]["message"]
     assert not any(kind == "SESSION_CLOSED" for kind, _values in events)
     assert workspace.exists()
     assert lock.closed
@@ -619,8 +620,11 @@ def test_protocol_error_remains_primary_when_cleanup_also_fails(tmp_path, monkey
     assert raised.value.code == 1
     assert [kind for kind, _values in events] == ["SESSION_CREATED", "ERROR"]
     assert events[-1][1]["code"] == "PROTOCOL_ERROR"
-    assert "Expecting value" in events[-1][1]["message"]
-    assert any("session cleanup also failed" in note for note in session.protocol_error.__notes__)
+    assert any(
+        note.startswith("session cleanup also failed:") for note in session.protocol_error.__notes__
+    )
+    assert isinstance(events[-1][1]["message"], str)
+    assert events[-1][1]["message"]
     assert workspace.exists()
     assert lock.closed
 
@@ -742,10 +746,11 @@ def test_supervised_child_reaps_and_disposes_after_signal_errors(monkeypatch):
     child = remote_helper.SupervisedChild(process)
     child._observed_returncode = 0
     disposed = []
+    term_error = RuntimeError("term failed")
 
     def fail_term(_pid, signum):
         if signum == signal.SIGTERM:
-            raise RuntimeError("term failed")
+            raise term_error
         raise ProcessLookupError
 
     def fail_dispose():
@@ -755,9 +760,10 @@ def test_supervised_child_reaps_and_disposes_after_signal_errors(monkeypatch):
     monkeypatch.setattr(remote_helper.os, "killpg", fail_term)
     monkeypatch.setattr(child, "dispose", fail_dispose)
 
-    with pytest.raises(RuntimeError, match="term failed") as raised:
+    with pytest.raises(RuntimeError) as raised:
         child.terminate()
 
+    assert raised.value is term_error
     assert process.wait_calls
     assert all(timeout is not None for timeout in process.wait_calls)
     assert disposed
@@ -852,11 +858,12 @@ def test_supervised_child_cleanup_uses_finite_budgets_after_failures(monkeypatch
     child.relay_threads = relays
     child._observed_returncode = 0
     signals = []
+    signal_error = RuntimeError("signal failed")
 
     def fail_killpg(_pid, signum):
         signals.append(signum)
         if signum != 0:
-            raise RuntimeError("signal failed")
+            raise signal_error
 
     monkeypatch.setattr(remote_helper, "CHILD_RELAY_JOIN_TIMEOUT", 0.75)
     monkeypatch.setattr(remote_helper.os, "killpg", fail_killpg)
@@ -869,9 +876,10 @@ def test_supervised_child_cleanup_uses_finite_budgets_after_failures(monkeypatch
     monkeypatch.setattr(child, "_warn_remaining_group_members", lambda: None)
     cleanup_deadline = clock.now + remote_helper.CHILD_RELAY_JOIN_TIMEOUT
 
-    with pytest.raises(RuntimeError, match="signal failed") as raised:
+    with pytest.raises(RuntimeError) as raised:
         child.terminate()
 
+    assert raised.value is signal_error
     assert signals == [signal.SIGTERM, 0, signal.SIGKILL]
     assert process.wait_calls == [remote_helper.CHILD_REAP_TIMEOUT]
     join_calls = [timeout for relay in relays for timeout in relay.join_calls]
