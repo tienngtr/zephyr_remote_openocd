@@ -554,11 +554,20 @@ class TestRttClient:
         input_read, input_write = os.pipe()
         os.write(input_write, b"pending input")
         os.close(input_write)
-        polls: list[None] = []
+        input_became_readable = False
+        observed_after_input = False
 
         def poll_session():
-            polls.append(None)
-            return 0 if len(polls) == 2 else None
+            nonlocal observed_after_input
+            if input_became_readable:
+                observed_after_input = True
+                return 0
+            return None
+
+        def select_input(_readable, _writable, _exceptional, _timeout):
+            nonlocal input_became_readable
+            input_became_readable = True
+            return [stdin.fileno()], [], []
 
         with (
             os.fdopen(input_read, "rb", buffering=0) as stdin,
@@ -567,22 +576,28 @@ class TestRttClient:
             patch.object(
                 rtt_module.select,
                 "select",
-                return_value=([stdin.fileno()], [], []),
+                side_effect=select_input,
             ) as select_call,
         ):
             input_fd = stdin.fileno()
             assert run_rtt_client(5555, poll_session, stdin=stdin, stdout=stdout) == 0
 
-        assert polls == [None, None]
+        assert observed_after_input
         select_call.assert_called_once_with((input_fd, connection), (), (), 0.1)
 
     def test_full_input_queue_pauses_and_resumes_stdin_after_partial_send(self, monkeypatch):
+        input_resumed = False
+        input_forwarded_after_resume = False
+
         class Connection:
             def __init__(self):
                 self.sent = []
 
             def send(self, payload):
+                nonlocal input_forwarded_after_resume
                 self.sent.append(bytes(payload))
+                if input_resumed:
+                    input_forwarded_after_resume = True
                 return 2
 
             def close(self):
@@ -594,11 +609,18 @@ class TestRttClient:
         input_read, input_write = os.pipe()
         os.write(input_write, b"abcdefgh")
         os.close(input_write)
-        polls: list[None] = []
 
         def poll_session():
-            polls.append(None)
-            return 0 if len(polls) == 4 else None
+            return 0 if input_forwarded_after_resume else None
+
+        def select_io(_readable, _writable, _exceptional, _timeout):
+            nonlocal input_resumed
+            if not connection.sent:
+                if _writable:
+                    return [], [connection], []
+                return [input_fd], [], []
+            input_resumed = True
+            return [input_fd], [connection], []
 
         with (
             os.fdopen(input_read, "rb", buffering=0) as stdin,
@@ -610,16 +632,12 @@ class TestRttClient:
                 patch.object(
                     rtt_module.select,
                     "select",
-                    side_effect=(
-                        ([input_fd], [], []),
-                        ([], [connection], []),
-                        ([input_fd], [connection], []),
-                    ),
+                    side_effect=select_io,
                 ) as select_call,
             ):
                 assert run_rtt_client(5555, poll_session, stdin=stdin, stdout=stdout) == 0
 
-        assert polls == [None, None, None, None]
+        assert input_forwarded_after_resume
         assert connection.sent == [b"abcd", b"cdef"]
         assert [call.args[:2] for call in select_call.call_args_list] == [
             ((input_fd, connection), ()),
@@ -691,12 +709,27 @@ class TestRttClient:
         thread.join(2)
 
     def test_tty_preserves_signals_and_restores_complete_state(self):
+        input_closed = False
+        channel_closed = False
+
         class Connection:
             def recv(self, _size):
+                nonlocal channel_closed
+                channel_closed = True
                 return b""
 
             def close(self):
                 pass
+
+        def read_input(_fd, _size):
+            nonlocal input_closed
+            input_closed = True
+            return b""
+
+        def select_io(_readable, _writable, _exceptional, _timeout):
+            if input_closed:
+                return [connection], [], []
+            return [stream.fileno()], [], []
 
         original = [
             1,
@@ -708,16 +741,15 @@ class TestRttClient:
             [7],
         ]
         connection = Connection()
-        poll_results = iter((None, None, 0))
         with (
             tempfile.TemporaryFile("w+b") as stream,
             patch.object(rtt_module, "_connect", return_value=(connection, b"")),
             patch.object(rtt_module.os, "isatty", return_value=True),
-            patch.object(rtt_module.os, "read", return_value=b""),
+            patch.object(rtt_module.os, "read", side_effect=read_input),
             patch.object(
                 rtt_module.select,
                 "select",
-                side_effect=[([stream.fileno()], [], []), ([connection], [], [])],
+                side_effect=select_io,
             ),
             patch.object(
                 rtt_module.termios,
@@ -729,7 +761,7 @@ class TestRttClient:
             assert (
                 run_rtt_client(
                     5555,
-                    lambda: next(poll_results),
+                    lambda: 0 if channel_closed else None,
                     stdin=stream,
                     stdout=stream,
                 )

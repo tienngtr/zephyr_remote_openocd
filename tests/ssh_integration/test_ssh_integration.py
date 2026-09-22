@@ -309,8 +309,41 @@ class TestSshTransportIntegration:
             with pytest.raises(SessionError):
                 session.wait_for_openocd_exit(timeout=20)
         finally:
-            with pytest.raises(SessionError, match="did not produce SESSION_CLOSED"):
+            with pytest.raises(SessionError, match="SESSION_CLOSED"):
                 session.close()
+        assert session.closed
+        result = self.ssh.run(
+            self.host,
+            f"test ! -e {shlex.quote(descriptor.remote_workspace)}",
+            timeout=20,
+        )
+        assert result.returncode == 0, result.stderr.decode(errors="replace")
+
+    def test_owned_forward_loss_is_reported_and_session_cleans_up(self):
+        """An established session reports loss of its own SSH forward."""
+        local_port = free_loopback_port()
+        session = RemoteSession.open(
+            RemoteSessionRequest(
+                self.host,
+                self.ssh,
+                session_echo_process(),
+                services=(Service("gdb", local_port, 3333),),
+            )
+        )
+        assert session.descriptor is not None
+        descriptor = session.descriptor
+        try:
+            forward = session.forwards[0]
+            forward.terminate()
+            forward.wait(timeout=20)
+
+            with pytest.raises(SessionError, match="SSH forwarding exited"):
+                session.check_openocd_exit()
+
+            session.close()
+        finally:
+            session.close()
+
         assert session.closed
         result = self.ssh.run(
             self.host,
