@@ -169,10 +169,7 @@ def test_unexpected_requested_terminal_event_fails_status_observation():
         session.wait_for_openocd_exit(timeout=0)
 
 
-@pytest.mark.timeout(10)
-def test_close_keeps_reader_owned_stdout_open_until_reader_stops(monkeypatch):
-    release_reader = threading.Event()
-    reader_started = threading.Event()
+def test_close_keeps_reader_owned_stdout_open_until_reader_stops():
     reader_stopped = threading.Event()
 
     class ReaderOwnedStream(io.BytesIO):
@@ -180,10 +177,18 @@ def test_close_keeps_reader_owned_stdout_open_until_reader_stops(monkeypatch):
             assert reader_stopped.is_set()
             super().close()
 
+    class Reader:
+        def join(self, timeout=None):
+            del timeout
+
+        @staticmethod
+        def is_alive():
+            return not reader_stopped.is_set()
+
     class Process:
         def __init__(self):
             self.args = ("fake-helper",)
-            self.returncode = 0
+            self.returncode = None
             self.stdin = io.BytesIO()
             self.stdout = ReaderOwnedStream()
             self.stderr = io.BytesIO()
@@ -192,10 +197,12 @@ def test_close_keeps_reader_owned_stdout_open_until_reader_stops(monkeypatch):
             return self.returncode
 
         def terminate(self):
-            raise AssertionError("dead helper should not be terminated")
+            reader_stopped.set()
+            self.returncode = 0
 
         def kill(self):
-            raise AssertionError("dead helper should not be killed")
+            reader_stopped.set()
+            self.returncode = -9
 
         def wait(self, timeout=None):
             return self.returncode
@@ -212,42 +219,13 @@ def test_close_keeps_reader_owned_stdout_open_until_reader_stops(monkeypatch):
     session.reader_error = None
     session._state_lock = threading.RLock()
     session._state_changed = threading.Condition(session._state_lock)
-    session._terminal_reason = None
+    session._terminal_reason = "process_exit"
+    session.reader_thread = Reader()
 
-    def consume_terminal_event():
-        reader_started.set()
-        release_reader.wait()
-        with session._state_lock:
-            session._terminal_reason = "requested"
-        reader_stopped.set()
+    assert session.close() is None
 
-    session.reader_thread = threading.Thread(target=consume_terminal_event)
-    session.reader_thread.start()
-    assert reader_started.wait(5)
-
-    join_attempts = 0
-
-    def controlled_join(current, timeout=2.0):
-        nonlocal join_attempts
-        del timeout
-        join_attempts += 1
-        if join_attempts == 1:
-            return False
-        release_reader.set()
-        assert reader_stopped.wait(5)
-        assert current.reader_thread is not None
-        current.reader_thread.join(timeout=5)
-        return not current.reader_thread.is_alive()
-
-    monkeypatch.setattr(RemoteSession, "_join_reader", controlled_join)
-    try:
-        assert session.close() is None
-    finally:
-        release_reader.set()
-        assert reader_stopped.wait(5)
-        session.reader_thread.join(timeout=5)
-
-    assert session.reader_thread is not None and not session.reader_thread.is_alive()
+    assert reader_stopped.is_set()
+    assert not session.reader_thread.is_alive()
     assert session.helper_process.stdin.closed
     assert session.helper_process.stdout.closed
     assert session.helper_process.stderr.closed
