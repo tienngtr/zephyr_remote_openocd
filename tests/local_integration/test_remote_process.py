@@ -280,6 +280,7 @@ class TestForwardingLifecycle:
             note.startswith("helper startup cleanup also failed:")
             for note in raised.value.__notes__
         )
+        assert any("process cleanup failed" in note for note in raised.value.__notes__)
 
     def test_wait_error_leaves_cleanup_to_lifecycle(self):
         session = self.session(self.Command(self.Process()))
@@ -430,6 +431,7 @@ class TestForwardingLifecycle:
         assert any(
             note.startswith("helper cleanup also failed:") for note in raised.value.__notes__
         )
+        assert any(str(forced_stop_error) in note for note in raised.value.__notes__)
         assert session.closed
 
         helper.stdin.fail = False
@@ -1861,6 +1863,7 @@ sys.exit(7)
             assert any(
                 note.startswith("additional cleanup failure:") for note in raised.value.__notes__
             )
+            assert any("cleanup failed" in note for note in raised.value.__notes__)
             assert backend.forwards == []
             assert backend.closed
 

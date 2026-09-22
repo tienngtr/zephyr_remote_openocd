@@ -311,7 +311,9 @@ def test_stderr_tail_waits_for_delayed_eof_with_a_bounded_timeout(monkeypatch):
         assert suffix_read.is_set()
         assert wait_timeouts
         assert all(
-            timeout is not None and math.isfinite(timeout) and timeout > 0
+            timeout is not None
+            and math.isfinite(timeout)
+            and 0 < timeout <= ssh_module._SSH_STDERR_JOIN_TIMEOUT
             for timeout in wait_timeouts
         )
     finally:

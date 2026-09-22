@@ -624,6 +624,9 @@ def test_protocol_error_remains_primary_when_cleanup_also_fails(tmp_path, monkey
     assert any(
         note.startswith("session cleanup also failed:") for note in session.protocol_error.__notes__
     )
+    assert any(
+        "injected workspace removal failure" in note for note in session.protocol_error.__notes__
+    )
     assert isinstance(events[-1][1]["message"], str)
     assert events[-1][1]["message"]
     assert workspace.exists()
@@ -888,7 +891,9 @@ def test_supervised_child_cleanup_uses_finite_budgets_after_failures(monkeypatch
     assert signals.index(signal.SIGTERM) < signals.index(signal.SIGKILL)
     assert process.wait_calls
     assert all(
-        timeout is not None and math.isfinite(timeout) and timeout > 0
+        timeout is not None
+        and math.isfinite(timeout)
+        and 0 < timeout <= remote_helper.CHILD_REAP_TIMEOUT
         for timeout in process.wait_calls
     )
     join_calls = [timeout for relay in relays for timeout in relay.join_calls]

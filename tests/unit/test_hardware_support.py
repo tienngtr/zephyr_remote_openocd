@@ -148,5 +148,5 @@ def test_elf_memory_witness_ignores_load_segment_padding(tmp_path: Path) -> None
     before_path.write_bytes(original)
     selected_path.write_bytes(selected_data)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="loadable-section witness"):
         elf_memory_witness(before_path, selected_path, size=1)
