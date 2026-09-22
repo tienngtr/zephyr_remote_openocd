@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from zephyr_remote_openocd.remote.backend import RemoteSession
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
+from zephyr_remote_openocd.remote.helper_client import _HelperClient
 from zephyr_remote_openocd.remote.model import RemoteProcess, RemoteSessionRequest, Service
 from zephyr_remote_openocd.remote.ssh import SshCommand
 
@@ -106,5 +107,10 @@ def test_forward_progresses_when_configured_ssh_stderr_exceeds_pipe_capacity(tmp
 
 def _opened_session(*args, **kwargs):
     session = RemoteSession(*args, **kwargs)
-    session._open_helper()
+    session._helper = _HelperClient.open(
+        session.request.ssh_command,
+        session.request.host,
+        session.deployment,
+        output_handler=session._output_handler,
+    )
     return session

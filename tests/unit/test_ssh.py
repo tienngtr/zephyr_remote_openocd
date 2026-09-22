@@ -18,10 +18,12 @@ from unittest.mock import patch
 import pytest
 from zephyr_remote_openocd.remote import backend as backend_module
 from zephyr_remote_openocd.remote import forwarding as forwarding_module
+from zephyr_remote_openocd.remote import helper_client as helper_client_module
 from zephyr_remote_openocd.remote import ssh as ssh_module
 from zephyr_remote_openocd.remote.backend import RemoteSession
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
 from zephyr_remote_openocd.remote.forwarding import _ForwardManager
+from zephyr_remote_openocd.remote.helper_client import _HelperClient
 from zephyr_remote_openocd.remote.model import (
     RemoteProcess,
     RemoteSessionRequest,
@@ -186,7 +188,7 @@ def test_helper_startup_timeout_does_not_block_on_partial_output(monkeypatch):
         def select(self, _timeout):
             if not self.delivered:
                 self.delivered = True
-                clock.now = backend_module.HELPER_START_TIMEOUT + 1
+                clock.now = helper_client_module.HELPER_START_TIMEOUT + 1
                 return [(None, None)]
             return []
 
@@ -198,12 +200,13 @@ def test_helper_startup_timeout_does_not_block_on_partial_output(monkeypatch):
     clock = Clock()
     try:
         os.write(write_fd, b'{"version":1,"type":"SESSION_CREATED"')
-        monkeypatch.setattr(backend_module.time, "monotonic", clock.monotonic)
-        monkeypatch.setattr(backend_module.selectors, "DefaultSelector", Selector)
+        monkeypatch.setattr(helper_client_module.time, "monotonic", clock.monotonic)
+        monkeypatch.setattr(helper_client_module.selectors, "DefaultSelector", Selector)
 
         with pytest.raises(SessionError) as raised:
-            _opened_session(
-                RemoteSessionRequest("host", Command(), RemoteProcess(("child",))),
+            _HelperClient.open(
+                Command(),
+                "host",
                 DeploymentResult("/helper.py", "digest", False),
             )
 
@@ -423,9 +426,9 @@ def test_helper_output_delivery_does_not_retain_event_history():
     )
     try:
         backend._start_process(())
-        assert backend.reader_thread is not None
-        backend.reader_thread.join(timeout=10)
-        assert not backend.reader_thread.is_alive()
+        assert backend._helper._reader_thread is not None
+        backend._helper._reader_thread.join(timeout=10)
+        assert not backend._helper._reader_thread.is_alive()
         command.process.writer.join(timeout=10)
         assert not command.process.writer.is_alive()
         assert handled == [
@@ -602,13 +605,13 @@ def test_initial_forward_failure_consumes_terminal_openocd_event(monkeypatch):
         services=(Service("gdb", 3333, 3333),),
     )
     deployment = DeploymentResult("/helper.py", "digest", False)
-    dispatch = RemoteSession._dispatch
+    dispatch = _HelperClient._dispatch
 
     monkeypatch.setattr(backend_module, "deploy_helper", lambda *_args: deployment)
     monkeypatch.setattr(RemoteSession, "_stage", lambda _session, _files: None)
 
-    def observe_terminal(session, event):
-        dispatch(session, event)
+    def observe_terminal(helper_client, event):
+        dispatch(helper_client, event)
         if event["type"] == "SESSION_CLOSED":
             terminal_seen.set()
 
@@ -616,7 +619,7 @@ def test_initial_forward_failure_consumes_terminal_openocd_event(monkeypatch):
         assert terminal_seen.wait(5)
         raise forward_error
 
-    monkeypatch.setattr(RemoteSession, "_dispatch", observe_terminal)
+    monkeypatch.setattr(_HelperClient, "_dispatch", observe_terminal)
     monkeypatch.setattr(_ForwardManager, "start", fail_forwards)
 
     with pytest.raises(SessionError) as raised:
@@ -710,5 +713,10 @@ def test_drain_startup_error_is_primary_when_process_cleanup_fails(monkeypatch):
 
 def _opened_session(*args, **kwargs):
     session = RemoteSession(*args, **kwargs)
-    session._open_helper()
+    session._helper = _HelperClient.open(
+        session.request.ssh_command,
+        session.request.host,
+        session.deployment,
+        output_handler=session._output_handler,
+    )
     return session

@@ -293,11 +293,26 @@ class TestSshTransportIntegration:
 
     def test_helper_ssh_loss_cleans_session(self):
         """Losing the helper SSH process cleans the session."""
+
+        class RecordingSshCommand(SshCommand):
+            helper_processes: list
+
+            def __post_init__(self):
+                super().__post_init__()
+                object.__setattr__(self, "helper_processes", [])
+
+            def popen(self, host, remote_command, *extra_args):
+                process = super().popen(host, remote_command, *extra_args)
+                if remote_command.endswith(" control"):
+                    self.helper_processes.append(process)
+                return process
+
         local_port = free_loopback_port()
+        ssh = RecordingSshCommand(self.ssh_settings.ssh_command)
         session = RemoteSession.open(
             RemoteSessionRequest(
                 self.host,
-                self.ssh,
+                ssh,
                 session_echo_process(),
                 services=(Service("gdb", local_port, 3333),),
             )
@@ -305,8 +320,9 @@ class TestSshTransportIntegration:
         assert session.descriptor is not None
         descriptor = session.descriptor
         try:
-            session.helper_process.terminate()
-            session.helper_process.wait(timeout=20)
+            helper_process = ssh.helper_processes[0]
+            helper_process.terminate()
+            helper_process.wait(timeout=20)
             with pytest.raises(SessionError):
                 session.wait_for_openocd_exit(timeout=20)
         finally:

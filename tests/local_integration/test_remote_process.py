@@ -23,6 +23,7 @@ from unittest.mock import patch
 import pytest
 from zephyr_remote_openocd.remote import backend as backend_module
 from zephyr_remote_openocd.remote import forwarding as forwarding_module
+from zephyr_remote_openocd.remote import helper_client as helper_client_module
 from zephyr_remote_openocd.remote import rtt as rtt_module
 from zephyr_remote_openocd.remote.backend import (
     RemoteSession,
@@ -30,6 +31,7 @@ from zephyr_remote_openocd.remote.backend import (
 )
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
 from zephyr_remote_openocd.remote.forwarding import _ForwardManager
+from zephyr_remote_openocd.remote.helper_client import _HelperClient
 from zephyr_remote_openocd.remote.model import (
     RemoteProcess,
     RemoteSessionRequest,
@@ -46,10 +48,7 @@ from zephyr_remote_openocd.remote.rtt import RttClientError, run_rtt_client
 from zephyr_remote_openocd.remote.services import (
     LOOPBACK_RANGE,
 )
-from zephyr_remote_openocd.remote.session import (
-    SessionError,
-    _SessionState,
-)
+from zephyr_remote_openocd.remote.session import SessionError
 from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand
 from zephyr_remote_openocd.remote.staging import build_archive
 
@@ -185,14 +184,15 @@ class TestForwardingLifecycle:
 
     @staticmethod
     def session(command):
-        session = cast(Any, object.__new__(RemoteSession))
-        session.request = RemoteSessionRequest("target", command, TEST_PROCESS)
-        session._forwards = _ForwardManager(command, "target")
-        session.closed = False
-        session.output_handler = None
-        session._state = _SessionState()
-        session.reader_thread = None
-        session._order = EventOrder()
+        session = RemoteSession(
+            RemoteSessionRequest("target", command, TEST_PROCESS),
+            DeploymentResult("/helper.py", "digest", False),
+        )
+        helper = _HelperClient(command, "target", session.deployment)
+        helper._process = command.process
+        helper._allocation = SessionAllocation("session", "/workspace")
+        helper._order = EventOrder()
+        session._helper = helper
         return session
 
     @staticmethod
@@ -243,7 +243,7 @@ class TestForwardingLifecycle:
                 "remote_workspace": "/workspace",
             },
         )
-        with patch.object(RemoteSession, "_read_event", side_effect=events):
+        with patch.object(_HelperClient, "_read_event", side_effect=events):
             _opened_session(
                 RemoteSessionRequest("target", command, TEST_PROCESS),
                 DeploymentResult("/helper.py", "digest", False),
@@ -261,9 +261,9 @@ class TestForwardingLifecycle:
         startup_error = SessionError("invalid helper response")
 
         with (
-            patch.object(RemoteSession, "_read_event", side_effect=startup_error),
+            patch.object(_HelperClient, "_read_event", side_effect=startup_error),
             patch.object(
-                backend_module,
+                helper_client_module,
                 "_stop_process",
                 side_effect=RuntimeError("process cleanup failed"),
             ),
@@ -375,7 +375,7 @@ class TestForwardingLifecycle:
 
         helper = self.helper_process()
         session = self.session(self.Command(helper))
-        session.helper_process = helper
+        session._helper._process = helper
         forwards = Forwards()
         session._forwards = forwards
 
@@ -425,7 +425,7 @@ class TestForwardingLifecycle:
         )
         helper.stdin = FailingStdin()
         session = self.session(self.Command(helper))
-        session.helper_process = helper
+        session._helper._process = helper
 
         with pytest.raises(RuntimeError) as raised:
             session.close()
@@ -460,7 +460,7 @@ class TestForwardingLifecycle:
             encode_message("SESSION_CLOSED", reason="requested", returncode=None)
         )
         session = self.session(self.Command(helper))
-        session.helper_process = helper
+        session._helper._process = helper
 
         with pytest.raises(subprocess.TimeoutExpired):
             session.close()
@@ -474,34 +474,34 @@ class TestForwardingLifecycle:
         self, returncode
     ):
         session = self.session(self.Command(self.Process()))
-        session.helper_process = session.request.ssh_command.process
+        session._helper._process = session.request.ssh_command.process
         event_consumed = threading.Event()
         release_reader = threading.Event()
 
         def consume_session_closed():
-            session._dispatch(
+            session._helper._dispatch(
                 {"type": "SESSION_CLOSED", "reason": "process_exit", "returncode": returncode}
             )
             event_consumed.set()
             release_reader.wait()
 
-        session.reader_thread = threading.Thread(target=consume_session_closed)
-        session.reader_thread.start()
+        session._helper._reader_thread = threading.Thread(target=consume_session_closed)
+        session._helper._reader_thread.start()
         event_consumed.wait()
         try:
-            assert session.reader_thread.is_alive()
-            assert session.helper_process.poll() is None
+            assert session._helper._reader_thread.is_alive()
+            assert session._helper._process.poll() is None
             assert session.check_openocd_exit() == returncode
         finally:
             release_reader.set()
-            session.reader_thread.join()
+            session._helper._reader_thread.join()
 
     def test_check_openocd_exit_preserves_reader_error_before_known_process_exit(self):
         session = self.session(self.Command(self.Process()))
-        session.helper_process = session.request.ssh_command.process
-        session._state.record_terminal("process_exit", OPENOCD_FAILURE_RC)
+        session._helper._process = session.request.ssh_command.process
+        session._helper._state.record_terminal("process_exit", OPENOCD_FAILURE_RC)
         reader_error = RuntimeError("protocol failed")
-        session._state.record_reader_failure(reader_error)
+        session._helper._state.record_reader_failure(reader_error)
 
         with pytest.raises(SessionError) as raised:
             session.check_openocd_exit()
@@ -509,10 +509,10 @@ class TestForwardingLifecycle:
 
     def test_check_preserves_reader_recorded_helper_exit(self):
         session = self.session(self.Command(self.Process(returncode=HELPER_FAILURE_RC)))
-        session.helper_process = session.request.ssh_command.process
+        session._helper._process = session.request.ssh_command.process
         reader_error = SessionError(f"remote helper exited with status {HELPER_FAILURE_RC}")
-        session._state.record_reader_failure(reader_error)
-        session.reader_thread = None
+        session._helper._state.record_reader_failure(reader_error)
+        session._helper._reader_thread = None
 
         with pytest.raises(SessionError) as raised:
             session.check_openocd_exit()
@@ -697,7 +697,7 @@ class TestRttClient:
     def test_eof_drains_pending_session_closed_status(self):
         class Connection:
             def recv(self, _size):
-                session._dispatch(
+                session._helper._dispatch(
                     {"type": "SESSION_CLOSED", "reason": "process_exit", "returncode": 0}
                 )
                 return b""
@@ -708,7 +708,7 @@ class TestRttClient:
         session = TestForwardingLifecycle.session(
             TestForwardingLifecycle.Command(TestForwardingLifecycle.Process())
         )
-        session.helper_process = session.request.ssh_command.process
+        session._helper._process = session.request.ssh_command.process
         connection = Connection()
         with (
             tempfile.TemporaryFile("w+b") as stream,
@@ -1015,10 +1015,15 @@ class TestRealProcessHelper:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "firmware.bin"
             source.write_bytes(b"firmware")
-            session = cast(Any, object.__new__(RemoteSession))
-            session.request = RemoteSessionRequest("local", LocalCommand(), TEST_PROCESS)
-            session.deployment = DeploymentResult("/helper.py", "0" * 64, False)
-            session.allocation = SessionAllocation("session", "/workspace")
+            session = RemoteSession(
+                RemoteSessionRequest("local", LocalCommand(), TEST_PROCESS),
+                DeploymentResult("/helper.py", "0" * 64, False),
+            )
+            session._helper = type(
+                "Helper",
+                (),
+                {"allocation": SessionAllocation("session", "/workspace")},
+            )()
             with pytest.raises(SessionError, match="invalid remote staging response"):
                 session._stage((StagedFile(source, PurePosixPath("firmware.bin")),))
 
@@ -1719,7 +1724,7 @@ sys.exit({exit_code})
             RemoteSessionRequest("local", LocalCommand(), TEST_PROCESS),
             DeploymentResult("/helper.py", "digest", False),
         )
-        backend._start_event_drain()
+        backend._helper._start_event_drain()
         try:
             if expected is None:
                 assert backend.close() is None
@@ -1775,16 +1780,16 @@ sys.stdin.buffer.read()
             DeploymentResult("/helper.py", "digest", False),
         )
         terminal_consumed = threading.Event()
-        dispatch = backend._dispatch
+        dispatch = backend._helper._dispatch
 
         def observe_terminal(event):
             dispatch(event)
             if event["type"] == "SESSION_CLOSED":
                 terminal_consumed.set()
 
-        with patch.object(backend, "_dispatch", side_effect=observe_terminal):
-            backend._start_event_drain()
-            assert backend.reader_thread is not None
+        with patch.object(backend._helper, "_dispatch", side_effect=observe_terminal):
+            backend._helper._start_event_drain()
+            assert backend._helper._reader_thread is not None
             assert terminal_consumed.wait(5)
         try:
             with pytest.raises(SessionError):
@@ -1846,7 +1851,7 @@ sys.exit(7)
         )
         forwards = FailingForwards()
         backend._forwards = forwards
-        backend._start_event_drain()
+        backend._helper._start_event_drain()
         try:
             with pytest.raises(RuntimeError) as raised:
                 backend.close()
@@ -1900,8 +1905,8 @@ sys.exit(7)
             DeploymentResult("/helper.py", "digest", False),
         )
         try:
-            backend._start_event_drain()
-            backend.helper_process.wait(timeout=5)
+            backend._helper._start_event_drain()
+            backend._helper._process.wait(timeout=5)
             with pytest.raises(SessionError):
                 backend.wait_for_openocd_exit(5)
             assert backend.openocd_returncode == 0
@@ -1945,7 +1950,7 @@ sys.exit(7)
                 RemoteSessionRequest("local", LocalCommand(), process=remote_process),
                 DeploymentResult(str(helper), "digest", False),
             )
-            workspace = Path(backend.allocation.remote_workspace)
+            workspace = Path(backend._helper.allocation.remote_workspace)
             child_pid = None
             child_pidfd = None
             try:
@@ -1956,7 +1961,7 @@ sys.exit(7)
                 backend.close()
 
                 assert backend.closed
-                assert backend.helper_process.returncode == 0
+                assert backend._helper._process.returncode == 0
                 assert not workspace.exists()
                 _assert_pidfd_exited(child_pidfd)
             finally:
@@ -2030,5 +2035,10 @@ sys.exit(7)
 
 def _opened_session(*args, **kwargs):
     session = RemoteSession(*args, **kwargs)
-    session._open_helper()
+    session._helper = _HelperClient.open(
+        session.request.ssh_command,
+        session.request.host,
+        session.deployment,
+        output_handler=session._output_handler,
+    )
     return session

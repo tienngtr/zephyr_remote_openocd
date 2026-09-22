@@ -10,9 +10,11 @@ from typing import Any, cast
 import pytest
 from zephyr_remote_openocd.remote import backend as backend_module
 from zephyr_remote_openocd.remote import forwarding as forwarding_module
+from zephyr_remote_openocd.remote import helper_client as helper_client_module
 from zephyr_remote_openocd.remote.backend import RemoteSession
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
 from zephyr_remote_openocd.remote.forwarding import _ForwardManager
+from zephyr_remote_openocd.remote.helper_client import _HelperClient, _HelperCloseResult
 from zephyr_remote_openocd.remote.model import (
     RemoteProcess,
     RemoteSessionRequest,
@@ -32,9 +34,6 @@ def test_open_rolls_back_failed_acquisition_once(monkeypatch):
 
     monkeypatch.setattr(backend_module, "deploy_helper", lambda *_args: deployment)
 
-    def open_helper(session):
-        session.helper_process = object()
-
     def fail_stage(_session, _files):
         raise startup_error
 
@@ -42,7 +41,7 @@ def test_open_rolls_back_failed_acquisition_once(monkeypatch):
         nonlocal cleanup_calls
         cleanup_calls += 1
 
-    monkeypatch.setattr(RemoteSession, "_open_helper", open_helper)
+    monkeypatch.setattr(_HelperClient, "open", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(RemoteSession, "_stage", fail_stage)
     monkeypatch.setattr(RemoteSession, "close", close)
 
@@ -61,7 +60,7 @@ def test_open_retains_nested_rollback_cleanup_diagnostics(monkeypatch):
     cleanup_error.add_note("additional cleanup failure: forward cleanup failed")
 
     monkeypatch.setattr(backend_module, "deploy_helper", lambda *_args: deployment)
-    monkeypatch.setattr(RemoteSession, "_open_helper", lambda _session: None)
+    monkeypatch.setattr(_HelperClient, "open", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(
         RemoteSession,
         "_stage",
@@ -83,7 +82,7 @@ def test_open_retains_nested_rollback_cleanup_diagnostics(monkeypatch):
     assert all("startup failure cleanup also failed" in note for note in notes)
 
 
-def test_open_helper_retains_nested_cleanup_diagnostics(monkeypatch):
+def test_helper_open_retains_nested_cleanup_diagnostics(monkeypatch):
     request = RemoteSessionRequest("host", SshCommand(), RemoteProcess(("openocd",)))
     deployment = DeploymentResult("/helper.py", "digest", False)
     cleanup_error = RuntimeError("helper process cleanup failed")
@@ -97,12 +96,10 @@ def test_open_helper_retains_nested_cleanup_diagnostics(monkeypatch):
         raise cleanup_error
 
     monkeypatch.setattr(SshCommand, "popen", lambda *_args: Process())
-    monkeypatch.setattr(backend_module, "_stop_process", fail_stop)
-
-    session = RemoteSession(request, deployment)
+    monkeypatch.setattr(helper_client_module, "_stop_process", fail_stop)
 
     with pytest.raises(SessionError) as raised:
-        session._open_helper()
+        _HelperClient.open(request.ssh_command, request.host, deployment)
 
     assert raised.value is not cleanup_error
     notes = raised.value.__notes__
@@ -112,9 +109,12 @@ def test_open_helper_retains_nested_cleanup_diagnostics(monkeypatch):
 
 
 def test_closed_session_exposes_only_cached_openocd_result():
+    class Helper:
+        openocd_returncode = None
+
     session = cast(Any, object.__new__(RemoteSession))
     session.closed = True
-    session._state = _SessionState()
+    session._helper = Helper()
 
     assert session.openocd_returncode is None
     assert session.check_openocd_exit() is None
@@ -125,8 +125,7 @@ def test_closed_session_exposes_only_cached_openocd_result():
 
     completed = cast(Any, object.__new__(RemoteSession))
     completed.closed = True
-    completed._state = _SessionState()
-    completed._state.record_terminal("process_exit", OPENOCD_FAILURE_RC)
+    completed._helper = type("Helper", (), {"openocd_returncode": OPENOCD_FAILURE_RC})()
     assert completed.openocd_returncode == OPENOCD_FAILURE_RC
     assert completed.check_openocd_exit() == OPENOCD_FAILURE_RC
     assert completed.wait_for_openocd_exit() == OPENOCD_FAILURE_RC
@@ -196,7 +195,7 @@ def test_requested_stop_serializes_terminal_event_with_stop_write():
     assert state.recorded_openocd_exit() is None
 
 
-def test_close_keeps_reader_owned_stdout_open_until_reader_stops():
+def test_helper_close_keeps_reader_owned_stdout_open_until_reader_stops():
     reader_stopped = threading.Event()
 
     class ReaderOwnedStream(io.BytesIO):
@@ -237,24 +236,20 @@ def test_close_keeps_reader_owned_stdout_open_until_reader_stops():
         def close_stderr(self):
             self.stderr.close()
 
-    session = cast(Any, object.__new__(RemoteSession))
-    session.closed = False
-    session._forwards = _ForwardManager(SshCommand(), "host")
-    session.output_handler = None
-    session.helper_process = Process()
-    session._state = _SessionState()
-    session._state.record_terminal("process_exit", 0)
-    session.reader_thread = Reader()
+    helper = _HelperClient(SshCommand(), "host", DeploymentResult("/helper.py", "digest", False))
+    test_helper = cast(Any, helper)
+    test_helper._process = Process()
+    test_helper._state.record_terminal("process_exit", 0)
+    test_helper._reader_thread = Reader()
 
-    assert session.close() is None
+    assert helper.close().error is None
 
     assert reader_stopped.is_set()
-    assert not session.reader_thread.is_alive()
-    assert session.helper_process.stdin.closed
-    assert session.helper_process.stdout.closed
-    assert session.helper_process.stderr.closed
-    assert session.closed
-    assert session.close() is None
+    assert not test_helper._reader_thread.is_alive()
+    assert test_helper._process.stdin.closed
+    assert test_helper._process.stdout.closed
+    assert test_helper._process.stderr.closed
+    assert helper.close().error is None
 
 
 def test_close_attempts_all_cleanup_once_and_preserves_first_failure():
@@ -271,10 +266,10 @@ def test_close_attempts_all_cleanup_once_and_preserves_first_failure():
 
     def close_helper():
         actions.append("helper")
-        return later_error, []
+        return _HelperCloseResult(later_error, ())
 
     session._forwards = type("Forwards", (), {"close": staticmethod(close_forwards)})()
-    session._close_helper = close_helper
+    session._helper = type("Helper", (), {"close": staticmethod(close_helper)})()
 
     with pytest.raises(RuntimeError) as raised:
         session.close()
@@ -292,7 +287,7 @@ def test_close_attempts_all_cleanup_once_and_preserves_first_failure():
     assert len(actions) == 2
 
 
-def test_close_helper_retains_nested_process_cleanup_diagnostics():
+def test_helper_close_retains_nested_process_cleanup_diagnostics():
     terminate_error = RuntimeError("helper terminate failed")
     stderr_error = RuntimeError("helper stderr close failed")
 
@@ -312,19 +307,17 @@ def test_close_helper_retains_nested_process_cleanup_diagnostics():
         def close_stderr(self):
             raise stderr_error
 
-    session = cast(Any, object.__new__(RemoteSession))
-    session.helper_process = Process()
-    session.reader_thread = None
-    session.output_handler = None
-    session._state = _SessionState()
-    session._state.request_stop(lambda: None)
-    session._state.record_terminal("requested", None)
+    helper = _HelperClient(SshCommand(), "host", DeploymentResult("/helper.py", "digest", False))
+    test_helper = cast(Any, helper)
+    test_helper._process = Process()
+    test_helper._state.request_stop(lambda: None)
+    test_helper._state.record_terminal("requested", None)
 
-    logical_error, cleanup_errors = session._close_helper()
+    result = helper.close()
 
-    assert isinstance(logical_error, SessionError)
-    assert cleanup_errors == [terminate_error]
-    notes = logical_error.__notes__
+    assert isinstance(result.error, SessionError)
+    assert result.cleanup_errors == (terminate_error,)
+    notes = result.error.__notes__
     assert any("helper terminate failed" in note for note in notes)
     assert any("helper stderr close failed" in note for note in notes)
     assert all("helper cleanup also failed" in note for note in notes)
@@ -374,7 +367,7 @@ def test_forward_manager_raises_when_ssh_forward_exits():
 
 @pytest.mark.timeout(10)
 def test_wait_for_openocd_exit_observes_forward_failure():
-    class State:
+    class Helper:
         openocd_returncode = None
 
         def __init__(self, forwards):
@@ -406,13 +399,13 @@ def test_wait_for_openocd_exit_observes_forward_failure():
     session = cast(Any, object.__new__(RemoteSession))
     session.closed = False
     forwards = Forwards()
-    session._state = State(forwards)
+    session._helper = Helper(forwards)
     session._forwards = forwards
 
     with pytest.raises(SessionError):
         session.wait_for_openocd_exit()
-    assert len(session._state.wait_timeouts) == 1
-    assert 0 < session._state.wait_timeouts[0] <= backend_module.FORWARD_HEALTH_INTERVAL
+    assert len(session._helper.wait_timeouts) == 1
+    assert 0 < session._helper.wait_timeouts[0] <= backend_module.FORWARD_HEALTH_INTERVAL
 
 
 @pytest.mark.timeout(5)

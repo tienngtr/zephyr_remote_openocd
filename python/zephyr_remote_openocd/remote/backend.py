@@ -4,48 +4,24 @@
 
 from __future__ import annotations
 
-import os
-import selectors
 import shlex
-import subprocess
-import threading
 import time
 from collections.abc import Callable, Iterable
-from typing import BinaryIO, cast
 
 from .cleanup import _add_failure_note, _raise_cleanup_errors
 from .deploy import DeploymentResult, deploy_helper
-from .forwarding import (
-    FORWARD_HEALTH_INTERVAL,
-    _ForwardManager,
-)
-from .model import (
-    RemoteSessionRequest,
-    Service,
-    SessionAllocation,
-    SessionDescriptor,
-    StagedEntry,
-)
+from .forwarding import FORWARD_HEALTH_INTERVAL, _ForwardManager
+from .helper_client import _HelperClient
+from .model import RemoteSessionRequest, Service, SessionDescriptor, StagedEntry
 from .protocol import (
-    EventOrder,
     ProtocolError,
     decode_message,
-    read_message,
     validate_openocd_version_response,
     validate_staged_response,
-    write_start,
-    write_stop,
 )
-from .session import SessionClosedError, SessionError, _SessionState
-from .ssh import SshCommand, _stop_process
+from .session import SessionClosedError, SessionError
+from .ssh import SshCommand
 from .staging import build_archive
-
-# The helper gives a supervised child five seconds to exit after SIGTERM,
-# followed by up to four seconds joining its relay threads and workspace
-# cleanup. Keep the control transport alive through that fallback and remote
-# process scheduling/transport overhead.
-HELPER_STOP_TIMEOUT = 15.0
-HELPER_START_TIMEOUT = 10.0
 
 
 def query_remote_openocd_version(
@@ -70,24 +46,25 @@ def query_remote_openocd_version(
 
 
 class RemoteSession:
+    """Coordinate one helper client and its SSH forwarding processes."""
+
     def __init__(
         self,
         request: RemoteSessionRequest,
         deployment: DeploymentResult,
         output_handler: Callable[[str, str, bool], None] | None = None,
-    ):
+    ) -> None:
         self.request = request
         self.deployment = deployment
         self._forwards = _ForwardManager(request.ssh_command, request.host)
+        self._output_handler = output_handler
+        self._helper: _HelperClient | None = None
         self.closed = False
-        self.output_handler = output_handler
-        self._state = _SessionState()
-        self.reader_thread: threading.Thread | None = None
         self.descriptor: SessionDescriptor | None = None
 
     @property
     def openocd_returncode(self) -> int | None:
-        return self._state.openocd_returncode
+        return None if self._helper is None else self._helper.openocd_returncode
 
     @classmethod
     def open(
@@ -98,10 +75,15 @@ class RemoteSession:
     ) -> RemoteSession:
         deployment = deploy_helper(request.ssh_command, request.host)
         session = cls(request, deployment, output_handler)
-        session._open_helper()
+        session._helper = _HelperClient.open(
+            request.ssh_command,
+            request.host,
+            deployment,
+            output_handler=output_handler,
+        )
         try:
             session._stage(request.staged_files)
-            session.descriptor = session._start_process(request.services)
+            session._start_process(request.services)
         except BaseException as error:
             try:
                 session.close()
@@ -110,76 +92,13 @@ class RemoteSession:
             raise
         return session
 
-    def _open_helper(self) -> None:
-        command = f"python3 {shlex.quote(self.deployment.path)} control"
-        self.helper_process = self.request.ssh_command.popen(self.request.host, command)
-        try:
-            if self.helper_process.stdout is None:
-                raise SessionError("helper stdout was not captured")
-            self._order = EventOrder()
-            created = self._read_event(time.monotonic() + HELPER_START_TIMEOUT)
-            if created["type"] != "SESSION_CREATED":
-                raise ProtocolError("helper did not begin with SESSION_CREATED")
-            self.allocation = SessionAllocation(created["session_id"], created["remote_workspace"])
-        except BaseException as error:
-            try:
-                _stop_process(self.helper_process)
-            except BaseException as cleanup_error:
-                _add_failure_note(error, "helper startup cleanup also failed", cleanup_error)
-            raise
-
-    def _read_event(self, deadline: float | None = None) -> dict:
-        stream = cast(BinaryIO, self.helper_process.stdout)
-        try:
-            message = (
-                read_message(stream)
-                if deadline is None
-                else self._read_initial_message(stream, deadline)
-            )
-        except EOFError as error:
-            diagnostic = self.helper_process.stderr_tail()
-            raise SessionError(
-                "remote helper terminated: " + diagnostic.decode("utf-8", "replace")
-            ) from error
-        except TimeoutError as error:
-            diagnostic = self.helper_process.stderr_tail()
-            suffix = ": " + diagnostic.decode("utf-8", "replace").strip() if diagnostic else ""
-            raise SessionError("remote helper startup timed out" + suffix) from error
-        self._order.accept(message)
-        if message["type"] == "ERROR":
-            raise SessionError(f"remote helper error: {message.get('message', 'unknown error')}")
-        return message
-
-    @staticmethod
-    def _read_initial_message(stream: BinaryIO, deadline: float) -> dict:
-        descriptor = stream.fileno()
-        pending = bytearray()
-        selector = selectors.DefaultSelector()
-        try:
-            selector.register(stream, selectors.EVENT_READ)
-            while True:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise TimeoutError("remote helper startup timed out")
-                if not selector.select(remaining):
-                    continue
-                chunk = os.read(descriptor, 1)
-                if not chunk:
-                    if pending:
-                        return decode_message(bytes(pending))
-                    raise EOFError("helper control channel closed")
-                pending.extend(chunk)
-                if chunk == b"\n":
-                    return decode_message(bytes(pending))
-        finally:
-            selector.close()
-
     def _stage(self, files: Iterable[StagedEntry]):
+        helper = self._helper_or_error()
         archive = build_archive(files)
         try:
             command = (
                 f"python3 {shlex.quote(self.deployment.path)} stage "
-                f"{shlex.quote(self.allocation.remote_workspace)}"
+                f"{shlex.quote(helper.allocation.remote_workspace)}"
             )
             result = self.request.ssh_command.run_stream(
                 self.request.host, command, archive.stream, timeout=60
@@ -208,37 +127,12 @@ class RemoteSession:
 
     def _start_process(self, services: Iterable[Service]) -> SessionDescriptor:
         service_list = tuple(services)
-        process = self.request.process
-        if self.helper_process.stdin is None:
-            raise SessionError("helper stdin was not captured")
-        write_start(
-            cast(BinaryIO, self.helper_process.stdin),
-            process,
-            service_list,
-        )
-        address = self._await_process_ready()
-        self._start_event_drain()
+        helper = self._helper_or_error()
+        address = helper.start_process(self.request.process, service_list)
         if service_list:
             self._forwards.start(service_list, address)
-        self.descriptor = SessionDescriptor(self.allocation, address)
+        self.descriptor = SessionDescriptor(helper.allocation, address)
         return self.descriptor
-
-    def _await_process_ready(self) -> str:
-        while True:
-            event = self._read_event()
-            self._dispatch(event)
-            if event["type"] == "PROCESS_READY":
-                return event["remote_address"]
-            if event["type"] == "SESSION_CLOSED":
-                raise SessionError(
-                    f"remote process closed before becoming ready ({event.get('returncode')})"
-                )
-
-    def _start_event_drain(self) -> None:
-        if self.reader_thread is not None:
-            return
-        self.reader_thread = threading.Thread(target=self._drain_events, daemon=True)
-        self.reader_thread.start()
 
     def forward(self, services: Iterable[Service]) -> None:
         if self.closed:
@@ -246,28 +140,26 @@ class RemoteSession:
         if self.descriptor is None:
             raise SessionError("remote session is not ready for additional forwarding")
         service_list = tuple(services)
-        if not service_list:
-            return
-        self._forwards.start(service_list, self.descriptor.remote_address)
+        if service_list:
+            self._forwards.start(service_list, self.descriptor.remote_address)
 
     def check_openocd_exit(self) -> int | None:
         if self.closed:
-            return self._state.openocd_returncode
-        result = self._recorded_openocd_exit()
+            return self.openocd_returncode
+        helper = self._helper_or_error()
+        result = helper.recorded_openocd_exit()
         if result is not None:
             return result
         self._forwards.check_health()
-        return self._recorded_openocd_exit()
-
-    def _recorded_openocd_exit(self) -> int | None:
-        return self._state.recorded_openocd_exit()
+        return helper.recorded_openocd_exit()
 
     def wait_for_openocd_exit(self, timeout: float | None = None) -> int:
         if self.closed:
-            result = self._state.openocd_returncode
+            result = self.openocd_returncode
             if result is None:
                 raise SessionClosedError("remote session closed without a natural OpenOCD exit")
             return result
+        helper = self._helper_or_error()
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
             result = self.check_openocd_exit()
@@ -275,194 +167,18 @@ class RemoteSession:
                 return result
             remaining = None if deadline is None else deadline - time.monotonic()
             if remaining is not None and remaining <= 0:
-                raise subprocess.TimeoutExpired(self.helper_process.args, timeout or 0.0)
+                raise helper.timeout_expired(timeout or 0.0)
             health_wait = FORWARD_HEALTH_INTERVAL if self._forwards.has_forwards else remaining
             wait_timeout = (
                 health_wait if remaining is None else min(remaining, health_wait or remaining)
             )
-            if self._state.has_result_or_reader_failure():
+            if helper.has_result_or_reader_failure():
                 continue
-            self._state.wait_for_change(wait_timeout)
-
-    def _dispatch(self, event: dict) -> None:
-        if event["type"] == "CHILD_OUTPUT" and self.output_handler is not None:
-            self.output_handler(
-                event["stream"],
-                event["payload"],
-                event["line_end"],
-            )
-        elif event["type"] == "SESSION_CLOSED":
-            self._state.record_terminal(event["reason"], event["returncode"])
-
-    def _drain_events(self) -> None:
-        try:
-            while True:
-                event = self._read_event()
-                self._dispatch(event)
-        except BaseException as error:
-            terminal_reason = self._state.terminal_reason
-            if isinstance(error.__cause__, EOFError):
-                helper_status = self.helper_process.poll()
-                if terminal_reason is not None and helper_status in (0, None):
-                    return
-                if terminal_reason is None:
-                    detail = (
-                        "remote helper exited without a terminal event"
-                        if helper_status is None
-                        else f"remote helper exited with status {helper_status} "
-                        "without a terminal event"
-                    )
-                else:
-                    detail = (
-                        f"remote helper exited with status {helper_status} "
-                        f"after {terminal_reason} shutdown"
-                    )
-                failure = SessionError(detail)
-                failure.__cause__ = error.__cause__
-                error = failure
-            self._state.record_reader_failure(error)
-
-    def _join_reader(self, timeout: float = 2.0) -> bool:
-        reader = self.reader_thread
-        if reader is None:
-            return True
-        reader.join(timeout=timeout)
-        return not reader.is_alive()
-
-    def _helper_reader_failure(self) -> BaseException | None:
-        return self._state.reader_failure()
-
-    def _emit_helper_diagnostic(self) -> None:
-        """Surface the bounded helper stderr tail without changing close status."""
-        if self.output_handler is None:
-            return
-        try:
-            diagnostic = self.helper_process.stderr_tail()
-            if not diagnostic:
-                return
-            payload = diagnostic.decode("utf-8", "replace")
-            fragments = payload.split("\n")
-            for index, fragment in enumerate(fragments):
-                line_end = index < len(fragments) - 1
-                if fragment or line_end:
-                    self.output_handler("stderr", fragment, line_end)
-        except BaseException:
-            # Diagnostics are best effort and must not mask a successful close.
-            return
-
-    def _close_helper(self) -> tuple[BaseException | None, list[BaseException]]:
-        """Stop the helper and return logical and mechanical cleanup failures.
-
-        A helper terminal event is part of the STOP contract.  Mechanical
-        process cleanup is kept separate so that an event/protocol failure is
-        never replaced by a later terminate, wait, or stream-close failure.
-        """
-
-        helper = self.helper_process
-        logical_error: BaseException | None = None
-        cleanup_errors: list[BaseException] = []
-
-        def terminal_reason() -> str | None:
-            return self._state.terminal_reason
-
-        terminal_before_stop = terminal_reason()
-        helper_status = helper.poll()
-
-        if terminal_before_stop == "requested":
-            logical_error = SessionError(
-                "helper reported SESSION_CLOSED(reason='requested') before STOP"
-            )
-        # A process-exit terminal event means that the helper has already
-        # handled the remote process.  Do not send a second STOP merely
-        # because a fake or SSH wrapper has not reaped its own process yet.
-        elif helper_status is None and terminal_before_stop is None:
-            if self.reader_thread is None:
-                self._start_event_drain()
-            if helper.stdin is None:
-                logical_error = SessionError("helper stdin was not captured")
-            else:
-
-                def write_requested_stop() -> None:
-                    nonlocal logical_error
-                    write_stop(cast(BinaryIO, helper.stdin))
-
-                try:
-                    terminal_before_stop = self._state.request_stop(write_requested_stop)
-                except BaseException as error:
-                    logical_error = error
-                else:
-                    if terminal_before_stop == "requested":
-                        logical_error = SessionError(
-                            "helper reported SESSION_CLOSED(reason='requested') before STOP"
-                        )
-                try:
-                    helper.stdin.close()
-                except BaseException as error:
-                    cleanup_errors.append(error)
-                if logical_error is None:
-                    try:
-                        helper.wait(timeout=HELPER_STOP_TIMEOUT)
-                    except subprocess.TimeoutExpired as error:
-                        logical_error = error
-                    except BaseException as error:
-                        logical_error = error
-
-        # Let the reader consume the requested terminal event before the
-        # process streams are forcibly closed.  A bounded second join below
-        # handles a helper that does not close its output after termination.
-        reader_stopped = self._join_reader()
-
-        try:
-            _stop_process(helper, close_streams=reader_stopped)
-        except BaseException as error:
-            cleanup_errors.append(error)
-
-        if self.reader_thread is not None:
-            initially_stopped = reader_stopped
-            reader_stopped = self._join_reader()
-            if reader_stopped and not initially_stopped:
-                try:
-                    _stop_process(helper, close_streams=True)
-                except BaseException as error:
-                    cleanup_errors.append(error)
-            if not reader_stopped:
-                reader_cleanup_error = SessionError("helper event reader did not stop")
-                cleanup_errors.append(reader_cleanup_error)
-
-        self._emit_helper_diagnostic()
-
-        reader_eof = self._state.reader_failure_has_eof_cause()
-        reader_failure = self._helper_reader_failure()
-        if reader_failure is not None and not reader_eof:
-            logical_error = logical_error or reader_failure
-
-        terminal = terminal_reason()
-        if logical_error is None:
-            helper_status = helper.poll()
-            if terminal not in {"requested", "process_exit"}:
-                logical_error = SessionError(
-                    "helper shutdown did not produce "
-                    "SESSION_CLOSED(reason='requested' or 'process_exit') "
-                    f"(terminal={terminal!r}, "
-                    f"exit={helper_status!r})"
-                )
-            elif helper_status not in (0, None):
-                logical_error = SessionError(
-                    f"remote helper exited with status {helper_status} after {terminal} shutdown"
-                )
-        if logical_error is None and reader_failure is not None:
-            logical_error = reader_failure
-
-        if logical_error is not None:
-            for cleanup_error in cleanup_errors:
-                _add_failure_note(logical_error, "helper cleanup also failed", cleanup_error)
-
-        return logical_error, cleanup_errors
+            helper.wait_for_change(wait_timeout)
 
     def close(self) -> None:
         if self.closed:
             return
-
         forward_errors: list[BaseException] = []
         try:
             self._forwards.close()
@@ -470,11 +186,14 @@ class RemoteSession:
             forward_errors.append(error)
 
         helper_error: BaseException | None = None
-        helper_cleanup_errors: list[BaseException] = []
-        try:
-            helper_error, helper_cleanup_errors = self._close_helper()
-        except BaseException as error:
-            helper_error = error
+        helper_cleanup_errors: tuple[BaseException, ...] = ()
+        if self._helper is not None:
+            try:
+                helper_result = self._helper.close()
+                helper_error = helper_result.error
+                helper_cleanup_errors = helper_result.cleanup_errors
+            except BaseException as error:
+                helper_error = error
 
         errors = forward_errors
         if helper_error is not None:
@@ -484,3 +203,8 @@ class RemoteSession:
         self.closed = True
         if errors:
             _raise_cleanup_errors(errors)
+
+    def _helper_or_error(self) -> _HelperClient:
+        if self._helper is None:
+            raise SessionError("remote helper control session is not open")
+        return self._helper
