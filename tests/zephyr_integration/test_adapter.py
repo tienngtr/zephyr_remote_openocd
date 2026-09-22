@@ -260,8 +260,8 @@ def test_operation_build_queries_version_without_session(runner_api, monkeypatch
             None,
             "operation",
             (
-                "session cleanup also failed: cleanup failed",
-                "session cleanup also failed detail: nested cleanup detail",
+                "session cleanup also failed",
+                "nested cleanup detail",
             ),
             id="operation-failure-precedes-cleanup-failure",
         ),
@@ -271,7 +271,7 @@ def test_operation_build_queries_version_without_session(runner_api, monkeypatch
             "cleanup failed",
             OPENOCD_FAILURE_RC,
             "openocd",
-            ("session cleanup also failed: cleanup failed",),
+            ("session cleanup also failed",),
             id="observed-openocd-failure-precedes-cleanup-failure",
         ),
         pytest.param(
@@ -280,7 +280,7 @@ def test_operation_build_queries_version_without_session(runner_api, monkeypatch
             "helper failed",
             OPENOCD_FAILURE_RC,
             "openocd",
-            ("session cleanup also failed: helper failed",),
+            ("session cleanup also failed", "helper failed"),
             id="observed-openocd-failure-precedes-later-infrastructure-failure",
         ),
     ),
