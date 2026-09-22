@@ -78,6 +78,65 @@ def test_open_rolls_back_failed_acquisition_once(monkeypatch):
     assert actions == ["helper", "stage", "close"]
 
 
+def test_open_retains_nested_rollback_cleanup_diagnostics(monkeypatch):
+    request = RemoteSessionRequest("host", SshCommand(), RemoteProcess(("openocd",)))
+    deployment = DeploymentResult("/helper.py", "digest", False)
+    startup_error = RuntimeError("staging failed")
+    cleanup_error = RuntimeError("session cleanup failed")
+    cleanup_error.add_note("additional cleanup failure: forward cleanup failed")
+
+    monkeypatch.setattr(backend_module, "deploy_helper", lambda *_args: deployment)
+    monkeypatch.setattr(RemoteSession, "_open_helper", lambda _session: None)
+    monkeypatch.setattr(
+        RemoteSession,
+        "_stage",
+        lambda _session, _files: (_ for _ in ()).throw(startup_error),
+    )
+
+    def fail_close(_session):
+        raise cleanup_error
+
+    monkeypatch.setattr(RemoteSession, "close", fail_close)
+
+    with pytest.raises(RuntimeError) as raised:
+        RemoteSession.open(request)
+
+    assert raised.value is startup_error
+    assert raised.value.__notes__ == [
+        "startup failure cleanup also failed: session cleanup failed",
+        "startup failure cleanup also failed detail: "
+        "additional cleanup failure: forward cleanup failed",
+    ]
+
+
+def test_open_helper_retains_nested_cleanup_diagnostics(monkeypatch):
+    request = RemoteSessionRequest("host", SshCommand(), RemoteProcess(("openocd",)))
+    deployment = DeploymentResult("/helper.py", "digest", False)
+    cleanup_error = RuntimeError("helper process cleanup failed")
+    cleanup_error.add_note("process cleanup also failed: stream close failed")
+
+    class Process:
+        stdout = None
+
+    def fail_stop(_process, *, close_streams=True):
+        del close_streams
+        raise cleanup_error
+
+    monkeypatch.setattr(SshCommand, "popen", lambda *_args: Process())
+    monkeypatch.setattr(RemoteSession, "_stop_process", staticmethod(fail_stop))
+
+    session = RemoteSession(request, deployment)
+
+    with pytest.raises(SessionError, match="stdout was not captured") as raised:
+        session._open_helper()
+
+    assert raised.value.__notes__ == [
+        "helper startup cleanup also failed: helper process cleanup failed",
+        "helper startup cleanup also failed detail: "
+        "process cleanup also failed: stream close failed",
+    ]
+
+
 def test_open_helper_failure_does_not_start_whole_session_cleanup(monkeypatch):
     request = RemoteSessionRequest("host", SshCommand(), RemoteProcess(("openocd",)))
     deployment = DeploymentResult("/helper.py", "digest", False)
@@ -282,6 +341,46 @@ def test_close_attempts_all_cleanup_once_and_preserves_first_failure():
     assert session.closed
     assert session.close() is None
     assert actions == ["forwards", "helper"]
+
+
+def test_close_helper_retains_nested_process_cleanup_diagnostics():
+    terminate_error = RuntimeError("helper terminate failed")
+    stderr_error = RuntimeError("helper stderr close failed")
+
+    class Process:
+        def __init__(self):
+            self.stdin = io.BytesIO()
+            self.stdout = io.BytesIO()
+            self.poll_calls = 0
+
+        def poll(self):
+            self.poll_calls += 1
+            return (1, None, 0, 0)[self.poll_calls - 1]
+
+        def terminate(self):
+            raise terminate_error
+
+        def close_stderr(self):
+            raise stderr_error
+
+    session = cast(Any, object.__new__(RemoteSession))
+    session.helper_process = Process()
+    session.reader_thread = None
+    session.reader_error = None
+    session.output_handler = None
+    session._state_lock = threading.RLock()
+    session._state_changed = threading.Condition(session._state_lock)
+    session._terminal_reason = None
+
+    logical_error, cleanup_errors = session._close_helper()
+
+    assert isinstance(logical_error, SessionError)
+    assert cleanup_errors == [terminate_error]
+    assert logical_error.__notes__ == [
+        "helper cleanup also failed: helper terminate failed",
+        "helper cleanup also failed detail: "
+        "process cleanup also failed: helper stderr close failed",
+    ]
 
 
 @pytest.mark.timeout(10)

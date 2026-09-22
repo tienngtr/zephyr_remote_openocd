@@ -51,15 +51,24 @@ _PROCESS_TERM_TIMEOUT = 5.0
 _PROCESS_KILL_TIMEOUT = 1.0
 
 
+def _add_failure_note(
+    primary: BaseException,
+    prefix: str,
+    secondary: BaseException,
+) -> None:
+    """Retain an exception and its existing diagnostics on another failure."""
+    primary.add_note(f"{prefix}: {secondary}")
+    for note in getattr(secondary, "__notes__", ()):
+        primary.add_note(f"{prefix} detail: {note}")
+
+
 def _raise_cleanup_errors(errors: list[BaseException]) -> None:
     """Raise the first cleanup error after retaining subsequent diagnostics."""
     if not errors:
         return
     first, *additional = errors
     for error in additional:
-        first.add_note(f"additional cleanup failure: {error}")
-        for note in getattr(error, "__notes__", ()):
-            first.add_note(f"additional cleanup failure detail: {note}")
+        _add_failure_note(first, "additional cleanup failure", error)
     raise first
 
 
@@ -127,7 +136,7 @@ class RemoteSession:
             try:
                 session.close()
             except BaseException as cleanup_error:
-                error.add_note(f"startup failure cleanup also failed: {cleanup_error}")
+                _add_failure_note(error, "startup failure cleanup also failed", cleanup_error)
             raise
         return session
 
@@ -146,7 +155,7 @@ class RemoteSession:
             try:
                 self._stop_process(self.helper_process)
             except BaseException as cleanup_error:
-                error.add_note(f"helper startup cleanup also failed: {cleanup_error}")
+                _add_failure_note(error, "helper startup cleanup also failed", cleanup_error)
             raise
 
     def _read_event(self, deadline: float | None = None) -> dict:
@@ -537,7 +546,7 @@ class RemoteSession:
                     cleanup_errors.append(error)
         if primary_error is not None:
             for cleanup_failure in cleanup_errors:
-                primary_error.add_note(f"process cleanup also failed: {cleanup_failure}")
+                _add_failure_note(primary_error, "process cleanup also failed", cleanup_failure)
             raise primary_error
         _raise_cleanup_errors(cleanup_errors)
 
@@ -705,7 +714,7 @@ class RemoteSession:
 
         if logical_error is not None:
             for cleanup_error in cleanup_errors:
-                logical_error.add_note(f"helper cleanup also failed: {cleanup_error}")
+                _add_failure_note(logical_error, "helper cleanup also failed", cleanup_error)
 
         return logical_error, cleanup_errors
 
