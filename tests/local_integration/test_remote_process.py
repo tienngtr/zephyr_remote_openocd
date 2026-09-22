@@ -426,11 +426,9 @@ class TestForwardingLifecycle:
             def __init__(self):
                 super().__init__()
                 self.stdin = io.BytesIO()
-                self.wait_calls = 0
 
             def wait(self, timeout=None):
-                self.wait_calls += 1
-                if self.wait_calls == 1:
+                if self.returncode is None:
                     raise subprocess.TimeoutExpired("helper", timeout)
                 return self.returncode
 

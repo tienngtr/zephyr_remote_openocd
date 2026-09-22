@@ -417,7 +417,7 @@ def test_rtt_execution_defers_forward_until_after_gdb(runner_api, monkeypatch):
     runner.run_client.side_effect = lambda _argv: calls.append("gdb")
     session = Mock(spec=RemoteSession)
     session.forward.side_effect = lambda _services: calls.append("forward")
-    session.check_openocd_exit.return_value = 3
+    session.check_openocd_exit.return_value = OPENOCD_FAILURE_RC
     rtt_service = Service("rtt", 19021, 19021)
     plan = _debug_plan(gdb_argv=("gdb", "--batch"), rtt_service=rtt_service)
     observed_returncodes: list[int] = []
@@ -441,9 +441,9 @@ def test_rtt_execution_defers_forward_until_after_gdb(runner_api, monkeypatch):
     client.assert_called_once()
     assert client.call_args.args[0] == rtt_service.local_port
     session.check_openocd_exit.assert_called_once_with()
-    assert observed_returncodes == [3]
+    assert observed_returncodes == [OPENOCD_FAILURE_RC]
     session.close.assert_not_called()
-    assert returncode == 3
+    assert returncode == OPENOCD_FAILURE_RC
 
 
 def test_rtt_cleanup_failure_does_not_replace_observed_openocd_failure(runner_api, monkeypatch):
@@ -482,7 +482,7 @@ def test_debugserver_execution_reports_gdb_service_and_waits(runner_api):
 
     runner = Mock()
     session = Mock()
-    session.wait_for_openocd_exit.return_value = 5
+    session.wait_for_openocd_exit.return_value = OPENOCD_FAILURE_RC
     gdb_service = Service("gdb", 3333, 3333)
     plan = _debug_plan(services=(gdb_service,))
 
@@ -491,7 +491,7 @@ def test_debugserver_execution_reports_gdb_service_and_waits(runner_api):
     runner.logger.info.assert_called_once()
     assert 3333 in runner.logger.info.call_args.args
     session.wait_for_openocd_exit.assert_called_once_with()
-    assert returncode == 5
+    assert returncode == OPENOCD_FAILURE_RC
 
 
 def parser_for(runner):

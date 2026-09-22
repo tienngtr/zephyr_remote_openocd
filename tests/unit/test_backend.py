@@ -19,6 +19,7 @@ from zephyr_remote_openocd.remote.session import SessionClosedError, SessionErro
 from zephyr_remote_openocd.remote.ssh import SshCommand
 
 OPENOCD_FAILURE_RC = 7
+FORWARD_FAILURE_RC = 13
 
 
 def test_open_rolls_back_failed_acquisition_once(monkeypatch):
@@ -276,13 +277,13 @@ def test_close_helper_retains_nested_process_cleanup_diagnostics():
         def __init__(self):
             self.stdin = io.BytesIO()
             self.stdout = io.BytesIO()
-            self.poll_calls = 0
+            self.returncode = None
 
         def poll(self):
-            self.poll_calls += 1
-            return (1, None, 0, 0)[self.poll_calls - 1]
+            return self.returncode
 
         def terminate(self):
+            self.returncode = 0
             raise terminate_error
 
         def close_stderr(self):
@@ -295,7 +296,7 @@ def test_close_helper_retains_nested_process_cleanup_diagnostics():
     session.output_handler = None
     session._state_lock = threading.RLock()
     session._state_changed = threading.Condition(session._state_lock)
-    session._terminal_reason = None
+    session._terminal_reason = "requested"
 
     logical_error, cleanup_errors = session._close_helper()
 
@@ -350,7 +351,7 @@ def test_check_openocd_exit_raises_when_ssh_forward_exits():
 
     class Forward:
         def poll(self):
-            return 9
+            return FORWARD_FAILURE_RC
 
         def stderr_tail(self):
             return b"forward failed"
@@ -379,7 +380,7 @@ def test_wait_for_openocd_exit_observes_forward_failure():
 
     class Forward:
         def poll(self):
-            return 13 if failed.is_set() else None
+            return FORWARD_FAILURE_RC if failed.is_set() else None
 
         def stderr_tail(self):
             return b"forward failed"

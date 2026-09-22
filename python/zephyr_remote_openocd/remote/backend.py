@@ -613,7 +613,6 @@ class RemoteSession:
 
         terminal_before_stop = terminal_reason()
         helper_status = helper.poll()
-        reader_thread = self.reader_thread
 
         if terminal_before_stop == "requested":
             logical_error = SessionError(
@@ -623,9 +622,8 @@ class RemoteSession:
         # handled the remote process.  Do not send a second STOP merely
         # because a fake or SSH wrapper has not reaped its own process yet.
         elif helper_status is None and terminal_before_stop is None:
-            if reader_thread is None:
+            if self.reader_thread is None:
                 self._start_event_drain()
-                reader_thread = self.reader_thread
             if helper.stdin is None:
                 logical_error = SessionError("helper stdin was not captured")
             else:
@@ -697,17 +695,17 @@ class RemoteSession:
 
         terminal = terminal_reason()
         if logical_error is None:
+            helper_status = helper.poll()
             if terminal not in {"requested", "process_exit"}:
-                status = helper.poll()
                 logical_error = SessionError(
                     "helper shutdown did not produce "
                     "SESSION_CLOSED(reason='requested' or 'process_exit') "
                     f"(terminal={terminal!r}, "
-                    f"exit={status!r})"
+                    f"exit={helper_status!r})"
                 )
-            elif helper.poll() not in (0, None):
+            elif helper_status not in (0, None):
                 logical_error = SessionError(
-                    f"remote helper exited with status {helper.poll()} after {terminal} shutdown"
+                    f"remote helper exited with status {helper_status} after {terminal} shutdown"
                 )
         if logical_error is None and reader_failure is not None:
             logical_error = reader_failure

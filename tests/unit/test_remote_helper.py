@@ -824,10 +824,11 @@ def test_supervised_child_cleanup_uses_finite_budgets_after_failures(monkeypatch
     class Relay:
         ident = 1
 
-        def __init__(self, name):
+        def __init__(self, name, *, consumes_budget=False):
             self.name = name
             self.alive = True
             self.join_calls = []
+            self.consumes_budget = consumes_budget
 
         def is_alive(self):
             return self.alive
@@ -836,13 +837,17 @@ def test_supervised_child_cleanup_uses_finite_budgets_after_failures(monkeypatch
             self.join_calls.append(timeout)
             join_deadlines.append(clock.now + (timeout or 0.0))
             self.alive = False
-            if len(join_deadlines) == 1:
+            if self.consumes_budget:
+                self.consumes_budget = False
                 clock.now += remote_helper.CHILD_RELAY_JOIN_TIMEOUT
 
     clock = Clock()
     join_deadlines: list[float] = []
     process = Process()
-    relays = [Relay("stdout-relay"), Relay("stderr-relay")]
+    relays = [
+        Relay("stdout-relay", consumes_budget=True),
+        Relay("stderr-relay"),
+    ]
     child = remote_helper.SupervisedChild(process)
     child.relay_threads = relays
     child._observed_returncode = 0
