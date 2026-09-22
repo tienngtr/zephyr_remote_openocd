@@ -152,6 +152,50 @@ def test_gdb_execution_reports_session_status(runner_api):
     assert returncode == OPENOCD_FAILURE_RC
 
 
+def test_operation_build_queries_version_without_session(runner_api, monkeypatch, tmp_path):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
+    runner = Mock()
+    runner.thread_info_enabled = True
+    selected = ResolvedRemote(
+        "lab",
+        tmp_path / "config.yaml",
+        "host",
+        ("openocd", "-f", "board.cfg"),
+        ("ssh", "-F", "config"),
+        (),
+        (),
+    )
+    query = Mock(return_value="Open On-Chip Debugger 0.12.0")
+    request = Mock()
+    plan = Mock()
+    versions = []
+
+    def capture_plan(_runner, command, _selected, version):
+        assert command == "debug"
+        versions.append(version)
+        return plan
+
+    monkeypatch.setattr(runner_module, "query_remote_openocd_version", query)
+    monkeypatch.setattr(runner_module, "_debug_plan", capture_plan)
+    monkeypatch.setattr(runner_module, "_debug_request", lambda *_args: request)
+    monkeypatch.setattr(
+        runner_module.RemoteSession,
+        "open",
+        Mock(side_effect=AssertionError("operation construction opened a session")),
+    )
+
+    result = runner_module._build_operation(runner, "debug", selected)
+
+    assert result == (selected, request, plan)
+    query.assert_called_once_with(
+        SshCommand(selected.ssh_command),
+        selected.remote_host,
+        selected.openocd_command,
+    )
+    assert len(versions) == 1
+
+
 @pytest.mark.parametrize(
     (
         "foreground_returncode",
