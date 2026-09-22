@@ -60,6 +60,8 @@ from zephyr_remote_openocd.remote.services import (
 from zephyr_remote_openocd.remote.ssh import SshCommand
 from zephyr_remote_openocd.remote.staging import StagingError, build_archive
 
+from tests.process_support import read_line
+
 TEST_PROCESS = RemoteProcess(("test-process",))
 
 
@@ -409,20 +411,52 @@ def test_helper_deployment_serializes_refresh_and_pruning(tmp_path):
     lock_path = helper_directory / ".deploy.lock"
     environment = os.environ.copy()
     environment["HOME"] = str(tmp_path)
+    marker_read_fd, marker_write_fd = os.pipe()
+    environment["ZRO_TEST_LOCK_MARKER_FD"] = str(marker_write_fd)
+    wrapper = f"""
+import fcntl
+import os
 
-    with lock_path.open("a+b") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        process = subprocess.Popen(
-            [sys.executable, "-c", deploy_module.BOOTSTRAP],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=environment,
-        )
-        with pytest.raises(subprocess.TimeoutExpired):
-            process.communicate(b"concurrent helper revision", timeout=0.5)
+original_flock = fcntl.flock
 
-    stdout, stderr = process.communicate(timeout=5)
+def report_lock_attempt(file_object, operation):
+    os.write(int(os.environ[\"ZRO_TEST_LOCK_MARKER_FD\"]), b\"before-flock\\n\")
+    return original_flock(file_object, operation)
+
+fcntl.flock = report_lock_attempt
+exec({deploy_module.BOOTSTRAP!r}, {{\"__name__\": \"__main__\"}})
+"""
+
+    process = None
+    try:
+        with lock_path.open("a+b") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            process = subprocess.Popen(
+                [sys.executable, "-c", wrapper],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=environment,
+                pass_fds=(marker_write_fd,),
+            )
+            os.close(marker_write_fd)
+            assert process.stdin is not None
+            process.stdin.write(b"concurrent helper revision")
+            process.stdin.close()
+
+            with os.fdopen(marker_read_fd, "rb", buffering=0) as marker:
+                assert read_line(marker, timeout=5) == b"before-flock\n"
+    except BaseException:
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+        raise
+
+    process.wait(timeout=5)
+    assert process.stdout is not None
+    assert process.stderr is not None
+    stdout = process.stdout.read()
+    stderr = process.stderr.read()
     assert process.returncode == 0, stderr.decode("utf-8", "replace")
     response = json.loads(stdout)
     assert Path(response["path"]).read_bytes() == b"concurrent helper revision"
