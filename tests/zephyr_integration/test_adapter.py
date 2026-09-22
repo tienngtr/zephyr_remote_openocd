@@ -305,23 +305,64 @@ def test_rtt_execution_defers_forward_until_after_gdb(runner_api, monkeypatch):
     runner.run_client.side_effect = lambda _argv: calls.append("gdb")
     session = Mock(spec=RemoteSession)
     session.forward.side_effect = lambda _services: calls.append("forward")
+    session.check_openocd_exit.return_value = 3
     rtt_service = Service("rtt", 19021, 19021)
     plan = _debug_plan(gdb_argv=("gdb", "--batch"), rtt_service=rtt_service)
+    observed_returncodes: list[int] = []
 
-    def run_rtt(_port, _poll):
+    def run_rtt(_port, poll):
         calls.append("rtt")
-        return 3
+        return poll()
 
     client = Mock(side_effect=run_rtt)
     monkeypatch.setattr(runner_module, "run_rtt_client", client)
 
-    returncode = runner_module._execute_rtt(runner, plan, session)
+    returncode = runner_module._execute_rtt(
+        runner,
+        plan,
+        session,
+        observed_returncodes.append,
+    )
 
     assert calls == ["gdb", "forward", "rtt"]
     session.forward.assert_called_once_with((rtt_service,))
-    client.assert_called_once_with(rtt_service.local_port, session.check_openocd_exit)
+    client.assert_called_once()
+    assert client.call_args.args[0] == rtt_service.local_port
+    session.check_openocd_exit.assert_called_once_with()
+    assert observed_returncodes == [3]
     session.close.assert_not_called()
     assert returncode == 3
+
+
+def test_rtt_cleanup_failure_does_not_replace_observed_openocd_failure(runner_api, monkeypatch):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
+    runner = Mock()
+    session = Mock(spec=RemoteSession)
+    session.descriptor = SessionDescriptor(SessionAllocation("session", "/workspace"), "127.0.0.1")
+    session.openocd_returncode = OPENOCD_FAILURE_RC
+    session.check_openocd_exit.return_value = OPENOCD_FAILURE_RC
+    rtt_service = Service("rtt", 19021, 19021)
+    plan = _debug_plan(gdb_argv=("gdb", "--batch"), rtt_service=rtt_service)
+    rtt_cleanup_error = RuntimeError("RTT connection cleanup failed")
+
+    def run_rtt(_port, poll):
+        try:
+            return poll()
+        finally:
+            raise rtt_cleanup_error
+
+    monkeypatch.setattr(runner_module.RemoteSession, "open", Mock(return_value=session))
+    monkeypatch.setattr(runner_module, "run_rtt_client", run_rtt)
+    request = RemoteSessionRequest("host", SshCommand(), TEST_PROCESS)
+
+    with pytest.raises(RuntimeError, match=str(OPENOCD_FAILURE_RC)) as raised:
+        runner_module._execute_operation(runner, "rtt", request, plan)
+
+    assert raised.value is not rtt_cleanup_error
+    assert any("RTT connection cleanup failed" in note for note in raised.value.__notes__)
+    session.check_openocd_exit.assert_called_once_with()
+    session.close.assert_called_once_with()
 
 
 def test_debugserver_execution_reports_gdb_service_and_waits(runner_api):

@@ -151,6 +151,11 @@ def _execute_operation(runner, command, request, plan):
     descriptor = session.descriptor
     operation_error = None
     foreground_returncode = None
+
+    def observe_openocd_exit(returncode):
+        nonlocal foreground_returncode
+        foreground_returncode = returncode
+
     try:
         runner.logger.info(
             "Remote OpenOCD session %s workspace=%s bindto=%s",
@@ -158,7 +163,15 @@ def _execute_operation(runner, command, request, plan):
             descriptor.remote_workspace,
             descriptor.remote_address,
         )
-        foreground_returncode = _execute_started_operation(runner, command, plan, session)
+        returncode = _execute_started_operation(
+            runner,
+            command,
+            plan,
+            session,
+            observe_openocd_exit,
+        )
+        if returncode is not None:
+            observe_openocd_exit(returncode)
     except BaseException as error:
         operation_error = error
     _finalize_operation(session, operation_error, foreground_returncode)
@@ -166,8 +179,15 @@ def _execute_operation(runner, command, request, plan):
 
 def _finalize_operation(session, operation_error, foreground_returncode):
     """Close one session and apply the lifecycle failure-precedence matrix."""
-    if operation_error is None and foreground_returncode not in (None, 0):
-        operation_error = _openocd_failure(foreground_returncode)
+    if foreground_returncode not in (None, 0):
+        openocd_error = _openocd_failure(foreground_returncode)
+        if operation_error is not None:
+            _add_failure_diagnostic(
+                openocd_error,
+                "operation also failed after OpenOCD exit was observed",
+                operation_error,
+            )
+        operation_error = openocd_error
 
     cleanup_error = None
     try:
@@ -210,9 +230,9 @@ def _add_failure_diagnostic(primary, prefix, secondary):
         primary.add_note(f"{prefix} detail: {note}")
 
 
-def _execute_started_operation(runner, command, plan, session):
+def _execute_started_operation(runner, command, plan, session, observe_openocd_exit):
     if command == "rtt":
-        return _execute_rtt(runner, plan, session)
+        return _execute_rtt(runner, plan, session, observe_openocd_exit)
     _report_rtt_service(runner, plan)
     if command in {"debug", "attach"}:
         return _execute_gdb_client(runner, plan, session)
@@ -226,14 +246,21 @@ def _execute_gdb_client(runner, plan, session):
     return session.check_openocd_exit()
 
 
-def _execute_rtt(runner, plan, session):
+def _execute_rtt(runner, plan, session, observe_openocd_exit):
     assert plan is not None and plan.gdb_argv is not None
     assert plan.rtt_service is not None
     runner.require(plan.gdb_argv[0])
     runner.run_client(list(plan.gdb_argv))
     session.forward((plan.rtt_service,))
     _report_rtt_service(runner, plan)
-    return run_rtt_client(plan.rtt_service.local_port, session.check_openocd_exit)
+
+    def check_openocd_exit():
+        returncode = session.check_openocd_exit()
+        if returncode is not None:
+            observe_openocd_exit(returncode)
+        return returncode
+
+    return run_rtt_client(plan.rtt_service.local_port, check_openocd_exit)
 
 
 def _execute_server(runner, command, plan, session):
