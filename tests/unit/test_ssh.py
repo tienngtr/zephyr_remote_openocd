@@ -246,7 +246,7 @@ def test_stderr_tail_is_best_effort_when_drain_has_not_reached_eof(monkeypatch):
             if self.reads == 1:
                 first_chunk_read.set()
                 return b"prefix"
-            release_eof.wait()
+            assert release_eof.wait(5)
             return b""
 
         def close(self):
@@ -284,7 +284,7 @@ def test_stderr_tail_waits_for_delayed_eof_with_a_bounded_timeout(monkeypatch):
                 first_chunk_read.set()
                 return b"prefix"
             if self.reads == 2:
-                release_suffix.wait()
+                assert release_suffix.wait(5)
                 suffix_read.set()
                 return b"suffix"
             return b""
@@ -305,13 +305,14 @@ def test_stderr_tail_waits_for_delayed_eof_with_a_bounded_timeout(monkeypatch):
     monkeypatch.setattr(drain._finished, "wait", wait)
     drain.start()
     try:
-        first_chunk_read.wait()
+        assert first_chunk_read.wait(5)
         assert drain.tail() == b"prefixsuffix"
         assert suffix_read.is_set()
         assert wait_timeouts == [ssh_module._SSH_STDERR_JOIN_TIMEOUT]
     finally:
         release_suffix.set()
-        drain._thread.join()
+        drain._thread.join(timeout=5)
+        assert not drain._thread.is_alive()
 
 
 def test_process_cleanup_closes_an_active_stderr_drain():

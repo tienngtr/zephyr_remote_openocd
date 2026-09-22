@@ -375,7 +375,7 @@ def test_background_openocd_result_does_not_replace_foreground_failure(
 
     def record_openocd_failure():
         reader_ready.set()
-        reader_can_record.wait()
+        assert reader_can_record.wait(5)
         session.openocd_returncode = OPENOCD_FAILURE_RC
         reader_recorded.set()
 
