@@ -112,6 +112,37 @@ def test_remote_home_json_preserves_spaces(runner_api, monkeypatch, tmp_path):
     assert str(resolved.path_mappings[0].remote) == "/home/ Remote User /remote tree"
 
 
+def test_remote_home_resolution_reports_ssh_failure(runner_api, monkeypatch, tmp_path):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
+    selected = ResolvedRemote(
+        "lab",
+        tmp_path / "config.yaml",
+        "host",
+        ("~/openocd",),
+        ("ssh",),
+        (),
+        (),
+    )
+    monkeypatch.setattr(
+        SshCommand,
+        "run",
+        Mock(
+            return_value=subprocess.CompletedProcess(
+                [], 255, b"", b"Permission denied (publickey)."
+            )
+        ),
+    )
+
+    with pytest.raises(ConfigError) as error:
+        runner_module._prepare_remote_paths(selected)
+
+    message = str(error.value)
+    assert "remote home" in message
+    assert "lab" in message
+    assert "Permission denied" in message
+
+
 @pytest.mark.parametrize(
     "output", (b'"relative"\n', b"null\n", b"not-json\n", b'"/bad\\u0000path"')
 )
