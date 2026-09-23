@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-name: Developer tools
+name: Install developer tools
 description: Set up Python and install the repository developer tools
 runs:
   using: composite
