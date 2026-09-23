@@ -406,12 +406,3 @@ def resolve_remote(
         values.forward_env or (),
         values.path_mappings or (),
     )
-
-
-def require_remote_settings(config: ResolvedRemote, operation: str) -> tuple[str, str]:
-    """Return mandatory production settings or raise an actionable error."""
-    if not config.ssh_host:
-        raise ConfigError(f"ssh_host is required for remote {operation} ({config.path})")
-    if not config.openocd_command:
-        raise ConfigError(f"openocd_command is required for remote {operation} ({config.path})")
-    return config.ssh_host, config.openocd_command[0]

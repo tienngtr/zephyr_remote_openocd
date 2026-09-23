@@ -1009,8 +1009,6 @@ def main():
         stage(args.workspace)
     elif args.command == "openocd-version":
         openocd_version(args.executable)
-    else:
-        raise AssertionError(f"unsupported command: {args.command}")
 
 
 if __name__ == "__main__":
