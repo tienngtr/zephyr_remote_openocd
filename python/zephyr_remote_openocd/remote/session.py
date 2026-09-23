@@ -86,10 +86,6 @@ class _SessionState:
                 EOFError,
             )
 
-    def has_result_or_reader_failure(self) -> bool:
-        with self._changed:
-            return self._reader_error is not None or self._openocd_returncode is not None
-
     def wait_for_change(self, timeout: float | None) -> None:
         with self._changed:
             if self._reader_error is None and self._openocd_returncode is None:

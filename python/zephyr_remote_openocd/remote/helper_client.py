@@ -98,9 +98,6 @@ class _HelperClient:
     def recorded_openocd_exit(self) -> int | None:
         return self._state.recorded_openocd_exit()
 
-    def has_result_or_reader_failure(self) -> bool:
-        return self._state.has_result_or_reader_failure()
-
     def wait_for_change(self, timeout: float | None) -> None:
         self._state.wait_for_change(timeout)
 
