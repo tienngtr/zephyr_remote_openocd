@@ -28,6 +28,7 @@ from zephyr_remote_openocd.remote.ssh import SshCommand
 from tests.process_support import read_line
 
 pytestmark = pytest.mark.ssh
+REMOTE_FAILURE_EXIT_CODE = 7
 
 REMOTE_ECHO = b"""\
 import select, socket, sys
@@ -201,11 +202,12 @@ class TestSshTransportIntegration:
 
         failed = self.ssh.run(
             self.host,
-            "python3 -c 'import sys; sys.stdin.buffer.read(); raise SystemExit(7)'",
+            "python3 -c 'import sys; sys.stdin.buffer.read(); "
+            f"raise SystemExit({REMOTE_FAILURE_EXIT_CODE})'",
             input_data=b"stream before remote failure",
             timeout=20,
         )
-        assert failed.returncode == 7
+        assert failed.returncode == REMOTE_FAILURE_EXIT_CODE
 
     def test_protocol_v1_helper_vertical_slice(self):
         """Exercise the production transport path with an explicit test process."""

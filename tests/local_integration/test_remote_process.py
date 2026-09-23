@@ -155,7 +155,7 @@ class TestForwardingLifecycle:
 
         def kill(self):
             self.kill_calls += 1
-            self.returncode = -9
+            self.returncode = -signal.SIGKILL
 
         def wait(self, timeout=None):
             return self.returncode
@@ -1192,7 +1192,8 @@ class TestRealProcessHelper:
                 command = [
                     sys.executable,
                     "-c",
-                    'import sys;print("out");print("err",file=sys.stderr);sys.exit(7)',
+                    f'import sys;print("out");print("err",file=sys.stderr);'
+                    f"sys.exit({OPENOCD_FAILURE_RC})",
                 ]
                 process.stdin.write(start_frame(command))
                 process.stdin.flush()
@@ -1206,7 +1207,7 @@ class TestRealProcessHelper:
                 }
                 assert outputs == {("stdout", "out"), ("stderr", "err")}
                 exit_event = next(event for event in events if event["type"] == "SESSION_CLOSED")
-                assert exit_event["returncode"] == 7
+                assert exit_event["returncode"] == OPENOCD_FAILURE_RC
                 assert exit_event["reason"] == "process_exit"
                 assert not Path(created["remote_workspace"]).exists()
                 assert process.stderr is not None
@@ -1383,8 +1384,13 @@ class TestRealProcessHelper:
                     )
 
             output = []
+            sample_openocd_exit_code = 6
             remote_process = RemoteProcess(
-                (sys.executable, "-c", 'import sys;print("hello");sys.exit(6)'),
+                (
+                    sys.executable,
+                    "-c",
+                    f'import sys;print("hello");sys.exit({sample_openocd_exit_code})',
+                ),
             )
             request = RemoteSessionRequest("local", LocalCommand(), process=remote_process)
             deployment = DeploymentResult(str(helper), "digest", False)
@@ -1398,7 +1404,7 @@ class TestRealProcessHelper:
             try:
                 assert backend.descriptor is not None
                 assert ipaddress.ip_address(backend.descriptor.remote_address) in LOOPBACK_RANGE
-                assert backend.wait_for_openocd_exit(5) == 6
+                assert backend.wait_for_openocd_exit(5) == sample_openocd_exit_code
                 assert [
                     (payload, line_end)
                     for stream, payload, line_end in output
@@ -1732,24 +1738,24 @@ sys.stdin.buffer.read()
                 backend.close()
 
     def test_helper_client_reports_helper_failure_after_close_event(self):
-        helper_code = """
+        helper_code = f"""
 import json
 import sys
 
 events = (
-    {
+    {{
         "version": 1,
         "type": "SESSION_CREATED",
         "helper": "test",
         "session_id": "id",
         "remote_workspace": "/workspace",
-    },
-    {"version": 1, "type": "PROCESS_READY", "remote_address": "127.64.0.1", "child_pid": 1},
-    {"version": 1, "type": "SESSION_CLOSED", "reason": "process_exit", "returncode": 0},
+    }},
+    {{"version": 1, "type": "PROCESS_READY", "remote_address": "127.64.0.1", "child_pid": 1}},
+    {{"version": 1, "type": "SESSION_CLOSED", "reason": "process_exit", "returncode": 0}},
 )
 for event in events:
     print(json.dumps(event, separators=(",", ":")), flush=True)
-sys.exit(7)
+sys.exit({HELPER_FAILURE_RC})
 """
 
         class LocalCommand(_BlockedSshCommand):

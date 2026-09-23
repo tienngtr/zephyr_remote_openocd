@@ -37,6 +37,11 @@ CHILD_POLL_INTERVAL = 0.05
 CHILD_REAP_TIMEOUT = 1
 CHILD_RELAY_JOIN_TIMEOUT = 2
 RELAY_CHUNK_SIZE = 64 * 1024
+MAX_SESSION_ID_ATTEMPTS = 32
+MAX_ADDRESS_ALLOCATION_ATTEMPTS = 32
+# 18 random bytes provide 144 bits of entropy in a compact URL-safe ID.
+SESSION_ID_TOKEN_BYTES = 18
+MAX_CAPTURED_STARTUP_FRAGMENTS = 128
 _emit_lock = threading.Lock()
 
 
@@ -102,8 +107,8 @@ def new_workspace():
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(root, 0o700)
     reclaim_stale_workspaces(root)
-    for _ in range(32):
-        session_id = secrets.token_urlsafe(18)
+    for _ in range(MAX_SESSION_ID_ATTEMPTS):
+        session_id = secrets.token_urlsafe(SESSION_ID_TOKEN_BYTES)
         path = root / session_id
         try:
             path.mkdir(mode=0o700)
@@ -282,11 +287,11 @@ def relay(stream, stream_name, marker=None, marker_seen=None, captured=None, cap
             record = _CapturedFragment(stream_name, payload, line_end)
             if capture_lock is None:
                 captured.append(record)
-                del captured[:-128]
+                del captured[:-MAX_CAPTURED_STARTUP_FRAGMENTS]
             else:
                 with capture_lock:
                     captured.append(record)
-                    del captured[:-128]
+                    del captured[:-MAX_CAPTURED_STARTUP_FRAGMENTS]
         emit(
             "CHILD_OUTPUT",
             stream=stream_name,
@@ -337,7 +342,7 @@ def is_bind_collision(output: list[_CapturedFragment]):
 
 
 def allocate_service_address(ports):
-    for _ in range(32):
+    for _ in range(MAX_ADDRESS_ALLOCATION_ATTEMPTS):
         address = random_address()
         sockets = []
         try:
@@ -351,7 +356,9 @@ def allocate_service_address(ports):
         finally:
             for candidate in sockets:
                 candidate.close()
-    raise RuntimeError("loopback allocation exhausted after 32 attempts")
+    raise RuntimeError(
+        f"loopback allocation exhausted after {MAX_ADDRESS_ALLOCATION_ATTEMPTS} attempts"
+    )
 
 
 def services_connectable(address, services):
@@ -821,13 +828,16 @@ def _wait_for_process(child, address, request, attempt):
     while time.monotonic() < deadline:
         if child.poll() is not None:
             child.terminate()
-            if is_bind_collision(child.startup_output) and attempt < 31:
+            if (
+                is_bind_collision(child.startup_output)
+                and attempt + 1 < MAX_ADDRESS_ALLOCATION_ATTEMPTS
+            ):
                 return False
             raise RuntimeError(f"process exited before readiness with status {child.returncode}")
         if child.marker_seen.is_set() and services_connectable(address, request.services):
             emit("PROCESS_READY", remote_address=address, child_pid=child.pid)
             return True
-        time.sleep(0.05)
+        time.sleep(CHILD_POLL_INTERVAL)
     raise RuntimeError("process readiness timed out")
 
 
@@ -858,7 +868,7 @@ class ControlSession:
         if self.child is not None:
             raise ValueError("START is only valid once")
         ports = [service.remote_port for service in request.services]
-        attempts = 32 if request.readiness_marker is not None else 1
+        attempts = MAX_ADDRESS_ALLOCATION_ATTEMPTS if request.readiness_marker is not None else 1
         for attempt in range(attempts):
             address = allocate_service_address(ports) if ports else random_address()
             argv, replacements = _expanded_argv(request, self.work, address)
@@ -873,7 +883,10 @@ class ControlSession:
             if _wait_for_process(self.child, address, request, attempt):
                 return
             self.child = None
-        raise RuntimeError("process address collision retry exhausted after 32 attempts")
+        raise RuntimeError(
+            "process address collision retry exhausted after "
+            f"{MAX_ADDRESS_ALLOCATION_ATTEMPTS} attempts"
+        )
 
     def dispatch(self, message):
         request = decode_command(message)

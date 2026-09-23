@@ -12,6 +12,7 @@ from typing import Any, BinaryIO
 from .model import RemoteProcess, Service
 
 PROTOCOL_VERSION = 1
+SHA256_HEX_DIGEST_LENGTH = 64
 _ENVELOPE_FIELDS = frozenset(("version", "type"))
 
 
@@ -231,7 +232,7 @@ def validate_openocd_version_response(message: dict[str, Any]) -> None:
 def _sha256(value: Any) -> bool:
     return (
         isinstance(value, str)
-        and len(value) == 64
+        and len(value) == SHA256_HEX_DIGEST_LENGTH
         and all(character in "0123456789abcdef" for character in value)
     )
 

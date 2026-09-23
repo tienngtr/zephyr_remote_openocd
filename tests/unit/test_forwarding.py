@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import os
+import signal
 import sys
 from collections.abc import Iterator
 from contextlib import suppress
@@ -18,6 +19,7 @@ from zephyr_remote_openocd.remote.session import SessionError
 from zephyr_remote_openocd.remote.ssh import SSH_STDERR_TAIL_BYTES, SshCommand
 
 FORWARD_FAILURE_RC = 13
+SAMPLE_FORWARD_EXIT_CODE = 9
 
 
 class _ForwardCommand(SshCommand):
@@ -104,11 +106,11 @@ def test_forward_diagnostic_keeps_a_useful_tail_after_nonzero_exit():
         "import sys;"
         "sys.stderr.buffer.write(b'x' * 200000 + b'forward-tail\\n');"
         "sys.stderr.flush();"
-        "raise SystemExit(9)"
+        f"raise SystemExit({SAMPLE_FORWARD_EXIT_CODE})"
     )
     process = SshCommand((sys.executable, "-c", code)).popen("host", "ignored")
     try:
-        assert process.wait(timeout=5) == 9
+        assert process.wait(timeout=5) == SAMPLE_FORWARD_EXIT_CODE
         diagnostic = _ForwardManager._diagnostic(process)
         assert diagnostic.endswith("forward-tail")
         assert len(diagnostic.encode()) <= SSH_STDERR_TAIL_BYTES
@@ -214,7 +216,7 @@ class _ForwardProcess:
         self.returncode = 0
 
     def kill(self):
-        self.returncode = -9
+        self.returncode = -signal.SIGKILL
 
     def stderr_tail(self):
         return b""

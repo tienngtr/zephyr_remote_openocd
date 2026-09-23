@@ -13,6 +13,7 @@ from .protocol import ProtocolError, decode_message, validate_deployment_respons
 from .ssh import SshCommand
 
 BOOTSTRAP = r'''import fcntl,hashlib,json,os,pathlib,sys,tempfile,time
+STALE_HELPER_AGE_SECONDS=24*60*60
 data=sys.stdin.buffer.read()
 digest=hashlib.sha256(data).hexdigest()
 base=pathlib.Path.home()/'.local/libexec/zephyr_remote_openocd/protocol_v1'
@@ -39,7 +40,7 @@ with (base/'.deploy.lock').open('a+b') as lock:
             except FileNotFoundError: pass
     os.chmod(target,0o600)
     os.utime(target,None)
-    cutoff=time.time()-24*60*60
+    cutoff=time.time()-STALE_HELPER_AGE_SECONDS
     for candidate in base.glob('helper-*.py'):
         if candidate==target:
             continue

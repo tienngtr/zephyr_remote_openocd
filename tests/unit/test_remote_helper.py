@@ -26,6 +26,8 @@ assert SPEC is not None and SPEC.loader is not None
 remote_helper = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(remote_helper)
 
+SAMPLE_CHILD_EXIT_CODE = 7
+
 
 def _wait_for_descendant(path):
     deadline = time.monotonic() + 5
@@ -270,7 +272,9 @@ def test_relay_preserves_split_utf8_and_invalid_bytes(monkeypatch):
 
 
 def test_relay_real_child_flushes_newline_free_output_before_exit(monkeypatch):
-    monkeypatch.setattr(remote_helper, "RELAY_CHUNK_SIZE", 64)
+    relay_chunk_size = 64
+    output_size = remote_helper.MAX_CAPTURED_STARTUP_FRAGMENTS * relay_chunk_size + 1
+    monkeypatch.setattr(remote_helper, "RELAY_CHUNK_SIZE", relay_chunk_size)
     events = []
     output_emitted = threading.Event()
 
@@ -288,15 +292,15 @@ def test_relay_real_child_flushes_newline_free_output_before_exit(monkeypatch):
             sys.executable,
             "-c",
             "import signal,sys;"
-            "sys.stdout.buffer.write(b'x'*8193);sys.stdout.flush();signal.pause()",
+            f"sys.stdout.buffer.write(b'x'*{output_size});sys.stdout.flush();signal.pause()",
         )
     )
     try:
         child.start_relays(capture_startup=True)
         assert output_emitted.wait(5)
         assert child.poll() is None
-        assert all(len(values["payload"]) <= 64 for _kind, values in events)
-        assert len(child.startup_output) <= 128
+        assert all(len(values["payload"]) <= relay_chunk_size for _kind, values in events)
+        assert len(child.startup_output) <= remote_helper.MAX_CAPTURED_STARTUP_FRAGMENTS
     finally:
         child.terminate()
 
@@ -494,7 +498,7 @@ def test_control_session_natural_exit_cleans_before_close_event(tmp_path, monkey
     lock = (workspace / remote_helper.SESSION_LOCK).open("w+b")
 
     class Child:
-        returncode = 7
+        returncode = SAMPLE_CHILD_EXIT_CODE
 
         def poll(self):
             return self.returncode
@@ -515,7 +519,12 @@ def test_control_session_natural_exit_cleans_before_close_event(tmp_path, monkey
     session.child = Child()
 
     assert session._child_finished()
-    assert events == [("SESSION_CLOSED", {"reason": "process_exit", "returncode": 7})]
+    assert events == [
+        (
+            "SESSION_CLOSED",
+            {"reason": "process_exit", "returncode": SAMPLE_CHILD_EXIT_CODE},
+        )
+    ]
 
 
 def test_control_session_natural_exit_cleanup_failure_is_terminal_error(tmp_path, monkeypatch):
