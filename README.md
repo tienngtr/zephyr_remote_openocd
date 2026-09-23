@@ -32,7 +32,7 @@ git clone https://github.com/tienngtr/zephyr_remote_openocd.git
 Then run the setup script:
 
 ```sh
-python3 zephyr_remote_openocd/scripts/setup.py
+python3 zephyr_remote_openocd/scripts/user/setup.py
 ```
 
 Activate the module by adding its path to the `EXTRA_ZEPHYR_MODULES` environment
@@ -72,7 +72,7 @@ remotes:
 Validate syntax and effective settings without contacting the remote:
 
 ```sh
-python3 zephyr_remote_openocd/scripts/validate_configuration.py --remote lab
+python3 zephyr_remote_openocd/scripts/user/validate_configuration.py --remote lab
 ```
 
 Then verify the remote prerequisites using the configured host and OpenOCD

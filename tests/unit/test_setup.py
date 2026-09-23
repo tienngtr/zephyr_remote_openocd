@@ -15,8 +15,8 @@ import pytest
 
 from tests.support import ROOT
 
-SETUP = ROOT / "scripts" / "setup.py"
-CONFIG_DEFAULT = ROOT / "scripts" / "config_default.py"
+SETUP = ROOT / "scripts" / "user" / "setup.py"
+CONFIG_DEFAULT = ROOT / "zephyr" / "config_default.py"
 TEMPLATE = ROOT / "resources" / "config.example.yaml"
 
 
@@ -41,7 +41,7 @@ def test_creates_template_and_reports_activation(tmp_path: Path):
     assert str(config) in result.stdout
     assert str(ROOT) in result.stdout
     assert "EXTRA_ZEPHYR_MODULES" in result.stdout
-    validator = ROOT / "scripts" / "validate_configuration.py"
+    validator = ROOT / "scripts" / "user" / "validate_configuration.py"
     assert str(validator) in result.stdout
     assert "--remote" in result.stdout
     assert stat.S_IMODE(config.parent.stat().st_mode) == 0o700

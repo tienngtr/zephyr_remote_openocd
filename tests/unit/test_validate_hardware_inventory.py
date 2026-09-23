@@ -12,7 +12,8 @@ from tests.inventory_samples import inventory_document
 from tests.support import ROOT
 
 SPEC = importlib.util.spec_from_file_location(
-    "validate_hardware_inventory", ROOT / "scripts/validate_hardware_inventory.py"
+    "validate_hardware_inventory",
+    ROOT / "scripts/contributor/validate_hardware_inventory.py",
 )
 assert SPEC is not None and SPEC.loader is not None
 validator = importlib.util.module_from_spec(SPEC)

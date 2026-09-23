@@ -21,7 +21,13 @@ class SetupError(RuntimeError):
 def module_root(script_path: str | os.PathLike[str] | None = None) -> Path:
     """Return the module root independently of the current working directory."""
     path = Path(script_path) if script_path is not None else Path(__file__)
-    return path.resolve().parent.parent
+    resolved = path.resolve()
+    for candidate in (resolved.parent, *resolved.parents):
+        if (candidate / "zephyr" / "module.yml").is_file() and (
+            candidate / "python" / "zephyr_remote_openocd" / "__init__.py"
+        ).is_file():
+            return candidate
+    raise SetupError(f"cannot find Zephyr module root from {path}")
 
 
 def config_path(home: str | os.PathLike[str] | None = None) -> Path:
@@ -139,7 +145,7 @@ def main() -> int:
     )
     print("Next, edit the configuration and validate a remote:")
     print(f"  {destination}")
-    validator = shlex.quote(str(root / "scripts" / "validate_configuration.py"))
+    validator = shlex.quote(str(root / "scripts" / "user" / "validate_configuration.py"))
     print(f"  python3 {validator} --remote NAME")
     _print_dependency_status()
     return 0

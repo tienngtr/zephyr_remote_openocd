@@ -105,6 +105,7 @@ zephyr_remote_openocd/
     zephyr/
         module.yml
         CMakeLists.txt
+        config_default.py
 
     runners/
         remote_openocd.py
@@ -132,14 +133,19 @@ zephyr_remote_openocd/
         config.example.yaml
 
     scripts/
-        config_default.py
-        setup.py
+        user/
+            setup.py
+            validate_configuration.py
+        contributor/
+            static_check.py
+            validate_hardware_inventory.py
 ```
 
 The implementation is intentionally self-contained in the module tree. Apart
 from the discovery markers described below, exact filenames are not
-architectural contracts. User setup is implemented by `scripts/setup.py`; pip
-packaging is not required.
+architectural contracts. User setup is implemented by `scripts/user/setup.py`; pip
+packaging is not required. `zephyr/config_default.py` is invoked by the adjacent
+`CMakeLists.txt` during build configuration; it is not a user command.
 
 ---
 
@@ -193,7 +199,7 @@ This path is only an example; the module may live anywhere persistent.
 User setup is a separate, non-invasive operation:
 
 ```text
-python3 scripts/setup.py
+python3 scripts/user/setup.py
 ```
 
 The setup script copies `resources/config.example.yaml` only when the canonical
@@ -243,7 +249,7 @@ Remote fields replace complete preset settings; lists and mappings are not
 merged. Remote `~` paths are expanded using the SSH user's actual home only
 during a real operation; recording keeps them unresolved.
 
-`scripts/validate_configuration.py` is a no-I/O front end to this loader and
+`scripts/user/validate_configuration.py` is a no-I/O front end to this loader and
 resolver. Its optional configuration path follows the product default and
 `ZEPHYR_REMOTE_OPENOCD_CONFIG`. It resolves an explicit `--remote`, otherwise
 the file's `default_remote`; it does not consult

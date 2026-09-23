@@ -6,7 +6,7 @@ layer-specific commands and external-test setup details.
 
 Choose the smallest layer that covers the change:
 
-- Every change: `.venv/bin/python -m pytest` and `.venv/bin/python scripts/static_check.py`.
+- Every change: `.venv/bin/python -m pytest` and `.venv/bin/python scripts/contributor/static_check.py`.
 - Zephyr adapter or build integration: `tests/zephyr_integration/` with a
   Zephyr 4.4 source tree and its configured Python environment.
 - SSH transport behavior: `tests/ssh_integration/` with a local hardware inventory.
@@ -68,7 +68,7 @@ The schema and capability profiles are documented in
 Validate the inventory without external I/O before collection:
 
 ```sh
-.venv/bin/python scripts/validate_hardware_inventory.py \
+.venv/bin/python scripts/contributor/validate_hardware_inventory.py \
   .scratch/config/hardware.yaml --check-local
 ```
 
@@ -135,7 +135,7 @@ ZEPHYR_BASE=/path/to/zephyr \
 These compare applicable parser behavior with upstream and execute recording
 through the real adapter while rejecting external process, socket, and SSH
 operations. The Zephyr compatibility import boundary is enforced by
-`scripts/static_check.py`.
+`scripts/contributor/static_check.py`.
 
 Native SSH tests require an `ssh` executable on `PATH` and a reachable host
 from the inventory. Zephyr integration additionally requires a Zephyr checkout,
@@ -198,7 +198,7 @@ its complete parametrized node ID:
 Run all configured static checks with:
 
 ```sh
-.venv/bin/python scripts/static_check.py
+.venv/bin/python scripts/contributor/static_check.py
 ```
 
 ## Complexity review

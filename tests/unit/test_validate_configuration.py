@@ -17,7 +17,7 @@ from zephyr_remote_openocd.remote.ssh import SshCommand
 from tests.support import ROOT
 
 SPEC = importlib.util.spec_from_file_location(
-    "validate_configuration", ROOT / "scripts/validate_configuration.py"
+    "validate_configuration", ROOT / "scripts/user/validate_configuration.py"
 )
 assert SPEC is not None and SPEC.loader is not None
 validator = importlib.util.module_from_spec(SPEC)
@@ -118,7 +118,7 @@ def test_missing_file_fails_with_setup_guidance(tmp_path: Path, capsys) -> None:
     output = capsys.readouterr()
     assert output.out == ""
     assert str(path) in output.err
-    assert "python3 scripts/setup.py" in output.err
+    assert "python3 scripts/user/setup.py" in output.err
     assert "provide CONFIG" in output.err
 
 
@@ -138,7 +138,7 @@ def test_inspection_failure_is_not_reported_as_missing(tmp_path: Path, monkeypat
     assert "cannot read configuration" in output.err
     assert "permission denied" in output.err
     assert "does not exist" not in output.err
-    assert "scripts/setup.py" not in output.err
+    assert "scripts/user/setup.py" not in output.err
 
 
 def test_configuration_and_resolution_errors_are_actionable(tmp_path: Path, capsys) -> None:

@@ -11,7 +11,7 @@ not install that file.
 Run the checks appropriate to every change and state the actual coverage in the
 pull request:
 
-- Every change: run `.venv/bin/python -m pytest` and `.venv/bin/python scripts/static_check.py`.
+- Every change: run `.venv/bin/python -m pytest` and `.venv/bin/python scripts/contributor/static_check.py`.
 - Zephyr runner or build-integration changes: run the applicable Zephyr 4.4
   integration tests.
 - SSH, helper, session, or forwarding changes: run the applicable SSH
@@ -33,7 +33,7 @@ Set up the contributor environment and run the ordinary checks with:
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements_dev.txt
 .venv/bin/python -m pytest
-.venv/bin/python scripts/static_check.py
+.venv/bin/python scripts/contributor/static_check.py
 ```
 
 Collect branch coverage for production code, runner entry points, maintained
