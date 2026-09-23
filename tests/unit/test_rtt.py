@@ -2,8 +2,54 @@
 
 from __future__ import annotations
 
+import io
+import tempfile
+
 import pytest
 from zephyr_remote_openocd.remote import rtt as rtt_module
+
+
+def test_run_rtt_client_receives_after_transient_would_block(monkeypatch):
+    class Connection:
+        def __init__(self):
+            self.received = False
+            self.output_delivered = False
+            self.closed = False
+
+        def recv(self, _size):
+            if not self.received:
+                self.received = True
+                raise BlockingIOError
+            self.output_delivered = True
+            return b"RTT output"
+
+        def close(self):
+            self.closed = True
+
+    connection = Connection()
+
+    def poll_session():
+        return 0 if connection.output_delivered else None
+
+    def select(readers, writers, errors, timeout):
+        return [connection], [], []
+
+    output = io.BytesIO()
+    monkeypatch.setattr(rtt_module, "_connect", lambda _port, _timeout: (connection, b""))
+    monkeypatch.setattr(rtt_module.select, "select", select)
+    monkeypatch.setattr(rtt_module.os, "isatty", lambda _fd: False)
+
+    with tempfile.TemporaryFile("w+b") as input_stream:
+        result = rtt_module.run_rtt_client(
+            5566,
+            poll_session,
+            stdin=input_stream,
+            stdout=output,
+        )
+
+    assert result == 0
+    assert output.getvalue() == b"RTT output"
+    assert connection.closed
 
 
 def test_connect_retries_refusal_until_startup_error(monkeypatch):
