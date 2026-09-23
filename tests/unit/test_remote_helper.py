@@ -954,6 +954,33 @@ def test_decode_command_rejects_malformed_required_path_before_launch(start_comm
         remote_helper.decode_command(start_command)
 
 
+def test_control_session_does_not_launch_when_required_file_is_missing(
+    tmp_path, monkeypatch, start_command
+):
+    workspace = tmp_path / "workspace"
+    staged = workspace / "staged"
+    staged.mkdir(parents=True)
+    missing_file = staged / "image"
+    start_command["required_paths"] = [{"kind": "file", "path": "{workspace}/staged/image"}]
+    spawn_calls = []
+    monkeypatch.setattr(
+        remote_helper,
+        "_spawn_child",
+        lambda *args, **kwargs: spawn_calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(remote_helper, "allocate_service_address", lambda _ports: "127.0.0.1")
+    session = remote_helper.ControlSession("session", workspace, None)
+
+    with pytest.raises(ValueError) as raised:
+        session.dispatch(start_command)
+
+    message = str(raised.value)
+    assert "required remote file" in message
+    assert "missing" in message
+    assert str(missing_file) in message
+    assert spawn_calls == []
+
+
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     (
