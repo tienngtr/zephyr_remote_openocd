@@ -104,6 +104,23 @@ def test_config_default_finds_module_by_markers(tmp_path):
         module.find_module_root(tmp_path / "missing")
 
 
+def test_config_default_reports_invalid_configuration_to_cmake(tmp_path: Path):
+    config = tmp_path / "invalid.yaml"
+    config.write_text("unknown: true\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [sys.executable, str(CONFIG_DEFAULT), str(config)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert "invalid configuration" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
 @pytest.mark.parametrize(
     ("missing_module", "missing_name"),
     (("elftools", "pyelftools"), ("yaml", "PyYAML"), ("jsonschema", "jsonschema")),
