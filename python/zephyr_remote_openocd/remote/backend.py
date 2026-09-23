@@ -171,8 +171,6 @@ class RemoteSession:
             wait_timeout = (
                 health_wait if remaining is None else min(remaining, health_wait or remaining)
             )
-            if helper.has_result_or_reader_failure():
-                continue
             helper.wait_for_change(wait_timeout)
 
     def close(self) -> None:

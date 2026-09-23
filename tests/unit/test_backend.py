@@ -148,10 +148,6 @@ def test_wait_for_openocd_exit_observes_forward_failure():
         def recorded_openocd_exit():
             return None
 
-        @staticmethod
-        def has_result_or_reader_failure():
-            return False
-
         def wait_for_change(self, timeout):
             self.wait_timeouts.append(timeout)
             self.forwards.failed = True
@@ -193,10 +189,6 @@ def test_wait_for_openocd_exit_raises_helper_timeout_at_deadline(monkeypatch):
         @staticmethod
         def recorded_openocd_exit():
             return None
-
-        @staticmethod
-        def has_result_or_reader_failure():
-            return False
 
         def wait_for_change(self, timeout):
             self.wait_timeouts.append(timeout)
