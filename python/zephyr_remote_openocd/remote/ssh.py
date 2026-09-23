@@ -61,13 +61,10 @@ class _StderrDrain:
 
     def _append(self, chunk: bytes) -> None:
         with self._lock:
-            if len(chunk) >= SSH_STDERR_TAIL_BYTES:
-                self._tail[:] = chunk[-SSH_STDERR_TAIL_BYTES:]
-                return
-            excess = len(self._tail) + len(chunk) - SSH_STDERR_TAIL_BYTES
+            self._tail.extend(chunk)
+            excess = len(self._tail) - SSH_STDERR_TAIL_BYTES
             if excess > 0:
                 del self._tail[:excess]
-            self._tail.extend(chunk)
 
     def tail(self) -> bytes:
         """Return the captured diagnostic tail after a bounded drain wait.

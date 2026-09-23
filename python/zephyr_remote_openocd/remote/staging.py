@@ -47,8 +47,6 @@ def _validate_manifest(
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     paths = {}
     for item in manifest:
-        if not isinstance(item, (StagedFile, StagedDirectory)):
-            raise StagingError("staged manifest contains an unsupported entry")
         destination = item.destination
         if destination in paths:
             raise StagingError("duplicate staged destination")

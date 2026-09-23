@@ -18,7 +18,6 @@ from runners.openocd import OpenOcdBinaryRunner  # pylint: disable=no-name-in-mo
 from zephyr_remote_openocd.config import (
     ConfigError,
     load_config,
-    require_remote_settings,
     resolve_remote,
 )
 from zephyr_remote_openocd.remote import (
@@ -34,7 +33,7 @@ from zephyr_remote_openocd.remote.debug import (
 )
 from zephyr_remote_openocd.remote.flash import FlashInputs, FlashPlanError, build_flash_plan
 from zephyr_remote_openocd.remote.paths import PathPlanner, PathPlanningError
-from zephyr_remote_openocd.remote.rtt import RttClientError, run_rtt_client
+from zephyr_remote_openocd.remote.rtt import run_rtt_client
 from zephyr_remote_openocd.remote.ssh import SshCommand
 
 
@@ -108,7 +107,6 @@ class RemoteOpenOcdBinaryRunner(OpenOcdBinaryRunner):
             FlashPlanError,
             DebugPlanError,
             PathPlanningError,
-            RttClientError,
         ) as error:
             raise RuntimeError(str(error)) from error
         _execute_operation(self, command, request, plan)
@@ -138,7 +136,7 @@ def _build_operation(runner, command, selected):
             query_remote_openocd_version(
                 SshCommand(selected.ssh_command),
                 selected.remote_host,
-                _remote_openocd(selected, command),
+                _remote_openocd(selected),
             )
         )
     plan = _debug_plan(runner, command, selected, version)
@@ -361,7 +359,7 @@ def _recorded_rtt(runner, command, plan):
 
 
 def _flash_request(runner, selected):
-    executable = _remote_openocd(selected, "flash")
+    executable = _remote_openocd(selected)
     environment = _forwarded_environment(runner, selected)
     search_paths = _search_paths(runner)
     inputs = FlashInputs(
@@ -399,8 +397,7 @@ def _flash_request(runner, selected):
     )
 
 
-def _remote_openocd(selected, command):
-    require_remote_settings(selected, command)
+def _remote_openocd(selected):
     return selected.openocd_command
 
 
@@ -476,7 +473,7 @@ def _debug_plan(runner, command, selected, version):
     return build_debug_plan(
         DebugInputs(
             command=command,
-            executable=_remote_openocd(selected, command),
+            executable=_remote_openocd(selected),
             gdb=runner.remote_config.gdb,
             elf_file=runner.remote_config.elf_file,
             search_paths=_search_paths(runner),

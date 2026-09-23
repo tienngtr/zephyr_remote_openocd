@@ -87,8 +87,6 @@ class _ForwardManager:
     def start(self, services: Iterable[Service], remote_address: str) -> None:
         """Create and verify local forwards for remote services."""
         service_list = tuple(services)
-        if not service_list:
-            return
         try:
             validated_services((*self._services, *service_list))
         except DuplicateServiceError as error:

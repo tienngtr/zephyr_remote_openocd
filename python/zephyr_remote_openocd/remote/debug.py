@@ -128,8 +128,6 @@ def _commands(commands: tuple[str, ...]) -> list[str]:
 def _validate_debug_inputs(inputs: DebugInputs) -> None:
     if inputs.command not in {"debug", "attach", "debugserver", "rtt"}:
         raise DebugPlanError(f"unsupported persistent debug command: {inputs.command}")
-    if not inputs.readiness_marker or any(ch.isspace() for ch in inputs.readiness_marker):
-        raise DebugPlanError("readiness marker must be a non-empty token")
 
 
 def _plan_debug_services(inputs: DebugInputs) -> DebugServicePlan:

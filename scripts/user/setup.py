@@ -52,9 +52,6 @@ def _ensure_config_directory(path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
     except OSError as error:
         raise SetupError(f"cannot create configuration parent {path.parent}: {error}") from error
-    if path.parent.exists() and not path.parent.is_dir():
-        raise SetupError(f"configuration directory {path.parent} is not a directory")
-
     try:
         path.mkdir(mode=0o700)
     except FileExistsError:
