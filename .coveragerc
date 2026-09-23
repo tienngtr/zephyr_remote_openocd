@@ -4,6 +4,9 @@ source =
     python/zephyr_remote_openocd
     runners
     scripts
+    zephyr
+omit =
+    scripts/contributor/static_check.py
 patch = subprocess
 relative_files = True
 
