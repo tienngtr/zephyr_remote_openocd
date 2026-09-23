@@ -760,6 +760,35 @@ class TestFlashPlanning:
             assert len([item for item in plan.staged_files if item.source == config]) == 1
             assert plan.process.argv[-4:] == ("-c", "reset run", "-c", "shutdown")
 
+    def test_hex_verify_only_plan_omits_load_and_keeps_verify(self, tmp_path: Path):
+        image = tmp_path / "firmware.hex"
+        image.write_bytes(b":00000001FF\n")
+
+        plan = build_flash_plan(
+            FlashInputs(
+                executable="openocd",
+                image_type="hex",
+                file=None,
+                elf_file=None,
+                hex_file=str(image),
+                bin_file=None,
+                search_paths=(),
+                config_files=(),
+                load_command="flash write_image erase",
+                verify_command="verify_image",
+                verify_only=True,
+            ),
+            PathPlanner(()),
+        )
+
+        commands = {
+            plan.process.argv[index + 1]
+            for index, argument in enumerate(plan.process.argv[:-1])
+            if argument == "-c"
+        }
+        assert any(command.startswith("verify_image ") for command in commands)
+        assert not any(command.startswith("flash write_image ") for command in commands)
+
     def test_elf_plan_resumes_before_shutdown(self, monkeypatch, tmp_path):
         image = tmp_path / "image.elf"
         image.write_bytes(b"not inspected")
