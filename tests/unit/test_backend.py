@@ -7,7 +7,7 @@ from typing import Any, cast
 
 import pytest
 from zephyr_remote_openocd.remote import backend as backend_module
-from zephyr_remote_openocd.remote.backend import RemoteSession
+from zephyr_remote_openocd.remote.backend import RemoteSession, query_remote_openocd_version
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
 from zephyr_remote_openocd.remote.helper_client import _HelperClient, _HelperCloseResult
 from zephyr_remote_openocd.remote.model import (
@@ -78,6 +78,44 @@ def test_open_retains_nested_rollback_cleanup_diagnostics(monkeypatch):
     assert any("session cleanup failed" in note for note in notes)
     assert any("forward cleanup failed" in note for note in notes)
     assert all("startup failure cleanup also failed" in note for note in notes)
+
+
+def test_version_query_reports_ssh_failure_status_and_diagnostic(monkeypatch):
+    ssh_exit_status = 23
+
+    class FailedCommand(SshCommand):
+        def __init__(self):
+            super().__init__(("fake-ssh", "-F", "test-config"))
+
+        def run(
+            self,
+            host: str,
+            remote_command: str,
+            *,
+            input_data: bytes | None = None,
+            timeout: float = 15,
+        ) -> subprocess.CompletedProcess[bytes]:
+            assert host == "target"
+            assert "openocd-version" in remote_command
+            return subprocess.CompletedProcess(
+                remote_command,
+                ssh_exit_status,
+                b"",
+                b"Permission denied while querying remote OpenOCD",
+            )
+
+    monkeypatch.setattr(
+        backend_module,
+        "deploy_helper",
+        lambda _ssh_command, _host: DeploymentResult("/helper.py", "digest", False),
+    )
+
+    with pytest.raises(SessionError) as raised:
+        query_remote_openocd_version(FailedCommand(), "target", ("openocd",))
+
+    message = str(raised.value)
+    assert str(ssh_exit_status) in message
+    assert "Permission denied" in message
 
 
 def test_closed_session_exposes_only_cached_openocd_result():
