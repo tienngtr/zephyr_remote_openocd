@@ -19,7 +19,6 @@ from .deploy import DeploymentResult
 from .model import RemoteProcess, Service, SessionAllocation
 from .protocol import (
     EventOrder,
-    ProtocolError,
     decode_message,
     read_message,
     write_start,
@@ -203,8 +202,6 @@ class _HelperClient:
                 raise SessionError("helper stdout was not captured")
             self._order = EventOrder()
             created = self._read_event(time.monotonic() + HELPER_START_TIMEOUT)
-            if created["type"] != "SESSION_CREATED":
-                raise ProtocolError("helper did not begin with SESSION_CREATED")
             self._allocation = SessionAllocation(created["session_id"], created["remote_workspace"])
         except BaseException as error:
             try:
