@@ -13,6 +13,9 @@ from zephyr_remote_openocd.remote.helper_client import _HelperClient, _HelperClo
 from zephyr_remote_openocd.remote.model import (
     RemoteProcess,
     RemoteSessionRequest,
+    Service,
+    SessionAllocation,
+    SessionDescriptor,
 )
 from zephyr_remote_openocd.remote.session import SessionClosedError, SessionError
 from zephyr_remote_openocd.remote.ssh import SshCommand
@@ -220,3 +223,30 @@ def test_wait_for_openocd_exit_raises_helper_timeout_at_deadline(monkeypatch):
     assert helper.expired_timeout == requested_timeout
     assert clock[0] == requested_timeout
     assert all(0 < wait <= requested_timeout for wait in helper.wait_timeouts)
+
+
+def test_forward_uses_allocated_remote_address_and_requested_services():
+    remote_address = "127.0.0.7"
+    requested_services = (
+        Service("gdb", 3333, 3333),
+        Service("telnet", 4444, 4444),
+    )
+
+    class Forwards:
+        def __init__(self):
+            self.forwarded = None
+
+        def start(self, services, address):
+            self.forwarded = (tuple(services), address)
+
+    session = cast(Any, object.__new__(RemoteSession))
+    session.closed = False
+    session.descriptor = SessionDescriptor(
+        SessionAllocation("session-id", "/tmp/session"), remote_address
+    )
+    forwards = Forwards()
+    session._forwards = forwards
+
+    session.forward(requested_services)
+
+    assert forwards.forwarded == (requested_services, remote_address)
