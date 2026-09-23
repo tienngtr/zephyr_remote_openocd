@@ -29,6 +29,11 @@ def tool_executable(name: str) -> str:
     return str(adjacent) if adjacent.is_file() else name
 
 
+def report_phase(name: str) -> None:
+    """Print the check currently running, even when output is piped."""
+    print(f"Running {name}...", flush=True)
+
+
 def source_files(root: Path) -> tuple[str, ...]:
     """Return existing tracked or untracked Python files."""
     result = subprocess.run(
@@ -161,7 +166,7 @@ def commands(
     python_files: tuple[str, ...],
     yaml_paths: tuple[str, ...],
     markdown_paths: tuple[str, ...],
-) -> tuple[tuple[str, ...], ...]:
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
     """Build the ordered static-check commands."""
     python = sys.executable
     schema, hardware_schema = json_schema_files()
@@ -173,63 +178,99 @@ def commands(
         path for path in yaml_paths if Path(path).parts[:2] == (".github", "workflows")
     )
     return (
-        (python, "-m", "ruff", "check", "."),
-        (python, "-m", "ruff", "format", "--check", "."),
-        (python, "-m", "mypy", "--config-file=mypy.ini", *python_files),
-        (python, "-m", "pylint", "-j", "1", "--rcfile=pylintrc", *python_files),
+        ("ruff check", (python, "-m", "ruff", "check", ".")),
+        ("ruff format", (python, "-m", "ruff", "format", "--check", ".")),
+        ("mypy", (python, "-m", "mypy", "--config-file=mypy.ini", *python_files)),
         (
-            tool_executable("vermin"),
-            "-p=1",
-            "-f",
-            "parsable",
-            "--violations",
-            "-t=3.12-",
-            "--no-make-paths-absolute",
-            *python_files,
-        ),
-        (python, "-m", "yamllint", "-c", ".yamllint", *yaml_paths),
-        (tool_executable("check-jsonschema"), "--check-metaschema", schema),
-        (tool_executable("check-jsonschema"), "--check-metaschema", hardware_schema),
-        (
-            tool_executable("check-jsonschema"),
-            "--schemafile",
-            schema,
-            "--force-filetype",
-            "yaml",
-            example,
+            "pylint",
+            (python, "-m", "pylint", "-j", "1", "--rcfile=pylintrc", *python_files),
         ),
         (
-            tool_executable("check-jsonschema"),
-            "--schemafile",
-            hardware_schema,
-            "--force-filetype",
-            "yaml",
-            hardware_example,
+            "vermin",
+            (
+                tool_executable("vermin"),
+                "-p=1",
+                "-f",
+                "parsable",
+                "--violations",
+                "-t=3.12-",
+                "--no-make-paths-absolute",
+                *python_files,
+            ),
         ),
         (
-            tool_executable("check-jsonschema"),
-            "--schemafile",
-            hardware_schema,
-            "--force-filetype",
-            "yaml",
-            hardware_complete_example,
+            "yamllint",
+            (python, "-m", "yamllint", "-c", ".yamllint", *yaml_paths),
         ),
-        (python, "scripts/validate_hardware_inventory.py", ci_hardware),
-        (tool_executable("actionlint"), "-no-color", *workflow_paths),
         (
-            tool_executable("rumdl"),
-            "check",
-            "--no-config",
-            "--no-cache",
-            "--color",
-            "never",
-            "--flavor",
-            "gfm",
-            "--enable",
-            "MD001,MD025,MD041,MD051,MD057",
-            *markdown_paths,
+            "check-jsonschema (configuration schema)",
+            (tool_executable("check-jsonschema"), "--check-metaschema", schema),
         ),
-        ("git", "diff", "--check", "HEAD"),
+        (
+            "check-jsonschema (hardware schema)",
+            (tool_executable("check-jsonschema"), "--check-metaschema", hardware_schema),
+        ),
+        (
+            "check-jsonschema (configuration example)",
+            (
+                tool_executable("check-jsonschema"),
+                "--schemafile",
+                schema,
+                "--force-filetype",
+                "yaml",
+                example,
+            ),
+        ),
+        (
+            "check-jsonschema (hardware example)",
+            (
+                tool_executable("check-jsonschema"),
+                "--schemafile",
+                hardware_schema,
+                "--force-filetype",
+                "yaml",
+                hardware_example,
+            ),
+        ),
+        (
+            "check-jsonschema (complete hardware example)",
+            (
+                tool_executable("check-jsonschema"),
+                "--schemafile",
+                hardware_schema,
+                "--force-filetype",
+                "yaml",
+                hardware_complete_example,
+            ),
+        ),
+        (
+            "hardware inventory validation",
+            (python, "scripts/validate_hardware_inventory.py", ci_hardware),
+        ),
+        (
+            "actionlint",
+            (tool_executable("actionlint"), "-no-color", *workflow_paths),
+        ),
+        (
+            "rumdl",
+            (
+                tool_executable("rumdl"),
+                "check",
+                "--no-config",
+                "--no-cache",
+                "--color",
+                "never",
+                "--flavor",
+                "gfm",
+                "--enable",
+                "MD001,MD025,MD041,MD051,MD057",
+                *markdown_paths,
+            ),
+        ),
+        (
+            "git diff check",
+            ("git", "diff", "--check", "HEAD"),
+        ),
     )
 
 
@@ -237,14 +278,23 @@ def main() -> int:
     """Run checks in order and stop after the first failure."""
     root = repository_root()
     python_files = source_files(root)
+    report_phase("JSON schema formatting")
     if not check_json_format(root, json_schema_files()):
         return 1
+    report_phase("OpenSSH client configuration check")
     if not check_ssh_config(root):
         return 1
+    report_phase("Zephyr import boundary check")
     if not check_zephyr_import_boundary(root, python_files):
         return 1
-    for command in commands(python_files, yaml_files(root), markdown_files(root)):
-        result = subprocess.run(command, cwd=root, check=False)
+    for name, command in commands(python_files, yaml_files(root), markdown_files(root)):
+        report_phase(name)
+        result = subprocess.run(
+            command,
+            cwd=root,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
         if result.returncode:
             return result.returncode
     return 0
