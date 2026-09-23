@@ -919,6 +919,40 @@ class TestRealProcessHelper:
             with pytest.raises(SessionError, match="invalid remote staging response"):
                 session._stage((StagedFile(source, PurePosixPath("firmware.bin")),))
 
+    def test_backend_rejects_staging_confirmation_with_wrong_digest(self, tmp_path):
+        response = encode_message(
+            "STAGED",
+            byte_count=len(b"firmware"),
+            sha256="0" * 64,
+            files=["firmware.bin"],
+            directories=[],
+        )
+
+        class LocalCommand(_BlockedSshCommand):
+            def run_stream(self, host, command, stream, timeout=60):
+                stream.read()
+                return subprocess.CompletedProcess(command, 0, response, b"")
+
+        source = tmp_path / "firmware.bin"
+        source.write_bytes(b"firmware")
+        session = RemoteSession(
+            RemoteSessionRequest("local", LocalCommand(), TEST_PROCESS),
+            DeploymentResult("/helper.py", "0" * 64, False),
+        )
+        session._helper = type(
+            "Helper",
+            (),
+            {"allocation": SessionAllocation("session", "/workspace")},
+        )()
+
+        with pytest.raises(SessionError) as raised:
+            session._stage((StagedFile(source, PurePosixPath("firmware.bin")),))
+
+        cause = raised.value.__cause__
+        assert "invalid remote staging response" in str(raised.value)
+        assert isinstance(cause, ValueError)
+        assert "digest" in str(cause)
+
     def test_backend_reports_nonzero_staging_command_and_closes_archive(self):
         diagnostic = b"staging destination is unavailable"
 
