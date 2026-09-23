@@ -201,6 +201,27 @@ remotes:
     assert str(selected.path_mappings[0].remote) == "~/remote"
 
 
+def test_ssh_executable_under_current_home_is_expanded(monkeypatch, tmp_path: Path):
+    home = tmp_path / "local home"
+    monkeypatch.setenv("HOME", str(home))
+    config = load_text(
+        tmp_path,
+        """remotes:
+  lab:
+    ssh_command: [~/bin/ssh, -F, 'config with spaces', --verbose]
+""",
+    )
+
+    selected = resolve_remote(config, "lab", require_openocd=False)
+
+    assert selected.ssh_command == (
+        str(home / "bin/ssh"),
+        "-F",
+        "config with spaces",
+        "--verbose",
+    )
+
+
 def test_local_and_remote_mapping_paths_preserve_spaces(tmp_path: Path):
     local = tmp_path / "local tree"
     config = load_text(
