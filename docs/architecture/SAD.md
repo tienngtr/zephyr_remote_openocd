@@ -243,8 +243,6 @@ Remote fields replace complete preset settings; lists and mappings are not
 merged. Remote `~` paths are expanded using the SSH user's actual home only
 during a real operation; recording keeps them unresolved.
 
-The SSH command is represented as an argv list rather than a shell command string.
-
 `scripts/validate_configuration.py` is a no-I/O front end to this loader and
 resolver. Its optional configuration path follows the product default and
 `ZEPHYR_REMOTE_OPENOCD_CONFIG`. It resolves an explicit `--remote`, otherwise
@@ -255,8 +253,7 @@ definitions. It requires the target file to exist, prints commands as argv and
 forwarded environment names without values, and does not test local or remote
 resource existence.
 
-Rationale:
-
+The SSH command is represented as an argv list rather than a shell command string.
 An argv representation:
 
 - avoids shell quoting ambiguity;
