@@ -138,6 +138,30 @@ def test_close_attempts_all_cleanup_once_and_preserves_first_failure():
     assert len(actions) == 2
 
 
+def test_close_raises_helper_cleanup_only_error_after_closing_session():
+    session = cast(Any, object.__new__(RemoteSession))
+    session.closed = False
+    cleanup_error = RuntimeError("helper stream close failed")
+    actions = []
+
+    def close_forwards():
+        actions.append("forwards")
+
+    def close_helper():
+        actions.append("helper")
+        return _HelperCloseResult(None, (cleanup_error,))
+
+    session._forwards = type("Forwards", (), {"close": staticmethod(close_forwards)})()
+    session._helper = type("Helper", (), {"close": staticmethod(close_helper)})()
+
+    with pytest.raises(RuntimeError) as raised:
+        session.close()
+
+    assert raised.value is cleanup_error
+    assert actions == ["forwards", "helper"]
+    assert session.closed
+
+
 @pytest.mark.timeout(10)
 def test_wait_for_openocd_exit_observes_forward_failure():
     class Helper:
