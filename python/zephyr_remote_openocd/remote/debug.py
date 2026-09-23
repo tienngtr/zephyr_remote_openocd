@@ -11,6 +11,11 @@ from .model import RemoteProcess, Service
 from .openocd_plan import plan_openocd_base
 from .paths import PathPlanner
 
+RTT_SEARCH_RANGE_SIZE = 0x10
+RTT_CHANNEL = 0
+THREAD_INFO_VERSION_THRESHOLD = (0, 11, 0)
+OPENOCD_READINESS_TIMEOUT = 30.0
+
 
 class DebugPlanError(RuntimeError):
     pass
@@ -43,7 +48,7 @@ def thread_info_enabled(requested: bool, version: OpenOcdVersion | None) -> bool
         return False
     if version is None:
         raise DebugPlanError("OpenOCD version is required when Zephyr thread info is enabled")
-    return version.zephyr_tuple > (0, 11, 0)
+    return version.zephyr_tuple > THREAD_INFO_VERSION_THRESHOLD
 
 
 @dataclass(frozen=True)
@@ -187,11 +192,11 @@ def _server_commands(
         commands.extend(
             (
                 "-c",
-                f'rtt setup 0x{inputs.rtt_address:x} 0x10 "SEGGER RTT"',
+                f'rtt setup 0x{inputs.rtt_address:x} 0x{RTT_SEARCH_RANGE_SIZE:x} "SEGGER RTT"',
                 "-c",
                 "rtt start",
                 "-c",
-                f"rtt server start {services.rtt_service.remote_port} 0",
+                f"rtt server start {services.rtt_service.remote_port} {RTT_CHANNEL}",
             )
         )
     commands.extend(("-c", f"echo {inputs.readiness_marker}"))
@@ -202,13 +207,13 @@ def _rtt_client_commands(inputs: DebugInputs, services: DebugServicePlan) -> tup
     assert inputs.rtt_address is not None and services.rtt_service is not None
     return (
         "-ex",
-        f'monitor rtt setup 0x{inputs.rtt_address:x} 0x10 "SEGGER RTT"',
+        f'monitor rtt setup 0x{inputs.rtt_address:x} 0x{RTT_SEARCH_RANGE_SIZE:x} "SEGGER RTT"',
         "-ex",
         "monitor reset run",
         "-ex",
         "monitor rtt start",
         "-ex",
-        f"monitor rtt server start {services.rtt_service.remote_port} 0",
+        f"monitor rtt server start {services.rtt_service.remote_port} {RTT_CHANNEL}",
         "-ex",
         "detach",
         "-ex",
@@ -271,8 +276,8 @@ def build_debug_plan(
         environment,
         tuple(planner.remote_checks),
         inputs.readiness_marker,
-        30.0,
-        base.literal_prefix,
+        readiness_timeout=OPENOCD_READINESS_TIMEOUT,
+        literal_prefix=base.literal_prefix,
     )
     return DebugPlan(
         process,

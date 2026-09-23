@@ -91,7 +91,7 @@ def test_rtt_reader_matches_markers_in_same_chunk_after_exit():
     ) as process:
         process.wait(timeout=5)
         output = bytearray()
-        read_until(process, "endpoint", 1, output)
-        read_until(process, "ready", 1, output)
+        read_until(process, "endpoint", timeout=1, output=output)
+        read_until(process, "ready", timeout=1, output=output)
         with pytest.raises(AssertionError):
-            read_until(process, "missing", 1, output)
+            read_until(process, "missing", timeout=1, output=output)

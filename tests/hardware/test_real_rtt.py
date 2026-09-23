@@ -233,7 +233,7 @@ class TestRealRtt:
         )
         output = bytearray()
         try:
-            read_until(process, "ZRO_GDB_RTT_READY", 90, output)
+            read_until(process, "ZRO_GDB_RTT_READY", timeout=90, output=output)
             assert process.poll() is None
             try:
                 self._rtt_round_trip(fixture, port)

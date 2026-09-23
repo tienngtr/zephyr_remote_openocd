@@ -6,6 +6,7 @@ import io
 import json
 import math
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -28,6 +29,10 @@ from zephyr_remote_openocd.remote.model import (
 from zephyr_remote_openocd.remote.protocol import encode_message
 from zephyr_remote_openocd.remote.session import SessionError
 from zephyr_remote_openocd.remote.ssh import SSH_STDERR_TAIL_BYTES, SshCommand, _stop_process
+
+LONG_LIVED_CHILD_EXIT_CODE = 7
+STREAM_CHILD_EXIT_CODE = 4
+SAMPLE_OPENOCD_EXIT_CODE = 6
 
 
 class _PopenOnlySshCommand(SshCommand):
@@ -107,7 +112,7 @@ def test_long_lived_process_drains_noisy_stderr_and_keeps_bounded_tail():
         "sys.stderr.flush();"
         "print('READY', flush=True);"
         "sys.stdin.buffer.read();"
-        "raise SystemExit(7)"
+        f"raise SystemExit({LONG_LIVED_CHILD_EXIT_CODE})"
     )
     process = SshCommand((sys.executable, "-c", code)).popen("host", "ignored")
     try:
@@ -115,7 +120,7 @@ def test_long_lived_process_drains_noisy_stderr_and_keeps_bounded_tail():
         assert process.stdout.readline() == b"READY\n"
         assert process.stdin is not None
         process.stdin.close()
-        assert process.wait(timeout=5) == 7
+        assert process.wait(timeout=5) == LONG_LIVED_CHILD_EXIT_CODE
         tail = process.stderr_tail()
         assert len(tail) <= SSH_STDERR_TAIL_BYTES
         assert tail.endswith(b"tail-marker\n")
@@ -135,14 +140,14 @@ def test_run_stream_passes_file_as_stdin_and_captures_output(tmp_path):
         "sys.stdout.buffer.write(sys.stdin.buffer.read());"
         "sys.stderr.buffer.write(b'x' * 100000);"
         "sys.stderr.flush();"
-        "raise SystemExit(4)"
+        f"raise SystemExit({STREAM_CHILD_EXIT_CODE})"
     )
     source_path = tmp_path / "payload.bin"
     source_path.write_bytes(b"payload")
     with source_path.open("rb") as source:
         result = SshCommand((sys.executable, "-c", code)).run_stream("host", "ignored", source)
         assert not source.closed
-    assert result.returncode == 4
+    assert result.returncode == STREAM_CHILD_EXIT_CODE
     assert result.stdout == b"payload"
     assert result.stderr == b"x" * 100000
 
@@ -267,7 +272,7 @@ class _HelperProcess:
         self.returncode = 0
 
     def kill(self):
-        self.returncode = -9
+        self.returncode = -signal.SIGKILL
 
     def close_stderr(self):
         pass
@@ -303,7 +308,9 @@ def test_initial_forward_failure_consumes_terminal_openocd_event(monkeypatch):
             remote_workspace="/workspace",
         )
         + encode_message("PROCESS_READY", remote_address="127.64.0.1", child_pid=1)
-        + encode_message("SESSION_CLOSED", reason="process_exit", returncode=6)
+        + encode_message(
+            "SESSION_CLOSED", reason="process_exit", returncode=SAMPLE_OPENOCD_EXIT_CODE
+        )
     )
     helper.returncode = 0
     command = _ForwardCommand(helper)

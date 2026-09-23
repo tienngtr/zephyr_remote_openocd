@@ -9,6 +9,7 @@ import secrets
 from collections.abc import Callable
 
 LOOPBACK_RANGE = ipaddress.IPv4Network("127.64.0.0/10")
+MAX_LOOPBACK_ALLOCATION_ATTEMPTS = 32
 
 
 def random_loopback_address() -> str:
@@ -16,7 +17,9 @@ def random_loopback_address() -> str:
     return str(ipaddress.IPv4Address(int(LOOPBACK_RANGE.network_address) + offset))
 
 
-def allocate_loopback[T](attempt: Callable[[str], T], *, attempts: int = 32) -> tuple[str, T]:
+def allocate_loopback[T](
+    attempt: Callable[[str], T], *, attempts: int = MAX_LOOPBACK_ALLOCATION_ATTEMPTS
+) -> tuple[str, T]:
     """Try an address-dependent operation, treating OSError as a collision."""
     last_error: OSError | None = None
     for _ in range(attempts):

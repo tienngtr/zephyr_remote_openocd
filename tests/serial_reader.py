@@ -16,6 +16,9 @@ from tests.process_support import read_line
 type ReaderProcess = subprocess.Popen[bytes] | ManagedSshProcess
 
 SERIAL_READER_SOURCE = r'''import base64,json,os,re,select,sys,termios,time
+MATCH_EXIT_CODE=0
+TIMEOUT_EXIT_CODE=2
+ERROR_EXIT_CODE=3
 device,baud_text,data_bits_text,parity,stop_bits_text,flow,pattern_text,timeout_text=sys.argv[1:]
 baud=int(baud_text); data_bits=int(data_bits_text); stop_bits=int(stop_bits_text)
 timeout=float(timeout_text)
@@ -57,11 +60,11 @@ try:
    try: data.extend(os.read(fd,65536))
    except BlockingIOError: pass
    if pattern.search(data.decode('utf-8','replace')):
-    emit('MATCH',data=base64.b64encode(data).decode('ascii'));sys.exit(0)
+    emit('MATCH',data=base64.b64encode(data).decode('ascii'));sys.exit(MATCH_EXIT_CODE)
   if time.monotonic()>=deadline: break
- emit('TIMEOUT',data=base64.b64encode(data).decode('ascii'));sys.exit(2)
+ emit('TIMEOUT',data=base64.b64encode(data).decode('ascii'));sys.exit(TIMEOUT_EXIT_CODE)
 except Exception as exc:
- emit('ERROR',message=str(exc));sys.exit(3)
+ emit('ERROR',message=str(exc));sys.exit(ERROR_EXIT_CODE)
 finally:
  if fd is not None: os.close(fd)
 '''

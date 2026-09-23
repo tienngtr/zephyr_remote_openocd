@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import os
+import signal
 import subprocess
 import threading
 from typing import Any, BinaryIO, cast, override
@@ -137,7 +138,7 @@ def test_close_keeps_stop_failure_primary_when_forced_disposal_also_fails():
             raise forced_stop_error
 
         def kill(self):
-            self.returncode = -9
+            self.returncode = -signal.SIGKILL
 
         @staticmethod
         def stderr_tail():
@@ -179,7 +180,7 @@ def test_close_reports_helper_stop_timeout():
             self.returncode = 0
 
         def kill(self):
-            self.returncode = -9
+            self.returncode = -signal.SIGKILL
 
         @staticmethod
         def stderr_tail():
@@ -256,7 +257,7 @@ def test_helper_close_keeps_reader_owned_stdout_open_until_reader_stops():
 
         def kill(self):
             reader_stopped.set()
-            self.returncode = -9
+            self.returncode = -signal.SIGKILL
 
         def wait(self, timeout=None):
             return self.returncode
@@ -337,7 +338,7 @@ def test_helper_startup_timeout_does_not_block_on_partial_output(monkeypatch):
             self.returncode = 0
 
         def kill(self):
-            self.returncode = -9
+            self.returncode = -signal.SIGKILL
 
         def wait(self, timeout=None):
             return self.returncode
@@ -458,7 +459,7 @@ def test_helper_client_output_delivery_does_not_retain_event_history():
             self.returncode = 0
 
         def kill(self):
-            self.returncode = -9
+            self.returncode = -signal.SIGKILL
 
         def stderr_tail(self):
             return b""
