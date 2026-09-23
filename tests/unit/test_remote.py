@@ -321,36 +321,71 @@ def test_missing_packaged_remote_helper_is_actionable(monkeypatch, tmp_path):
         _helper_source()
 
 
+class DeploymentReply(SshCommand):
+    reply: tuple[int, bytes, bytes]
+
+    def __init__(self, returncode: int, stdout: bytes, stderr: bytes):
+        super().__init__()
+        object.__setattr__(self, "reply", (returncode, stdout, stderr))
+
+    @override
+    def run(
+        self,
+        host: str,
+        remote_command: str,
+        *,
+        input_data: bytes | None = None,
+        timeout: float = 15,
+    ) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(remote_command, *self.reply)
+
+    @override
+    def popen(self, host: str, remote_command: str, *extra_args: str) -> Any:
+        raise AssertionError("popen() is not expected in this test")
+
+    @override
+    def run_stream(
+        self,
+        host: str,
+        remote_command: str,
+        stream: BinaryIO,
+        *,
+        timeout: float = 60,
+    ) -> subprocess.CompletedProcess[bytes]:
+        raise AssertionError("run_stream() is not expected in this test")
+
+
 def test_deployment_wraps_invalid_utf8_response():
-    class InvalidReply(SshCommand):
-        @override
-        def run(
-            self,
-            host: str,
-            remote_command: str,
-            *,
-            input_data: bytes | None = None,
-            timeout: float = 15,
-        ) -> subprocess.CompletedProcess[bytes]:
-            return subprocess.CompletedProcess(remote_command, 0, b"\xff", b"")
-
-        @override
-        def popen(self, host: str, remote_command: str, *extra_args: str) -> Any:
-            raise AssertionError("popen() is not expected in this test")
-
-        @override
-        def run_stream(
-            self,
-            host: str,
-            remote_command: str,
-            stream: BinaryIO,
-            *,
-            timeout: float = 60,
-        ) -> subprocess.CompletedProcess[bytes]:
-            raise AssertionError("run_stream() is not expected in this test")
+    ssh = DeploymentReply(0, b"\xff", b"")
 
     with pytest.raises(deploy_module.DeploymentError, match="invalid deployment response"):
-        deploy_module.deploy_helper(InvalidReply(), "host", source=b"helper source")
+        deploy_module.deploy_helper(ssh, "host", source=b"helper source")
+
+
+def test_deployment_reports_nonzero_ssh_status_and_diagnostic():
+    ssh_exit_status = 23
+    ssh = DeploymentReply(ssh_exit_status, b"", b"permission denied")
+
+    with pytest.raises(deploy_module.DeploymentError) as error:
+        deploy_module.deploy_helper(ssh, "host", source=b"helper source")
+
+    assert str(ssh_exit_status) in str(error.value)
+    assert "permission denied" in str(error.value)
+
+
+def test_deployment_rejects_digest_that_differs_from_source():
+    source = b"helper source"
+    different_source_digest = hashlib.sha256(b"different helper source").hexdigest()
+    response = encode_message(
+        "DEPLOYED",
+        status="deployed",
+        path="/home/test/helper.py",
+        sha256=different_source_digest,
+    )
+    ssh = DeploymentReply(0, response, b"")
+
+    with pytest.raises(deploy_module.DeploymentError, match="invalid deployment response"):
+        deploy_module.deploy_helper(ssh, "host", source=source)
 
 
 def _run_bootstrap(home: Path, source: bytes) -> dict[str, object]:
