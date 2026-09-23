@@ -106,6 +106,23 @@ def check_json_format(root: Path, paths: tuple[str, ...]) -> bool:
     return valid
 
 
+def check_ssh_config(root: Path) -> bool:
+    """Validate the committed OpenSSH client configuration."""
+    result = subprocess.run(
+        (
+            "ssh",
+            "-G",
+            "-F",
+            "tests/ci/ssh/ssh_config",
+            "ci-ssh",
+        ),
+        cwd=root,
+        stdout=subprocess.DEVNULL,
+        check=False,
+    )
+    return result.returncode == 0
+
+
 def check_zephyr_import_boundary(root: Path, paths: tuple[str, ...]) -> bool:
     """Keep upstream OpenOCD runner imports in the Zephyr compatibility layer."""
     package = Path("python/zephyr_remote_openocd")
@@ -221,6 +238,8 @@ def main() -> int:
     root = repository_root()
     python_files = source_files(root)
     if not check_json_format(root, json_schema_files()):
+        return 1
+    if not check_ssh_config(root):
         return 1
     if not check_zephyr_import_boundary(root, python_files):
         return 1
