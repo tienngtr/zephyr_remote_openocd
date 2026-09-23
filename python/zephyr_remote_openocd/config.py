@@ -100,15 +100,6 @@ class RemoteOpenOcdConfig:
     presets: Mapping[str, Preset]
     remotes: Mapping[str, RemoteDefinition]
 
-    def printable(self) -> dict[str, object]:
-        return {
-            "path": str(self.path),
-            "default_runner": self.default_runner,
-            "default_remote": self.default_remote,
-            "presets": sorted(self.presets),
-            "remotes": sorted(self.remotes),
-        }
-
 
 def _require_dependencies(config_path: Path) -> None:
     if _IMPORT_ERROR is not None:
