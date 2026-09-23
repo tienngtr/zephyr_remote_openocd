@@ -245,7 +245,11 @@ def commands(
         ),
         (
             "hardware inventory validation",
-            (python, "scripts/validate_hardware_inventory.py", ci_hardware),
+            (
+                python,
+                "scripts/contributor/validate_hardware_inventory.py",
+                ci_hardware,
+            ),
         ),
         (
             "actionlint",

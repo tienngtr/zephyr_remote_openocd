@@ -11,7 +11,7 @@ import sys
 from collections.abc import Iterable
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT / "python") not in sys.path:
     sys.path.insert(0, str(ROOT / "python"))
 
@@ -77,7 +77,7 @@ def main(argv: list[str] | None = None) -> int:
     except FileNotFoundError:
         print(
             f"Configuration invalid: {path} does not exist; run "
-            "python3 scripts/setup.py or provide CONFIG",
+            "python3 scripts/user/setup.py or provide CONFIG",
             file=sys.stderr,
         )
         return 1
@@ -97,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
     if remote is None:
         print("No default remote is configured.")
         print("Resolve one with:")
-        print("  python3 scripts/validate_configuration.py [CONFIG] --remote NAME")
+        print("  python3 scripts/user/validate_configuration.py [CONFIG] --remote NAME")
     else:
         _print_remote(remote)
     return 0

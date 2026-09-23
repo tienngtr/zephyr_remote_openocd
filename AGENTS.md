@@ -108,7 +108,7 @@ configured checkout, west, SDK, toolchain, and environment. Consult
 `docs/development/testing.md` when uncertain.
 
 Run validation proportional to the change and always run
-`.venv/bin/python scripts/static_check.py` for repository static checks. It
+`.venv/bin/python scripts/contributor/static_check.py` for repository static checks. It
 uses single-process Pylint in restricted sandboxes. Use `--collect-only` before
 external nodes and inspect cleanup before target reuse. See `CONTRIBUTING.md`
 for the full checklist.

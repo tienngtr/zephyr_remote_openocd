@@ -17,7 +17,7 @@ The repository excludes `.scratch/` from version control. Replace every
 placeholder, validate the contract and local paths, and inspect test selection:
 
 ```sh
-.venv/bin/python scripts/validate_hardware_inventory.py \
+.venv/bin/python scripts/contributor/validate_hardware_inventory.py \
   .scratch/config/hardware.yaml --check-local
 .venv/bin/python -m pytest --collect-only -q \
   --hardware-inventory .scratch/config/hardware.yaml

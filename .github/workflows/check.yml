@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/install-dev-tools
       - name: Run static checks
-        run: python scripts/static_check.py
+        run: python scripts/contributor/static_check.py
 
   self-contained-tests:
     runs-on: ubuntu-24.04
