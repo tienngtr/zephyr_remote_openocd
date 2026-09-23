@@ -919,6 +919,42 @@ class TestRealProcessHelper:
             with pytest.raises(SessionError, match="invalid remote staging response"):
                 session._stage((StagedFile(source, PurePosixPath("firmware.bin")),))
 
+    def test_backend_reports_nonzero_staging_command_and_closes_archive(self):
+        diagnostic = b"staging destination is unavailable"
+        staging_ssh_exit_status = 23
+
+        class LocalCommand(_BlockedSshCommand):
+            stream: BinaryIO | None = None
+
+            def run_stream(self, host, command, stream, timeout=60):
+                self.stream = stream
+                assert stream.read()
+                return subprocess.CompletedProcess(
+                    command, staging_ssh_exit_status, b"", diagnostic
+                )
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "firmware.bin"
+            source.write_bytes(b"firmware")
+            command = LocalCommand()
+            session = RemoteSession(
+                RemoteSessionRequest("local", command, TEST_PROCESS),
+                DeploymentResult("/helper.py", "digest", False),
+            )
+            session._helper = type(
+                "Helper",
+                (),
+                {"allocation": SessionAllocation("session", "/workspace")},
+            )()
+
+            with pytest.raises(SessionError) as raised:
+                session._stage((StagedFile(source, PurePosixPath("firmware.bin")),))
+
+            message = str(raised.value)
+            assert str(staging_ssh_exit_status) in message
+            assert "staging destination is unavailable" in message
+            assert command.stream is not None and command.stream.closed
+
     def test_backend_wraps_invalid_utf8_version_response(self, monkeypatch):
         class LocalCommand(_BlockedSshCommand):
             def run(
