@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import ipaddress
 import json
@@ -918,6 +919,36 @@ class TestRealProcessHelper:
             )()
             with pytest.raises(SessionError, match="invalid remote staging response"):
                 session._stage((StagedFile(source, PurePosixPath("firmware.bin")),))
+
+    def test_backend_rejects_staging_confirmation_with_wrong_digest(self, tmp_path):
+        different_payload_digest = hashlib.sha256(b"different firmware").hexdigest()
+        response = encode_message(
+            "STAGED",
+            byte_count=len(b"firmware"),
+            sha256=different_payload_digest,
+            files=["firmware.bin"],
+            directories=[],
+        )
+
+        class LocalCommand(_BlockedSshCommand):
+            def run_stream(self, host, command, stream, timeout=60):
+                stream.read()
+                return subprocess.CompletedProcess(command, 0, response, b"")
+
+        source = tmp_path / "firmware.bin"
+        source.write_bytes(b"firmware")
+        session = RemoteSession(
+            RemoteSessionRequest("local", LocalCommand(), TEST_PROCESS),
+            DeploymentResult("/helper.py", "digest", False),
+        )
+        session._helper = type(
+            "Helper",
+            (),
+            {"allocation": SessionAllocation("session", "/workspace")},
+        )()
+
+        with pytest.raises(SessionError):
+            session._stage((StagedFile(source, PurePosixPath("firmware.bin")),))
 
     def test_backend_reports_nonzero_staging_command_and_closes_archive(self):
         diagnostic = b"staging destination is unavailable"
