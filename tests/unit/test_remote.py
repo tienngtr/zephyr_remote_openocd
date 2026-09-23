@@ -667,6 +667,44 @@ class TestAllocation:
 
 
 class TestFlashPlanning:
+    @pytest.mark.parametrize(
+        ("image_type", "load_command", "verify_command", "flash_address", "required"),
+        (
+            ("bin", None, None, None, ("load command", "flash address")),
+            ("hex", None, None, None, ("load", "verify")),
+        ),
+    )
+    def test_missing_required_flash_metadata_fails_during_planning(
+        self,
+        image_type: str,
+        load_command: str | None,
+        verify_command: str | None,
+        flash_address: str | None,
+        required: tuple[str, ...],
+    ):
+        planner = PathPlanner(())
+        inputs = FlashInputs(
+            executable="openocd",
+            image_type=image_type,
+            file=None,
+            elf_file=None,
+            hex_file=None,
+            bin_file=None,
+            search_paths=(),
+            config_files=(),
+            load_command=load_command,
+            verify_command=verify_command,
+            flash_address=flash_address,
+        )
+
+        with pytest.raises(flash_module.FlashPlanError) as error:
+            build_flash_plan(inputs, planner)
+
+        message = str(error.value).lower()
+        assert all(item in message for item in required)
+        assert not planner.staged_files
+        assert not planner.remote_checks
+
     def test_plan_directory_records_empty_root_and_nested_directories(self, tmp_path: Path):
         root = tmp_path / "search"
         (root / "empty").mkdir(parents=True)
@@ -871,6 +909,26 @@ class TestDebugPlanning:
         )
         values.update(changes)
         return DebugInputs(**values)
+
+    @pytest.mark.parametrize(
+        ("missing", "message"),
+        (("gdb", "GDB executable"), ("elf_file", "ELF file")),
+    )
+    def test_missing_client_metadata_fails_during_planning(
+        self, tmp_path: Path, missing: str, message: str
+    ):
+        changes = {missing: None}
+        planner = PathPlanner(())
+
+        with pytest.raises(DebugPlanError) as error:
+            build_debug_plan(
+                self.inputs(tmp_path, search_paths=(), config_files=(), **changes),
+                planner,
+            )
+
+        assert message.lower() in str(error.value).lower()
+        assert not planner.staged_files
+        assert not planner.remote_checks
 
     def test_command_semantics_and_client_ordering(self):
         with tempfile.TemporaryDirectory() as directory:
