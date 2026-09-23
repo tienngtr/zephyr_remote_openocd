@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from typing import Any, cast
 
 import pytest
@@ -175,3 +176,55 @@ def test_wait_for_openocd_exit_observes_forward_failure():
         session.wait_for_openocd_exit()
     assert len(session._helper.wait_timeouts) == 1
     assert 0 < session._helper.wait_timeouts[0] <= backend_module.FORWARD_HEALTH_INTERVAL
+
+
+def test_wait_for_openocd_exit_raises_helper_timeout_at_deadline(monkeypatch):
+    requested_timeout = 2.5
+    clock = [0.0]
+
+    class Helper:
+        openocd_returncode = None
+
+        def __init__(self):
+            self.wait_timeouts = []
+            self.expired_timeout = None
+            self.timeout_error = subprocess.TimeoutExpired(("python3", "helper"), requested_timeout)
+
+        @staticmethod
+        def recorded_openocd_exit():
+            return None
+
+        @staticmethod
+        def has_result_or_reader_failure():
+            return False
+
+        def wait_for_change(self, timeout):
+            self.wait_timeouts.append(timeout)
+            assert timeout is not None and timeout > 0
+            clock[0] += timeout
+
+        def timeout_expired(self, timeout):
+            self.expired_timeout = timeout
+            return self.timeout_error
+
+    class Forwards:
+        has_forwards = False
+
+        @staticmethod
+        def check_health():
+            pass
+
+    helper = Helper()
+    session = cast(Any, object.__new__(RemoteSession))
+    session.closed = False
+    session._helper = helper
+    session._forwards = Forwards()
+    monkeypatch.setattr(backend_module.time, "monotonic", lambda: clock[0])
+
+    with pytest.raises(subprocess.TimeoutExpired) as raised:
+        session.wait_for_openocd_exit(requested_timeout)
+
+    assert raised.value is helper.timeout_error
+    assert helper.expired_timeout == requested_timeout
+    assert clock[0] == requested_timeout
+    assert all(0 < wait <= requested_timeout for wait in helper.wait_timeouts)
