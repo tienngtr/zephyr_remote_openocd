@@ -73,6 +73,30 @@ def test_existing_non_file_configuration_fails_actionably(tmp_path: Path):
     assert "not a regular file" in result.stderr
 
 
+def test_initialize_config_preserves_file_created_after_absence_check(tmp_path, monkeypatch):
+    setup = load_setup_module()
+    destination = tmp_path / ".config" / "zephyr_remote_openocd" / "config.yaml"
+    concurrent_contents = b"created by another setup process\n"
+    original_open = os.open
+
+    def create_concurrent_file_then_raise(path, flags, mode=0o777, *, dir_fd=None):
+        if Path(path) == destination:
+            descriptor = original_open(path, flags, mode, dir_fd=dir_fd)
+            try:
+                os.write(descriptor, concurrent_contents)
+            finally:
+                os.close(descriptor)
+            raise FileExistsError(path)
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(setup.os, "open", create_concurrent_file_then_raise)
+
+    created = setup.initialize_config(ROOT, destination)
+
+    assert created is False
+    assert destination.read_bytes() == concurrent_contents
+
+
 def load_setup_module():
     spec = importlib.util.spec_from_file_location("zro_setup", SETUP)
     assert spec is not None and spec.loader is not None
