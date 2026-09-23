@@ -232,9 +232,8 @@ Python helper subprocesses with:
   --cov-report=term-missing
 ```
 
-GitHub Actions writes the self-contained report to that job's summary. The SSH
-and Zephyr jobs also collect coverage from Python code running on their host
-runners. A final reporting job combines the three raw coverage data files and
-writes the aggregate report to its summary. Coverage is informational; no
-percentage threshold is enforced. Code run inside the SSH container and
-physical hardware is outside this host-side measurement.
+The self-contained, SSH, and Zephyr jobs collect raw coverage from Python code
+running on their host runners. A final reporting job combines the three
+coverage data files and writes the aggregate report to its summary. Coverage is
+informational; no percentage threshold is enforced. Code run inside the SSH
+container and physical hardware is outside this host-side measurement.

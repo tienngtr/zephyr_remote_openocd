@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: Apache-2.0
+
+Host ci-ssh
+  HostName 127.0.0.1
+  Port 22222
+  User ci
+  IdentityFile ~/.ssh/zro_ci_ed25519
+  IdentitiesOnly yes
+  UserKnownHostsFile ~/.ssh/zro_ci_known_hosts
+  GlobalKnownHostsFile /dev/null
+  StrictHostKeyChecking accept-new
+  BatchMode yes
+  ConnectTimeout 5
+  LogLevel ERROR

@@ -4,7 +4,10 @@ name: checks
 
 on:
   push:
-  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   static-checks:
@@ -22,9 +25,7 @@ jobs:
       - uses: ./.github/actions/install-dev-tools
       - name: Run self-contained tests with coverage
         run: >-
-          pytest --cov --cov-config=.coveragerc
-          --cov-report=term-missing
-          --cov-report="markdown-append:${GITHUB_STEP_SUMMARY}"
+          pytest --cov --cov-config=.coveragerc --cov-report=
       - name: Prepare self-contained coverage data
         run: mv .coverage .coverage.self-contained-tests
       - uses: actions/upload-artifact@v7
@@ -33,6 +34,7 @@ jobs:
           path: .coverage.self-contained-tests
           include-hidden-files: true
           if-no-files-found: error
+          retention-days: 1
 
   ssh-integration:
     runs-on: ubuntu-24.04
@@ -41,88 +43,35 @@ jobs:
       - uses: ./.github/actions/install-dev-tools
       - name: Create ephemeral SSH credentials
         run: |
-          mkdir -p .scratch/ci
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
           ssh-keygen -q -t ed25519 -N '' -C zro-github-ci \
-            -f .scratch/ci/id_ed25519
-          chmod 600 .scratch/ci/id_ed25519
-          chmod 644 .scratch/ci/id_ed25519.pub
+            -f ~/.ssh/zro_ci_ed25519
+          : > ~/.ssh/zro_ci_known_hosts
       - name: Build SSH server image
         run: docker build -t zro-ci-ssh-server:local tests/ci/ssh_server
       - name: Start SSH server container
-        id: ssh-server
         run: |
-          container="zro-ci-ssh-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          public_key="$(cat .scratch/ci/id_ed25519.pub)"
-          docker run --detach --name "$container" \
-            --publish 127.0.0.1::22 \
+          public_key="$(cat ~/.ssh/zro_ci_ed25519.pub)"
+          docker run --detach --name zro-ci-ssh \
+            --publish 127.0.0.1:22222:22 \
             --env "CI_AUTHORIZED_KEY=$public_key" \
             zro-ci-ssh-server:local
-          port_format='{{(index (index .NetworkSettings.Ports "22/tcp") 0).HostPort}}'
-          port="$(docker inspect --format "$port_format" "$container")"
-          printf 'container=%s\n' "$container" >> "$GITHUB_OUTPUT"
-          printf 'port=%s\n' "$port" >> "$GITHUB_OUTPUT"
-      - name: Configure isolated SSH client
-        env:
-          SSH_PORT: ${{ steps.ssh-server.outputs.port }}
-        run: |
-          cat > .scratch/ci/ssh_config <<EOF
-          Host ci-ssh
-            HostName 127.0.0.1
-            Port $SSH_PORT
-            User ci
-            IdentityFile $GITHUB_WORKSPACE/.scratch/ci/id_ed25519
-            IdentitiesOnly yes
-            UserKnownHostsFile $GITHUB_WORKSPACE/.scratch/ci/known_hosts
-            GlobalKnownHostsFile /dev/null
-            StrictHostKeyChecking accept-new
-            BatchMode yes
-            ConnectTimeout 5
-            LogLevel ERROR
-          EOF
-          : > .scratch/ci/known_hosts
       - name: Wait for authenticated SSH and required remote tools
         run: |
           deadline=$((SECONDS + 120))
-          until ssh -F .scratch/ci/ssh_config ci-ssh 'python3 --version' \
-            && ssh -F .scratch/ci/ssh_config ci-ssh 'openocd --version'; do
+          until ssh -F tests/ci/ssh/ssh_config ci-ssh \
+            'python3 --version && openocd --version'; do
             if (( SECONDS >= deadline )); then
               echo 'SSH server or required remote tool did not become ready.' >&2
               exit 1
             fi
             sleep 0.25
           done
-      - name: Create SSH-only hardware inventory
-        run: |
-          cat > .scratch/ci-hardware.yaml <<EOF
-          build_environments:
-            ci:
-              zephyr_base: /unused/zephyr
-              west: /unused/west
-          hosts:
-            ci:
-              ssh_host: ci-ssh
-              ssh_command: [ssh, -F, "$GITHUB_WORKSPACE/.scratch/ci/ssh_config"]
-              openocd_command: [/usr/bin/openocd]
-          targets:
-            ci_placeholder:
-              host: ci
-              build_environment: ci
-              board: ci_transport_only
-              builds:
-                unused:
-                  application: ci_transport_only
-              # Inventory schema requires an operation; SSH tests do not use it.
-              profiles:
-                inventory_schema:
-                  build: unused
-                  operations:
-                    debug:
-                      breakpoint: main
-          EOF
       - name: Run SSH integration suite
         run: >-
           pytest tests/ssh_integration -m ssh
-          --hardware-inventory .scratch/ci-hardware.yaml
+          --hardware-inventory tests/ci/ssh/hardware.yaml
           --require-external-tests
           --cov --cov-config=.coveragerc --cov-report=
       - name: Prepare SSH coverage data
@@ -133,12 +82,10 @@ jobs:
           path: .coverage.ssh-integration
           include-hidden-files: true
           if-no-files-found: error
+          retention-days: 1
       - name: Remove SSH server container
         if: always()
-        env:
-          CONTAINER: zro-ci-ssh-${{ github.run_id }}-${{ github.run_attempt }}
-        run: |
-          docker rm --force "$CONTAINER" || true
+        run: docker rm --force zro-ci-ssh || true
 
   zephyr-integration:
     runs-on: ubuntu-24.04
@@ -187,6 +134,7 @@ jobs:
           path: .coverage.zephyr-integration
           include-hidden-files: true
           if-no-files-found: error
+          retention-days: 1
 
   coverage:
     needs: [self-contained-tests, ssh-integration, zephyr-integration]
