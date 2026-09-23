@@ -547,6 +547,60 @@ def test_parser_preserves_applicable_upstream_options(runner_api, argv):
     assert {name: actual[name] for name in expected} == expected
 
 
+def test_attach_rejects_rtt_server_before_remote_work(runner_api, tmp_path, monkeypatch):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
+    core, _, remote = runner_api
+    build = tmp_path / "build"
+    (build / "zephyr").mkdir(parents=True)
+    (build / "zephyr" / ".config").write_text("# CONFIG_DEBUG_THREAD_INFO is not set\n")
+    image = build / "zephyr" / "zephyr.elf"
+    image.write_bytes(b"test image")
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "default_remote: chosen\n"
+        "remotes:\n"
+        "  chosen:\n"
+        "    ssh_host: selected_host\n"
+        "    openocd_command: [openocd]\n"
+        "    ssh_command: [ssh]\n"
+    )
+    monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", str(config))
+    monkeypatch.delenv("ZEPHYR_REMOTE_OPENOCD_REMOTE", raising=False)
+
+    cfg = core.RunnerConfig(
+        build_dir=str(build),
+        board_dir=str(tmp_path),
+        elf_file=str(image),
+        exe_file=None,
+        hex_file=None,
+        bin_file=str(image),
+        uf2_file=None,
+        mot_file=None,
+        file=None,
+        file_type=core.FileType.BIN,
+        gdb="gdb",
+        openocd="openocd",
+        openocd_search=[],
+    )
+    args = parser_for(remote).parse_args(["--rtt-server"])
+    runner = remote.create(cfg, args)
+
+    monkeypatch.setattr(SshCommand, "run", Mock(side_effect=AssertionError("SSH action started")))
+    monkeypatch.setattr(
+        runner_module.RemoteSession,
+        "open",
+        Mock(side_effect=AssertionError("remote session started")),
+    )
+
+    with pytest.raises(RuntimeError) as raised:
+        runner.run("attach")
+
+    message = str(raised.value)
+    assert "attach" in message
+    assert "--rtt-server" in message
+
+
 @pytest.fixture
 def forbid_external_io(monkeypatch):
     guards = []
