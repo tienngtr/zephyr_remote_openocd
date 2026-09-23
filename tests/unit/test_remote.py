@@ -705,6 +705,33 @@ class TestFlashPlanning:
         assert not planner.staged_files
         assert not planner.remote_checks
 
+    def test_unsupported_erase_fails_before_planning_paths(self, tmp_path: Path):
+        image = tmp_path / "firmware.hex"
+        image.write_bytes(b":00000001FF\n")
+        planner = PathPlanner(())
+        inputs = FlashInputs(
+            executable="openocd",
+            image_type="hex",
+            file=None,
+            elf_file=None,
+            hex_file=str(image),
+            bin_file=None,
+            search_paths=(),
+            config_files=(),
+            load_command="program",
+            verify_command="verify_image",
+            erase=True,
+        )
+
+        with pytest.raises(flash_module.FlashPlanError) as error:
+            build_flash_plan(inputs, planner)
+
+        message = str(error.value).lower()
+        assert "erase requested" in message
+        assert "no erase command" in message
+        assert not planner.staged_files
+        assert not planner.remote_checks
+
     def test_plan_directory_records_empty_root_and_nested_directories(self, tmp_path: Path):
         root = tmp_path / "search"
         (root / "empty").mkdir(parents=True)
