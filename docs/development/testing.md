@@ -18,9 +18,13 @@ Hardware and SSH tests can change external state; keep destructive profiles
 serial and inspect cleanup output before reusing a target.
 
 The maintained suite uses pytest. The ordinary `.venv/bin/python -m pytest`
-command runs only hardware-free unit and local-process tests. External layers
-are selected explicitly so a normal contributor run never needs SSH, a Zephyr
-checkout, or lab hardware:
+command runs only hardware-free unit and local-process tests. GitHub Actions
+runs four independent validation jobs: the self-contained suite, static
+checks, the SSH suite against an isolated SSH server container, and the full
+Zephyr 4.4 suite with a real workspace and SDK. The SSH server has its own
+filesystem, process namespace, and network namespace; the tests use the real
+SSH client and server. External layers remain explicit locally, so a normal
+contributor run never needs SSH, a Zephyr checkout, or lab hardware:
 
 ```sh
 .venv/bin/python -m pytest
@@ -119,7 +123,9 @@ requested and is not a substitute for testing the configured remote executable.
 ## Linux
 
 The focused adapter contract tests need only the Zephyr source and its Python
-runner dependencies, not a board, SDK, or firmware build:
+runner dependencies, not a board, SDK, or firmware build. GitHub Actions also
+runs these alongside the full Zephyr integration suite, which performs real
+`west build` operations for Zephyr 4.4 without a physical board:
 
 ```sh
 ZEPHYR_BASE=/path/to/zephyr \
@@ -138,6 +144,15 @@ SDK/toolchain. PyYAML and jsonschema must be importable by the Python
 environment running pytest. Clean-install checks also require `pyelftools` in
 the Python environment used by `west`. Hardware tests require the declared
 board, probe, serial endpoint, and remote OpenOCD setup.
+
+GitHub Actions supplies the SSH layer with an ephemeral key and an isolated
+container running `sshd`, Python, and OpenOCD. The Zephyr job fetches
+Zephyr 4.4.0, updates the modules needed for its test board, and installs the
+matching SDK toolchain.
+These jobs use `--require-external-tests` so a missing prerequisite or skipped
+test fails the job. Physical hardware remains an explicit lab-only validation
+layer and never runs on GitHub-hosted runners. Spike and virtual OpenOCD target
+testing are not part of this CI setup.
 
 Real `west debug` acceptance is source-level and architecture-independent. The
 selected debug profile supplies an ELF and breakpoint symbol. GDB loads that
@@ -217,7 +232,8 @@ Python helper subprocesses with:
   --cov-report=term-missing
 ```
 
-GitHub Actions also writes the report to its job summary and uploads
-`coverage.xml`. Coverage is currently informational; no percentage threshold
-is enforced. Remote SSH and hardware processes are outside the self-contained
-CI coverage measurement.
+The self-contained, SSH, and Zephyr jobs collect raw coverage from Python code
+running on their host runners. A final reporting job combines the three
+coverage data files and writes the aggregate report to its summary. Coverage is
+informational; no percentage threshold is enforced. Code run inside the SSH
+container and physical hardware is outside this host-side measurement.

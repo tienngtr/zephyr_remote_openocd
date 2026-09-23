@@ -151,6 +151,7 @@ def commands(
     example = "resources/config.example.yaml"
     hardware_example = "tests/fixtures/hardware.example.yaml"
     hardware_complete_example = "tests/fixtures/hardware.complete.example.yaml"
+    ci_hardware = "tests/ci/ssh/hardware.yaml"
     workflow_paths = tuple(
         path for path in yaml_paths if Path(path).parts[:2] == (".github", "workflows")
     )
@@ -196,6 +197,7 @@ def commands(
             "yaml",
             hardware_complete_example,
         ),
+        (python, "scripts/validate_hardware_inventory.py", ci_hardware),
         (tool_executable("actionlint"), "-no-color", *workflow_paths),
         (
             tool_executable("rumdl"),
