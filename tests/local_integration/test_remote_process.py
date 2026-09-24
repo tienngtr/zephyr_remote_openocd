@@ -970,7 +970,7 @@ class TestRealProcessHelper:
             command = LocalCommand()
             session = RemoteSession(
                 RemoteSessionRequest("local", command, TEST_PROCESS),
-                DeploymentResult("/helper.py", "0" * 64, False),
+                DeploymentResult("/helper.py", "digest", False),
             )
             session._helper = type(
                 "Helper",
