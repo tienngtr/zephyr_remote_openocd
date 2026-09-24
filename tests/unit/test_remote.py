@@ -785,6 +785,42 @@ class TestFlashPlanning:
             assert len([item for item in plan.staged_files if item.source == config]) == 1
             assert plan.process.argv[-4:] == ("-c", "reset run", "-c", "shutdown")
 
+    def test_hex_explicit_erase_removes_implicit_load_erase(self, tmp_path: Path):
+        image = tmp_path / "firmware.hex"
+        image.write_bytes(b":00000001FF\n")
+
+        plan = build_flash_plan(
+            FlashInputs(
+                executable="openocd",
+                image_type="hex",
+                file=None,
+                elf_file=None,
+                hex_file=str(image),
+                bin_file=None,
+                search_paths=(),
+                config_files=(),
+                load_command="flash write_image erase",
+                verify_command="verify_image",
+                erase=True,
+                erase_commands=("target_erase",),
+            ),
+            PathPlanner(()),
+        )
+        commands = [
+            plan.process.argv[index + 1]
+            for index, argument in enumerate(plan.process.argv[:-1])
+            if argument == "-c"
+        ]
+
+        erase_index = commands.index("target_erase")
+        load_index = next(
+            index
+            for index, command in enumerate(commands)
+            if command.startswith("flash write_image ")
+        )
+        assert erase_index < load_index
+        assert not commands[load_index].endswith(" erase")
+
     def test_hex_verify_only_plan_omits_load_and_keeps_verify(self, tmp_path: Path):
         image = tmp_path / "firmware.hex"
         image.write_bytes(b":00000001FF\n")
