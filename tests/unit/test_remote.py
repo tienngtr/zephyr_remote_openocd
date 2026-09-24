@@ -364,22 +364,24 @@ def test_deployment_wraps_invalid_utf8_response():
 
 
 def test_deployment_reports_nonzero_ssh_status_and_diagnostic():
-    ssh = DeploymentReply(23, b"", b"permission denied")
+    ssh_exit_status = 23
+    ssh = DeploymentReply(ssh_exit_status, b"", b"permission denied")
 
     with pytest.raises(deploy_module.DeploymentError) as error:
         deploy_module.deploy_helper(ssh, "host", source=b"helper source")
 
-    assert "23" in str(error.value)
+    assert str(ssh_exit_status) in str(error.value)
     assert "permission denied" in str(error.value)
 
 
 def test_deployment_rejects_digest_that_differs_from_source():
     source = b"helper source"
+    different_source_digest = hashlib.sha256(b"different helper source").hexdigest()
     response = encode_message(
         "DEPLOYED",
         status="deployed",
         path="/home/test/helper.py",
-        sha256="0" * 64,
+        sha256=different_source_digest,
     )
     ssh = DeploymentReply(0, response, b"")
 
