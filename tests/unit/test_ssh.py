@@ -28,7 +28,12 @@ from zephyr_remote_openocd.remote.model import (
 )
 from zephyr_remote_openocd.remote.protocol import encode_message
 from zephyr_remote_openocd.remote.session import SessionError
-from zephyr_remote_openocd.remote.ssh import SSH_STDERR_TAIL_BYTES, SshCommand, _stop_process
+from zephyr_remote_openocd.remote.ssh import (
+    SSH_STDERR_TAIL_BYTES,
+    ManagedSshProcess,
+    SshCommand,
+    _stop_process,
+)
 
 LONG_LIVED_CHILD_EXIT_CODE = 7
 STREAM_CHILD_EXIT_CODE = 4
@@ -251,6 +256,53 @@ def test_process_cleanup_closes_an_active_stderr_drain():
         if process.poll() is None:
             process.kill()
             process.wait(timeout=5)
+
+
+def test_process_cleanup_kills_after_graceful_termination_times_out():
+    class Process:
+        def __init__(self):
+            self.stdin = io.BytesIO()
+            self.stdout = io.BytesIO()
+            self.returncode = None
+            self.terminated = False
+            self.killed = False
+            self.graceful_wait_timed_out = False
+            self.kill_wait_completed = False
+            self.stderr_closed = False
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout=None):
+            assert timeout is not None and math.isfinite(timeout) and timeout > 0
+            if not self.killed:
+                self.graceful_wait_timed_out = True
+                raise subprocess.TimeoutExpired("fake-ssh", timeout)
+            self.kill_wait_completed = True
+            self.returncode = -signal.SIGKILL
+            return self.returncode
+
+        def kill(self):
+            self.killed = True
+
+        def close_stderr(self):
+            self.stderr_closed = True
+
+    process = Process()
+
+    _stop_process(cast(ManagedSshProcess, process))
+
+    assert process.terminated
+    assert process.graceful_wait_timed_out
+    assert process.killed
+    assert process.kill_wait_completed
+    assert process.returncode is not None
+    assert process.stderr_closed
+    assert process.stdin.closed
+    assert process.stdout.closed
 
 
 class _HelperProcess:
