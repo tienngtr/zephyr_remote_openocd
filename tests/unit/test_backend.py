@@ -81,6 +81,8 @@ def test_open_retains_nested_rollback_cleanup_diagnostics(monkeypatch):
 
 
 def test_version_query_reports_ssh_failure_status_and_diagnostic(monkeypatch):
+    ssh_exit_status = 23
+
     class FailedCommand(SshCommand):
         def __init__(self):
             super().__init__(("fake-ssh", "-F", "test-config"))
@@ -97,7 +99,7 @@ def test_version_query_reports_ssh_failure_status_and_diagnostic(monkeypatch):
             assert "openocd-version" in remote_command
             return subprocess.CompletedProcess(
                 remote_command,
-                23,
+                ssh_exit_status,
                 b"",
                 b"Permission denied while querying remote OpenOCD",
             )
@@ -112,7 +114,7 @@ def test_version_query_reports_ssh_failure_status_and_diagnostic(monkeypatch):
         query_remote_openocd_version(FailedCommand(), "target", ("openocd",))
 
     message = str(raised.value)
-    assert "23" in message
+    assert str(ssh_exit_status) in message
     assert "Permission denied" in message
 
 
