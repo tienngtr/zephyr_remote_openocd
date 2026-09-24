@@ -72,7 +72,7 @@ def _preparation_with_unavailable_recipe(
 
 def test_preparation_builds_only_requested_recipes(tmp_path):
     preparation, _inventory, build_root = _preparation_with_unavailable_recipe(tmp_path)
-    with patch("tests.hardware_support.subprocess.run") as run:
+    with patch("tests.hardware_support.subprocess.run", autospec=True) as run:
         run.return_value = subprocess.CompletedProcess([], 0, "")
         preparation.prepare("target:profile", "flash")
 
@@ -92,7 +92,7 @@ def test_preparation_retries_failed_build_and_caches_success(tmp_path, monkeypat
     preparation, inventory, build_root = _preparation_with_unavailable_recipe(tmp_path)
     monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_REMOTE", "developer_remote")
     monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", "/developer/config.yaml")
-    with patch("tests.hardware_support.subprocess.run") as run:
+    with patch("tests.hardware_support.subprocess.run", autospec=True) as run:
         run.side_effect = [
             subprocess.CompletedProcess([], 1, "build failed"),
             subprocess.CompletedProcess([], 0, ""),

@@ -84,7 +84,7 @@ def test_fixed_arguments_are_preserved_without_a_shell():
     ]
 
 
-@patch("subprocess.Popen")
+@patch("subprocess.Popen", autospec=True)
 def test_long_lived_process_preserves_explicit_path_and_generated_arguments(popen):
     popen.return_value.stderr = io.BytesIO()
     SshCommand(("/opt/client/custom-ssh", "-F", "/a file")).popen("host", "serve", "-N")
@@ -375,7 +375,10 @@ def test_initial_forward_failure_consumes_terminal_openocd_event(monkeypatch):
     deployment = DeploymentResult("/helper.py", "digest", False)
     dispatch = _HelperClient._dispatch
 
-    monkeypatch.setattr(backend_module, "deploy_helper", lambda *_args: deployment)
+    def deploy(_ssh_command, _host):
+        return deployment
+
+    monkeypatch.setattr(backend_module, "deploy_helper", deploy)
     monkeypatch.setattr(RemoteSession, "_stage", lambda _session, _files: None)
 
     def observe_terminal(helper_client, event):

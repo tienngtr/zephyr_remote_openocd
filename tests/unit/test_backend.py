@@ -30,7 +30,13 @@ def test_open_rolls_back_failed_acquisition_once(monkeypatch):
     startup_error = RuntimeError("staging failed")
     cleanup_calls = 0
 
-    monkeypatch.setattr(backend_module, "deploy_helper", lambda *_args: deployment)
+    def deploy(_ssh_command, _host):
+        return deployment
+
+    def open_helper(_ssh_command, _host, _deployment, *, output_handler=None):
+        return object()
+
+    monkeypatch.setattr(backend_module, "deploy_helper", deploy)
 
     def fail_stage(_session, _files):
         raise startup_error
@@ -39,7 +45,7 @@ def test_open_rolls_back_failed_acquisition_once(monkeypatch):
         nonlocal cleanup_calls
         cleanup_calls += 1
 
-    monkeypatch.setattr(_HelperClient, "open", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(_HelperClient, "open", open_helper)
     monkeypatch.setattr(RemoteSession, "_stage", fail_stage)
     monkeypatch.setattr(RemoteSession, "close", close)
 
@@ -57,8 +63,14 @@ def test_open_retains_nested_rollback_cleanup_diagnostics(monkeypatch):
     cleanup_error = RuntimeError("session cleanup failed")
     cleanup_error.add_note("additional cleanup failure: forward cleanup failed")
 
-    monkeypatch.setattr(backend_module, "deploy_helper", lambda *_args: deployment)
-    monkeypatch.setattr(_HelperClient, "open", lambda *_args, **_kwargs: object())
+    def deploy(_ssh_command, _host):
+        return deployment
+
+    def open_helper(_ssh_command, _host, _deployment, *, output_handler=None):
+        return object()
+
+    monkeypatch.setattr(backend_module, "deploy_helper", deploy)
+    monkeypatch.setattr(_HelperClient, "open", open_helper)
     monkeypatch.setattr(
         RemoteSession,
         "_stage",
