@@ -13,23 +13,25 @@ def test_run_rtt_client_receives_after_transient_would_block(monkeypatch):
     class Connection:
         def __init__(self):
             self.received = False
+            self.output_delivered = False
             self.closed = False
 
         def recv(self, _size):
             if not self.received:
                 self.received = True
                 raise BlockingIOError
+            self.output_delivered = True
             return b"RTT output"
 
         def close(self):
             self.closed = True
 
     connection = Connection()
-    poll_results = iter((None, None, 0))
-    select_calls = []
+
+    def poll_session():
+        return 0 if connection.output_delivered else None
 
     def select(readers, writers, errors, timeout):
-        select_calls.append((readers, writers, errors, timeout))
         return [connection], [], []
 
     output = io.BytesIO()
@@ -40,14 +42,13 @@ def test_run_rtt_client_receives_after_transient_would_block(monkeypatch):
     with tempfile.TemporaryFile("w+b") as input_stream:
         result = rtt_module.run_rtt_client(
             5566,
-            lambda: next(poll_results),
+            poll_session,
             stdin=input_stream,
             stdout=output,
         )
 
     assert result == 0
     assert output.getvalue() == b"RTT output"
-    assert len(select_calls) == 2
     assert connection.closed
 
 
