@@ -60,6 +60,7 @@ from zephyr_remote_openocd.remote.services import (
 from zephyr_remote_openocd.remote.ssh import SshCommand
 from zephyr_remote_openocd.remote.staging import StagingError, build_archive
 
+from tests.elf_fixtures import ELF_ENTRY_POINT, elf_memory_witness_bytes
 from tests.process_support import read_line
 
 TEST_PROCESS = RemoteProcess(("test-process",))
@@ -853,10 +854,9 @@ class TestFlashPlanning:
         assert any(command.startswith("verify_image ") for command in commands)
         assert not any(command.startswith("flash write_image ") for command in commands)
 
-    def test_elf_plan_resumes_before_shutdown(self, monkeypatch, tmp_path):
+    def test_elf_plan_resumes_before_shutdown(self, tmp_path: Path):
         image = tmp_path / "image.elf"
-        image.write_bytes(b"not inspected")
-        monkeypatch.setattr(flash_module, "_elf_entry", lambda _: "0x0000000008000000")
+        image.write_bytes(elf_memory_witness_bytes(entry_point=ELF_ENTRY_POINT))
         plan = build_flash_plan(
             FlashInputs(
                 executable="openocd",
@@ -870,12 +870,16 @@ class TestFlashPlanning:
             ),
             PathPlanner(()),
         )
-        assert plan.process.argv[-4:] == (
-            "-c",
-            "resume 0x0000000008000000",
-            "-c",
-            "shutdown",
+        commands = tuple(
+            plan.process.argv[index + 1]
+            for index, argument in enumerate(plan.process.argv[:-1])
+            if argument == "-c"
         )
+        resume_commands = [command for command in commands if command.startswith("resume ")]
+        assert len(resume_commands) == 1
+        resume_command = resume_commands[0]
+        assert int(resume_command.removeprefix("resume "), 0) == ELF_ENTRY_POINT
+        assert commands.index(resume_command) < commands.index("shutdown")
 
     def test_longest_mapping_and_remote_check(self):
         with tempfile.TemporaryDirectory() as directory:

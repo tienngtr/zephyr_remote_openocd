@@ -28,6 +28,7 @@ _SHT_STRTAB = 3
 _SHF_ALLOC = 2
 
 ELF_LOAD_ADDRESS = 0x400000
+ELF_ENTRY_POINT = ELF_LOAD_ADDRESS
 ELF_SHIFTED_LOAD_VADDR = ELF_LOAD_ADDRESS + 1
 _LOAD_FILE_OFFSET = 0
 _LOAD_SIZE = 0x180
@@ -52,7 +53,7 @@ ELF_PADDING_OFFSET = 0xC0
 ELF_LOAD_VADDR_OFFSET = _PROGRAM_HEADERS_OFFSET + 16
 
 
-def elf_memory_witness_bytes() -> bytes:
+def elf_memory_witness_bytes(entry_point: int = 0) -> bytes:
     """Return a small ELF with one loadable section and controlled padding."""
     assert ELF_LOAD_ADDRESS % _LOAD_ALIGNMENT == _LOAD_FILE_OFFSET % _LOAD_ALIGNMENT
     assert ELF_SHIFTED_LOAD_VADDR % _LOAD_ALIGNMENT == _LOAD_FILE_OFFSET % _LOAD_ALIGNMENT
@@ -69,7 +70,7 @@ def elf_memory_witness_bytes() -> bytes:
         _ET_EXEC,
         _EM_X86_64,
         _EV_CURRENT,
-        0,
+        entry_point,
         _PROGRAM_HEADERS_OFFSET,
         _SECTION_HEADERS_OFFSET,
         0,
