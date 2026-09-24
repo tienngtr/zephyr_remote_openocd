@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import ipaddress
 import json
@@ -920,10 +921,11 @@ class TestRealProcessHelper:
                 session._stage((StagedFile(source, PurePosixPath("firmware.bin")),))
 
     def test_backend_rejects_staging_confirmation_with_wrong_digest(self, tmp_path):
+        different_payload_digest = hashlib.sha256(b"different firmware").hexdigest()
         response = encode_message(
             "STAGED",
             byte_count=len(b"firmware"),
-            sha256="0" * 64,
+            sha256=different_payload_digest,
             files=["firmware.bin"],
             directories=[],
         )
@@ -937,7 +939,7 @@ class TestRealProcessHelper:
         source.write_bytes(b"firmware")
         session = RemoteSession(
             RemoteSessionRequest("local", LocalCommand(), TEST_PROCESS),
-            DeploymentResult("/helper.py", "0" * 64, False),
+            DeploymentResult("/helper.py", "digest", False),
         )
         session._helper = type(
             "Helper",
