@@ -211,7 +211,10 @@ def test_helper_open_retains_nested_cleanup_diagnostics(monkeypatch):
         del close_streams
         raise cleanup_error
 
-    monkeypatch.setattr(SshCommand, "popen", lambda *_args: Process())
+    def popen(_self, _host, _remote_command):
+        return Process()
+
+    monkeypatch.setattr(SshCommand, "popen", popen)
     monkeypatch.setattr(helper_client_module, "_stop_process", fail_stop)
 
     with pytest.raises(SessionError) as raised:

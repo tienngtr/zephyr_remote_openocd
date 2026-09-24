@@ -12,7 +12,7 @@ import socket
 import subprocess
 import threading
 from pathlib import PurePosixPath
-from unittest.mock import Mock
+from unittest.mock import Mock, create_autospec
 
 import pytest
 from zephyr_remote_openocd.config import ConfigError, PathMapping, ResolvedRemote
@@ -350,7 +350,11 @@ def test_operation_failure_precedence(
             raise cleanup_error
 
     session.close.side_effect = close
-    monkeypatch.setattr(runner_module.RemoteSession, "open", Mock(return_value=session))
+    monkeypatch.setattr(
+        runner_module.RemoteSession,
+        "open",
+        create_autospec(RemoteSession.open, return_value=session),
+    )
     monkeypatch.setattr(runner_module, "_execute_started_operation", execute_started_operation)
     request = RemoteSessionRequest("host", SshCommand(), TEST_PROCESS)
 
@@ -421,7 +425,11 @@ def test_background_openocd_result_does_not_replace_foreground_failure(
             assert reader_recorded.wait(5)
         raise operation_error
 
-    monkeypatch.setattr(runner_module.RemoteSession, "open", Mock(return_value=session))
+    monkeypatch.setattr(
+        runner_module.RemoteSession,
+        "open",
+        create_autospec(RemoteSession.open, return_value=session),
+    )
     monkeypatch.setattr(runner_module, "_execute_started_operation", fail_operation)
     request = RemoteSessionRequest("host", SshCommand(), TEST_PROCESS)
 
@@ -496,7 +504,11 @@ def test_rtt_cleanup_failure_does_not_replace_observed_openocd_failure(runner_ap
         finally:
             raise rtt_cleanup_error
 
-    monkeypatch.setattr(runner_module.RemoteSession, "open", Mock(return_value=session))
+    monkeypatch.setattr(
+        runner_module.RemoteSession,
+        "open",
+        create_autospec(RemoteSession.open, return_value=session),
+    )
     monkeypatch.setattr(runner_module, "run_rtt_client", run_rtt)
     request = RemoteSessionRequest("host", SshCommand(), TEST_PROCESS)
 
