@@ -748,6 +748,15 @@ class TestFlashPlanning:
         ]
         assert all(isinstance(item, StagedDirectory) for item in planner.staged_files)
 
+    def test_plan_directory_rejects_ancestor_symlink_cycle(self, tmp_path: Path):
+        root = tmp_path / "search"
+        ancestor = root / "a"
+        ancestor.mkdir(parents=True)
+        (ancestor / "back").symlink_to(root, target_is_directory=True)
+
+        with pytest.raises(PathPlanningError):
+            PathPlanner(()).plan_directory(root, "search_0")
+
     def test_hex_plan_preserves_ports_and_rewrites_paths(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
