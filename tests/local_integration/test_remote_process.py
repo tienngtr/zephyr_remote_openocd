@@ -910,7 +910,7 @@ class TestRealProcessHelper:
             source.write_bytes(b"firmware")
             session = RemoteSession(
                 RemoteSessionRequest("local", LocalCommand(), TEST_PROCESS),
-                DeploymentResult("/helper.py", "0" * 64, False),
+                DeploymentResult("/helper.py", "digest", False),
             )
             session._helper = type(
                 "Helper",
@@ -1002,7 +1002,7 @@ class TestRealProcessHelper:
 
         monkeypatch.setattr(
             "zephyr_remote_openocd.remote.backend.deploy_helper",
-            lambda _command, _host: DeploymentResult("/helper.py", "0" * 64, False),
+            lambda _command, _host: DeploymentResult("/helper.py", "digest", False),
         )
 
         with pytest.raises(SessionError, match="invalid remote OpenOCD version response"):
