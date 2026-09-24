@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import errno
+import socket
 from pathlib import Path
 
 import pytest
@@ -11,6 +13,19 @@ import pytest
 from tests.hardware_support import HardwarePreparation, PreparedOperation
 from tests.hardware_support import prepared_hardware as _prepared_hardware
 from tests.inventory import Inventory, InventoryError, load_inventory
+
+
+@pytest.fixture(scope="session")
+def requires_loopback_listener() -> None:
+    """Skip tests that need a loopback TCP listener when it is unavailable."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+    except OSError as error:
+        if error.errno in {errno.EACCES, errno.EPERM}:
+            pytest.skip("loopback TCP listeners unavailable in this test environment")
+        raise
 
 
 @pytest.fixture(autouse=True)

@@ -189,15 +189,13 @@ class TestForwardingLifecycle:
 
     @staticmethod
     def port():
-        try:
-            listener = socket.socket()
-        except PermissionError:
-            pytest.skip("sandbox prohibits loopback listeners")
-        with listener:
+        with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
             return listener.getsockname()[1]
 
-    def test_gdb_listener_readiness_does_not_probe_single_client_socket(self):
+    def test_gdb_listener_readiness_does_not_probe_single_client_socket(
+        self, requires_loopback_listener
+    ):
         process = self.Process()
         command = self.Command(process)
         session = self.session(command)
@@ -416,17 +414,14 @@ class TestForwardingLifecycle:
 class TestRttClient:
     @staticmethod
     def _listener(handler):
-        try:
-            listener = socket.socket()
-        except PermissionError:
-            pytest.skip("sandbox prohibits loopback listeners")
+        listener = socket.socket()
         listener.bind(("127.0.0.1", 0))
         listener.listen()
         thread = threading.Thread(target=handler, args=(listener,), daemon=True)
         thread.start()
         return listener.getsockname()[1], thread
 
-    def test_bidirectional_non_tty_channel(self):
+    def test_bidirectional_non_tty_channel(self, requires_loopback_listener):
         received = []
 
         def server(listener):
@@ -618,7 +613,7 @@ class TestRttClient:
                 == 0
             )
 
-    def test_immediate_forwarded_channel_failure_is_authoritative(self):
+    def test_immediate_forwarded_channel_failure_is_authoritative(self, requires_loopback_listener):
         def server(listener):
             with listener, listener.accept()[0]:
                 pass
@@ -1078,14 +1073,12 @@ class TestRealProcessHelper:
                         if stream is not None and not stream.closed:
                             stream.close()
 
-    def test_persistent_process_requires_marker_and_connectable_service(self):
-        try:
-            probe = socket.socket()
+    def test_persistent_process_requires_marker_and_connectable_service(
+        self, requires_loopback_listener
+    ):
+        with socket.socket() as probe:
             probe.bind(("127.64.0.1", 0))
             remote_port = probe.getsockname()[1]
-            probe.close()
-        except PermissionError:
-            pytest.skip("sandbox prohibits loopback listeners")
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
@@ -1162,7 +1155,7 @@ class TestRealProcessHelper:
         assert message["type"] == "OPENOCD_VERSION"
         assert "Python" in message["output"]
 
-    def test_helper_retries_an_openocd_address_collision(self):
+    def test_helper_retries_an_openocd_address_collision(self, requires_loopback_listener):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
@@ -1178,13 +1171,9 @@ class TestRealProcessHelper:
             try:
                 assert process.stdout is not None and process.stdin is not None
                 assert json.loads(read_line(process.stdout))["type"] == "SESSION_CREATED"
-                try:
-                    port_socket = socket.socket()
-                except PermissionError:
-                    pytest.skip("sandbox prohibits loopback listeners")
-                port_socket.bind(("127.0.0.1", 0))
-                remote_port = port_socket.getsockname()[1]
-                port_socket.close()
+                with socket.socket() as port_socket:
+                    port_socket.bind(("127.0.0.1", 0))
+                    remote_port = port_socket.getsockname()[1]
                 marker = "ZRO_READY_collision"
                 child = Path(directory) / "collision_child.py"
                 child.write_text(
@@ -1368,7 +1357,7 @@ class TestRealProcessHelper:
                 if child_pidfd is not None:
                     os.close(child_pidfd)
 
-    def test_partial_openocd_start_cleans_child_and_workspace(self):
+    def test_partial_openocd_start_cleans_child_and_workspace(self, requires_loopback_listener):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
@@ -1385,11 +1374,7 @@ class TestRealProcessHelper:
                 created = json.loads(read_line(process.stdout))
                 assert created["type"] == "SESSION_CREATED"
                 workspace = Path(created["remote_workspace"])
-                try:
-                    listener = socket.socket()
-                except PermissionError:
-                    pytest.skip("sandbox prohibits loopback listeners")
-                with listener:
+                with socket.socket() as listener:
                     listener.bind(("127.0.0.1", 0))
                     remote_port = listener.getsockname()[1]
                 marker = "ZRO_READY_partial"
