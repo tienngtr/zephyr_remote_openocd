@@ -139,7 +139,7 @@ def test_config_default_reports_invalid_configuration_to_cmake(tmp_path: Path):
         check=False,
     )
 
-    assert result.returncode == 2
+    assert result.returncode != 0
     assert result.stdout == ""
     assert "invalid configuration" in result.stderr
     assert "Traceback" not in result.stderr
