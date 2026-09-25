@@ -23,6 +23,7 @@ from zephyr_remote_openocd.remote.ssh import SshCommand
 
 OPENOCD_FAILURE_RC = 7
 FORWARD_FAILURE_RC = 13
+HELPER_FAILURE_RC = 17
 
 
 def test_open_rolls_back_failed_acquisition_once(monkeypatch):
@@ -129,6 +130,52 @@ def test_version_query_reports_ssh_failure_status_and_diagnostic(monkeypatch):
     message = str(raised.value)
     assert str(ssh_exit_status) in message
     assert "Permission denied" in message
+
+
+def test_version_query_reports_helper_error_frame(monkeypatch):
+    response = encode_message("ERROR", code="HELPER_ERROR", message="version probe failed")
+
+    class FailedCommand(SshCommand):
+        def run(self, host, remote_command, *, input_data=None, timeout=15):
+            return subprocess.CompletedProcess(remote_command, HELPER_FAILURE_RC, response, b"")
+
+    monkeypatch.setattr(
+        backend_module,
+        "deploy_helper",
+        lambda _ssh_command, _host: DeploymentResult("/helper.py", "digest", False),
+    )
+
+    with pytest.raises(SessionError) as raised:
+        query_remote_openocd_version(FailedCommand(), "target", ("openocd",))
+
+    message = str(raised.value)
+    assert f"({HELPER_FAILURE_RC})" in message
+    assert "HELPER_ERROR" in message
+    assert "version probe failed" in message
+
+
+def test_version_query_falls_back_to_stderr_for_malformed_failure_frame(monkeypatch):
+    class FailedCommand(SshCommand):
+        def run(self, host, remote_command, *, input_data=None, timeout=15):
+            return subprocess.CompletedProcess(
+                remote_command,
+                HELPER_FAILURE_RC,
+                b"not a protocol frame\n",
+                b"transport failed",
+            )
+
+    monkeypatch.setattr(
+        backend_module,
+        "deploy_helper",
+        lambda _ssh_command, _host: DeploymentResult("/helper.py", "digest", False),
+    )
+
+    with pytest.raises(SessionError) as raised:
+        query_remote_openocd_version(FailedCommand(), "target", ("openocd",))
+
+    message = str(raised.value)
+    assert f"({HELPER_FAILURE_RC})" in message
+    assert "transport failed" in message
 
 
 def test_version_query_rejects_response_without_lf(monkeypatch):

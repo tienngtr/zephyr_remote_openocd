@@ -16,12 +16,26 @@ from .model import RemoteSessionRequest, Service, SessionDescriptor, StagedEntry
 from .protocol import (
     ProtocolError,
     decode_single_frame,
+    validate_helper_event,
     validate_openocd_version_response,
     validate_staged_response,
 )
 from .session import SessionClosedError, SessionError
 from .ssh import SshCommand
 from .staging import build_archive
+
+
+def _one_shot_failure_detail(stdout: bytes, stderr: bytes) -> str:
+    """Decode a helper ERROR frame, falling back to transport diagnostics."""
+    if stdout:
+        try:
+            message = decode_single_frame(stdout)
+            validate_helper_event(message)
+            if message["type"] == "ERROR":
+                return f"{message['code']}: {message['message']}"
+        except (ProtocolError, ValueError):
+            pass
+    return (stderr or stdout).decode("utf-8", "replace").strip()
 
 
 def query_remote_openocd_version(
@@ -35,7 +49,7 @@ def query_remote_openocd_version(
     command = f"python3 {shlex.quote(deployment.path)} openocd-version -- {encoded}"
     result = ssh_command.run(host, command, timeout=30)
     if result.returncode:
-        detail = (result.stderr or result.stdout).decode("utf-8", "replace").strip()
+        detail = _one_shot_failure_detail(result.stdout, result.stderr)
         raise SessionError(f"remote OpenOCD version query failed ({result.returncode}): " + detail)
     try:
         message = decode_single_frame(result.stdout)
@@ -107,7 +121,7 @@ class RemoteSession:
         if result.returncode:
             raise SessionError(
                 f"remote staging failed ({result.returncode}): "
-                + result.stderr.decode("utf-8", "replace").strip()
+                + _one_shot_failure_detail(result.stdout, result.stderr)
             )
         try:
             message = decode_single_frame(result.stdout)

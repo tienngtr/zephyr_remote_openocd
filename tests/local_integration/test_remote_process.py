@@ -946,8 +946,9 @@ class TestRealProcessHelper:
             session._stage((StagedFile(source, PurePosixPath("firmware.bin")),))
 
     def test_backend_reports_nonzero_staging_command_and_closes_archive(self):
-        diagnostic = b"staging destination is unavailable"
+        diagnostic = "staging destination is unavailable"
         staging_ssh_exit_status = 23
+        response = encode_message("ERROR", code="HELPER_ERROR", message=diagnostic)
 
         class LocalCommand(_BlockedSshCommand):
             stream: BinaryIO | None = None
@@ -955,9 +956,7 @@ class TestRealProcessHelper:
             def run_stream(self, host, command, stream, timeout=60):
                 self.stream = stream
                 assert stream.read()
-                return subprocess.CompletedProcess(
-                    command, staging_ssh_exit_status, b"", diagnostic
-                )
+                return subprocess.CompletedProcess(command, staging_ssh_exit_status, response, b"")
 
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "firmware.bin"
@@ -978,7 +977,8 @@ class TestRealProcessHelper:
 
             message = str(raised.value)
             assert str(staging_ssh_exit_status) in message
-            assert "staging destination is unavailable" in message
+            assert "HELPER_ERROR" in message
+            assert diagnostic in message
             assert command.stream is not None and command.stream.closed
 
     def test_backend_wraps_invalid_utf8_version_response(self, monkeypatch):
