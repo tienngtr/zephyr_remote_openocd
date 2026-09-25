@@ -51,6 +51,14 @@ class _HelperCloseResult:
     cleanup_errors: tuple[BaseException, ...]
 
 
+@dataclass(frozen=True)
+class _ShutdownAttempt:
+    """Outcome of requesting graceful helper shutdown."""
+
+    error: BaseException | None
+    cleanup_errors: tuple[BaseException, ...]
+
+
 class _HelperClient:
     """Own one helper control connection and its Protocol-v1 lifecycle."""
 
@@ -132,6 +140,22 @@ class _HelperClient:
     def close(self) -> _HelperCloseResult:
         """Stop the helper without deciding whole-session failure precedence."""
         helper = self._process_or_error()
+        shutdown = self._request_shutdown(helper)
+        cleanup_errors = list(shutdown.cleanup_errors)
+        cleanup_errors.extend(self._dispose_control_process(helper))
+        self._emit_diagnostic()
+        try:
+            logical_error = self._resolve_shutdown_result(helper, shutdown.error)
+        except BaseException as error:
+            logical_error = error
+
+        if logical_error is not None:
+            for cleanup_error in cleanup_errors:
+                _add_failure_note(logical_error, "helper cleanup also failed", cleanup_error)
+        return _HelperCloseResult(logical_error, tuple(cleanup_errors))
+
+    def _request_shutdown(self, helper: ManagedSshProcess) -> _ShutdownAttempt:
+        """Request protocol shutdown and perform its bounded graceful wait."""
         logical_error: BaseException | None = None
         cleanup_errors: list[BaseException] = []
 
@@ -184,8 +208,16 @@ class _HelperClient:
                             logical_error = error
         except BaseException as error:
             logical_error = error
+        return _ShutdownAttempt(logical_error, tuple(cleanup_errors))
 
-        reader_stopped = self._join_reader()
+    def _dispose_control_process(self, helper: ManagedSshProcess) -> tuple[BaseException, ...]:
+        """Stop the reader and helper process without abandoning cleanup."""
+        cleanup_errors: list[BaseException] = []
+        try:
+            reader_stopped = self._join_reader()
+        except BaseException as error:
+            cleanup_errors.append(error)
+            reader_stopped = False
         try:
             _stop_process(helper, close_streams=reader_stopped)
         except BaseException as error:
@@ -193,7 +225,11 @@ class _HelperClient:
 
         if self._reader_thread is not None:
             initially_stopped = reader_stopped
-            reader_stopped = self._join_reader()
+            try:
+                reader_stopped = self._join_reader()
+            except BaseException as error:
+                cleanup_errors.append(error)
+                reader_stopped = False
             if reader_stopped and not initially_stopped:
                 try:
                     _stop_process(helper, close_streams=True)
@@ -201,9 +237,14 @@ class _HelperClient:
                     cleanup_errors.append(error)
             if not reader_stopped:
                 cleanup_errors.append(SessionError("helper event reader did not stop"))
+        return tuple(cleanup_errors)
 
-        self._emit_diagnostic()
-
+    def _resolve_shutdown_result(
+        self,
+        helper: ManagedSshProcess,
+        logical_error: BaseException | None,
+    ) -> BaseException | None:
+        """Reconcile final helper observations into one logical failure."""
         snapshot = self._observations.snapshot()
         reader_eof = isinstance(
             snapshot.reader_failure.__cause__ if snapshot.reader_failure is not None else None,
@@ -220,7 +261,7 @@ class _HelperClient:
         if logical_error is None:
             logical_error = self._take_unreported_helper_error()
 
-        ending = self._observations.snapshot().ending
+        ending = snapshot.ending
         if logical_error is None and not isinstance(ending, _HelperError):
             helper_status = helper.poll()
             close_reason = ending.reason if isinstance(ending, _SessionClosed) else None
@@ -237,11 +278,7 @@ class _HelperClient:
                 )
         if logical_error is None and reader_failure is not None:
             logical_error = reader_failure
-
-        if logical_error is not None:
-            for cleanup_error in cleanup_errors:
-                _add_failure_note(logical_error, "helper cleanup also failed", cleanup_error)
-        return _HelperCloseResult(logical_error, tuple(cleanup_errors))
+        return logical_error
 
     def _open(self) -> None:
         command = f"python3 {shlex.quote(self._deployment.path)} control"

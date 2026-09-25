@@ -5,14 +5,23 @@
 from __future__ import annotations
 
 import shlex
+import subprocess
 import time
 from collections.abc import Callable, Iterable
+from typing import Protocol
 
 from .cleanup import _add_failure_note, _raise_cleanup_errors
 from .deploy import DeploymentResult, deploy_helper
 from .forwarding import FORWARD_HEALTH_INTERVAL, _ForwardManager
-from .helper_client import _HelperClient
-from .model import RemoteSessionRequest, Service, SessionDescriptor, StagedEntry
+from .helper_client import _HelperClient, _HelperCloseResult
+from .model import (
+    RemoteProcess,
+    RemoteSessionRequest,
+    Service,
+    SessionAllocation,
+    SessionDescriptor,
+    StagedEntry,
+)
 from .protocol import (
     ProtocolError,
     decode_single_frame,
@@ -59,6 +68,39 @@ def query_remote_openocd_version(
         raise SessionError(f"invalid remote OpenOCD version response: {result.stdout!r}") from error
 
 
+class _SessionHelper(Protocol):
+    """Helper-control operations owned by ``RemoteSession``."""
+
+    @property
+    def openocd_returncode(self) -> int | None: ...
+
+    @property
+    def allocation(self) -> SessionAllocation: ...
+
+    def start_process(self, process: RemoteProcess, services: Iterable[Service]) -> str: ...
+
+    def recorded_openocd_exit(self) -> int | None: ...
+
+    def wait_for_change(self, timeout: float | None) -> None: ...
+
+    def timeout_expired(self, timeout: float) -> subprocess.TimeoutExpired: ...
+
+    def close(self) -> _HelperCloseResult: ...
+
+
+class _SessionForwards(Protocol):
+    """Forwarding operations owned by ``RemoteSession``."""
+
+    @property
+    def has_forwards(self) -> bool: ...
+
+    def start(self, services: Iterable[Service], remote_address: str) -> None: ...
+
+    def check_health(self) -> None: ...
+
+    def close(self) -> None: ...
+
+
 class RemoteSession:
     """Coordinate one helper client and its SSH forwarding processes."""
 
@@ -70,8 +112,8 @@ class RemoteSession:
     ) -> None:
         self.request = request
         self.deployment = deployment
-        self._forwards = _ForwardManager(request.ssh_command, request.host)
-        self._helper: _HelperClient | None = None
+        self._forwards: _SessionForwards = _ForwardManager(request.ssh_command, request.host)
+        self._helper: _SessionHelper | None = None
         self.closed = False
         self.descriptor: SessionDescriptor | None = None
 
@@ -215,7 +257,7 @@ class RemoteSession:
         if errors:
             _raise_cleanup_errors(errors)
 
-    def _helper_or_error(self) -> _HelperClient:
+    def _helper_or_error(self) -> _SessionHelper:
         if self._helper is None:
             raise SessionError("remote helper control session is not open")
         return self._helper

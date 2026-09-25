@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import subprocess
-from typing import Any, cast
+from collections.abc import Iterable
+from typing import override
 
 import pytest
 from zephyr_remote_openocd.remote import backend as backend_module
@@ -26,6 +27,56 @@ FORWARD_FAILURE_RC = 13
 HELPER_FAILURE_RC = 17
 
 
+class _BlockedHelper:
+    @property
+    def openocd_returncode(self) -> int | None:
+        raise AssertionError("openocd_returncode is not expected")
+
+    @property
+    def allocation(self) -> SessionAllocation:
+        raise AssertionError("allocation is not expected")
+
+    def start_process(self, process: RemoteProcess, services: Iterable[Service]) -> str:
+        del process, services
+        raise AssertionError("start_process() is not expected")
+
+    def recorded_openocd_exit(self) -> int | None:
+        raise AssertionError("recorded_openocd_exit() is not expected")
+
+    def wait_for_change(self, timeout: float | None) -> None:
+        del timeout
+        raise AssertionError("wait_for_change() is not expected")
+
+    def timeout_expired(self, timeout: float) -> subprocess.TimeoutExpired:
+        del timeout
+        raise AssertionError("timeout_expired() is not expected")
+
+    def close(self) -> _HelperCloseResult:
+        raise AssertionError("close() is not expected")
+
+
+class _BlockedForwards:
+    @property
+    def has_forwards(self) -> bool:
+        raise AssertionError("has_forwards is not expected")
+
+    def start(self, services: Iterable[Service], remote_address: str) -> None:
+        del services, remote_address
+        raise AssertionError("start() is not expected")
+
+    def check_health(self) -> None:
+        raise AssertionError("check_health() is not expected")
+
+    def close(self) -> None:
+        raise AssertionError("close() is not expected")
+
+
+def _make_session() -> RemoteSession:
+    request = RemoteSessionRequest("host", SshCommand(), RemoteProcess(("openocd",)))
+    deployment = DeploymentResult("/helper.py", "digest", False)
+    return RemoteSession(request, deployment)
+
+
 def test_open_rolls_back_failed_acquisition_once(monkeypatch):
     request = RemoteSessionRequest("host", SshCommand(), RemoteProcess(("openocd",)))
     deployment = DeploymentResult("/helper.py", "digest", False)
@@ -36,7 +87,7 @@ def test_open_rolls_back_failed_acquisition_once(monkeypatch):
         return deployment
 
     def open_helper(_ssh_command, _host, _deployment, *, output_handler=None):
-        return object()
+        return _BlockedHelper()
 
     monkeypatch.setattr(backend_module, "deploy_helper", deploy)
 
@@ -69,7 +120,7 @@ def test_open_retains_nested_rollback_cleanup_diagnostics(monkeypatch):
         return deployment
 
     def open_helper(_ssh_command, _host, _deployment, *, output_handler=None):
-        return object()
+        return _BlockedHelper()
 
     monkeypatch.setattr(backend_module, "deploy_helper", deploy)
     monkeypatch.setattr(_HelperClient, "open", open_helper)
@@ -206,11 +257,14 @@ def test_staging_rejects_response_without_lf(monkeypatch):
             del host, stream, timeout
             return subprocess.CompletedProcess(remote_command, 0, response, b"")
 
-    class Helper:
-        allocation = SessionAllocation("session", "/workspace")
+    class Helper(_BlockedHelper):
+        @property
+        @override
+        def allocation(self) -> SessionAllocation:
+            return SessionAllocation("session", "/workspace")
 
-        @staticmethod
-        def close():
+        @override
+        def close(self) -> _HelperCloseResult:
             return _HelperCloseResult(None, ())
 
     def open_helper(_ssh_command, _host, _deployment, *, output_handler=None):
@@ -230,12 +284,18 @@ def test_staging_rejects_response_without_lf(monkeypatch):
 
 
 def test_closed_session_exposes_only_cached_openocd_result():
-    class Helper:
-        openocd_returncode = None
+    class Helper(_BlockedHelper):
+        def __init__(self, openocd_returncode: int | None) -> None:
+            self._openocd_returncode = openocd_returncode
 
-    session = cast(Any, object.__new__(RemoteSession))
+        @property
+        @override
+        def openocd_returncode(self) -> int | None:
+            return self._openocd_returncode
+
+    session = _make_session()
     session.closed = True
-    session._helper = Helper()
+    session._helper = Helper(None)
 
     assert session.openocd_returncode is None
     assert session.check_openocd_exit() is None
@@ -244,32 +304,35 @@ def test_closed_session_exposes_only_cached_openocd_result():
     with pytest.raises(SessionClosedError):
         session.forward(())
 
-    completed = cast(Any, object.__new__(RemoteSession))
+    completed = _make_session()
     completed.closed = True
-    completed._helper = type("Helper", (), {"openocd_returncode": OPENOCD_FAILURE_RC})()
+    completed._helper = Helper(OPENOCD_FAILURE_RC)
     assert completed.openocd_returncode == OPENOCD_FAILURE_RC
     assert completed.check_openocd_exit() == OPENOCD_FAILURE_RC
     assert completed.wait_for_openocd_exit() == OPENOCD_FAILURE_RC
 
 
 def test_close_attempts_all_cleanup_once_and_preserves_first_failure():
-    session = cast(Any, object.__new__(RemoteSession))
-    session.closed = False
+    session = _make_session()
     first_error = RuntimeError("forward cleanup failed")
     later_error = RuntimeError("helper cleanup failed")
     later_error.add_note("helper cleanup also failed: stream close failed")
-    actions = []
+    actions: list[str] = []
 
-    def close_forwards():
-        actions.append("forwards")
-        raise first_error
+    class Forwards(_BlockedForwards):
+        @override
+        def close(self) -> None:
+            actions.append("forwards")
+            raise first_error
 
-    def close_helper():
-        actions.append("helper")
-        return _HelperCloseResult(later_error, ())
+    class Helper(_BlockedHelper):
+        @override
+        def close(self) -> _HelperCloseResult:
+            actions.append("helper")
+            return _HelperCloseResult(later_error, ())
 
-    session._forwards = type("Forwards", (), {"close": staticmethod(close_forwards)})()
-    session._helper = type("Helper", (), {"close": staticmethod(close_helper)})()
+    session._forwards = Forwards()
+    session._helper = Helper()
 
     with pytest.raises(RuntimeError) as raised:
         session.close()
@@ -279,29 +342,30 @@ def test_close_attempts_all_cleanup_once_and_preserves_first_failure():
     assert any("helper cleanup failed" in note for note in notes)
     assert any("stream close failed" in note for note in notes)
     assert all("additional cleanup failure" in note for note in notes)
-    assert set(actions) == {"forwards", "helper"}
-    assert len(actions) == 2
+    assert actions == ["forwards", "helper"]
     assert session.closed
-    assert session.close() is None
-    assert set(actions) == {"forwards", "helper"}
-    assert len(actions) == 2
+    session.close()
+    assert actions == ["forwards", "helper"]
 
 
 def test_close_raises_helper_cleanup_only_error_after_closing_session():
-    session = cast(Any, object.__new__(RemoteSession))
-    session.closed = False
+    session = _make_session()
     cleanup_error = RuntimeError("helper stream close failed")
-    actions = []
+    actions: list[str] = []
 
-    def close_forwards():
-        actions.append("forwards")
+    class Forwards(_BlockedForwards):
+        @override
+        def close(self) -> None:
+            actions.append("forwards")
 
-    def close_helper():
-        actions.append("helper")
-        return _HelperCloseResult(None, (cleanup_error,))
+    class Helper(_BlockedHelper):
+        @override
+        def close(self) -> _HelperCloseResult:
+            actions.append("helper")
+            return _HelperCloseResult(None, (cleanup_error,))
 
-    session._forwards = type("Forwards", (), {"close": staticmethod(close_forwards)})()
-    session._helper = type("Helper", (), {"close": staticmethod(close_helper)})()
+    session._forwards = Forwards()
+    session._helper = Helper()
 
     with pytest.raises(RuntimeError) as raised:
         session.close()
@@ -313,78 +377,94 @@ def test_close_raises_helper_cleanup_only_error_after_closing_session():
 
 @pytest.mark.timeout(10)
 def test_wait_for_openocd_exit_observes_forward_failure():
-    class Helper:
-        openocd_returncode = None
-
-        def __init__(self, forwards):
+    class Helper(_BlockedHelper):
+        def __init__(self, forwards: Forwards) -> None:
             self.forwards = forwards
-            self.wait_timeouts = []
+            self.wait_timeouts: list[float] = []
 
-        @staticmethod
-        def recorded_openocd_exit():
+        @property
+        @override
+        def openocd_returncode(self) -> int | None:
             return None
 
-        def wait_for_change(self, timeout):
+        @override
+        def recorded_openocd_exit(self) -> int | None:
+            return None
+
+        @override
+        def wait_for_change(self, timeout: float | None) -> None:
+            assert timeout is not None
             self.wait_timeouts.append(timeout)
             self.forwards.failed = True
 
-    class Forwards:
-        has_forwards = True
-
-        def __init__(self):
+    class Forwards(_BlockedForwards):
+        def __init__(self) -> None:
             self.failed = False
 
-        def check_health(self):
+        @property
+        @override
+        def has_forwards(self) -> bool:
+            return True
+
+        @override
+        def check_health(self) -> None:
             if self.failed:
                 raise SessionError(f"SSH forwarding exited with status {FORWARD_FAILURE_RC}")
 
-    session = cast(Any, object.__new__(RemoteSession))
-    session.closed = False
+    session = _make_session()
     forwards = Forwards()
-    session._helper = Helper(forwards)
+    helper = Helper(forwards)
+    session._helper = helper
     session._forwards = forwards
 
     with pytest.raises(SessionError):
         session.wait_for_openocd_exit()
-    assert len(session._helper.wait_timeouts) == 1
-    assert 0 < session._helper.wait_timeouts[0] <= backend_module.FORWARD_HEALTH_INTERVAL
+    assert len(helper.wait_timeouts) == 1
+    assert 0 < helper.wait_timeouts[0] <= backend_module.FORWARD_HEALTH_INTERVAL
 
 
 def test_wait_for_openocd_exit_raises_helper_timeout_at_deadline(monkeypatch):
     requested_timeout = 2.5
     clock = [0.0]
 
-    class Helper:
-        openocd_returncode = None
-
-        def __init__(self):
-            self.wait_timeouts = []
-            self.expired_timeout = None
+    class Helper(_BlockedHelper):
+        def __init__(self) -> None:
+            self.wait_timeouts: list[float] = []
+            self.expired_timeout: float | None = None
             self.timeout_error = subprocess.TimeoutExpired(("python3", "helper"), requested_timeout)
 
-        @staticmethod
-        def recorded_openocd_exit():
+        @property
+        @override
+        def openocd_returncode(self) -> int | None:
             return None
 
-        def wait_for_change(self, timeout):
-            self.wait_timeouts.append(timeout)
+        @override
+        def recorded_openocd_exit(self) -> int | None:
+            return None
+
+        @override
+        def wait_for_change(self, timeout: float | None) -> None:
             assert timeout is not None and timeout > 0
+            self.wait_timeouts.append(timeout)
             clock[0] += timeout
 
-        def timeout_expired(self, timeout):
+        @override
+        def timeout_expired(self, timeout: float) -> subprocess.TimeoutExpired:
             self.expired_timeout = timeout
             return self.timeout_error
 
-    class Forwards:
-        has_forwards = False
+    class Forwards(_BlockedForwards):
+        @property
+        @override
+        def has_forwards(self) -> bool:
+            return False
 
-        @staticmethod
-        def check_health():
+        @override
+        def check_health(self) -> None:
             pass
 
     helper = Helper()
-    session = cast(Any, object.__new__(RemoteSession))
-    session.closed = False
+    session = _make_session()
     session._helper = helper
     session._forwards = Forwards()
     monkeypatch.setattr(backend_module.time, "monotonic", lambda: clock[0])
@@ -405,15 +485,15 @@ def test_forward_uses_allocated_remote_address_and_requested_services():
         Service("telnet", 4444, 4444),
     )
 
-    class Forwards:
-        def __init__(self):
-            self.forwarded = None
+    class Forwards(_BlockedForwards):
+        def __init__(self) -> None:
+            self.forwarded: tuple[tuple[Service, ...], str] | None = None
 
-        def start(self, services, address):
-            self.forwarded = (tuple(services), address)
+        @override
+        def start(self, services: Iterable[Service], remote_address: str) -> None:
+            self.forwarded = (tuple(services), remote_address)
 
-    session = cast(Any, object.__new__(RemoteSession))
-    session.closed = False
+    session = _make_session()
     session.descriptor = SessionDescriptor(
         SessionAllocation("session-id", "/tmp/session"), remote_address
     )

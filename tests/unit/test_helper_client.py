@@ -436,7 +436,91 @@ def test_close_disposes_helper_when_initial_status_observation_fails():
     assert process.stderr.closed
 
 
-def test_close_reports_helper_stop_timeout():
+def test_close_disposes_helper_when_reader_join_fails():
+    join_error = RuntimeError("helper reader join failed")
+
+    class Process:
+        def __init__(self):
+            self.args = ("fake-helper",)
+            self.stdin = io.BytesIO()
+            self.stdout = io.BytesIO()
+            self.stderr = io.BytesIO()
+            self.returncode = 0
+
+        def poll(self):
+            return self.returncode
+
+        def close_stderr(self):
+            self.stderr.close()
+
+    class Reader:
+        def __init__(self):
+            self.join_calls = 0
+
+        def join(self, timeout=None):
+            del timeout
+            self.join_calls += 1
+            if self.join_calls == 1:
+                raise join_error
+
+        @staticmethod
+        def is_alive():
+            return False
+
+    process = Process()
+    helper_client = _helper_client()
+    test_helper = cast(Any, helper_client)
+    test_helper._process = process
+    test_helper._reader_thread = Reader()
+    helper_client._observations.record_close("process_exit", 0)
+
+    result = helper_client.close()
+
+    assert result.error is None
+    assert result.cleanup_errors == (join_error,)
+    assert process.stdin.closed
+    assert process.stdout.closed
+    assert process.stderr.closed
+
+
+def test_close_preserves_cleanup_error_when_final_status_observation_fails():
+    status_error = RuntimeError("helper final status failed")
+    cleanup_error = RuntimeError("helper stderr cleanup failed")
+
+    class Process:
+        def __init__(self):
+            self.args = ("fake-helper",)
+            self.stdin = io.BytesIO()
+            self.stdout = io.BytesIO()
+            self.returncode = 0
+            self.disposal_attempted = False
+
+        def poll(self):
+            if self.disposal_attempted:
+                raise status_error
+            return self.returncode
+
+        def close_stderr(self):
+            self.disposal_attempted = True
+            raise cleanup_error
+
+    process = Process()
+    helper_client = _helper_client()
+    cast(Any, helper_client)._process = process
+    helper_client._observations.record_close("process_exit", 0)
+
+    result = helper_client.close()
+
+    assert result.error is status_error
+    assert result.cleanup_errors == (cleanup_error,)
+    assert process.stdin.closed
+    assert process.stdout.closed
+    assert any("helper cleanup also failed" in note for note in status_error.__notes__)
+
+
+def test_close_closes_streams_when_reader_thread_does_not_start(monkeypatch):
+    reader_start_error = RuntimeError("helper reader did not start")
+
     class Process:
         def __init__(self):
             self.args = ("fake-helper",)
