@@ -38,6 +38,7 @@ from zephyr_remote_openocd.remote.model import (
     RemoteSessionRequest,
     Service,
     SessionAllocation,
+    StagedDirectory,
     StagedFile,
 )
 from zephyr_remote_openocd.remote.paths import REMOTE_ADDRESS_PLACEHOLDER, PathPlanner
@@ -828,6 +829,53 @@ class TestRealProcessHelper:
             "trees/search_0/nested/also-empty",
             "trees/search_0/nested/payload.cfg",
         }
+
+    def test_helper_stages_multiple_files_with_interspersed_directories(self, tmp_path):
+        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        tree = tmp_path / "tree"
+        nested = tree / "nested"
+        nested.mkdir(parents=True)
+        first = tree / "first.bin"
+        second = nested / "second.bin"
+        first.write_bytes(b"first")
+        second.write_bytes(b"second")
+        archive = build_archive(
+            (
+                StagedDirectory(tree, PurePosixPath("trees/root")),
+                StagedFile(first, PurePosixPath("trees/root/first.bin")),
+                StagedDirectory(nested, PurePosixPath("trees/root/nested")),
+                StagedFile(second, PurePosixPath("trees/root/nested/second.bin")),
+            )
+        )
+
+        runtime = tmp_path / "runtime"
+        workspace = runtime / "zephyr_remote_openocd" / "session"
+        (workspace / "staged").mkdir(parents=True)
+        environment = os.environ.copy()
+        environment["XDG_RUNTIME_DIR"] = str(runtime)
+        try:
+            result = subprocess.run(
+                [sys.executable, str(helper), "stage", str(workspace)],
+                env=environment,
+                stdin=archive.stream,
+                capture_output=True,
+                check=False,
+            )
+        finally:
+            archive.stream.close()
+
+        assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+        assert json.loads(result.stdout) == {
+            "version": 1,
+            "type": "STAGED",
+            "byte_count": archive.byte_count,
+            "sha256": archive.sha256,
+            "files": list(archive.files),
+            "directories": list(archive.directories),
+        }
+        staged = workspace / "staged"
+        assert (staged / "trees/root/first.bin").read_bytes() == b"first"
+        assert (staged / "trees/root/nested/second.bin").read_bytes() == b"second"
 
     @pytest.mark.parametrize(
         "members",

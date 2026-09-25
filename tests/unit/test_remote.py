@@ -576,6 +576,24 @@ def test_packaged_remote_helper_is_available_and_valid_python():
 
 
 class TestStaging:
+    def test_build_archive_hashes_files_in_archive_order(self, tmp_path: Path):
+        first = tmp_path / "first.bin"
+        second = tmp_path / "second.bin"
+        first.write_bytes(b"first")
+        second.write_bytes(b"second")
+
+        archive = build_archive(
+            (
+                StagedFile(second, PurePosixPath("second.bin")),
+                StagedFile(first, PurePosixPath("first.bin")),
+            )
+        )
+
+        assert archive.files == ("second.bin", "first.bin")
+        assert archive.byte_count == len(b"secondfirst")
+        assert archive.sha256 == hashlib.sha256(b"secondfirst").hexdigest()
+        archive.stream.close()
+
     def test_build_archive_preserves_binary_and_empty_files(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

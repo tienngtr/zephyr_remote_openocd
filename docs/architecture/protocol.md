@@ -123,7 +123,11 @@ A normalized manifest path is a non-empty relative string without NUL, empty,
 `.` or `..` components. Each of `files` and `directories` contains unique
 paths, the lists are disjoint, and no listed file is an ancestor of another
 listed path. Directory entries are explicit. `byte_count` and `sha256` cover
-regular-file content only.
+regular-file content only. Both manifest lists preserve archive encounter order
+within their respective kind. `byte_count` is the sum of regular-file byte
+lengths, and `sha256` is the SHA-256 digest of regular-file bytes concatenated
+in archive encounter order, without paths, metadata, directory entries, or
+boundary bytes.
 
 `helper stage <workspace>` reads tar stdin and emits `STAGED` on success.
 Duplicate archive paths and file ancestors are rejected before extraction.
