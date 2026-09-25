@@ -612,7 +612,7 @@ stage configuration
 start remote OpenOCD
      |
      v
-wait for required service
+wait for lifecycle readiness
      |
      v
 establish forwarding
@@ -1136,9 +1136,15 @@ readiness policy is satisfied; this does not experimentally verify every
 exposed service endpoint.
 
 For persistent OpenOCD operations, the adapter places an init-complete echo
-hook in OpenOCD's post-init command list before board configuration files. This
-hook runs after OpenOCD initialization has created its GDB listener. The adapter
-then appends a startup-complete echo after the full server startup sequence.
+hook in OpenOCD's post-init command list before board configuration files. It
+also establishes the remote bind address and exposed service-port settings
+before those files. These are runner-owned session and transport properties,
+so a configuration-triggered `init` cannot create listeners with pre-runner
+defaults. Board configuration files own probe and target setup. A board or user
+configuration that overrides the runner's bind address or service ports
+conflicts with the remote-session contract. The hook runs after OpenOCD
+initialization has created its GDB listener. The adapter then appends a
+startup-complete echo after the full server startup sequence.
 Each complete trimmed output sentinel proves one lifecycle fact; the helper emits
 `PROCESS_READY` only after both have been observed, in either order and on
 either child stream. The init hook therefore covers explicit `init`,
@@ -1147,10 +1153,14 @@ when `--no-init` is used.
 
 The helper allocates a session loopback address and preflights requested ports
 for bind collisions. OpenOCD remains the owner of its enabled GDB, Tcl, telnet,
-and RTT listeners. No service TCP connect or readiness probe is performed.
-Tcl and telnet are compatibility endpoints, not startup dependencies. If RTT
-server startup is part of the sequence, successful `rtt server start` precedes
-the startup-complete sentinel, so readiness follows that command causally.
+and RTT listeners. Readiness covers process lifecycle sentinels; it does not
+wait for remote service sockets to become connectable. Tcl and telnet are
+compatibility endpoints, and their remote socket connectability is not a
+readiness condition. Their configured local forwarding processes still start
+as part of `RemoteSession.open()`; a local forwarding startup failure prevents
+the session from opening. If RTT server startup is part of the sequence,
+successful `rtt server start` precedes the startup-complete sentinel, so
+readiness follows that command causally.
 Generic processes with no required sentinels are ready immediately. The
 startup timeout is 30 seconds.
 
