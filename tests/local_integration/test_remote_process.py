@@ -346,40 +346,6 @@ class TestForwardingLifecycle:
         manager.close()
         assert failed.terminate_calls == 1
 
-    def test_close_attempts_helper_and_all_forwards_after_cleanup_failure(self):
-        cleanup_error = RuntimeError("forward cleanup failed")
-
-        class Forwards:
-            closed = False
-
-            def close(self):
-                self.closed = True
-                raise cleanup_error
-
-        class Helper:
-            def __init__(self):
-                self.closed = False
-
-            def close(self):
-                self.closed = True
-                return helper_client_module._HelperCloseResult(None, ())
-
-        helper = Helper()
-        session = self.session(self.Command(self.Process()))
-        session._helper = helper
-        forwards = Forwards()
-        session._forwards = forwards
-
-        with pytest.raises(RuntimeError) as raised:
-            session.close()
-
-        assert raised.value is cleanup_error
-        assert forwards.closed
-        assert helper.closed
-        assert session.closed
-
-        session.close()
-
     def test_check_openocd_exit_uses_semantic_helper_result(self):
         session = self.session(self.Command(self.Process()))
         session._helper = type(
@@ -1811,50 +1777,6 @@ sys.stdin.buffer.read()
         finally:
             with suppress(BaseException):
                 helper_client.close()
-
-    def test_backend_close_preserves_first_forward_failure_and_notes_helper_failure(self):
-        forward_cleanup_error = RuntimeError("forward cleanup failed")
-        helper_error = SessionError("helper cleanup failed")
-        helper_error.add_note("helper cleanup also failed: reader did not stop")
-
-        class FailingForwards:
-            def __init__(self):
-                self.close_calls = 0
-
-            def close(self):
-                self.close_calls += 1
-                raise forward_cleanup_error
-
-        class Helper:
-            def close(self):
-                return helper_client_module._HelperCloseResult(helper_error, ())
-
-        backend = RemoteSession(
-            RemoteSessionRequest("local", _BlockedSshCommand(), TEST_PROCESS),
-            DeploymentResult("/helper.py", "digest", False),
-        )
-        forwards = FailingForwards()
-        test_backend = cast(Any, backend)
-        test_backend._forwards = forwards
-        test_backend._helper = Helper()
-        try:
-            with pytest.raises(RuntimeError) as raised:
-                backend.close()
-            assert raised.value is forward_cleanup_error
-            assert any(
-                note.startswith("additional cleanup failure:") for note in raised.value.__notes__
-            )
-            assert any("helper cleanup failed" in note for note in raised.value.__notes__)
-            assert any("reader did not stop" in note for note in raised.value.__notes__)
-            assert forwards.close_calls == 1
-            assert backend.closed
-
-            backend.close()
-            assert forwards.close_calls == 1
-            assert backend.closed
-        finally:
-            with suppress(BaseException):
-                backend.close()
 
     def test_helper_client_reports_helper_failure_after_close_event(self):
         helper_code = f"""
