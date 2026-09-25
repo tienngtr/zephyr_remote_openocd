@@ -16,6 +16,7 @@ import sys
 import tarfile
 import tempfile
 import threading
+from collections.abc import Iterable
 from contextlib import suppress
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO, cast, override
@@ -32,7 +33,7 @@ from zephyr_remote_openocd.remote.backend import (
 )
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
 from zephyr_remote_openocd.remote.forwarding import _ForwardManager
-from zephyr_remote_openocd.remote.helper_client import _HelperClient
+from zephyr_remote_openocd.remote.helper_client import _HelperClient, _HelperCloseResult
 from zephyr_remote_openocd.remote.model import (
     RemoteProcess,
     RemoteSessionRequest,
@@ -87,6 +88,36 @@ class _BlockedSshCommand(SshCommand):
         timeout: float = 60,
     ) -> subprocess.CompletedProcess[bytes]:
         raise AssertionError("run_stream() is not expected in this test")
+
+
+class _StagingHelper:
+    """Strict helper fake exposing only the staging allocation."""
+
+    @property
+    def openocd_returncode(self) -> int | None:
+        raise AssertionError("openocd_returncode is not expected in this test")
+
+    @property
+    def allocation(self) -> SessionAllocation:
+        return SessionAllocation("session", "/workspace")
+
+    def start_process(self, process: RemoteProcess, services: Iterable[Service]) -> str:
+        del process, services
+        raise AssertionError("start_process() is not expected in this test")
+
+    def recorded_openocd_exit(self) -> int | None:
+        raise AssertionError("recorded_openocd_exit() is not expected in this test")
+
+    def wait_for_change(self, timeout: float | None) -> None:
+        del timeout
+        raise AssertionError("wait_for_change() is not expected in this test")
+
+    def timeout_expired(self, timeout: float) -> subprocess.TimeoutExpired:
+        del timeout
+        raise AssertionError("timeout_expired() is not expected in this test")
+
+    def close(self) -> _HelperCloseResult:
+        raise AssertionError("close() is not expected in this test")
 
 
 def _assert_pidfd_exited(pidfd, timeout=5):
@@ -875,11 +906,7 @@ class TestRealProcessHelper:
                 RemoteSessionRequest("local", LocalCommand(), TEST_PROCESS),
                 DeploymentResult("/helper.py", "digest", False),
             )
-            session._helper = type(
-                "Helper",
-                (),
-                {"allocation": SessionAllocation("session", "/workspace")},
-            )()
+            session._helper = _StagingHelper()
             with pytest.raises(SessionError, match="invalid remote staging response"):
                 session._stage((StagedFile(source, PurePosixPath("firmware.bin")),))
 
@@ -904,11 +931,7 @@ class TestRealProcessHelper:
             RemoteSessionRequest("local", LocalCommand(), TEST_PROCESS),
             DeploymentResult("/helper.py", "digest", False),
         )
-        session._helper = type(
-            "Helper",
-            (),
-            {"allocation": SessionAllocation("session", "/workspace")},
-        )()
+        session._helper = _StagingHelper()
 
         with pytest.raises(SessionError):
             session._stage((StagedFile(source, PurePosixPath("firmware.bin")),))
@@ -934,11 +957,7 @@ class TestRealProcessHelper:
                 RemoteSessionRequest("local", command, TEST_PROCESS),
                 DeploymentResult("/helper.py", "digest", False),
             )
-            session._helper = type(
-                "Helper",
-                (),
-                {"allocation": SessionAllocation("session", "/workspace")},
-            )()
+            session._helper = _StagingHelper()
 
             with pytest.raises(SessionError) as raised:
                 session._stage((StagedFile(source, PurePosixPath("firmware.bin")),))
