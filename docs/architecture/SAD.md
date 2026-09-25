@@ -1274,8 +1274,9 @@ is more durable than a duplicate path sketch:
   commands without owning their execution.
 - `remote/session.py`, `helper_client.py`, and `backend.py` coordinate local
   session lifecycle, helper protocol, and OpenOCD result propagation.
-- `remote/services.py` and `forwarding.py` describe and forward OpenOCD-owned
-  listeners; the helper allocates and preflights remote addresses and ports.
+- `remote/model.py` defines service descriptions and `forwarding.py` manages
+  local SSH forwards to remote OpenOCD-owned listeners; `remote_helper.py`
+  allocates and preflights remote addresses and ports.
 - `remote_helper.py` owns remote supervision, output relay, protocol dispatch,
   and cleanup.
 - `remote/ssh.py` is the only boundary for configured SSH command behavior.
