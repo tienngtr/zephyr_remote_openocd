@@ -117,13 +117,15 @@ regenerates the runner configuration.
 ## How it works
 
 1. West and the Zephyr build remain on the local machine.
-2. The runner selects a configured SSH host and remote OpenOCD executable.
-3. Required build and board-support files are mapped or copied to a temporary
-   remote session directory.
-4. OpenOCD runs remotely while its enabled services are forwarded to local
-   loopback ports for GDB and RTT clients.
-5. OpenOCD output is relayed locally, and session processes and temporary files
-   are cleaned up when the command ends or the SSH connection is lost.
+2. The runner uses the configured SSH command to deploy a remote helper and
+   create an isolated session.
+3. The local control client communicates with the helper over SSH to stage the
+   build and board-support files and start OpenOCD; the helper supervises the
+   remote process and emits structured lifecycle and output events.
+4. SSH forwarding exposes OpenOCD's enabled GDB, Tcl, telnet, and RTT services
+   on local loopback ports.
+5. The runner coordinates output relay and cleanup when the session exits, is
+   interrupted, or loses SSH connectivity.
 
 ## Next steps
 
