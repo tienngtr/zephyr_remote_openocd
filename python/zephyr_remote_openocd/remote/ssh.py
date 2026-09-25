@@ -8,7 +8,7 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass
-from typing import BinaryIO, cast
+from typing import BinaryIO, Protocol, cast
 
 from .cleanup import _add_failure_note, _raise_cleanup_errors
 
@@ -173,10 +173,38 @@ class ManagedSshProcess:
         self._drain.close()
 
 
-def _stop_process(process: ManagedSshProcess, *, close_streams: bool = True) -> None:
-    """Stop and dispose one managed SSH process without hiding cleanup errors."""
+class _ProcessControl(Protocol):
+    """Process operations and resources needed during SSH cleanup."""
+
+    @property
+    def stdin(self) -> BinaryIO | None: ...
+
+    @property
+    def stdout(self) -> BinaryIO | None: ...
+
+    def poll(self) -> int | None: ...
+
+    def wait(self, timeout: float | None = None) -> int: ...
+
+    def terminate(self) -> None: ...
+
+    def kill(self) -> None: ...
+
+    def close_stderr(self) -> None: ...
+
+
+@dataclass(frozen=True)
+class _TerminationResult:
+    """Failures observed while attempting to stop a process."""
+
+    primary_error: BaseException | None
+    secondary_errors: tuple[BaseException, ...]
+
+
+def _terminate_process(process: _ProcessControl) -> _TerminationResult:
+    """Stop one process, escalating from graceful termination to a kill."""
     primary_error: BaseException | None = None
-    cleanup_errors: list[BaseException] = []
+    secondary_errors: list[BaseException] = []
     graceful_timeout: BaseException | None = None
     process_dead = False
 
@@ -185,7 +213,7 @@ def _stop_process(process: ManagedSshProcess, *, close_streams: bool = True) -> 
         if primary_error is None:
             primary_error = error
         else:
-            cleanup_errors.append(error)
+            secondary_errors.append(error)
 
     try:
         process_dead = process.poll() is not None
@@ -235,7 +263,16 @@ def _stop_process(process: ManagedSshProcess, *, close_streams: bool = True) -> 
     if not process_dead and primary_error is None:
         record_process_error(RuntimeError("process did not exit during cleanup"))
     if graceful_timeout is not None and primary_error is not None:
-        cleanup_errors.append(graceful_timeout)
+        secondary_errors.append(graceful_timeout)
+
+    return _TerminationResult(primary_error, tuple(secondary_errors))
+
+
+def _dispose_process_streams(
+    process: _ProcessControl, *, close_streams: bool
+) -> tuple[BaseException, ...]:
+    """Dispose the stderr drain and optionally the process data streams."""
+    cleanup_errors: list[BaseException] = []
 
     try:
         process.close_stderr()
@@ -249,10 +286,24 @@ def _stop_process(process: ManagedSshProcess, *, close_streams: bool = True) -> 
                 stream.close()
             except BaseException as error:
                 cleanup_errors.append(error)
-    if primary_error is not None:
+    return tuple(cleanup_errors)
+
+
+def _stop_process(process: _ProcessControl, *, close_streams: bool = True) -> None:
+    """Stop and dispose one managed SSH process without hiding cleanup errors."""
+    termination = _terminate_process(process)
+    cleanup_errors = [
+        *termination.secondary_errors,
+        *_dispose_process_streams(process, close_streams=close_streams),
+    ]
+    if termination.primary_error is not None:
         for cleanup_failure in cleanup_errors:
-            _add_failure_note(primary_error, "process cleanup also failed", cleanup_failure)
-        raise primary_error
+            _add_failure_note(
+                termination.primary_error,
+                "process cleanup also failed",
+                cleanup_failure,
+            )
+        raise termination.primary_error
     _raise_cleanup_errors(cleanup_errors)
 
 

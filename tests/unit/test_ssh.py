@@ -30,7 +30,6 @@ from zephyr_remote_openocd.remote.protocol import encode_message
 from zephyr_remote_openocd.remote.session import SessionError
 from zephyr_remote_openocd.remote.ssh import (
     SSH_STDERR_TAIL_BYTES,
-    ManagedSshProcess,
     SshCommand,
     _stop_process,
 )
@@ -293,7 +292,7 @@ def test_process_cleanup_kills_after_graceful_termination_times_out():
 
     process = Process()
 
-    _stop_process(cast(ManagedSshProcess, process))
+    _stop_process(process)
 
     assert process.terminated
     assert process.graceful_wait_timed_out
@@ -303,6 +302,37 @@ def test_process_cleanup_kills_after_graceful_termination_times_out():
     assert process.stderr_closed
     assert process.stdin.closed
     assert process.stdout.closed
+
+
+def test_process_cleanup_retains_graceful_timeout_after_kill_failure():
+    kill_error = RuntimeError("kill failed")
+    timeout_error = subprocess.TimeoutExpired("fake-ssh", 5)
+
+    class Process:
+        stdin = None
+        stdout = None
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+        def wait(self, timeout=None):
+            assert timeout is not None and math.isfinite(timeout) and timeout > 0
+            raise timeout_error
+
+        def kill(self):
+            raise kill_error
+
+        def close_stderr(self):
+            pass
+
+    with pytest.raises(RuntimeError) as raised:
+        _stop_process(Process())
+
+    assert raised.value is kill_error
+    assert any(str(timeout_error) in note for note in getattr(raised.value, "__notes__", ()))
 
 
 class _HelperProcess:
