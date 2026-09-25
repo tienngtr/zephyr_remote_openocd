@@ -7,6 +7,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum, auto
 from typing import Literal
 
 
@@ -47,11 +48,18 @@ class _StopWritten:
 _StopResult = _StopWritten | _SessionEnding
 
 
+class _HelperErrorDelivery(Enum):
+    UNREPORTED = auto()
+    FOREGROUND = auto()
+    CLOSE = auto()
+
+
 class _SessionObservations:
     """Synchronize facts observed from the helper event stream."""
 
     def __init__(self) -> None:
         self._ending: _SessionEnding | None = None
+        self._helper_error_delivery = _HelperErrorDelivery.UNREPORTED
         self._reader_failure: BaseException | None = None
         self._stop_requested = False
         self._lock = threading.RLock()
@@ -75,11 +83,36 @@ class _SessionObservations:
             self._ending = _SessionClosed(reason, returncode)
             self._changed.notify_all()
 
-    def record_error_event(self, error: SessionError) -> None:
+    def record_error_event(self, error: SessionError, *, reported: bool = False) -> None:
         """Record the helper's ERROR event and wake result waiters."""
         with self._changed:
             self._ending = _HelperError(error)
+            self._helper_error_delivery = (
+                _HelperErrorDelivery.FOREGROUND if reported else _HelperErrorDelivery.UNREPORTED
+            )
             self._changed.notify_all()
+
+    def take_unreported_helper_error(self) -> SessionError | None:
+        """Atomically consume a helper error not yet delivered to the caller."""
+        with self._changed:
+            if (
+                not isinstance(self._ending, _HelperError)
+                or self._helper_error_delivery is not _HelperErrorDelivery.UNREPORTED
+            ):
+                return None
+            self._helper_error_delivery = _HelperErrorDelivery.CLOSE
+            return self._ending.error
+
+    def helper_error_for_foreground(self) -> SessionError | None:
+        """Return the helper error and suppress its later replay during close."""
+        with self._changed:
+            if (
+                not isinstance(self._ending, _HelperError)
+                or self._helper_error_delivery is _HelperErrorDelivery.CLOSE
+            ):
+                return None
+            self._helper_error_delivery = _HelperErrorDelivery.FOREGROUND
+            return self._ending.error
 
     def record_reader_failure(self, error: BaseException) -> None:
         """Record an event-reader failure and wake result waiters."""

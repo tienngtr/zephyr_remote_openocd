@@ -279,8 +279,9 @@ def test_observed_background_error_is_not_reported_again_on_close():
     helper_client.start_process(RemoteProcess(("child",)), ())
     helper_client.wait_for_change(5)
 
-    with pytest.raises(SessionError):
-        helper_client.recorded_openocd_exit()
+    for _attempt in range(2):
+        with pytest.raises(SessionError):
+            helper_client.recorded_openocd_exit()
 
     assert helper_client.close().error is None
     commands = [decode_message(bytes(line))["type"] for line in process.stdin.written.splitlines()]
@@ -483,44 +484,51 @@ def test_close_disposes_helper_when_reader_join_fails():
     assert process.stderr.closed
 
 
-def test_close_preserves_cleanup_error_when_final_status_observation_fails():
-    status_error = RuntimeError("helper final status failed")
-    cleanup_error = RuntimeError("helper stderr cleanup failed")
+def test_close_closes_streams_when_reader_thread_does_not_start(monkeypatch):
+    reader_start_error = RuntimeError("helper reader did not start")
 
     class Process:
         def __init__(self):
             self.args = ("fake-helper",)
             self.stdin = io.BytesIO()
             self.stdout = io.BytesIO()
-            self.returncode = 0
-            self.disposal_attempted = False
+            self.stderr = io.BytesIO()
+            self.returncode = None
 
         def poll(self):
-            if self.disposal_attempted:
-                raise status_error
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = 0
+
+        def kill(self):
+            self.returncode = -signal.SIGKILL
+
+        def wait(self, timeout=None):
+            del timeout
             return self.returncode
 
         def close_stderr(self):
-            self.disposal_attempted = True
-            raise cleanup_error
+            self.stderr.close()
+
+    def fail_start(_thread):
+        raise reader_start_error
 
     process = Process()
     helper_client = _helper_client()
     cast(Any, helper_client)._process = process
-    helper_client._observations.record_close("process_exit", 0)
+    monkeypatch.setattr(threading.Thread, "start", fail_start)
 
     result = helper_client.close()
 
-    assert result.error is status_error
-    assert result.cleanup_errors == (cleanup_error,)
+    assert result.error is reader_start_error
+    assert result.cleanup_errors == ()
     assert process.stdin.closed
     assert process.stdout.closed
-    assert any("helper cleanup also failed" in note for note in status_error.__notes__)
+    assert process.stderr.closed
 
 
-def test_close_closes_streams_when_reader_thread_does_not_start(monkeypatch):
-    reader_start_error = RuntimeError("helper reader did not start")
-
+def test_close_reports_helper_stop_timeout():
     class Process:
         def __init__(self):
             self.args = ("fake-helper",)

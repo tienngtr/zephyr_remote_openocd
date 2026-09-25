@@ -139,3 +139,21 @@ def test_reader_failure_remains_independent_of_session_ending():
     snapshot = observations.snapshot()
     assert snapshot.ending == _SessionClosed("process_exit", 0)
     assert snapshot.reader_failure is reader_error
+
+
+def test_foreground_helper_error_is_recorded_as_already_reported():
+    observations = _SessionObservations()
+    helper_error = SessionError("foreground failed")
+
+    observations.record_error_event(helper_error, reported=True)
+
+    assert observations.take_unreported_helper_error() is None
+
+
+def test_helper_error_claimed_by_close_is_not_replayed_to_foreground():
+    observations = _SessionObservations()
+    helper_error = SessionError("background failed")
+    observations.record_error_event(helper_error)
+
+    assert observations.take_unreported_helper_error() is helper_error
+    assert observations.helper_error_for_foreground() is None

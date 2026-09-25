@@ -74,8 +74,6 @@ class _HelperClient:
         self._deployment = deployment
         self._output_handler = output_handler
         self._observations = _SessionObservations()
-        self._error_reported = False
-        self._error_report_lock = threading.Lock()
         self._reader_thread: threading.Thread | None = None
         self._process: ManagedSshProcess | None = None
         self._allocation: SessionAllocation | None = None
@@ -120,9 +118,9 @@ class _HelperClient:
         snapshot = self._observations.snapshot()
         if snapshot.reader_failure is not None:
             raise self._reader_failure(snapshot.reader_failure)
-        if isinstance(snapshot.ending, _HelperError):
-            self._mark_error_reported()
-            raise snapshot.ending.error
+        helper_error = self._observations.helper_error_for_foreground()
+        if helper_error is not None:
+            raise helper_error
         unexpected_close = self._unexpected_requested_close(snapshot)
         if unexpected_close is not None:
             raise unexpected_close
@@ -259,9 +257,9 @@ class _HelperClient:
             logical_error = logical_error or reader_failure
 
         if logical_error is None:
-            logical_error = self._take_unreported_helper_error()
+            logical_error = self._observations.take_unreported_helper_error()
 
-        ending = snapshot.ending
+        ending = self._observations.snapshot().ending
         if logical_error is None and not isinstance(ending, _HelperError):
             helper_status = helper.poll()
             close_reason = ending.reason if isinstance(ending, _SessionClosed) else None
@@ -320,9 +318,7 @@ class _HelperClient:
             session_error = SessionError(
                 f"remote helper error: {message.get('message', 'unknown error')}"
             )
-            self._observations.record_error_event(session_error)
-            if foreground:
-                self._mark_error_reported()
+            self._observations.record_error_event(session_error, reported=foreground)
             raise session_error
         return message
 
@@ -364,8 +360,9 @@ class _HelperClient:
     def _start_event_drain(self) -> None:
         if self._reader_thread is not None:
             return
-        self._reader_thread = threading.Thread(target=self._drain_events, daemon=True)
-        self._reader_thread.start()
+        reader_thread = threading.Thread(target=self._drain_events, daemon=True)
+        reader_thread.start()
+        self._reader_thread = reader_thread
 
     def _dispatch(self, event: dict) -> None:
         if event["type"] == "CHILD_OUTPUT" and self._output_handler is not None:
@@ -426,18 +423,6 @@ class _HelperClient:
                     self._output_handler("stderr", fragment, line_end)
         except BaseException:
             return
-
-    def _mark_error_reported(self) -> None:
-        with self._error_report_lock:
-            self._error_reported = True
-
-    def _take_unreported_helper_error(self) -> SessionError | None:
-        with self._error_report_lock:
-            ending = self._observations.snapshot().ending
-            if not isinstance(ending, _HelperError) or self._error_reported:
-                return None
-            self._error_reported = True
-            return ending.error
 
     @staticmethod
     def _unexpected_requested_close(snapshot: _SessionSnapshot) -> SessionError | None:
