@@ -45,25 +45,6 @@ class _PopenOnlySshCommand(SshCommand):
         raise AssertionError("run_stream() is not expected in this test")
 
 
-def test_initial_message_rejects_frame_without_lf():
-    read_fd, write_fd = os.pipe()
-    payload = encode_message(
-        "SESSION_CREATED",
-        helper="fake",
-        session_id="session",
-        remote_workspace="/workspace",
-    ).rstrip(b"\n")
-    os.write(write_fd, payload)
-    os.close(write_fd)
-    stream = os.fdopen(read_fd, "rb", buffering=0)
-
-    try:
-        with pytest.raises(ProtocolError):
-            _HelperClient._read_initial_message(stream, helper_client_module.time.monotonic() + 1)
-    finally:
-        stream.close()
-
-
 def _helper_client() -> _HelperClient:
     return _HelperClient(SshCommand(), "host", DeploymentResult("/helper.py", "digest", False))
 
@@ -118,7 +99,19 @@ class _EventProcess:
         self.stderr.close()
 
 
-def _open_helper_client_with_events(*events: bytes):
+def _open_helper_client(process: _EventProcess) -> _HelperClient:
+    class Command(_PopenOnlySshCommand):
+        @override
+        def popen(self, host: str, remote_command: str, *extra_args: str) -> Any:
+            del host, remote_command, extra_args
+            return process
+
+    return _HelperClient.open(Command(), "host", DeploymentResult("/helper.py", "digest", False))
+
+
+def _open_helper_client_with_events(
+    *events: bytes,
+) -> tuple[_HelperClient, _EventProcess]:
     process = _EventProcess(
         (
             encode_message(
@@ -130,17 +123,19 @@ def _open_helper_client_with_events(*events: bytes):
             *events,
         )
     )
+    return _open_helper_client(process), process
 
-    class Command(_PopenOnlySshCommand):
-        @override
-        def popen(self, host: str, remote_command: str, *extra_args: str) -> Any:
-            del host, remote_command, extra_args
-            return process
 
-    helper_client = _HelperClient.open(
-        Command(), "host", DeploymentResult("/helper.py", "digest", False)
-    )
-    return helper_client, process
+def test_open_rejects_initial_frame_without_lf():
+    payload = encode_message(
+        "SESSION_CREATED",
+        helper="fake",
+        session_id="session",
+        remote_workspace="/workspace",
+    ).rstrip(b"\n")
+
+    with pytest.raises(ProtocolError):
+        _open_helper_client(_EventProcess((payload,)))
 
 
 @pytest.mark.timeout(10)
@@ -196,14 +191,28 @@ def test_background_error_ends_session_without_sending_stop():
     )
     helper_client.start_process(RemoteProcess(("child",)), ())
 
-    assert helper_client._reader_thread is not None
-    helper_client._reader_thread.join(timeout=5)
-    assert not helper_client._reader_thread.is_alive()
-
+    helper_client.wait_for_change(5)
     result = helper_client.close()
 
     assert isinstance(result.error, SessionError)
     assert result.error.__cause__ is None
+    commands = [decode_message(bytes(line))["type"] for line in process.stdin.written.splitlines()]
+    assert commands == ["START"]
+
+
+@pytest.mark.timeout(10)
+def test_observed_background_error_is_not_reported_again_on_close():
+    helper_client, process = _open_helper_client_with_events(
+        encode_message("PROCESS_READY", remote_address="127.64.0.1", child_pid=1),
+        encode_message("ERROR", code="FAILED", message="background failed"),
+    )
+    helper_client.start_process(RemoteProcess(("child",)), ())
+    helper_client.wait_for_change(5)
+
+    with pytest.raises(SessionError):
+        helper_client.recorded_openocd_exit()
+
+    assert helper_client.close().error is None
     commands = [decode_message(bytes(line))["type"] for line in process.stdin.written.splitlines()]
     assert commands == ["START"]
 

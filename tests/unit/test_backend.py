@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import io
 import subprocess
-from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -151,26 +149,37 @@ def test_version_query_rejects_response_without_lf(monkeypatch):
 
 
 def test_staging_rejects_response_without_lf(monkeypatch):
-    archive = SimpleNamespace(
-        stream=io.BytesIO(), files=(), directories=(), byte_count=0, sha256="0" * 64
-    )
     response = encode_message(
-        "STAGED", byte_count=0, sha256=archive.sha256, files=[], directories=[]
+        "STAGED", byte_count=0, sha256="0" * 64, files=[], directories=[]
     ).rstrip(b"\n")
+    deployment = DeploymentResult("/helper.py", "digest", False)
 
     class ReplyCommand(SshCommand):
         def run_stream(self, host, remote_command, stream, *, timeout=60):
+            del host, stream, timeout
             return subprocess.CompletedProcess(remote_command, 0, response, b"")
 
-    monkeypatch.setattr(backend_module, "build_archive", lambda _files: archive)
-    request = RemoteSessionRequest("target", ReplyCommand(), RemoteProcess(("openocd",)))
-    session = RemoteSession(request, DeploymentResult("/helper.py", "digest", False))
-    cast(Any, session)._helper = SimpleNamespace(
-        allocation=SimpleNamespace(remote_workspace="/workspace")
+    class Helper:
+        allocation = SessionAllocation("session", "/workspace")
+
+        @staticmethod
+        def close():
+            return _HelperCloseResult(None, ())
+
+    def open_helper(_ssh_command, _host, _deployment, *, output_handler=None):
+        del output_handler
+        return Helper()
+
+    monkeypatch.setattr(
+        backend_module,
+        "deploy_helper",
+        lambda _ssh_command, _host: deployment,
     )
+    monkeypatch.setattr(_HelperClient, "open", open_helper)
+    request = RemoteSessionRequest("target", ReplyCommand(), RemoteProcess(("openocd",)))
 
     with pytest.raises(SessionError):
-        session._stage(())
+        RemoteSession.open(request)
 
 
 def test_closed_session_exposes_only_cached_openocd_result():

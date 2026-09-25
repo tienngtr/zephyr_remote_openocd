@@ -1043,35 +1043,52 @@ class TestRealProcessHelper:
                     if stream is not None and not stream.closed:
                         stream.close()
 
-    def test_helper_rejects_malformed_and_unsupported_version(self):
+    @pytest.mark.parametrize(
+        ("frame", "close_input"),
+        (
+            pytest.param(b"not-json\n", False, id="malformed-json"),
+            pytest.param(
+                b'{"version":2,"type":"STOP"}\n',
+                False,
+                id="unsupported-version",
+            ),
+            pytest.param(
+                b'{"version":1,"type":"STOP"}',
+                True,
+                id="missing-lf",
+            ),
+        ),
+    )
+    def test_helper_rejects_invalid_command_frame(self, frame, close_input):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
-        for frame in (b"not-json\n", b'{"version":2,"type":"STOP"}\n'):
-            with tempfile.TemporaryDirectory() as directory:
-                environment = os.environ.copy()
-                environment["XDG_RUNTIME_DIR"] = directory
-                process = subprocess.Popen(
-                    [sys.executable, str(helper), "control"],
-                    env=environment,
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                )
-                try:
-                    assert process.stdin is not None and process.stdout is not None
-                    read_line(process.stdout)
-                    process.stdin.write(frame)
-                    process.stdin.flush()
-                    error = json.loads(read_line(process.stdout))
-                    assert error["type"] == "ERROR"
-                    assert error["code"] == "PROTOCOL_ERROR"
-                    assert process.wait(timeout=5) == 0
-                finally:
-                    if process.poll() is None:
-                        process.kill()
-                        process.wait(timeout=5)
-                    for stream in (process.stdin, process.stdout, process.stderr):
-                        if stream is not None and not stream.closed:
-                            stream.close()
+        with tempfile.TemporaryDirectory() as directory:
+            environment = os.environ.copy()
+            environment["XDG_RUNTIME_DIR"] = directory
+            process = subprocess.Popen(
+                [sys.executable, str(helper), "control"],
+                env=environment,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            try:
+                assert process.stdin is not None and process.stdout is not None
+                read_line(process.stdout)
+                process.stdin.write(frame)
+                process.stdin.flush()
+                if close_input:
+                    process.stdin.close()
+                error = json.loads(read_line(process.stdout))
+                assert error["type"] == "ERROR"
+                assert error["code"] == "PROTOCOL_ERROR"
+                assert process.wait(timeout=5) == 0
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=5)
+                for stream in (process.stdin, process.stdout, process.stderr):
+                    if stream is not None and not stream.closed:
+                        stream.close()
 
     def test_persistent_process_waits_for_sentinels_without_service_probes(
         self, requires_loopback_listener
