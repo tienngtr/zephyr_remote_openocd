@@ -84,9 +84,10 @@ a concise body that explains the change.
 
 Zephyr, SSH, and hardware tests require external test environments and a local
 hardware inventory; see [`docs/development/testing.md`](docs/development/testing.md)
-before running them. Update [`SRS`](docs/requirements/SRS.md) for behavior and
+before running them. See [`SRS`](docs/requirements/SRS.md) for behavior and
 requirements, [`SAD`](docs/architecture/SAD.md) for architecture and rationale,
-and [`protocol.md`](docs/architecture/protocol.md) for the helper wire contract.
+[`protocol.md`](docs/architecture/protocol.md) for the helper wire contract, and
+[`test_design.md`](docs/development/test_design.md) for guidelines on writing tests.
 Never commit credentials, host/device details, generated builds, or `.scratch/`
 files.
 

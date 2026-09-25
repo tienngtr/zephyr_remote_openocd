@@ -58,6 +58,11 @@ error checks.
 
 ## Testing and Validation
 
+Follow [`docs/development/testing.md`](docs/development/testing.md) for the
+canonical test-design and regression-value guidance, including use of real
+production objects, constrained test doubles, deterministic synchronization,
+and treating excessive test difficulty as a production-design signal.
+
 Use pytest `test_` names and distinct parametrized nodes for external profiles.
 Cover affected contracts and plausible failures at the smallest useful layer,
 especially protocol ordering, lifecycle failure, cleanup, path safety, and
