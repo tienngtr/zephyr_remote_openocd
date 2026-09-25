@@ -15,7 +15,7 @@ from .helper_client import _HelperClient
 from .model import RemoteSessionRequest, Service, SessionDescriptor, StagedEntry
 from .protocol import (
     ProtocolError,
-    decode_message,
+    decode_single_frame,
     validate_openocd_version_response,
     validate_staged_response,
 )
@@ -38,7 +38,7 @@ def query_remote_openocd_version(
         detail = (result.stderr or result.stdout).decode("utf-8", "replace").strip()
         raise SessionError(f"remote OpenOCD version query failed ({result.returncode}): " + detail)
     try:
-        message = decode_message(result.stdout)
+        message = decode_single_frame(result.stdout)
         validate_openocd_version_response(message)
         return message["output"]
     except (KeyError, ProtocolError, ValueError) as error:
@@ -110,7 +110,7 @@ class RemoteSession:
                 + result.stderr.decode("utf-8", "replace").strip()
             )
         try:
-            message = decode_message(result.stdout)
+            message = decode_single_frame(result.stdout)
             validate_staged_response(message)
             if tuple(message.get("files", ())) != archive.files:
                 raise ValueError("remote staged-file confirmation differs from manifest")

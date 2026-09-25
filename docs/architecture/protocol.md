@@ -10,10 +10,11 @@ commands. Serialization does not re-parse its own output. The helper strictly
 validates every command received from the wire, while the client strictly
 validates helper events and one-shot responses.
 
-The contract uses UTF-8 JSON lines: one JSON object followed by one `LF` per
-frame. Every frame has integer, non-Boolean `version: 1` and a non-empty string
-`type`. Persistent command and event objects reject unknown fields. Helper
-stdout contains protocol frames only.
+The contract uses UTF-8 JSON lines: each frame contains one JSON object and
+ends with one `LF`. JSON whitespace other than `LF` may precede or follow the
+object within the frame. Every frame has integer, non-Boolean `version: 1` and
+a non-empty string `type`. Persistent command and event objects reject unknown
+fields. Helper stdout contains protocol frames only.
 
 The helper emits one `SESSION_CREATED` event before reading commands. The
 client writes commands to helper stdin and reads events from stdout. There is
@@ -114,6 +115,8 @@ extraction.
 revisions are pruned. Deployment serializes installation, reuse refresh, and
 pruning with a per-protocol lock so a concurrently selected revision cannot be
 removed from a stale observation.
+Each successful one-shot invocation emits exactly one response frame on
+stdout, with no additional output.
 
 Bulk binary content remains stream-oriented instead of JSON/base64. The
 configured SSH command prefix is passed as argv, separate from runner-generated

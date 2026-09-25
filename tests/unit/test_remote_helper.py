@@ -30,6 +30,47 @@ SPEC.loader.exec_module(remote_helper)
 SAMPLE_CHILD_EXIT_CODE = 7
 
 
+def test_helper_rejects_command_frame_without_lf(monkeypatch):
+    dispatched = []
+    session = remote_helper.ControlSession("session", None, None)
+
+    def record_dispatch(message):
+        dispatched.append(message)
+
+    monkeypatch.setattr(
+        remote_helper.sys,
+        "stdin",
+        SimpleNamespace(buffer=io.BytesIO(b'{"version":1,"type":"STOP"}')),
+    )
+    monkeypatch.setattr(session, "dispatch", record_dispatch)
+
+    assert not session._read_and_dispatch()
+
+    assert isinstance(session.protocol_error, ValueError)
+    assert dispatched == []
+
+
+def test_helper_accepts_json_whitespace_inside_command_frame(monkeypatch):
+    dispatched = []
+    session = remote_helper.ControlSession("session", None, None)
+
+    def record_dispatch(message):
+        dispatched.append(message)
+        return False
+
+    monkeypatch.setattr(
+        remote_helper.sys,
+        "stdin",
+        SimpleNamespace(buffer=io.BytesIO(b' \t{"version":1,"type":"STOP"} \t\r\n')),
+    )
+    monkeypatch.setattr(session, "dispatch", record_dispatch)
+
+    assert not session._read_and_dispatch()
+
+    assert session.protocol_error is None
+    assert dispatched == [{"version": 1, "type": "STOP"}]
+
+
 def _wait_for_descendant(path):
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:

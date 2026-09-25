@@ -14,7 +14,7 @@ from zephyr_remote_openocd.remote import helper_client as helper_client_module
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
 from zephyr_remote_openocd.remote.helper_client import _HelperClient
 from zephyr_remote_openocd.remote.model import RemoteProcess, RemoteSessionRequest
-from zephyr_remote_openocd.remote.protocol import decode_message, encode_message
+from zephyr_remote_openocd.remote.protocol import ProtocolError, decode_message, encode_message
 from zephyr_remote_openocd.remote.session import SessionError
 from zephyr_remote_openocd.remote.ssh import SshCommand
 
@@ -43,6 +43,25 @@ class _PopenOnlySshCommand(SshCommand):
         timeout: float = 60,
     ):
         raise AssertionError("run_stream() is not expected in this test")
+
+
+def test_initial_message_rejects_frame_without_lf():
+    read_fd, write_fd = os.pipe()
+    payload = encode_message(
+        "SESSION_CREATED",
+        helper="fake",
+        session_id="session",
+        remote_workspace="/workspace",
+    ).rstrip(b"\n")
+    os.write(write_fd, payload)
+    os.close(write_fd)
+    stream = os.fdopen(read_fd, "rb", buffering=0)
+
+    try:
+        with pytest.raises(ProtocolError):
+            _HelperClient._read_initial_message(stream, helper_client_module.time.monotonic() + 1)
+    finally:
+        stream.close()
 
 
 def _helper_client() -> _HelperClient:

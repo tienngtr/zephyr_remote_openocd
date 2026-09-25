@@ -39,6 +39,27 @@ def decode_message(line: bytes | str) -> dict[str, Any]:
         value = json.loads(text)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ProtocolError(f"malformed protocol message: {error}") from error
+    return _validate_message(value)
+
+
+def decode_single_frame(frame: bytes | str) -> dict[str, Any]:
+    """Decode exactly one JSON object followed by one LF, with no extra data."""
+    try:
+        text = frame.decode("utf-8") if isinstance(frame, bytes) else frame
+    except UnicodeDecodeError as error:
+        raise ProtocolError(f"malformed protocol message: {error}") from error
+    if not text.endswith("\n") or text.count("\n") != 1:
+        raise ProtocolError("protocol response must contain exactly one LF-terminated frame")
+
+    body = text[:-1]
+    try:
+        value = json.loads(body)
+    except json.JSONDecodeError as error:
+        raise ProtocolError(f"malformed protocol message: {error}") from error
+    return _validate_message(value)
+
+
+def _validate_message(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ProtocolError("protocol message must be an object")
     if not is_protocol_version(value.get("version")):
@@ -54,7 +75,7 @@ def read_message(stream: BinaryIO) -> dict[str, Any]:
     line = stream.readline()
     if not line:
         raise EOFError("helper control channel closed")
-    return decode_message(line)
+    return decode_single_frame(line)
 
 
 def _write_frame(stream: BinaryIO, message_type: str, **fields: Any) -> None:

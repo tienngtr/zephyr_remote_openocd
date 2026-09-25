@@ -9,7 +9,7 @@ import shlex
 from dataclasses import dataclass
 from importlib.resources import files
 
-from .protocol import ProtocolError, decode_message, validate_deployment_response
+from .protocol import ProtocolError, decode_single_frame, validate_deployment_response
 from .ssh import SshCommand
 
 BOOTSTRAP = r'''import fcntl,hashlib,json,os,pathlib,sys,tempfile,time
@@ -79,7 +79,7 @@ def deploy_helper(ssh: SshCommand, host: str, *, source: bytes | None = None) ->
         diagnostic = result.stderr.decode("utf-8", "replace").strip()
         raise DeploymentError(f"helper deployment failed ({result.returncode}): {diagnostic}")
     try:
-        message = decode_message(result.stdout)
+        message = decode_single_frame(result.stdout)
         validate_deployment_response(message)
         path = message["path"]
         digest = message["sha256"]
