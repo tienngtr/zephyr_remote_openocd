@@ -391,6 +391,51 @@ def test_close_keeps_stop_failure_primary_when_forced_disposal_also_fails():
     assert any("helper cleanup also failed" in note for note in graceful_stop_error.__notes__)
 
 
+def test_close_disposes_helper_when_initial_status_observation_fails():
+    observation_error = RuntimeError("helper status failed")
+
+    class Process:
+        def __init__(self):
+            self.args = ("fake-helper",)
+            self.stdin = io.BytesIO()
+            self.stdout = io.BytesIO()
+            self.stderr = io.BytesIO()
+            self.returncode = None
+            self.poll_calls = 0
+
+        def poll(self):
+            self.poll_calls += 1
+            if self.poll_calls == 1:
+                raise observation_error
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = 0
+
+        def kill(self):
+            self.returncode = -signal.SIGKILL
+
+        def wait(self, timeout=None):
+            del timeout
+            return self.returncode
+
+        def close_stderr(self):
+            self.stderr.close()
+
+    process = Process()
+    helper_client = _helper_client()
+    cast(Any, helper_client)._process = process
+
+    result = helper_client.close()
+
+    assert result.error is observation_error
+    assert result.cleanup_errors == ()
+    assert process.returncode == 0
+    assert process.stdin.closed
+    assert process.stdout.closed
+    assert process.stderr.closed
+
+
 def test_close_reports_helper_stop_timeout():
     class Process:
         def __init__(self):

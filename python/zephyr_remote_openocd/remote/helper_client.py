@@ -135,52 +135,55 @@ class _HelperClient:
         logical_error: BaseException | None = None
         cleanup_errors: list[BaseException] = []
 
-        close_before_stop = self._observations.snapshot()
-        helper_status = helper.poll()
-        unexpected_close = self._unexpected_requested_close(close_before_stop)
-        if unexpected_close is not None:
-            logical_error = unexpected_close
-        elif helper_status is None and close_before_stop.ending is None:
-            if self._reader_thread is None:
-                self._start_event_drain()
-            if helper.stdin is None:
-                logical_error = SessionError("helper stdin was not captured")
-            else:
-
-                def write_requested_stop() -> None:
-                    write_stop(cast(BinaryIO, helper.stdin))
-
-                stop_result = None
-                try:
-                    stop_result = self._observations.request_stop(write_requested_stop)
-                except BaseException as error:
-                    logical_error = error
+        try:
+            close_before_stop = self._observations.snapshot()
+            helper_status = helper.poll()
+            unexpected_close = self._unexpected_requested_close(close_before_stop)
+            if unexpected_close is not None:
+                logical_error = unexpected_close
+            elif helper_status is None and close_before_stop.ending is None:
+                if self._reader_thread is None:
+                    self._start_event_drain()
+                if helper.stdin is None:
+                    logical_error = SessionError("helper stdin was not captured")
                 else:
-                    unexpected_close = self._unexpected_requested_close(
-                        self._observations.snapshot()
-                    )
-                    if unexpected_close is not None:
-                        logical_error = unexpected_close
-                try:
-                    helper.stdin.close()
-                except BaseException as error:
-                    cleanup_errors.append(error)
-                ending = self._observations.snapshot().ending
-                if (
-                    logical_error is None
-                    and not isinstance(ending, _HelperError)
-                    and (
-                        isinstance(stop_result, _StopWritten)
-                        or (
-                            isinstance(stop_result, _SessionClosed)
-                            and stop_result.reason == "process_exit"
-                        )
-                    )
-                ):
+
+                    def write_requested_stop() -> None:
+                        write_stop(cast(BinaryIO, helper.stdin))
+
+                    stop_result = None
                     try:
-                        helper.wait(timeout=HELPER_STOP_TIMEOUT)
+                        stop_result = self._observations.request_stop(write_requested_stop)
                     except BaseException as error:
                         logical_error = error
+                    else:
+                        unexpected_close = self._unexpected_requested_close(
+                            self._observations.snapshot()
+                        )
+                        if unexpected_close is not None:
+                            logical_error = unexpected_close
+                    try:
+                        helper.stdin.close()
+                    except BaseException as error:
+                        cleanup_errors.append(error)
+                    ending = self._observations.snapshot().ending
+                    if (
+                        logical_error is None
+                        and not isinstance(ending, _HelperError)
+                        and (
+                            isinstance(stop_result, _StopWritten)
+                            or (
+                                isinstance(stop_result, _SessionClosed)
+                                and stop_result.reason == "process_exit"
+                            )
+                        )
+                    ):
+                        try:
+                            helper.wait(timeout=HELPER_STOP_TIMEOUT)
+                        except BaseException as error:
+                            logical_error = error
+        except BaseException as error:
+            logical_error = error
 
         reader_stopped = self._join_reader()
         try:
