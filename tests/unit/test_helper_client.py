@@ -20,6 +20,15 @@ from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand
 
 OPENOCD_FAILURE_RC = 7
 
+# These tests intentionally retain narrow typing escapes at the process-control
+# boundary.  _HelperClient owns the complete ManagedSshProcess lifecycle, so a
+# smaller production protocol would exist only for tests.  The process-shaped
+# doubles below inject behavior a real wrapper cannot express deterministically:
+# poll and wait failures, STOP/write races, termination and stderr-close
+# failures, reader shutdown ordering, and partial event-stream delivery.  Tests
+# that do not need those faults use real ManagedSshProcess construction in the
+# local-integration layer.
+
 
 class _PopenOnlySshCommand(SshCommand):
     @override

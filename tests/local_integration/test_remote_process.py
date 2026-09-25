@@ -19,7 +19,7 @@ import threading
 from collections.abc import Iterable
 from contextlib import suppress
 from pathlib import Path, PurePosixPath
-from typing import Any, BinaryIO, cast, override
+from typing import Any, BinaryIO, override
 from unittest.mock import patch
 
 import pytest
@@ -340,27 +340,67 @@ class TestForwardingLifecycle:
         session._forwards.close()
         assert stale.terminate_calls == 1
 
-    def test_forward_manager_cleanup_attempts_all_forwards_once(self):
+    def test_forward_manager_cleanup_attempts_all_forwards_once(self, monkeypatch):
         cleanup_error = RuntimeError("forward cleanup failed")
+        terminate_calls = 0
 
-        class FailingProcess(TestForwardingLifecycle.Process):
-            def terminate(self):
-                self.terminate_calls += 1
-                raise cleanup_error
+        class Command(_BlockedSshCommand):
+            processes: list[ManagedSshProcess]
 
-        failed = FailingProcess()
-        healthy = self.Process()
-        manager = _ForwardManager(self.Command(failed), "target")
-        manager._processes = [cast(Any, failed), cast(Any, healthy)]
+            def __init__(self, processes: list[ManagedSshProcess]) -> None:
+                super().__init__()
+                object.__setattr__(self, "processes", processes)
 
-        with pytest.raises(RuntimeError) as raised:
+            @override
+            def popen(self, host: str, remote_command: str, *extra_args: str) -> ManagedSshProcess:
+                del host, remote_command, extra_args
+                return self.processes.pop(0)
+
+        failed = managed_popen(
+            [sys.executable, "-c", "import sys; sys.stdin.buffer.read()"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        healthy = managed_popen(
+            [sys.executable, "-c", "import sys; sys.stdin.buffer.read()"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        def fail_terminate() -> None:
+            nonlocal terminate_calls
+            terminate_calls += 1
+            raise cleanup_error
+
+        monkeypatch.setattr(failed, "terminate", fail_terminate)
+        manager = _ForwardManager(Command([failed, healthy]), "target")
+        monkeypatch.setattr(_ForwardManager, "_preflight", staticmethod(lambda _service: None))
+        monkeypatch.setattr(_ForwardManager, "_await_ready", staticmethod(lambda *_args: True))
+        try:
+            manager.start(
+                (Service("gdb", 32155, 3333), Service("tcl", 32156, 6666)),
+                "127.64.1.1",
+            )
+
+            with pytest.raises(RuntimeError) as raised:
+                manager.close()
+
+            assert raised.value is cleanup_error
+            assert healthy.poll() is not None
+            assert not manager.has_forwards
             manager.close()
-
-        assert raised.value is cleanup_error
-        assert healthy.terminate_calls == 1
-        assert not manager.has_forwards
-        manager.close()
-        assert failed.terminate_calls == 1
+            assert terminate_calls == 1
+        finally:
+            for process in (failed, healthy):
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=5)
+                process.close_stderr()
+                for stream in (process.stdin, process.stdout):
+                    if stream is not None and not stream.closed:
+                        stream.close()
 
 
 class TestRttClient:

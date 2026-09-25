@@ -21,6 +21,13 @@ from zephyr_remote_openocd.remote.ssh import SSH_STDERR_TAIL_BYTES, SshCommand
 FORWARD_FAILURE_RC = 13
 SAMPLE_FORWARD_EXIT_CODE = 9
 
+# The Any/cast uses in this module are confined to the subprocess boundary.
+# _ForwardManager owns the full ManagedSshProcess lifecycle, so introducing a
+# narrower production protocol would only accommodate tests.  These doubles
+# provide deterministic poll results, diagnostics, and partial readiness input;
+# normal stderr-drain behavior uses a real SshCommand process below, and full
+# cleanup ownership is covered with real managed processes in local integration.
+
 
 class _ForwardCommand(SshCommand):
     processes: Iterator[Any]
