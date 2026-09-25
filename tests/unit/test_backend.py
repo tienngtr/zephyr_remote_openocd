@@ -312,6 +312,36 @@ def test_closed_session_exposes_only_cached_openocd_result():
     assert completed.wait_for_openocd_exit() == OPENOCD_FAILURE_RC
 
 
+def test_check_openocd_exit_propagates_helper_observation_failure():
+    observation_error = SessionError("helper event stream failed")
+
+    class Helper(_BlockedHelper):
+        @override
+        def recorded_openocd_exit(self) -> int | None:
+            raise observation_error
+
+    session = _make_session()
+    session._helper = Helper()
+
+    with pytest.raises(SessionError) as raised:
+        session.check_openocd_exit()
+
+    assert raised.value is observation_error
+
+
+def test_check_openocd_exit_returns_completed_result_before_forward_health():
+    class Helper(_BlockedHelper):
+        @override
+        def recorded_openocd_exit(self) -> int | None:
+            return OPENOCD_FAILURE_RC
+
+    session = _make_session()
+    session._helper = Helper()
+    session._forwards = _BlockedForwards()
+
+    assert session.check_openocd_exit() == OPENOCD_FAILURE_RC
+
+
 def test_close_attempts_all_cleanup_once_and_preserves_first_failure():
     session = _make_session()
     first_error = RuntimeError("forward cleanup failed")
@@ -421,6 +451,7 @@ def test_wait_for_openocd_exit_observes_forward_failure():
         session.wait_for_openocd_exit()
     assert len(helper.wait_timeouts) == 1
     assert 0 < helper.wait_timeouts[0] <= backend_module.FORWARD_HEALTH_INTERVAL
+    assert not session.closed
 
 
 def test_wait_for_openocd_exit_raises_helper_timeout_at_deadline(monkeypatch):

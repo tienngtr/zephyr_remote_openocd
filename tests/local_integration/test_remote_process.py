@@ -263,21 +263,6 @@ class TestForwardingLifecycle:
         )
         assert any("process cleanup failed" in note for note in raised.value.__notes__)
 
-    def test_wait_error_leaves_cleanup_to_lifecycle(self):
-        session = self.session(self.Command(self.Process()))
-        session._helper = object()
-        wait_error = SessionError("event stream failed")
-
-        with (
-            patch.object(session, "check_openocd_exit", side_effect=wait_error),
-            patch.object(session, "close") as close,
-            pytest.raises(SessionError) as raised,
-        ):
-            session.wait_for_openocd_exit()
-
-        assert raised.value is wait_error
-        close.assert_not_called()
-
     def test_stale_gdb_forward_cannot_mask_current_forward_failure(self, monkeypatch):
         class Clock:
             now = 0.0
@@ -345,37 +330,6 @@ class TestForwardingLifecycle:
         assert not manager.has_forwards
         manager.close()
         assert failed.terminate_calls == 1
-
-    def test_check_openocd_exit_uses_semantic_helper_result(self):
-        session = self.session(self.Command(self.Process()))
-        session._helper = type(
-            "Helper",
-            (),
-            {"recorded_openocd_exit": staticmethod(lambda: OPENOCD_FAILURE_RC)},
-        )()
-
-        class Forwards:
-            def check_health(self):
-                raise AssertionError("completed helper result should be returned first")
-
-        session._forwards = Forwards()
-        assert session.check_openocd_exit() == OPENOCD_FAILURE_RC
-
-    def test_check_openocd_exit_propagates_semantic_helper_failure(self):
-        reader_error = SessionError("helper event stream failed")
-
-        class Helper:
-            @staticmethod
-            def recorded_openocd_exit():
-                raise reader_error
-
-        session = self.session(self.Command(self.Process()))
-        session._helper = Helper()
-
-        with pytest.raises(SessionError) as raised:
-            session.check_openocd_exit()
-
-        assert raised.value is reader_error
 
 
 class TestRttClient:
