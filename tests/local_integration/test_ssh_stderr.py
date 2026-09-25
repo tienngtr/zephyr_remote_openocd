@@ -55,8 +55,8 @@ if remote_command.endswith(" control"):
             break
 elif remote_command.startswith("python3 -c "):
     noisy_stderr(b"forward-tail")
-    token = re.search(r"ZRO_FORWARD_[0-9a-f]+", remote_command).group(0)
-    print(token, flush=True)
+    sentinel = re.search(r"ZRO_FORWARD_[0-9a-f]+", remote_command).group(0)
+    print(sentinel, flush=True)
     sys.stdin.buffer.read()
 '''
 

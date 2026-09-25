@@ -47,16 +47,16 @@ class _ForwardManager:
             )
 
     @staticmethod
-    def _ready_command(token: str) -> str:
-        code = f"import sys; print({token!r}, flush=True); sys.stdin.buffer.read()"
+    def _ready_command(sentinel: str) -> str:
+        code = f"import sys; print({sentinel!r}, flush=True); sys.stdin.buffer.read()"
         return "python3 -c " + shlex.quote(code)
 
     @staticmethod
-    def _await_ready(process: ManagedSshProcess, token: str, deadline: float) -> bool:
+    def _await_ready(process: ManagedSshProcess, sentinel: str, deadline: float) -> bool:
         """Wait for the readiness sentinel from this exact SSH process."""
         if process.stdout is None:
             return False
-        token_bytes = token.encode()
+        sentinel_bytes = sentinel.encode()
         pending = b""
         selector = selectors.DefaultSelector()
         try:
@@ -71,7 +71,7 @@ class _ForwardManager:
                 pending += chunk
                 while b"\n" in pending:
                     line, pending = pending.split(b"\n", 1)
-                    if line.rstrip(b"\r") == token_bytes:
+                    if line.rstrip(b"\r") == sentinel_bytes:
                         return True
             return False
         finally:
@@ -95,17 +95,19 @@ class _ForwardManager:
         advisories = [message for service in service_list if (message := self._preflight(service))]
         for service in service_list:
             spec = f"127.0.0.1:{service.local_port}:{remote_address}:{service.remote_port}"
-            token = "ZRO_FORWARD_" + secrets.token_hex(16)
+            sentinel = "ZRO_FORWARD_" + secrets.token_hex(16)
             process = self._ssh_command.popen(
                 self._host,
-                self._ready_command(token),
+                self._ready_command(sentinel),
                 "-o",
                 "ExitOnForwardFailure=yes",
                 "-L",
                 spec,
             )
             self._processes.append(process)
-            connected = self._await_ready(process, token, time.monotonic() + FORWARD_START_TIMEOUT)
+            connected = self._await_ready(
+                process, sentinel, time.monotonic() + FORWARD_START_TIMEOUT
+            )
             if process.poll() is not None:
                 detail = self._diagnostic(process)
                 prefix = "; ".join(advisories)

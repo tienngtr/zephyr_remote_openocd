@@ -39,7 +39,11 @@ from zephyr_remote_openocd.remote.model import (
     StagedDirectory,
     StagedFile,
 )
-from zephyr_remote_openocd.remote.paths import ADDRESS_TOKEN, PathPlanner, PathPlanningError
+from zephyr_remote_openocd.remote.paths import (
+    REMOTE_ADDRESS_PLACEHOLDER,
+    PathPlanner,
+    PathPlanningError,
+)
 from zephyr_remote_openocd.remote.protocol import (
     EventOrder,
     ProtocolError,
@@ -134,7 +138,7 @@ class TestProtocol:
         process = RemoteProcess(
             ("openocd", "--fixed", ""),
             environment=(("ZRO_TEST", "value"),),
-            readiness_marker="READY",
+            required_output_sentinels=("READY FOR START",),
             literal_prefix=2,
         )
         write_start(stream, process, (Service("gdb", 3333, 3333),))
@@ -142,6 +146,7 @@ class TestProtocol:
         frames = [decode_message(line) for line in stream.getvalue().splitlines()]
         assert frames[0]["type"] == "START"
         assert frames[0]["argv"][-1] == ""
+        assert frames[0]["required_output_sentinels"] == ["READY FOR START"]
         assert frames[1] == {"version": 1, "type": "STOP"}
 
     def test_helper_event_unknown_fields_are_rejected(self):
@@ -276,7 +281,7 @@ class TestProtocol:
                     )
                 )
 
-    def test_event_order_accepts_output_until_terminal_event(self):
+    def test_event_order_accepts_output_until_session_ending_event(self):
         order = EventOrder()
         order.accept(
             decode_message(
@@ -314,6 +319,26 @@ class TestProtocol:
         )
         with pytest.raises(ProtocolError):
             output("stderr", "late output")
+
+    def test_error_is_session_ending_and_rejects_following_events(self):
+        order = EventOrder()
+        order.accept(
+            decode_message(
+                encode_message(
+                    "SESSION_CREATED",
+                    helper="helper",
+                    session_id="session",
+                    remote_workspace="/workspace",
+                )
+            )
+        )
+        order.accept(decode_message(encode_message("ERROR", code="FAILED", message="failed")))
+        with pytest.raises(ProtocolError):
+            order.accept(
+                decode_message(
+                    encode_message("PROCESS_READY", remote_address="127.64.1.1", child_pid=1)
+                )
+            )
 
 
 def test_missing_packaged_remote_helper_is_actionable(monkeypatch, tmp_path):
@@ -601,6 +626,15 @@ class TestStaging:
 
 class TestRemoteModels:
     @pytest.mark.parametrize(
+        "sentinels",
+        ("READY", b"READY"),
+        ids=("string", "bytes"),
+    )
+    def test_remote_process_rejects_scalar_output_sentinel_container(self, sentinels):
+        with pytest.raises(ValueError, match="required output sentinels"):
+            RemoteProcess(("openocd",), required_output_sentinels=sentinels)
+
+    @pytest.mark.parametrize(
         ("changes", "message"),
         (
             ({"argv": ()}, "argv"),
@@ -610,8 +644,9 @@ class TestRemoteModels:
             ({"environment": (("BAD=NAME", "value"),)}, "environment names"),
             ({"environment": (("NAME", "bad\0value"),)}, "environment values"),
             ({"required_paths": (object(),)}, "path checks"),
-            ({"readiness_marker": ""}, "readiness marker"),
-            ({"readiness_marker": "not a token"}, "readiness marker"),
+            ({"required_output_sentinels": ("",)}, "sentinels"),
+            ({"required_output_sentinels": (" READY ",)}, "sentinels"),
+            ({"required_output_sentinels": ("READY", "READY")}, "sentinels"),
             ({"readiness_timeout": True}, "readiness timeout"),
             ({"readiness_timeout": float("inf")}, "readiness timeout"),
             ({"readiness_timeout": 0}, "readiness timeout"),
@@ -789,7 +824,7 @@ class TestFlashPlanning:
                 (("PROBE", "value"),),
             )
             argv = plan.process.argv
-            assert f"bindto {ADDRESS_TOKEN}" in argv
+            assert f"bindto {REMOTE_ADDRESS_PLACEHOLDER}" in argv
             assert "gdb_port 7777" in argv
             assert "gdb_port disabled" not in argv
             assert plan.process.environment == (("PROBE", "value"),)
@@ -1011,7 +1046,8 @@ class TestDebugPlanning:
             elf_file="/local/zephyr.elf",
             search_paths=(str(root),),
             config_files=(str(config),),
-            readiness_marker="ZRO_READY_test",
+            openocd_init_sentinel="ZRO_OPENOCD_INIT_test",
+            startup_complete_sentinel="ZRO_STARTUP_COMPLETE_test",
         )
         values.update(changes)
         return DebugInputs(**values)
@@ -1080,6 +1116,50 @@ class TestDebugPlanning:
                 "set _ZEPHYR_BOARD_SERIAL probe"
             ) < server.process.argv.index("-f")
             assert "reset init" in server.process.argv
+
+    @pytest.mark.parametrize(
+        ("no_init", "config_triggers_init"),
+        ((False, False), (True, False), (True, True)),
+        ids=("explicit-init", "automatic-init", "config-triggered-init"),
+    )
+    def test_openocd_readiness_setup_precedes_configs_and_requires_both_sentinels(
+        self, tmp_path: Path, no_init: bool, config_triggers_init: bool
+    ):
+        inputs = self.inputs(
+            tmp_path,
+            no_init=no_init,
+            tcl_port="disabled",
+            telnet_port="disabled",
+        )
+        # Some board configs call `init` while being sourced; the readiness
+        # hook and listener settings must precede those files too.
+        config_file = tmp_path / "openocd.cfg"
+        config_file.write_text("init\n" if config_triggers_init else "# config\n")
+        plan = build_debug_plan(inputs, PathPlanner(()))
+        argv = plan.process.argv
+        first_config = argv.index("-f")
+        commands = [
+            (index, argv[index + 1]) for index, argument in enumerate(argv[:-1]) if argument == "-c"
+        ]
+        pre_config = {command for index, command in commands if index < first_config}
+        assert {
+            "lappend post_init_commands {echo ZRO_OPENOCD_INIT_test}",
+            f"bindto {REMOTE_ADDRESS_PLACEHOLDER}",
+            "tcl_port disabled",
+            "telnet_port disabled",
+            "gdb_port 3333",
+        } <= pre_config
+        startup_commands = [command for index, command in commands if index > first_config]
+        assert startup_commands[-1] == "echo ZRO_STARTUP_COMPLETE_test"
+        assert ("init" in startup_commands) is (not no_init)
+        if not no_init:
+            assert startup_commands.index("init") < startup_commands.index(
+                "echo ZRO_STARTUP_COMPLETE_test"
+            )
+        assert plan.process.required_output_sentinels == (
+            "ZRO_OPENOCD_INIT_test",
+            "ZRO_STARTUP_COMPLETE_test",
+        )
 
     def test_local_and_remote_paths_with_spaces_remain_argv_elements(self, tmp_path: Path):
         local = tmp_path / "debug support"

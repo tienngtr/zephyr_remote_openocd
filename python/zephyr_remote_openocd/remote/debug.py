@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 from .model import RemoteProcess, Service
 from .openocd_plan import plan_openocd_base
-from .paths import PathPlanner
+from .paths import REMOTE_ADDRESS_PLACEHOLDER, PathPlanner
 
 RTT_SEARCH_RANGE_SIZE = 0x10
 RTT_CHANNEL = 0
@@ -59,6 +59,8 @@ class DebugInputs:
     elf_file: str | None
     search_paths: tuple[str, ...]
     config_files: tuple[str, ...]
+    openocd_init_sentinel: str
+    startup_complete_sentinel: str
     pre_init: tuple[str, ...] = ()
     reset_halt: str = "reset init"
     serial: str | None = None
@@ -75,7 +77,6 @@ class DebugInputs:
     target_handle: str = "_TARGETNAME"
     thread_info_requested: bool = False
     openocd_version: OpenOcdVersion | None = None
-    readiness_marker: str = ""
     rtt_address: int | None = None
     rtt_port: int | str = 5555
     rtt_server: bool = False
@@ -167,14 +168,7 @@ def _plan_debug_services(inputs: DebugInputs) -> DebugServicePlan:
 def _server_commands(
     inputs: DebugInputs, services: DebugServicePlan, rtos: bool
 ) -> tuple[str, ...]:
-    commands: list[str] = []
-    for name, port in (
-        ("tcl_port", services.remote_tcl),
-        ("telnet_port", services.remote_telnet),
-        ("gdb_port", services.remote_gdb),
-    ):
-        commands.extend(("-c", f"{name} {port if port is not None else 'disabled'}"))
-    commands.extend(_commands(inputs.pre_init))
+    commands: list[str] = _commands(inputs.pre_init)
     if rtos:
         commands.extend(("-c", f"${inputs.target_handle} configure -rtos Zephyr"))
     if not inputs.no_init:
@@ -197,7 +191,7 @@ def _server_commands(
                 f"rtt server start {services.rtt_service.remote_port} {RTT_CHANNEL}",
             )
         )
-    commands.extend(("-c", f"echo {inputs.readiness_marker}"))
+    commands.extend(("-c", f"echo {inputs.startup_complete_sentinel}"))
     return tuple(commands)
 
 
@@ -258,12 +252,22 @@ def build_debug_plan(
 ) -> DebugPlan:
     _validate_debug_inputs(inputs)
     services = _plan_debug_services(inputs)
+    tcl_port = services.remote_tcl if services.remote_tcl is not None else "disabled"
+    telnet_port = services.remote_telnet if services.remote_telnet is not None else "disabled"
+    pre_config_commands = (
+        f"lappend post_init_commands {{echo {inputs.openocd_init_sentinel}}}",
+        f"bindto {REMOTE_ADDRESS_PLACEHOLDER}",
+        f"tcl_port {tcl_port}",
+        f"telnet_port {telnet_port}",
+        f"gdb_port {services.remote_gdb}",
+    )
     base = plan_openocd_base(
         inputs.executable,
         inputs.serial,
         inputs.search_paths,
         inputs.config_files,
         planner,
+        pre_config_commands,
     )
     rtos = thread_info_enabled(inputs.thread_info_requested, inputs.openocd_version)
     argv = base.argv + _server_commands(inputs, services, rtos)
@@ -273,7 +277,7 @@ def build_debug_plan(
         argv,
         environment,
         tuple(planner.remote_checks),
-        inputs.readiness_marker,
+        (inputs.openocd_init_sentinel, inputs.startup_complete_sentinel),
         readiness_timeout=OPENOCD_READINESS_TIMEOUT,
         literal_prefix=base.literal_prefix,
     )

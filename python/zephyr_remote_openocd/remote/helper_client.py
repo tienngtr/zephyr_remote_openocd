@@ -111,13 +111,15 @@ class _HelperClient:
         logical_error: BaseException | None = None
         cleanup_errors: list[BaseException] = []
 
-        terminal_before_stop = self._state.terminal_reason
+        close_before_stop = self._state.close_reason
         helper_status = helper.poll()
-        if terminal_before_stop == "requested":
+        if close_before_stop == "requested":
             logical_error = SessionError(
                 "helper reported SESSION_CLOSED(reason='requested') before STOP"
             )
-        elif helper_status is None and terminal_before_stop is None:
+        elif (
+            helper_status is None and close_before_stop is None and not self._state.has_error_event
+        ):
             if self._reader_thread is None:
                 self._start_event_drain()
             if helper.stdin is None:
@@ -128,11 +130,11 @@ class _HelperClient:
                     write_stop(cast(BinaryIO, helper.stdin))
 
                 try:
-                    terminal_before_stop = self._state.request_stop(write_requested_stop)
+                    close_before_stop = self._state.request_stop(write_requested_stop)
                 except BaseException as error:
                     logical_error = error
                 else:
-                    if terminal_before_stop == "requested":
+                    if close_before_stop == "requested":
                         logical_error = SessionError(
                             "helper reported SESSION_CLOSED(reason='requested') before STOP"
                         )
@@ -140,7 +142,7 @@ class _HelperClient:
                     helper.stdin.close()
                 except BaseException as error:
                     cleanup_errors.append(error)
-                if logical_error is None:
+                if logical_error is None and not self._state.has_error_event:
                     try:
                         helper.wait(timeout=HELPER_STOP_TIMEOUT)
                     except BaseException as error:
@@ -170,18 +172,22 @@ class _HelperClient:
         if reader_failure is not None and not reader_eof:
             logical_error = logical_error or reader_failure
 
-        terminal = self._state.terminal_reason
         if logical_error is None:
+            logical_error = self._state.take_unreported_error_event()
+
+        close_reason = self._state.close_reason
+        if logical_error is None and not self._state.has_error_event:
             helper_status = helper.poll()
-            if terminal not in {"requested", "process_exit"}:
+            if close_reason not in {"requested", "process_exit"}:
                 logical_error = SessionError(
                     "helper shutdown did not produce "
                     "SESSION_CLOSED(reason='requested' or 'process_exit') "
-                    f"(terminal={terminal!r}, exit={helper_status!r})"
+                    f"(close_reason={close_reason!r}, exit={helper_status!r})"
                 )
             elif helper_status not in (0, None):
                 logical_error = SessionError(
-                    f"remote helper exited with status {helper_status} after {terminal} shutdown"
+                    f"remote helper exited with status {helper_status} "
+                    f"after {close_reason} shutdown"
                 )
         if logical_error is None and reader_failure is not None:
             logical_error = reader_failure
@@ -207,7 +213,7 @@ class _HelperClient:
                 _add_failure_note(error, "helper startup cleanup also failed", cleanup_error)
             raise
 
-    def _read_event(self, deadline: float | None = None) -> dict:
+    def _read_event(self, deadline: float | None = None, *, foreground: bool = True) -> dict:
         helper = self._process_or_error()
         stream = cast(BinaryIO, helper.stdout)
         try:
@@ -228,7 +234,11 @@ class _HelperClient:
         assert self._order is not None
         self._order.accept(message)
         if message["type"] == "ERROR":
-            raise SessionError(f"remote helper error: {message.get('message', 'unknown error')}")
+            session_error = SessionError(
+                f"remote helper error: {message.get('message', 'unknown error')}"
+            )
+            self._state.record_error_event(session_error, reported=foreground)
+            raise session_error
         return message
 
     @staticmethod
@@ -276,30 +286,32 @@ class _HelperClient:
         if event["type"] == "CHILD_OUTPUT" and self._output_handler is not None:
             self._output_handler(event["stream"], event["payload"], event["line_end"])
         elif event["type"] == "SESSION_CLOSED":
-            self._state.record_terminal(event["reason"], event["returncode"])
+            self._state.record_close(event["reason"], event["returncode"])
 
     def _drain_events(self) -> None:
         try:
             while True:
-                self._dispatch(self._read_event())
+                self._dispatch(self._read_event(foreground=False))
         except BaseException as error:
-            terminal_reason = self._state.terminal_reason
+            if self._state.error_event is error:
+                return
+            close_reason = self._state.close_reason
             helper = self._process_or_error()
             if isinstance(error.__cause__, EOFError):
                 helper_status = helper.poll()
-                if terminal_reason is not None and helper_status in (0, None):
+                if close_reason is not None and helper_status in (0, None):
                     return
-                if terminal_reason is None:
+                if close_reason is None:
                     detail = (
-                        "remote helper exited without a terminal event"
+                        "remote helper exited without a session-ending event"
                         if helper_status is None
                         else "remote helper exited with status "
-                        f"{helper_status} without a terminal event"
+                        f"{helper_status} without a session-ending event"
                     )
                 else:
                     detail = (
                         f"remote helper exited with status {helper_status} "
-                        f"after {terminal_reason} shutdown"
+                        f"after {close_reason} shutdown"
                     )
                 failure = SessionError(detail)
                 failure.__cause__ = error.__cause__

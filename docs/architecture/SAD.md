@@ -126,6 +126,7 @@ zephyr_remote_openocd/
                 services.py, session.py, forwarding.py
                 helper_client.py, cleanup.py, protocol.py
                 backend.py, deploy.py, debug.py, flash.py, rtt.py
+                openocd_plan.py
 
             remote_helper.py
 
@@ -690,9 +691,9 @@ disabling normal signal handling, and restores the complete terminal state on
 every exit path. Non-TTY input is supported without terminal operations.
 
 For `debug --rtt-server` and `debugserver --rtt-server`, RTT setup is included
-in OpenOCD's startup command sequence before its unique final readiness marker;
-the RTT socket joins initial readiness and forwarding. These operations expose
-the endpoint but do not launch a local RTT client. Standalone `rtt` reuses the
+in OpenOCD's startup command sequence before its startup-complete sentinel.
+OpenOCD owns the RTT listener; the helper does not probe it. These operations
+expose the endpoint but do not launch a local RTT client. Standalone `rtt` reuses the
 same remote OpenOCD version and Zephyr thread-info decision as debug/attach.
 No GDB RSP observer is needed.
 
@@ -732,13 +733,18 @@ outside the runner's compatibility guarantees.
 
 ## 27. Remote OpenOCD Service Isolation
 
-Each OpenOCD session receives a random loopback address from:
+The helper allocates each OpenOCD session a random loopback address from:
 
 ```text
 127.64.0.0/10
 ```
 
 Different sessions therefore may use identical service-port numbers without collisions.
+
+The helper temporarily binds the requested ports at candidate addresses to
+preflight collisions, then releases those sockets before starting OpenOCD.
+OpenOCD owns the actual enabled GDB, Tcl, telnet, and RTT listeners on the
+allocated address; the helper neither creates nor probes those listeners.
 
 No board-specific addressing is involved.
 
@@ -764,6 +770,10 @@ Possible services include:
 - RTT.
 
 Disabled services have no local listener.
+
+The forward manager owns the local SSH-forward processes and their local
+loopback endpoints. The corresponding remote listeners remain owned by
+OpenOCD.
 
 ---
 
@@ -866,7 +876,12 @@ Disadvantages:
 
 ## 34. Staging Transport
 
-Staging SHOULD use the configured SSH command rather than require a separate `scp` executable.
+Staging SHALL use the configured SSH command rather than require a separate
+`scp` executable.
+
+Helper deployment and the long-lived helper-control and forwarding processes
+also use the same configured command abstraction; no implicit `scp` or SFTP
+transport is used.
 
 The configured SSH command carries arbitrary byte streams, including empty,
 textual, binary/NUL-containing, and large payloads, with remote failure
@@ -1018,8 +1033,11 @@ processes that outlive the OpenOCD leader.
 The helper's `ControlSession` owns the workspace, control selector, command
 dispatch, signal handlers, and final cleanup. A `SupervisedChild` owns the
 configured OpenOCD process, output relays, readiness observation, termination,
-and stream closure. This keeps process resources attached to one owner across
-success, failure, EOF, and signal paths.
+and stream closure. The helper allocates the remote loopback address and
+preflights requested service ports for bind collisions; OpenOCD owns and
+configures the actual GDB, Tcl, telnet, and RTT listeners. The helper does not
+probe listener connectability. This keeps process resources attached to one
+owner across success, failure, EOF, and signal paths.
 
 Cleanup sends `SIGTERM` to the owned group and waits a bounded grace period for
 the leader. It then checks whether the group still exists. If so, the helper
@@ -1042,16 +1060,18 @@ helper terminates OpenOCD
 cleanup
 ```
 
-For a client-requested stop, protocol completion accepts a valid terminal
+For a client-requested stop, protocol completion accepts a valid session-close
 `SESSION_CLOSED` event with either `reason: "requested"` and
 `returncode: null`, or `reason: "process_exit"` and an integer return code.
 The latter also records that value as `openocd_returncode`. Successful local
 cleanup additionally requires the helper to exit with status zero. Protocol,
 helper, or transport failures remain visible to the caller; later mechanical
-cleanup failures are retained as diagnostics. Local shutdown attempts all
-remaining mechanical cleanup once and then marks the session closed. A later
-`close()` is harmless, but does not resume a partially failed cleanup
-transaction or retain resources solely for that purpose.
+cleanup failures are retained as diagnostics. A received `ERROR` remains the
+helper failure across cleanup, rather than becoming a second reader or cleanup
+failure. Local shutdown attempts all remaining mechanical cleanup once and
+then marks the session closed. A later `close()` is harmless, but does not
+resume a partially failed cleanup transaction or retain resources solely for
+that purpose.
 
 Unexpected controlling-session loss follows the same cleanup path.
 Each session holds an advisory lock in its workspace. When allocating a new
@@ -1085,6 +1105,24 @@ RemoteSession.close()
 done
 ```
 
+The helper reader distinguishes three local outcomes:
+
+- A received `SESSION_CLOSED` is an orderly session close. Its reason is
+  recorded; only `reason: "process_exit"` supplies an OpenOCD result.
+- A received `ERROR` is a valid protocol failure event that ends the session.
+  The caller sees the helper error itself, not an event-stream failure. No
+  later `SESSION_CLOSED` is required.
+- An event-stream, read, or validation failure is distinct from both events.
+  It includes malformed or out-of-order messages and transport loss without a
+  session-ending event, and is reported as a reader or transport failure.
+
+After an accepted `ERROR`, the background reader stops without recording a
+reader failure. Mechanical cleanup still disposes of owned resources, but
+does not send `STOP`, await `SESSION_CLOSED`, or report the same `ERROR` again as
+a cleanup failure. If the foreground has not yet received the `ERROR`,
+`close()` reports that helper failure once; otherwise it reports only
+independent cleanup failures under the existing failure-precedence rules.
+
 The public lifecycle does not require state enumeration. Flash and other
 operations may omit local-client work while retaining the same session
 acquisition and cleanup boundary.
@@ -1093,16 +1131,28 @@ acquisition and cleanup boundary.
 
 ## 40. Service Readiness
 
-A dependent local client is not started until the required remote service is ready.
+The runner starts dependent local clients only after the requested process
+readiness policy is satisfied; this does not experimentally verify every
+exposed service endpoint.
 
-For persistent OpenOCD operations, the adapter appends a unique final `echo`
-marker after the intended startup commands. The helper reports readiness only
-after observing that marker and confirming that every requested service socket
-is connectable. Disabled services impose no readiness check. The startup timeout
-is 30 seconds.
+For persistent OpenOCD operations, the adapter places an init-complete echo
+hook in OpenOCD's post-init command list before board configuration files. This
+hook runs after OpenOCD initialization has created its GDB listener. The adapter
+then appends a startup-complete echo after the full server startup sequence.
+Each complete trimmed output sentinel proves one lifecycle fact; the helper emits
+`PROCESS_READY` only after both have been observed, in either order and on
+either child stream. The init hook therefore covers explicit `init`,
+config-triggered initialization, and OpenOCD's normal automatic initialization
+when `--no-init` is used.
 
-This combines command completion with socket availability instead of depending
-on ordinary human-readable OpenOCD diagnostics.
+The helper allocates a session loopback address and preflights requested ports
+for bind collisions. OpenOCD remains the owner of its enabled GDB, Tcl, telnet,
+and RTT listeners. No service TCP connect or readiness probe is performed.
+Tcl and telnet are compatibility endpoints, not startup dependencies. If RTT
+server startup is part of the sequence, successful `rtt server start` precedes
+the startup-complete sentinel, so readiness follows that command causally.
+Generic processes with no required sentinels are ready immediately. The
+startup timeout is 30 seconds.
 
 ---
 
@@ -1111,11 +1161,14 @@ on ordinary human-readable OpenOCD diagnostics.
 Remote OpenOCD output is relayed with bounded low buffering. The helper reads
 each child stream in bounded chunks, incrementally decodes UTF-8 with
 replacement, omits `LF` delimiters, and emits ordered `CHILD_OUTPUT` fragments
-with `line_end` metadata. A bounded chunk and an actual `LF` therefore remain
-distinct. Long newline-free output becomes visible before the child exits.
-`SESSION_CLOSED` follows relay completion and terminates the session. Readiness
-matching keeps separate line state and accepts a marker only after a complete
-trimmed line, so a fragment boundary cannot make a marker appear.
+with `line_end` metadata. `line_end` belongs only to `CHILD_OUTPUT` and is true
+only when the omitted delimiter was an actual child `LF`. A bounded chunk and
+an actual `LF` therefore remain distinct. Long newline-free output becomes
+visible before the child exits. `SESSION_CLOSED` follows relay completion and
+is an orderly session-close event; `ERROR` is a failure event. Both end the
+session and are followed by no further event. Readiness matching recognizes
+each required sentinel only as a complete trimmed line, so a fragment boundary
+cannot make a sentinel appear.
 
 This includes:
 
@@ -1195,31 +1248,21 @@ Fail the local operation and clean the remote OpenOCD session.
 
 ---
 
-## 43. Suggested Code Boundaries
+## 43. Code Ownership Boundaries
 
-```text
-python/zephyr_remote_openocd/
-    config.py
+The physical Python tree in §5 is the current module layout. Logical ownership
+is more durable than a duplicate path sketch:
 
-    zephyr44/
-        runner.py
-
-    remote/
-        model.py
-        paths.py
-        staging.py
-        ssh.py
-        services.py
-        session.py
-        forwarding.py
-        helper_client.py
-        cleanup.py
-        backend.py
-
-    helper/
-        protocol.py
-        deploy.py
-```
+- `zephyr44/runner.py` adapts Zephyr runner state to board-independent plans.
+- `remote/openocd_plan.py`, `debug.py`, and `flash.py` construct OpenOCD
+  commands without owning their execution.
+- `remote/session.py`, `helper_client.py`, and `backend.py` coordinate local
+  session lifecycle, helper protocol, and OpenOCD result propagation.
+- `remote/services.py` and `forwarding.py` describe and forward OpenOCD-owned
+  listeners; the helper allocates and preflights remote addresses and ports.
+- `remote_helper.py` owns remote supervision, output relay, protocol dispatch,
+  and cleanup.
+- `remote/ssh.py` is the only boundary for configured SSH command behavior.
 
 Platform-specific SSH behavior, if any is eventually needed, shall remain inside the SSH transport layer rather than spread through runner logic.
 
@@ -1276,7 +1319,7 @@ Selected for the current architecture:
 - cleanup-only `RemoteSession.close()`;
 - OpenOCD result stored separately as `openocd_returncode`;
 - foreground-controlled error precedence;
-- condition-driven terminal-event synchronization;
+- condition-driven session-close synchronization;
 - bounded local forwarding-process health polling;
 - no persistent artifact cache;
 - fail-fast cleanup after SSH loss.

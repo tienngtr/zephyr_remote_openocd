@@ -14,7 +14,7 @@ from zephyr_remote_openocd.remote import helper_client as helper_client_module
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
 from zephyr_remote_openocd.remote.helper_client import _HelperClient
 from zephyr_remote_openocd.remote.model import RemoteProcess, RemoteSessionRequest
-from zephyr_remote_openocd.remote.protocol import encode_message
+from zephyr_remote_openocd.remote.protocol import decode_message, encode_message
 from zephyr_remote_openocd.remote.session import SessionError
 from zephyr_remote_openocd.remote.ssh import SshCommand
 
@@ -49,13 +49,88 @@ def _helper_client() -> _HelperClient:
     return _HelperClient(SshCommand(), "host", DeploymentResult("/helper.py", "digest", False))
 
 
+class _RecordingInput:
+    def __init__(self) -> None:
+        self.written = bytearray()
+        self.closed = False
+
+    def write(self, payload: bytes) -> int:
+        self.written.extend(payload)
+        return len(payload)
+
+    @staticmethod
+    def flush() -> None:
+        pass
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _EventProcess:
+    def __init__(self, events: tuple[bytes, ...]) -> None:
+        self.args = ("fake-helper",)
+        self.stdin = _RecordingInput()
+        read_fd, write_fd = os.pipe()
+        os.write(write_fd, b"".join(events))
+        os.close(write_fd)
+        self.stdout = os.fdopen(read_fd, "rb", buffering=0)
+        self.stderr = io.BytesIO()
+        self.returncode: int | None = None
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        del timeout
+        self.returncode = 0
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.returncode = 0
+
+    def kill(self) -> None:
+        self.returncode = -signal.SIGKILL
+
+    @staticmethod
+    def stderr_tail() -> bytes:
+        return b""
+
+    def close_stderr(self) -> None:
+        self.stderr.close()
+
+
+def _open_helper_client_with_events(*events: bytes):
+    process = _EventProcess(
+        (
+            encode_message(
+                "SESSION_CREATED",
+                helper="fake",
+                session_id="session",
+                remote_workspace="/workspace",
+            ),
+            *events,
+        )
+    )
+
+    class Command(_PopenOnlySshCommand):
+        @override
+        def popen(self, host: str, remote_command: str, *extra_args: str) -> Any:
+            del host, remote_command, extra_args
+            return process
+
+    helper_client = _HelperClient.open(
+        Command(), "host", DeploymentResult("/helper.py", "digest", False)
+    )
+    return helper_client, process
+
+
 @pytest.mark.timeout(10)
 def test_recorded_openocd_exit_is_available_while_reader_remains_alive():
     helper_client = _helper_client()
-    terminal_recorded = threading.Event()
+    close_recorded = threading.Event()
     release_reader = threading.Event()
 
-    def consume_terminal() -> None:
+    def consume_close() -> None:
         helper_client._dispatch(
             {
                 "type": "SESSION_CLOSED",
@@ -63,12 +138,12 @@ def test_recorded_openocd_exit_is_available_while_reader_remains_alive():
                 "returncode": OPENOCD_FAILURE_RC,
             }
         )
-        terminal_recorded.set()
+        close_recorded.set()
         release_reader.wait()
 
-    reader = threading.Thread(target=consume_terminal)
+    reader = threading.Thread(target=consume_close)
     reader.start()
-    assert terminal_recorded.wait(5)
+    assert close_recorded.wait(5)
     try:
         assert reader.is_alive()
         assert helper_client.recorded_openocd_exit() == OPENOCD_FAILURE_RC
@@ -79,9 +154,44 @@ def test_recorded_openocd_exit_is_available_while_reader_remains_alive():
     assert not reader.is_alive()
 
 
+def test_startup_error_ends_session_without_stop_or_missing_close_failure():
+    helper_client, process = _open_helper_client_with_events(
+        encode_message("ERROR", code="FAILED", message="startup failed"),
+    )
+
+    with pytest.raises(SessionError, match="remote helper error: startup failed"):
+        helper_client.start_process(RemoteProcess(("child",)), ())
+
+    result = helper_client.close()
+
+    assert result.error is None
+    commands = [decode_message(bytes(line))["type"] for line in process.stdin.written.splitlines()]
+    assert commands == ["START"]
+
+
+@pytest.mark.timeout(10)
+def test_background_error_ends_session_without_sending_stop():
+    helper_client, process = _open_helper_client_with_events(
+        encode_message("PROCESS_READY", remote_address="127.64.0.1", child_pid=1),
+        encode_message("ERROR", code="FAILED", message="background failed"),
+    )
+    helper_client.start_process(RemoteProcess(("child",)), ())
+
+    assert helper_client._reader_thread is not None
+    helper_client._reader_thread.join(timeout=5)
+    assert not helper_client._reader_thread.is_alive()
+
+    result = helper_client.close()
+
+    assert isinstance(result.error, SessionError)
+    assert result.error.__cause__ is None
+    commands = [decode_message(bytes(line))["type"] for line in process.stdin.written.splitlines()]
+    assert commands == ["START"]
+
+
 def test_reader_failure_takes_precedence_over_known_openocd_result():
     helper_client = _helper_client()
-    helper_client._state.record_terminal("process_exit", OPENOCD_FAILURE_RC)
+    helper_client._state.record_close("process_exit", OPENOCD_FAILURE_RC)
     reader_error = RuntimeError("protocol failed")
     helper_client._state.record_reader_failure(reader_error)
 
@@ -91,9 +201,9 @@ def test_reader_failure_takes_precedence_over_known_openocd_result():
     assert raised.value.__cause__ is reader_error
 
 
-def test_reader_failure_is_reported_when_helper_exits_without_terminal_result():
+def test_reader_failure_is_reported_when_helper_exits_without_close_event():
     helper_client = _helper_client()
-    reader_error = SessionError("remote helper exited without a terminal event")
+    reader_error = SessionError("remote helper exited without a session-ending event")
     helper_client._state.record_reader_failure(reader_error)
 
     with pytest.raises(SessionError) as raised:
@@ -271,7 +381,7 @@ def test_helper_close_keeps_reader_owned_stdout_open_until_reader_stops():
     helper = _HelperClient(SshCommand(), "host", DeploymentResult("/helper.py", "digest", False))
     test_helper = cast(Any, helper)
     test_helper._process = Process()
-    test_helper._state.record_terminal("process_exit", 0)
+    test_helper._state.record_close("process_exit", 0)
     test_helper._reader_thread = Reader()
 
     assert helper.close().error is None
@@ -308,7 +418,7 @@ def test_helper_close_retains_nested_process_cleanup_diagnostics():
     test_helper = cast(Any, helper)
     test_helper._process = Process()
     test_helper._state.request_stop(lambda: None)
-    test_helper._state.record_terminal("requested", None)
+    test_helper._state.record_close("requested", None)
 
     result = helper.close()
 

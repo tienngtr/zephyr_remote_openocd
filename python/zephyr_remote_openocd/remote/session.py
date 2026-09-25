@@ -20,15 +20,17 @@ class SessionClosedError(SessionError):
 class _SessionState:
     """Synchronize facts observed from the helper event stream.
 
-    This object intentionally records observations only.  The foreground
-    session remains responsible for forwarding health, cleanup order, and
-    deciding which operation failure is primary.
+    This object records event observations and whether a helper error has been
+    reported. The foreground session remains responsible for forwarding
+    health, cleanup order, and deciding which operation failure is primary.
     """
 
     def __init__(self) -> None:
         self._openocd_returncode: int | None = None
         self._reader_error: BaseException | None = None
-        self._terminal_reason: str | None = None
+        self._error_event: BaseException | None = None
+        self._error_event_reported = False
+        self._close_reason: str | None = None
         self._stop_requested = False
         self._lock = threading.RLock()
         self._changed = threading.Condition(self._lock)
@@ -39,14 +41,24 @@ class _SessionState:
             return self._openocd_returncode
 
     @property
-    def terminal_reason(self) -> str | None:
+    def close_reason(self) -> str | None:
         with self._changed:
-            return self._terminal_reason
+            return self._close_reason
 
-    def record_terminal(self, reason: str, returncode: int | None) -> None:
-        """Record a terminal helper event and wake result waiters."""
+    @property
+    def has_error_event(self) -> bool:
         with self._changed:
-            self._terminal_reason = reason
+            return self._error_event is not None
+
+    @property
+    def error_event(self) -> BaseException | None:
+        with self._changed:
+            return self._error_event
+
+    def record_close(self, reason: str, returncode: int | None) -> None:
+        """Record a session-close event and wake result waiters."""
+        with self._changed:
+            self._close_reason = reason
             if reason == "process_exit":
                 self._openocd_returncode = int(cast(int, returncode))
             elif not self._stop_requested:
@@ -55,6 +67,21 @@ class _SessionState:
                 )
             self._changed.notify_all()
 
+    def record_error_event(self, error: BaseException, *, reported: bool) -> None:
+        """Record the helper's ERROR event and wake result waiters."""
+        with self._changed:
+            self._error_event = error
+            self._error_event_reported = reported
+            self._changed.notify_all()
+
+    def take_unreported_error_event(self) -> BaseException | None:
+        """Claim a helper error for close-time reporting only once."""
+        with self._changed:
+            if self._error_event is None or self._error_event_reported:
+                return None
+            self._error_event_reported = True
+            return self._error_event
+
     def record_reader_failure(self, error: BaseException) -> None:
         """Record an event-reader failure and wake result waiters."""
         with self._changed:
@@ -62,12 +89,14 @@ class _SessionState:
             self._changed.notify_all()
 
     def recorded_openocd_exit(self) -> int | None:
-        """Return a natural OpenOCD result or raise the recorded reader failure."""
+        """Return a natural result or raise the observed helper or reader error."""
         with self._changed:
             if self._reader_error is not None:
-                raise SessionError(
-                    f"helper event stream failed: {self._reader_error}"
-                ) from self._reader_error
+                reader_error = self._reader_error
+                raise SessionError(f"helper event stream failed: {reader_error}") from reader_error
+            if self._error_event is not None:
+                self._error_event_reported = True
+                raise self._error_event
             return self._openocd_returncode
 
     def reader_failure(self) -> BaseException | None:
@@ -88,19 +117,23 @@ class _SessionState:
 
     def wait_for_change(self, timeout: float | None) -> None:
         with self._changed:
-            if self._reader_error is None and self._openocd_returncode is None:
+            if (
+                self._reader_error is None
+                and self._error_event is None
+                and self._openocd_returncode is None
+            ):
                 self._changed.wait(timeout)
 
     def request_stop(self, write_stop: Callable[[], None]) -> str | None:
-        """Write STOP atomically with terminal-event observation.
+        """Write STOP atomically with session-ending event observation.
 
-        The write occurs while holding the state lock so a requested terminal
-        event cannot be mistaken for an unsolicited shutdown between the write
-        and recording that STOP was requested.
+        The write occurs while holding the state lock so a session-ending event
+        cannot be mistaken for an unsolicited shutdown between the write and
+        recording that STOP was requested.
         """
         with self._changed:
-            if self._terminal_reason is not None:
-                return self._terminal_reason
+            if self._close_reason is not None or self._error_event is not None:
+                return self._close_reason
             write_stop()
             self._stop_requested = True
             return None

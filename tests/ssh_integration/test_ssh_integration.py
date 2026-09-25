@@ -71,7 +71,7 @@ while True:
 def session_echo_process() -> RemoteProcess:
     return RemoteProcess(
         ("python3", "-c", REMOTE_SESSION_ECHO, "{address}", "3333"),
-        readiness_marker="ZRO_TEST_READY",
+        required_output_sentinels=("ZRO_TEST_READY",),
         literal_prefix=3,
     )
 
@@ -158,16 +158,16 @@ class TestSshTransportIntegration:
                 pytest.fail(helper_process.stderr_tail().decode(errors="replace"))
             remote_port = int(line)
             local_port = free_loopback_port()
-            token = "ZRO_FORWARD_READY"
+            sentinel = "ZRO_FORWARD_READY"
             tunnel = self.ssh.popen(
                 self.host,
-                _ForwardManager._ready_command(token),
+                _ForwardManager._ready_command(sentinel),
                 "-o",
                 "ExitOnForwardFailure=yes",
                 "-L",
                 f"127.0.0.1:{local_port}:127.0.0.1:{remote_port}",
             )
-            assert _ForwardManager._await_ready(tunnel, token, time.monotonic() + 20)
+            assert _ForwardManager._await_ready(tunnel, sentinel, time.monotonic() + 20)
             wait_for_echo(local_port, b"zro_forwarding", 20)
 
             assert helper_process.stdin is not None

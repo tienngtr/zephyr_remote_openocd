@@ -10,37 +10,37 @@ from zephyr_remote_openocd.remote.session import SessionError, _SessionState
 OPENOCD_FAILURE_RC = 7
 
 
-def test_only_process_exit_terminal_event_sets_openocd_result():
+def test_only_natural_process_close_sets_openocd_result():
     state = _SessionState()
 
-    state.record_terminal("requested", None)
+    state.record_close("requested", None)
     assert state.openocd_returncode is None
 
-    state.record_terminal("process_exit", OPENOCD_FAILURE_RC)
+    state.record_close("process_exit", OPENOCD_FAILURE_RC)
     assert state.openocd_returncode == OPENOCD_FAILURE_RC
 
 
-def test_unexpected_requested_terminal_event_fails_status_observation():
+def test_unexpected_requested_close_fails_status_observation():
     state = _SessionState()
 
-    state.record_terminal("requested", None)
+    state.record_close("requested", None)
 
     with pytest.raises(SessionError):
         state.recorded_openocd_exit()
 
 
 @pytest.mark.timeout(10)
-def test_requested_stop_serializes_terminal_event_with_stop_write():
-    terminal_attempted = threading.Event()
+def test_requested_stop_serializes_close_event_with_stop_write():
+    close_attempted = threading.Event()
     stop_write_entered = threading.Event()
     release_stop_write = threading.Event()
-    terminal_recorded = threading.Event()
-    observe_terminal = threading.Event()
+    close_recorded = threading.Event()
+    observe_close = threading.Event()
 
     class ObservableCondition(threading.Condition):
         def __enter__(self):
-            if observe_terminal.is_set():
-                terminal_attempted.set()
+            if observe_close.is_set():
+                close_attempted.set()
             return super().__enter__()
 
     state = _SessionState()
@@ -54,28 +54,28 @@ def test_requested_stop_serializes_terminal_event_with_stop_write():
     stopper.start()
     assert stop_write_entered.wait(5)
 
-    def record_terminal():
-        observe_terminal.set()
-        state.record_terminal("requested", None)
-        terminal_recorded.set()
+    def record_close():
+        observe_close.set()
+        state.record_close("requested", None)
+        close_recorded.set()
 
-    terminal = threading.Thread(target=record_terminal)
-    terminal.start()
-    assert terminal_attempted.wait(5)
-    assert not terminal_recorded.is_set()
+    close = threading.Thread(target=record_close)
+    close.start()
+    assert close_attempted.wait(5)
+    assert not close_recorded.is_set()
 
     release_stop_write.set()
     stopper.join(timeout=5)
-    terminal.join(timeout=5)
+    close.join(timeout=5)
 
     assert not stopper.is_alive()
-    assert not terminal.is_alive()
-    assert terminal_recorded.is_set()
+    assert not close.is_alive()
+    assert close_recorded.is_set()
     assert state.recorded_openocd_exit() is None
 
 
 @pytest.mark.timeout(10)
-def test_session_state_wakes_on_terminal_event():
+def test_session_state_wakes_on_close_event():
     waiting = threading.Event()
 
     class ObservableCondition(threading.Condition):
@@ -94,7 +94,7 @@ def test_session_state_wakes_on_terminal_event():
     waiter = threading.Thread(target=wait_for_result)
     waiter.start()
     assert waiting.wait(5)
-    state.record_terminal("process_exit", 0)
+    state.record_close("process_exit", 0)
     waiter.join(timeout=5)
 
     assert not waiter.is_alive()

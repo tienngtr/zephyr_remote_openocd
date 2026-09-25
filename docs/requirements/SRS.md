@@ -810,7 +810,8 @@ Local forwarded services SHALL bind only to local loopback interfaces.
 
 ### REQ-FUNC-SVC-004
 
-Remote OpenOCD services created for a remote-runner session SHALL bind only to remote loopback addresses.
+Remote OpenOCD services created for a remote-runner session SHALL bind only
+to remote loopback addresses.
 
 ### REQ-FUNC-SVC-005
 
@@ -997,20 +998,19 @@ OpenOCD process.
 
 ### REQ-FUNC-HELP-006
 
-The persistent helper contract SHALL use version value `1` and one strict
-`START` command. Its required process, readiness, path, environment, and
-service fields SHALL be validated in the client domain model before
-serialization and independently by the helper after receipt; unknown wire
-fields SHALL be rejected. The contract SHALL define `SESSION_CREATED`,
-`PROCESS_READY`, `CHILD_OUTPUT`, `SESSION_CLOSED`, and `ERROR` events with one
-terminal close event per session. `CHILD_OUTPUT` SHALL carry ordered UTF-8
-decoded fragments from the identified child stream, omit `LF` delimiters, and
-bound relay buffering. Each event SHALL include Boolean `line_end` metadata;
-it SHALL be true only when the fragment is followed by an actual child `LF`.
-An event with `line_end` false SHALL have a non-empty payload. Readiness SHALL
-require a complete intended marker line rather than a matching fragment prefix.
-`SESSION_CLOSED` SHALL follow relay completion and is the terminal event for
-both child streams.
+The persistent helper contract SHALL use version value `1`, one strict
+`START` command, and strict validation at both the client and helper
+boundaries. Unknown wire fields SHALL be rejected. Readiness SHALL be
+immediate for generic processes with no required output sentinel. For a process
+with required output sentinels, the helper SHALL report readiness only after
+each sentinel has appeared as a complete trimmed output line.
+`CHILD_OUTPUT` SHALL carry ordered, bounded, UTF-8-decoded fragments from the
+identified child stream and omit `LF` delimiters. Its Boolean `line_end` field
+SHALL be true only when that fragment is followed by an actual child `LF`; a
+fragment with `line_end` false SHALL have a non-empty payload. `SESSION_CLOSED`
+SHALL identify orderly session closure and follow relay completion. `ERROR`
+SHALL identify failure. Either event SHALL end the session, with no subsequent
+event. Loss of the control transport MAY prevent delivery of a final event.
 
 ### REQ-FUNC-HELP-007
 

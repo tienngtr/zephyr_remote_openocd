@@ -11,8 +11,8 @@ from zephyr_remote_openocd.config import PathMapping
 
 from .model import RemotePathCheck, StagedDirectory, StagedEntry, StagedFile
 
-WORKSPACE_TOKEN = "{workspace}"
-ADDRESS_TOKEN = "{address}"
+WORKSPACE_PLACEHOLDER = "{workspace}"
+REMOTE_ADDRESS_PLACEHOLDER = "{address}"
 
 
 class PathPlanningError(RuntimeError):
@@ -60,7 +60,7 @@ class PathPlanner:
         if not candidates:
             return None
         _, destination, relative = max(candidates, key=lambda item: item[0])
-        return f"{WORKSPACE_TOKEN}/staged/{destination.joinpath(*relative.parts)}"
+        return f"{WORKSPACE_PLACEHOLDER}/staged/{destination.joinpath(*relative.parts)}"
 
     def plan_directory(self, source: Path, namespace: str) -> PlannedPath:
         source = Path(source).expanduser().resolve()
@@ -79,7 +79,9 @@ class PathPlanner:
         self._staged_roots.append((source, destination))
         self._add_directory(source, destination)
         self._walk(source, source, destination, set())
-        return PlannedPath(source, f"{WORKSPACE_TOKEN}/staged/{destination}", "directory", False)
+        return PlannedPath(
+            source, f"{WORKSPACE_PLACEHOLDER}/staged/{destination}", "directory", False
+        )
 
     def plan_file(self, source: Path, namespace: str) -> PlannedPath:
         source = Path(source).expanduser().resolve()
@@ -96,7 +98,7 @@ class PathPlanner:
             return PlannedPath(source, existing, "file", False)
         destination = PurePosixPath("files", namespace + source.suffix)
         self._add_file(source, destination)
-        return PlannedPath(source, f"{WORKSPACE_TOKEN}/staged/{destination}", "file", False)
+        return PlannedPath(source, f"{WORKSPACE_PLACEHOLDER}/staged/{destination}", "file", False)
 
     def _add_entry(self, entry: StagedEntry) -> None:
         destination = entry.destination

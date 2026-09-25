@@ -40,7 +40,7 @@ from zephyr_remote_openocd.remote.model import (
     SessionAllocation,
     StagedFile,
 )
-from zephyr_remote_openocd.remote.paths import ADDRESS_TOKEN, PathPlanner
+from zephyr_remote_openocd.remote.paths import REMOTE_ADDRESS_PLACEHOLDER, PathPlanner
 from zephyr_remote_openocd.remote.protocol import encode_message
 from zephyr_remote_openocd.remote.rtt import RttClientError, run_rtt_client
 from zephyr_remote_openocd.remote.services import (
@@ -105,7 +105,7 @@ def start_frame(
     environment=None,
     required_paths=None,
     services=(),
-    readiness_marker=None,
+    required_output_sentinels=(),
     readiness_timeout=30.0,
     literal_prefix=0,
 ):
@@ -115,7 +115,7 @@ def start_frame(
         environment={} if environment is None else environment,
         required_paths=[] if required_paths is None else required_paths,
         services=list(services),
-        readiness_marker=readiness_marker,
+        required_output_sentinels=list(required_output_sentinels),
         readiness_timeout=readiness_timeout,
         literal_prefix=literal_prefix,
     )
@@ -1073,7 +1073,7 @@ class TestRealProcessHelper:
                         if stream is not None and not stream.closed:
                             stream.close()
 
-    def test_persistent_process_requires_marker_and_connectable_service(
+    def test_persistent_process_waits_for_sentinels_without_service_probes(
         self, requires_loopback_listener
     ):
         with socket.socket() as probe:
@@ -1096,11 +1096,13 @@ class TestRealProcessHelper:
                 created = json.loads(read_line(process.stdout))
                 assert created["type"] == "SESSION_CREATED"
                 workspace = Path(created["remote_workspace"])
-                marker = "ZRO_READY_unit"
+                first_sentinel = "ZRO_INIT_READY_unit"
+                second_sentinel = "ZRO_START_READY_unit"
                 child_code = (
-                    "import socket,sys,time;"
-                    "s=socket.socket();s.bind((sys.argv[1],int(sys.argv[2])));s.listen();"
-                    "print(sys.argv[3],flush=True);time.sleep(30)"
+                    "import sys,time;"
+                    "print(sys.argv[1],flush=True);"
+                    "print(sys.argv[2],flush=True);"
+                    "time.sleep(30)"
                 )
                 process.stdin.write(
                     start_frame(
@@ -1108,12 +1110,11 @@ class TestRealProcessHelper:
                             sys.executable,
                             "-c",
                             child_code,
-                            ADDRESS_TOKEN,
-                            str(remote_port),
-                            marker,
+                            first_sentinel,
+                            second_sentinel,
                         ],
                         services=[{"name": "tcl", "remote_port": remote_port}],
-                        readiness_marker=marker,
+                        required_output_sentinels=(first_sentinel, second_sentinel),
                         readiness_timeout=5,
                     )
                 )
@@ -1125,9 +1126,14 @@ class TestRealProcessHelper:
                 child_pid = ready["child_pid"]
                 child_pidfd = os.pidfd_open(child_pid)
                 assert any(
-                    event["type"] == "CHILD_OUTPUT" and event["payload"] == marker
+                    event["type"] == "CHILD_OUTPUT"
+                    and event["payload"] in {first_sentinel, second_sentinel}
                     for event in events
                 )
+                output_payloads = {
+                    event["payload"] for event in events if event["type"] == "CHILD_OUTPUT"
+                }
+                assert output_payloads >= {first_sentinel, second_sentinel}
                 process.stdin.write(encode_message("STOP"))
                 process.stdin.flush()
                 assert process.wait(timeout=8) == 0
@@ -1174,7 +1180,7 @@ class TestRealProcessHelper:
                 with socket.socket() as port_socket:
                     port_socket.bind(("127.0.0.1", 0))
                     remote_port = port_socket.getsockname()[1]
-                marker = "ZRO_READY_collision"
+                output_sentinel = "ZRO_SENTINEL_collision"
                 child = Path(directory) / "collision_child.py"
                 child.write_text(
                     "import os, pathlib, socket, sys, time\n"
@@ -1198,13 +1204,13 @@ class TestRealProcessHelper:
                         [
                             sys.executable,
                             str(child),
-                            ADDRESS_TOKEN,
+                            REMOTE_ADDRESS_PLACEHOLDER,
                             str(remote_port),
-                            marker,
+                            output_sentinel,
                         ],
                         services=[{"name": "tcl", "remote_port": remote_port}],
                         environment={"ZRO_COLLISION_STATE": str(state)},
-                        readiness_marker=marker,
+                        required_output_sentinels=(output_sentinel,),
                         readiness_timeout=5,
                     )
                 )
@@ -1357,7 +1363,7 @@ class TestRealProcessHelper:
                 if child_pidfd is not None:
                     os.close(child_pidfd)
 
-    def test_partial_openocd_start_cleans_child_and_workspace(self, requires_loopback_listener):
+    def test_partial_openocd_start_cleans_child_and_workspace(self):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
@@ -1374,22 +1380,18 @@ class TestRealProcessHelper:
                 created = json.loads(read_line(process.stdout))
                 assert created["type"] == "SESSION_CREATED"
                 workspace = Path(created["remote_workspace"])
-                with socket.socket() as listener:
-                    listener.bind(("127.0.0.1", 0))
-                    remote_port = listener.getsockname()[1]
-                marker = "ZRO_READY_partial"
+                first_sentinel = "ZRO_INIT_partial"
+                missing_sentinel = "ZRO_START_partial"
                 command = [
                     sys.executable,
                     "-c",
-                    "import sys,time; print(sys.argv[1], flush=True); time.sleep(30)",
-                    marker,
+                    "import sys; print(sys.argv[1], flush=True)",
+                    first_sentinel,
                 ]
                 process.stdin.write(
                     start_frame(
                         command,
-                        services=[{"name": "tcl", "remote_port": remote_port}],
-                        readiness_marker=marker,
-                        readiness_timeout=0.5,
+                        required_output_sentinels=(first_sentinel, missing_sentinel),
                     )
                 )
                 process.stdin.flush()
@@ -1503,7 +1505,7 @@ class TestRealProcessHelper:
             )
             remote_process = RemoteProcess(
                 (sys.executable, "-c", child_code, str(descendant_ready), "ZRO_DESCENDANT_READY"),
-                readiness_marker="ZRO_DESCENDANT_READY",
+                required_output_sentinels=("ZRO_DESCENDANT_READY",),
             )
             output = []
             backend = _opened_session(
@@ -1524,7 +1526,7 @@ class TestRealProcessHelper:
             )
 
     @pytest.mark.parametrize(
-        ("terminal", "exit_code", "expected", "expected_openocd_result"),
+        ("event_stream_tail", "exit_code", "expected", "expected_openocd_result"),
         (
             (
                 json.dumps(
@@ -1629,20 +1631,20 @@ class TestRealProcessHelper:
             "requested-then-error",
             "requested-then-malformed",
             "error-and-nonzero",
-            "requested-terminal-nonzero",
-            "malformed-terminal",
+            "requested-session-close-nonzero",
+            "malformed-session-close",
             "process-exit-with-nonzero-helper",
-            "nonzero-without-terminal",
+            "nonzero-without-session-close",
         ),
     )
     def test_helper_client_close_validates_helper_shutdown(
         self,
-        terminal,
+        event_stream_tail,
         exit_code,
         expected,
         expected_openocd_result,
     ):
-        terminal_line = "" if terminal is None else terminal + "\n"
+        event_stream_tail = "" if event_stream_tail is None else event_stream_tail + "\n"
         helper_code = f"""
 import json
 import sys
@@ -1656,7 +1658,7 @@ created = {{
 }}
 print(json.dumps(created, separators=(",", ":")), flush=True)
 sys.stdin.buffer.readline()
-sys.stdout.write({terminal_line!r})
+sys.stdout.write({event_stream_tail!r})
 sys.stdout.flush()
 sys.exit({exit_code})
 """
@@ -1687,7 +1689,7 @@ sys.exit({exit_code})
             with suppress(BaseException):
                 helper_client.close()
 
-    def test_helper_client_rejects_requested_terminal_before_local_stop(self):
+    def test_helper_client_rejects_requested_session_close_before_local_stop(self):
         helper_code = """
 import json
 import sys
@@ -1726,18 +1728,18 @@ sys.stdin.buffer.read()
             RemoteSessionRequest("local", LocalCommand(), TEST_PROCESS),
             DeploymentResult("/helper.py", "digest", False),
         )
-        terminal_consumed = threading.Event()
+        session_close_consumed = threading.Event()
         dispatch = helper_client._dispatch
 
-        def observe_terminal(event):
+        def observe_session_close(event):
             dispatch(event)
             if event["type"] == "SESSION_CLOSED":
-                terminal_consumed.set()
+                session_close_consumed.set()
 
-        with patch.object(helper_client, "_dispatch", side_effect=observe_terminal):
+        with patch.object(helper_client, "_dispatch", side_effect=observe_session_close):
             helper_client._start_event_drain()
             assert helper_client._reader_thread is not None
-            assert terminal_consumed.wait(5)
+            assert session_close_consumed.wait(5)
         try:
             result = helper_client.close()
             assert isinstance(result.error, SessionError)
@@ -1860,7 +1862,7 @@ sys.exit({HELPER_FAILURE_RC})
                     inner.process = process
                     return process
 
-            marker = "ZRO_READY_ignore_term"
+            output_sentinel = "ZRO_SENTINEL_ignore_term"
             child_code = (
                 "from pathlib import Path;"
                 "import os,signal,sys,time;"
@@ -1870,8 +1872,8 @@ sys.exit({HELPER_FAILURE_RC})
                 "time.sleep(30)"
             )
             remote_process = RemoteProcess(
-                (sys.executable, "-c", child_code, marker, str(child_pid_path)),
-                readiness_marker=marker,
+                (sys.executable, "-c", child_code, output_sentinel, str(child_pid_path)),
+                required_output_sentinels=(output_sentinel,),
             )
             command = LocalCommand()
             helper_client = _opened_helper_client(

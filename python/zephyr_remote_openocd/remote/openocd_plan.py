@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from .paths import ADDRESS_TOKEN, PathPlanner
+from .paths import PathPlanner
 
 
 @dataclass(frozen=True)
@@ -46,18 +46,19 @@ def base_argv(
     serial: str | None,
     remote_search: list[str],
     remote_configs: list[str],
+    pre_config_commands: tuple[str, ...],
 ) -> list[str]:
-    """Build the shared serial, search-path, config, and loopback prefix."""
+    """Build the shared command prefix with runner setup before board configs."""
 
     argv = executable_argv(executable)
+    for path in remote_search:
+        argv.extend(("-s", path))
+    argv.extend(argument for command in pre_config_commands for argument in ("-c", command))
     if serial:
         # Board configurations may consume this variable while they load.
         argv.extend(("-c", "set _ZEPHYR_BOARD_SERIAL " + serial))
-    for path in remote_search:
-        argv.extend(("-s", path))
     for path in remote_configs:
         argv.extend(("-f", path))
-    argv.extend(("-c", f"bindto {ADDRESS_TOKEN}"))
     return argv
 
 
@@ -67,12 +68,21 @@ def plan_openocd_base(
     search_paths: tuple[str, ...],
     config_files: tuple[str, ...],
     planner: PathPlanner,
+    pre_config_commands: tuple[str, ...],
 ) -> OpenOcdBasePlan:
-    """Plan executable, support paths, serial setup, and loopback binding."""
+    """Plan executable, support paths, runner setup, serial, and board configs."""
 
     executable_parts = tuple(executable_argv(executable))
     remote_search, remote_configs = plan_support_paths(search_paths, config_files, planner)
     return OpenOcdBasePlan(
-        tuple(base_argv(executable_parts, serial, remote_search, remote_configs)),
+        tuple(
+            base_argv(
+                executable_parts,
+                serial,
+                remote_search,
+                remote_configs,
+                pre_config_commands,
+            )
+        ),
         len(executable_parts),
     )

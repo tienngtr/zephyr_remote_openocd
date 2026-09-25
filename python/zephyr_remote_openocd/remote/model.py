@@ -8,7 +8,7 @@ import math
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Literal
+from typing import Any, Literal
 
 from .ssh import SshCommand
 
@@ -119,28 +119,45 @@ class RemoteProcess:
     argv: tuple[str, ...]
     environment: tuple[tuple[str, str], ...] = field(default_factory=tuple)
     required_paths: tuple[RemotePathCheck, ...] = field(default_factory=tuple)
-    readiness_marker: str | None = None
+    required_output_sentinels: tuple[str, ...] = field(default_factory=tuple)
     readiness_timeout: float = 30.0
     literal_prefix: int = 0
 
     def __post_init__(self) -> None:
-        argv, environment, required_paths = _normalized_process_fields(self)
+        argv, environment, required_paths, required_output_sentinels = _normalized_process_fields(
+            self
+        )
         _validate_process_argv(argv)
         _validate_process_environment(environment)
         _validate_process_paths(required_paths)
-        _validate_process_readiness(self.readiness_marker, self.readiness_timeout)
+        _validate_process_readiness(required_output_sentinels, self.readiness_timeout)
         _validate_literal_prefix(self.literal_prefix, len(argv))
         object.__setattr__(self, "argv", argv)
         object.__setattr__(self, "environment", environment)
         object.__setattr__(self, "required_paths", required_paths)
+        object.__setattr__(self, "required_output_sentinels", required_output_sentinels)
 
 
 def _normalized_process_fields(
     process: RemoteProcess,
-) -> tuple[tuple[str, ...], tuple[tuple[str, str], ...], tuple[RemotePathCheck, ...]]:
+) -> tuple[
+    tuple[str, ...],
+    tuple[tuple[str, str], ...],
+    tuple[RemotePathCheck, ...],
+    tuple[str, ...],
+]:
     """Freeze collection-valued process fields before validating them."""
 
-    return tuple(process.argv), tuple(process.environment), tuple(process.required_paths)
+    raw_sentinels: Any = process.required_output_sentinels
+    if isinstance(raw_sentinels, (str, bytes)):
+        raise ValueError("required output sentinels must be a collection of strings")
+
+    return (
+        tuple(process.argv),
+        tuple(process.environment),
+        tuple(process.required_paths),
+        tuple(raw_sentinels),
+    )
 
 
 def _validate_process_argv(argv: tuple[str, ...]) -> None:
@@ -176,11 +193,17 @@ def _validate_process_paths(required_paths: tuple[RemotePathCheck, ...]) -> None
         raise ValueError("remote path checks must be RemotePathCheck values")
 
 
-def _validate_process_readiness(marker: str | None, timeout: float) -> None:
-    if marker is not None and not isinstance(marker, str):
-        raise ValueError("readiness marker must be a non-empty token")
-    if marker is not None and (not marker or any(character.isspace() for character in marker)):
-        raise ValueError("readiness marker must be a non-empty token")
+def _validate_process_readiness(required_output_sentinels: tuple[str, ...], timeout: float) -> None:
+    if not all(
+        isinstance(sentinel, str)
+        and sentinel
+        and sentinel == sentinel.strip()
+        and "\0" not in sentinel
+        and "\n" not in sentinel
+        and "\r" not in sentinel
+        for sentinel in required_output_sentinels
+    ) or len(required_output_sentinels) != len(set(required_output_sentinels)):
+        raise ValueError("required output sentinels must be unique non-empty trimmed output lines")
     if (
         isinstance(timeout, bool)
         or not isinstance(timeout, (int, float))

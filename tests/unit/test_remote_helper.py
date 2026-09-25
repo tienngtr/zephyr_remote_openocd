@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 from contextlib import suppress
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -106,7 +107,7 @@ def start_command():
             {"name": "gdb", "remote_port": 3333},
             {"name": "tcl", "remote_port": 6333},
         ],
-        "readiness_marker": "READY",
+        "required_output_sentinels": ["READY"],
         "readiness_timeout": 30.0,
         "literal_prefix": 1,
     }
@@ -132,7 +133,7 @@ def test_relay_emits_bounded_fragments_and_preserves_utf8(monkeypatch):
         "emit",
         lambda kind, **values: events.append((kind, values)),
     )
-    marker_seen = threading.Event()
+    required_output_sentinels = remote_helper._RequiredOutputSentinels(("READY",))
     captured: list[Any] = []
     stream = _ChunkStream(
         b"abc\n",
@@ -143,7 +144,7 @@ def test_relay_emits_bounded_fragments_and_preserves_utf8(monkeypatch):
         b"tail",
     )
 
-    remote_helper.relay(stream, "stdout", "READY", marker_seen, captured)
+    remote_helper.relay(stream, "stdout", required_output_sentinels, captured)
 
     output_events = [values for _kind, values in events]
     assert [event["payload"] for event in output_events] == [
@@ -176,7 +177,7 @@ def test_relay_emits_bounded_fragments_and_preserves_utf8(monkeypatch):
     )
     assert all(len(event["payload"]) <= 4 for event in output_events)
     assert all(size == 4 for size in stream.read_sizes)
-    assert not marker_seen.is_set()
+    assert not required_output_sentinels.ready
     assert [record.stream for record in captured] == ["stdout"] * len(captured)
     assert [record.line_end for record in captured] == [
         True,
@@ -192,7 +193,7 @@ def test_relay_emits_bounded_fragments_and_preserves_utf8(monkeypatch):
     ]
 
 
-def test_relay_matches_marker_only_after_complete_line(monkeypatch):
+def test_relay_matches_sentinel_only_after_complete_line(monkeypatch):
     monkeypatch.setattr(remote_helper, "RELAY_CHUNK_SIZE", 8)
     events = []
     monkeypatch.setattr(
@@ -200,14 +201,81 @@ def test_relay_matches_marker_only_after_complete_line(monkeypatch):
         "emit",
         lambda kind, **values: events.append((kind, values)),
     )
-    marker_seen = threading.Event()
-    stream = _ChunkStream(b"NO", b"\nREA", b"DY", b"\n")
+    required_output_sentinels = remote_helper._RequiredOutputSentinels(("READY FOR START",))
+    stream = _ChunkStream(b"NO\nREADY FOR ", b"START\n")
 
-    remote_helper.relay(stream, "stderr", "READY", marker_seen, [])
+    remote_helper.relay(stream, "stderr", required_output_sentinels, [])
 
-    assert marker_seen.is_set()
-    assert [values["payload"] for _kind, values in events] == ["NO", "READY"]
-    assert [values["line_end"] for _kind, values in events] == [True, True]
+    assert required_output_sentinels.ready
+    output = [values for _kind, values in events]
+    assert "".join(item["payload"] + ("\n" if item["line_end"] else "") for item in output) == (
+        "NO\nREADY FOR START\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    (
+        ("OPENOCD_INIT", "STARTUP_COMPLETE"),
+        ("STARTUP_COMPLETE", "OPENOCD_INIT"),
+    ),
+    ids=("init-first", "startup-first"),
+)
+def test_relay_waits_for_each_complete_sentinel_across_streams(monkeypatch, first, second):
+    monkeypatch.setattr(remote_helper, "RELAY_CHUNK_SIZE", 8)
+    monkeypatch.setattr(remote_helper, "emit", lambda *_args, **_kwargs: None)
+    required_output_sentinels = remote_helper._RequiredOutputSentinels(
+        ("OPENOCD_INIT", "STARTUP_COMPLETE")
+    )
+
+    remote_helper.relay(
+        _ChunkStream(first[:8].encode(), (first[8:] + "\n").encode()),
+        "stdout",
+        required_output_sentinels,
+    )
+
+    assert not required_output_sentinels.ready
+
+    remote_helper.relay(
+        _ChunkStream(("  " + second + "  \n").encode()),
+        "stderr",
+        required_output_sentinels,
+    )
+
+    assert required_output_sentinels.ready
+
+
+def test_decode_start_accepts_full_output_lines_with_internal_spaces(start_command):
+    start_command["required_output_sentinels"] = ["READY FOR START"]
+
+    request = remote_helper.decode_command(start_command)
+
+    assert request.required_output_sentinels == ("READY FOR START",)
+
+
+def test_process_readiness_does_not_probe_service_sockets(monkeypatch, start_command):
+    request = remote_helper.decode_command(start_command)
+    required_output_sentinels = remote_helper._RequiredOutputSentinels(
+        request.required_output_sentinels
+    )
+    required_output_sentinels.observe("READY")
+    child = SimpleNamespace(
+        pid=42,
+        startup_output=[],
+        required_output_sentinels=required_output_sentinels,
+        poll=lambda: None,
+        returncode=None,
+    )
+    events = []
+    monkeypatch.setattr(remote_helper, "emit", lambda kind, **values: events.append((kind, values)))
+    monkeypatch.setattr(
+        remote_helper.socket,
+        "create_connection",
+        lambda *_args, **_kwargs: pytest.fail("readiness must not probe service sockets"),
+    )
+
+    assert remote_helper._wait_for_process(child, "127.64.3.1", request, 0)
+    assert [kind for kind, _values in events] == ["PROCESS_READY"]
 
 
 @pytest.mark.parametrize(
@@ -527,7 +595,7 @@ def test_control_session_natural_exit_cleans_before_close_event(tmp_path, monkey
     ]
 
 
-def test_control_session_natural_exit_cleanup_failure_is_terminal_error(tmp_path, monkeypatch):
+def test_control_session_natural_exit_cleanup_failure_emits_error_event(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     lock = (workspace / remote_helper.SESSION_LOCK).open("w+b")
@@ -986,7 +1054,8 @@ def test_control_session_does_not_launch_when_required_file_is_missing(
     (
         ("argv", [], "argv"),
         ("environment", {"BAD=NAME": "value"}, "environment"),
-        ("readiness_marker", "not a token", "marker"),
+        ("required_output_sentinels", [" READY "], "sentinels"),
+        ("required_output_sentinels", ["READY", "READY"], "unique"),
         ("readiness_timeout", 0, "readiness options"),
         ("literal_prefix", 3, "readiness options"),
     ),

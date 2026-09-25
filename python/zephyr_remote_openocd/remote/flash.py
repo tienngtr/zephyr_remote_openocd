@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .model import RemoteProcess
 from .openocd_plan import OpenOcdBasePlan, plan_openocd_base
-from .paths import PathPlanner
+from .paths import REMOTE_ADDRESS_PLACEHOLDER, PathPlanner
 
 
 class FlashPlanError(RuntimeError):
@@ -202,6 +202,7 @@ def build_flash_plan(
         inputs.search_paths,
         inputs.config_files,
         planner,
+        (f"bindto {REMOTE_ADDRESS_PLACEHOLDER}",),
     )
     image = _plan_image(inputs, planner)
 

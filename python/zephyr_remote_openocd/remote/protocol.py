@@ -76,7 +76,7 @@ def write_start(stream: BinaryIO, process: RemoteProcess, services: Iterable[Ser
         services=[
             {"name": service.name, "remote_port": service.remote_port} for service in services
         ],
-        readiness_marker=process.readiness_marker,
+        required_output_sentinels=list(process.required_output_sentinels),
         readiness_timeout=process.readiness_timeout,
         literal_prefix=process.literal_prefix,
     )

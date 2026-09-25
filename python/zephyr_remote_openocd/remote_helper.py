@@ -40,7 +40,7 @@ RELAY_CHUNK_SIZE = 64 * 1024
 MAX_SESSION_ID_ATTEMPTS = 32
 MAX_ADDRESS_ALLOCATION_ATTEMPTS = 32
 # 18 random bytes provide 144 bits of entropy in a compact URL-safe ID.
-SESSION_ID_TOKEN_BYTES = 18
+SESSION_ID_RANDOM_BYTES = 18
 MAX_CAPTURED_STARTUP_FRAGMENTS = 128
 _emit_lock = threading.Lock()
 
@@ -108,7 +108,7 @@ def new_workspace():
     os.chmod(root, 0o700)
     reclaim_stale_workspaces(root)
     for _ in range(MAX_SESSION_ID_ATTEMPTS):
-        session_id = secrets.token_urlsafe(SESSION_ID_TOKEN_BYTES)
+        session_id = secrets.token_urlsafe(SESSION_ID_RANDOM_BYTES)
         path = root / session_id
         try:
             path.mkdir(mode=0o700)
@@ -222,40 +222,59 @@ def random_address():
     )
 
 
-class _MarkerMatcher:
-    """Recognize one complete trimmed marker line without retaining its text."""
+class _RequiredOutputSentinels:
+    """Track which required complete output lines have been observed."""
 
-    def __init__(self, marker, marker_seen):
-        self.marker = marker
-        self.marker_seen = marker_seen
-        self._index = 0
+    def __init__(self, required_output_sentinels):
+        self._seen = {sentinel: threading.Event() for sentinel in required_output_sentinels}
+        self._ready = threading.Event()
+        if not self._seen:
+            self._ready.set()
+
+    @property
+    def ready(self):
+        return self._ready.is_set()
+
+    @property
+    def unseen(self):
+        return tuple(sentinel for sentinel, seen in self._seen.items() if not seen.is_set())
+
+    def observe(self, sentinel):
+        self._seen[sentinel].set()
+        if all(seen.is_set() for seen in self._seen.values()):
+            self._ready.set()
+
+
+class _SentinelMatcher:
+    """Recognize required sentinels as complete trimmed lines."""
+
+    def __init__(self, required_output_sentinels):
+        self.required_output_sentinels = required_output_sentinels
+        self._reset_line()
+
+    def _reset_line(self):
+        self._candidates = {sentinel: 0 for sentinel in self.required_output_sentinels.unseen}
         self._started = False
-        self._valid = True
 
     def feed(self, character):
-        if self.marker_seen.is_set() or not self._valid:
+        if self.required_output_sentinels.ready or not self._candidates:
             return
         if not self._started and character.isspace():
             return
-        if self._index < len(self.marker) and character == self.marker[self._index]:
-            self._started = True
-            self._index += 1
-            return
-        if self._index == len(self.marker) and character.isspace():
-            return
-        self._valid = False
+        self._started = True
+        for sentinel, index in tuple(self._candidates.items()):
+            if index < len(sentinel) and character == sentinel[index]:
+                self._candidates[sentinel] = index + 1
+            elif index == len(sentinel) and character.isspace():
+                continue
+            else:
+                del self._candidates[sentinel]
 
     def finish_line(self):
-        if (
-            not self.marker_seen.is_set()
-            and self._valid
-            and self._started
-            and self._index == len(self.marker)
-        ):
-            self.marker_seen.set()
-        self._index = 0
-        self._started = False
-        self._valid = True
+        for sentinel, index in self._candidates.items():
+            if self._started and index == len(sentinel):
+                self.required_output_sentinels.observe(sentinel)
+        self._reset_line()
 
 
 class _CapturedFragment:
@@ -269,12 +288,18 @@ class _CapturedFragment:
         self.line_end = line_end
 
 
-def relay(stream, stream_name, marker=None, marker_seen=None, captured=None, capture_lock=None):
-    """Relay bounded UTF-8 fragments while matching complete marker lines."""
+def relay(
+    stream,
+    stream_name,
+    required_output_sentinels=None,
+    captured=None,
+    capture_lock=None,
+):
+    """Relay bounded UTF-8 fragments while matching complete sentinels."""
     decoder = codecs.getincrementaldecoder("utf-8")("replace")
     matcher = (
-        _MarkerMatcher(marker, marker_seen)
-        if marker is not None and marker_seen is not None
+        _SentinelMatcher(required_output_sentinels)
+        if required_output_sentinels is not None
         else None
     )
     pending: list[str] = []
@@ -359,24 +384,6 @@ def allocate_service_address(ports):
     raise RuntimeError(
         f"loopback allocation exhausted after {MAX_ADDRESS_ALLOCATION_ATTEMPTS} attempts"
     )
-
-
-def services_connectable(address, services):
-    """Probe non-GDB listeners without consuming an OpenOCD client slot.
-
-    OpenOCD's GDB server treats a bare TCP connect as a rejected debugger
-    session.  The real GDB client connection is therefore authoritative for
-    that service; Tcl and telnet remain safe to probe here.
-    """
-    for service in services:
-        if service.name == "gdb":
-            continue
-        try:
-            with socket.create_connection((address, service.remote_port), timeout=0.2):
-                pass
-        except OSError:
-            return False
-    return True
 
 
 def openocd_version(argv):
@@ -464,11 +471,19 @@ def _validate_environment(environment):
             raise ValueError("START environment must contain valid string values")
 
 
-def _validate_marker(marker):
-    if marker is not None and (
-        not isinstance(marker, str) or not marker or any(c.isspace() for c in marker)
+def _validate_required_output_sentinels(sentinels):
+    if not isinstance(sentinels, list) or not all(
+        isinstance(sentinel, str)
+        and sentinel
+        and sentinel == sentinel.strip()
+        and "\0" not in sentinel
+        and "\n" not in sentinel
+        and "\r" not in sentinel
+        for sentinel in sentinels
     ):
-        raise ValueError("START readiness marker is invalid")
+        raise ValueError("START required output sentinels are invalid")
+    if len(sentinels) != len(set(sentinels)):
+        raise ValueError("START required output sentinels must be unique")
 
 
 def _validate_timeout(timeout):
@@ -490,15 +505,15 @@ def _validate_literal_prefix(literal_prefix, argv_length):
         raise ValueError("START readiness options are invalid")
 
 
-def _validate_options(marker, timeout, literal_prefix, argv_length):
-    _validate_marker(marker)
+def _validate_options(sentinels, timeout, literal_prefix, argv_length):
+    _validate_required_output_sentinels(sentinels)
     _validate_timeout(timeout)
     _validate_literal_prefix(literal_prefix, argv_length)
 
 
 def _expand(value, replacements):
-    for token, replacement in replacements.items():
-        value = value.replace(token, replacement)
+    for placeholder, replacement in replacements.items():
+        value = value.replace(placeholder, replacement)
     return value
 
 
@@ -527,13 +542,13 @@ class StartRequest(NamedTuple):
     environment: tuple[tuple[str, str], ...]
     required_paths: tuple[RequiredPath, ...]
     services: tuple[ServiceRequest, ...]
-    readiness_marker: str | None
+    required_output_sentinels: tuple[str, ...]
     readiness_timeout: float
     literal_prefix: int
 
 
 class StopRequest:
-    """Marker for the parameterless STOP command."""
+    """Request representing the parameterless STOP command."""
 
 
 def _parse_required_paths(values):
@@ -563,7 +578,7 @@ def _decode_start(message):
         "environment",
         "required_paths",
         "services",
-        "readiness_marker",
+        "required_output_sentinels",
         "readiness_timeout",
         "literal_prefix",
     }
@@ -571,12 +586,12 @@ def _decode_start(message):
         raise ValueError("START fields are invalid")
     argv = message["argv"]
     environment = message["environment"]
-    marker = message["readiness_marker"]
+    sentinels = message["required_output_sentinels"]
     timeout = message["readiness_timeout"]
     literal_prefix = message["literal_prefix"]
     _validate_argv(argv)
     _validate_environment(environment)
-    _validate_options(marker, timeout, literal_prefix, len(argv))
+    _validate_options(sentinels, timeout, literal_prefix, len(argv))
     services = _parse_services(message["services"], "START")
     checks = _parse_required_paths(message["required_paths"])
     return StartRequest(
@@ -584,7 +599,7 @@ def _decode_start(message):
         tuple(environment.items()),
         checks,
         services,
-        marker,
+        tuple(sentinels),
         float(timeout),
         literal_prefix,
     )
@@ -605,10 +620,9 @@ def decode_command(message):
 class SupervisedChild:
     """Own one child process and all resources used to relay its output."""
 
-    def __init__(self, process, marker=None):
+    def __init__(self, process, required_output_sentinels=()):
         self.process = process
-        self.marker = marker
-        self.marker_seen = threading.Event()
+        self.required_output_sentinels = _RequiredOutputSentinels(required_output_sentinels)
         self.startup_output: list[_CapturedFragment] = []
         self._capture_lock = threading.Lock()
         self.relay_threads: list[threading.Thread] = []
@@ -652,8 +666,7 @@ class SupervisedChild:
                 args=(
                     self.process.stdout,
                     "stdout",
-                    self.marker,
-                    self.marker_seen,
+                    self.required_output_sentinels,
                     captured,
                     self._capture_lock,
                 ),
@@ -664,8 +677,7 @@ class SupervisedChild:
                 args=(
                     self.process.stderr,
                     "stderr",
-                    self.marker,
-                    self.marker_seen,
+                    self.required_output_sentinels,
                     captured,
                     self._capture_lock,
                 ),
@@ -793,7 +805,7 @@ class SupervisedChild:
         _raise_cleanup_errors(errors)
 
 
-def _spawn_child(argv, *, cwd=None, environment=None, marker=None):
+def _spawn_child(argv, *, cwd=None, environment=None, required_output_sentinels=()):
     process = subprocess.Popen(
         argv,
         cwd=cwd,
@@ -803,7 +815,7 @@ def _spawn_child(argv, *, cwd=None, environment=None, marker=None):
         stderr=subprocess.PIPE,
         start_new_session=True,
     )
-    return SupervisedChild(process, marker)
+    return SupervisedChild(process, required_output_sentinels)
 
 
 def _expanded_argv(request, work, address):
@@ -821,7 +833,7 @@ def _child_environment(request):
 
 
 def _wait_for_process(child, address, request, attempt):
-    if request.readiness_marker is None:
+    if child.required_output_sentinels.ready:
         emit("PROCESS_READY", remote_address=address, child_pid=child.pid)
         return True
     deadline = time.monotonic() + request.readiness_timeout
@@ -834,7 +846,7 @@ def _wait_for_process(child, address, request, attempt):
             ):
                 return False
             raise RuntimeError(f"process exited before readiness with status {child.returncode}")
-        if child.marker_seen.is_set() and services_connectable(address, request.services):
+        if child.required_output_sentinels.ready:
             emit("PROCESS_READY", remote_address=address, child_pid=child.pid)
             return True
         time.sleep(CHILD_POLL_INTERVAL)
@@ -868,7 +880,7 @@ class ControlSession:
         if self.child is not None:
             raise ValueError("START is only valid once")
         ports = [service.remote_port for service in request.services]
-        attempts = MAX_ADDRESS_ALLOCATION_ATTEMPTS if request.readiness_marker is not None else 1
+        attempts = MAX_ADDRESS_ALLOCATION_ATTEMPTS if request.required_output_sentinels else 1
         for attempt in range(attempts):
             address = allocate_service_address(ports) if ports else random_address()
             argv, replacements = _expanded_argv(request, self.work, address)
@@ -877,7 +889,7 @@ class ControlSession:
                 argv,
                 cwd=self.work / "staged",
                 environment=_child_environment(request),
-                marker=request.readiness_marker,
+                required_output_sentinels=request.required_output_sentinels,
             )
             self.child.start_relays(capture_startup=True)
             if _wait_for_process(self.child, address, request, attempt):

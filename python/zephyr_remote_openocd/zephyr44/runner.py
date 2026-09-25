@@ -465,6 +465,7 @@ def _search_paths(runner):
 
 def _debug_plan(runner, command, selected, version):
     planner = PathPlanner(selected.path_mappings)
+    sentinel_suffix = secrets.token_hex(16)
     if command == "attach" and runner.parsed_args.rtt_server:
         raise DebugPlanError("--rtt-server is not supported with attach")
     rtt_requested = command == "rtt" or (
@@ -494,7 +495,8 @@ def _debug_plan(runner, command, selected, version):
             target_handle=runner.target_handle,
             thread_info_requested=runner.thread_info_enabled,
             openocd_version=version,
-            readiness_marker="ZRO_READY_" + secrets.token_hex(16),
+            openocd_init_sentinel="ZRO_OPENOCD_INIT_" + sentinel_suffix,
+            startup_complete_sentinel="ZRO_STARTUP_COMPLETE_" + sentinel_suffix,
             rtt_address=runner.get_rtt_address() if rtt_requested else None,
             rtt_port=runner.rtt_port,
             rtt_server=bool(runner.parsed_args.rtt_server),
@@ -543,7 +545,7 @@ def _request_record(request):
             "required_paths": [
                 {"path": item.path, "kind": item.kind} for item in request.process.required_paths
             ],
-            "readiness_marker": request.process.readiness_marker,
+            "required_output_sentinels": list(request.process.required_output_sentinels),
             "readiness_timeout": request.process.readiness_timeout,
             "literal_prefix": request.process.literal_prefix,
         }

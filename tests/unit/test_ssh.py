@@ -349,8 +349,8 @@ class _ForwardCommand(_PopenOnlySshCommand):
 
 
 @pytest.mark.timeout(10)
-def test_initial_forward_failure_consumes_terminal_openocd_event(monkeypatch):
-    terminal_seen = threading.Event()
+def test_initial_forward_failure_consumes_session_close_event(monkeypatch):
+    close_seen = threading.Event()
     forward_error = SessionError("initial forwarding failed")
     helper = _HelperProcess(
         encode_message(
@@ -381,16 +381,16 @@ def test_initial_forward_failure_consumes_terminal_openocd_event(monkeypatch):
     monkeypatch.setattr(backend_module, "deploy_helper", deploy)
     monkeypatch.setattr(RemoteSession, "_stage", lambda _session, _files: None)
 
-    def observe_terminal(helper_client, event):
+    def observe_close(helper_client, event):
         dispatch(helper_client, event)
         if event["type"] == "SESSION_CLOSED":
-            terminal_seen.set()
+            close_seen.set()
 
     def fail_forwards(_manager, _services, _address):
-        assert terminal_seen.wait(5)
+        assert close_seen.wait(5)
         raise forward_error
 
-    monkeypatch.setattr(_HelperClient, "_dispatch", observe_terminal)
+    monkeypatch.setattr(_HelperClient, "_dispatch", observe_close)
     monkeypatch.setattr(_ForwardManager, "start", fail_forwards)
 
     with pytest.raises(SessionError) as raised:

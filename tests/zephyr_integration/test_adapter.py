@@ -10,7 +10,9 @@ import json
 import os
 import socket
 import subprocess
+import sys
 import threading
+from contextlib import suppress
 from pathlib import PurePosixPath
 from unittest.mock import Mock, create_autospec
 
@@ -18,6 +20,8 @@ import pytest
 from zephyr_remote_openocd.config import ConfigError, PathMapping, ResolvedRemote
 from zephyr_remote_openocd.remote import RemoteSession
 from zephyr_remote_openocd.remote.debug import DebugPlan
+from zephyr_remote_openocd.remote.deploy import DeploymentResult
+from zephyr_remote_openocd.remote.helper_client import _HelperClient
 from zephyr_remote_openocd.remote.model import (
     RemoteProcess,
     RemoteSessionRequest,
@@ -25,7 +29,9 @@ from zephyr_remote_openocd.remote.model import (
     SessionAllocation,
     SessionDescriptor,
 )
-from zephyr_remote_openocd.remote.ssh import SshCommand
+from zephyr_remote_openocd.remote.protocol import encode_message
+from zephyr_remote_openocd.remote.session import SessionError
+from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand
 
 from tests.support import env_path
 
@@ -376,6 +382,64 @@ def test_operation_failure_precedence(
             assert not notes
 
     session.close.assert_called_once_with()
+
+
+@pytest.mark.timeout(10)
+def test_observed_helper_error_is_not_reported_again_during_finalization(runner_api, monkeypatch):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
+    created = encode_message(
+        "SESSION_CREATED", helper="test", session_id="session", remote_workspace="/workspace"
+    )
+    ready = encode_message("PROCESS_READY", remote_address="127.64.0.1", child_pid=1)
+    failure = encode_message("ERROR", code="FAILED", message="helper failed")
+    helper_code = (
+        "import sys\n"
+        f"sys.stdout.buffer.write({created!r})\n"
+        "sys.stdout.buffer.flush()\n"
+        "sys.stdin.buffer.readline()\n"
+        f"sys.stdout.buffer.write({ready!r} + {failure!r})\n"
+        "sys.stdout.buffer.flush()\n"
+    )
+
+    class LocalCommand(SshCommand):
+        def popen(self, host, remote_command, *extra_args):
+            return ManagedSshProcess.from_popen(
+                subprocess.Popen(
+                    [sys.executable, "-c", helper_code],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+            )
+
+    # A duplicate close result would copy notes from the same growing list.
+    # Fail at that boundary before the diagnostic loop can run unbounded.
+    original_diagnostic = runner_module._add_failure_diagnostic
+
+    def reject_duplicate_diagnostic(primary, prefix, secondary):
+        assert primary is not secondary, "same helper error reported as cleanup failure"
+        original_diagnostic(primary, prefix, secondary)
+
+    monkeypatch.setattr(runner_module, "_add_failure_diagnostic", reject_duplicate_diagnostic)
+    command = LocalCommand()
+    request = RemoteSessionRequest("local", command, TEST_PROCESS)
+    deployment = DeploymentResult("/helper.py", "digest", False)
+    session = RemoteSession(request, deployment)
+    session._helper = _HelperClient.open(command, request.host, deployment)
+    try:
+        session._start_process(())
+        with pytest.raises(SessionError) as observed:
+            session.wait_for_openocd_exit(timeout=5)
+        with pytest.raises(SessionError) as finalized:
+            runner_module._finalize_operation(session, observed.value, None)
+
+        assert finalized.value is observed.value
+        assert not getattr(finalized.value, "__notes__", ())
+        assert session.closed
+    finally:
+        with suppress(BaseException):
+            session.close()
 
 
 @pytest.mark.parametrize(

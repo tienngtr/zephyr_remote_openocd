@@ -30,7 +30,7 @@ required; no other fields are allowed:
 | `environment` | Object with valid string names and values. |
 | `required_paths` | List of `{kind, path}` objects, where `kind` is `file` or `directory`. |
 | `services` | List of `{name, remote_port}` objects. Names and ports are unique within the request. |
-| `readiness_marker` | `null` or a non-empty string without whitespace. |
+| `required_output_sentinels` | List of unique non-empty, trimmed output lines without `CR`, `LF`, or NUL; may be empty. |
 | `readiness_timeout` | Positive finite number. |
 | `literal_prefix` | Non-negative integer no greater than the length of `argv`. Placeholder expansion skips this many leading arguments. |
 
@@ -40,28 +40,32 @@ starts the child in `<remote_workspace>/staged` with the helper environment
 overlaid by `environment`. Service `remote_port` values are unique by
 contract, and duplicate values are rejected during validation before startup.
 
-The helper allocates an address in `127.64.0.0/10` and binds requested
-non-GDB services there. If `readiness_marker` is `null`, the process is
-immediately considered ready. Otherwise the helper waits for a complete
-trimmed marker line on either child stream and TCP-connectability of every
-requested non-GDB service. GDB is not probed because OpenOCD can consume its
-only debugger connection. The helper then emits one `PROCESS_READY` event.
-Output reads are bounded and use an incremental UTF-8 decoder. A readiness
-marker is recognized only when the complete trimmed line is observed; a
-fragment that merely matches a marker prefix does not make the process ready.
+The helper allocates an address in `127.64.0.0/10` and preflights requested
+service ports for bind collisions at that address. It does not create or probe
+service listeners; OpenOCD owns its GDB, Tcl, telnet, and RTT listeners. With an
+empty sentinel list, the process is immediately considered ready. Otherwise
+the helper waits until every required sentinel has appeared as a complete
+trimmed line on either child stream, then emits one `PROCESS_READY` event.
+Sentinels may arrive in any order and on either stream. Output reads are
+bounded and use an incremental UTF-8 decoder. A sentinel is recognized only
+when the complete trimmed line is observed; a fragment that merely matches a
+sentinel prefix does not make the process ready.
 
-`STOP` has no fields other than `version` and `type`. It terminates the child
-process group, removes the workspace, emits `SESSION_CLOSED` with
-`reason: "requested"` and `returncode: null`, and exits.
+`STOP` has no fields other than `version` and `type`. On successful cleanup, it
+terminates the child process group, removes the workspace, emits `SESSION_CLOSED`
+with `reason: "requested"` and `returncode: null`, and exits. A cleanup failure
+may instead end the session with `ERROR`.
 
-`SESSION_CLOSED` with `reason: "process_exit"` and an integer `returncode` is
-the sole wire source of an OpenOCD result. `SESSION_CLOSED` with
-`reason: "requested"` and `returncode: null` confirms requested shutdown but
-produces no OpenOCD result. The helper's Unix process status, SSH/control
-transport status, and forwarding-process status are independent health
-observations and are never OpenOCD results.
+`SESSION_CLOSED` is the orderly session-close event. With
+`reason: "process_exit"` and an integer `returncode`, it is the sole wire
+source of an OpenOCD result. With `reason: "requested"` and
+`returncode: null`, it confirms requested shutdown but produces no OpenOCD
+result. `ERROR` is a failure event that also ends the session. Neither event
+may be followed by another event. The helper's Unix process status,
+SSH/control transport status, and forwarding-process status are independent
+health observations and are never OpenOCD results.
 
-After local `STOP` initiation, either terminal form may legitimately occur:
+After local `STOP` initiation, either `SESSION_CLOSED` form may legitimately occur:
 OpenOCD may terminate naturally before requested termination takes effect, or
 the requested shutdown may complete first. Protocol version 1 is unchanged.
 
@@ -72,8 +76,8 @@ the requested shutdown may complete first. Protocol version 1 is unchanged.
 | `SESSION_CREATED` | Non-empty strings `helper`, `session_id`, `remote_workspace` | Session workspace and helper identity are available. |
 | `PROCESS_READY` | Non-empty `remote_address`, positive integer `child_pid` | The requested process passed readiness policy. |
 | `CHILD_OUTPUT` | `stream` exactly `stdout`/`stderr`, string `payload` without `LF`, Boolean `line_end` | One ordered decoded fragment from that child stream. `line_end` is true only when the fragment is followed by an actual child `LF` (the delimiter is omitted). A fragment with `line_end` false has a non-empty payload. UTF-8 decoding is incremental with replacement; one logical line may span several events. |
-| `SESSION_CLOSED` | `reason` and `returncode` | `reason` is `requested` with null return code, or `process_exit` with an integer return code. |
-| `ERROR` | Non-empty string `code`, string `message` | Protocol or startup failure. |
+| `SESSION_CLOSED` | `reason` and `returncode` | Orderly session close: `reason` is `requested` with null return code, or `process_exit` with an integer return code. |
+| `ERROR` | Non-empty string `code`, string `message` | Failure event that ends the session. |
 
 The event state graph is:
 
@@ -86,8 +90,8 @@ new --SESSION_CREATED--> created --PROCESS_READY--> active
 ```
 
 `CHILD_OUTPUT` may occur in `created` before `PROCESS_READY` and in `active`.
-`SESSION_CLOSED` follows relay completion; it and `ERROR` are terminal, and no
-event follows either one.
+`SESSION_CLOSED` follows relay completion. `SESSION_CLOSED` and `ERROR` both
+end the session, and no event follows either one.
 Malformed JSON, a non-object, an invalid version, an unexpected command,
 unknown fields, invalid values, or an invalid state causes `ERROR` and cleanup.
 EOF on helper stdin and `SIGINT`/`SIGTERM` also terminate the child process
