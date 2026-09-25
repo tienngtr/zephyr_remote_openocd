@@ -45,3 +45,32 @@ def test_hardware_inventory_option_is_registered_and_selects_inventory(tmp_path:
         check=False,
     )
     assert result.returncode == pytest.ExitCode.OK
+
+
+def test_hardware_timings_report_pytest_phases(tmp_path: Path) -> None:
+    timing_test = tmp_path / "test_hardware_timing.py"
+    timing_test.write_text(
+        "import pytest\n\n@pytest.mark.hardware\ndef test_timing_marker():\n    pass\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        (
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "tests.conftest",
+            str(timing_test),
+            "--hardware-timings",
+        ),
+        cwd=ROOT,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+
+    assert result.returncode == pytest.ExitCode.OK, result.stdout
+    assert "hardware timings" in result.stdout
+    assert "test call" in result.stdout

@@ -35,6 +35,30 @@ run never needs SSH, a Zephyr checkout, or lab hardware:
 .venv/bin/python -m pytest tests/hardware -m hardware --hardware-inventory /path/to/hardware.yaml
 ```
 
+Hardware preparation reuses incremental Zephyr build directories between
+pytest runs. The cache is stored below
+`.scratch/hardware/build-cache-<inventory-hash>/`; the hash includes the
+complete inventory, its path, and the repository checkout path, so separate
+inventories and checkouts do not share build artifacts. Zephyr's
+`USER_CACHE_DIR` and ccache are redirected into the same ignored cache
+namespace when the environment does not already specify a ccache directory,
+while an explicit inventory `USER_CACHE_DIR` remains authoritative.
+The harness requests `--pristine=never`; edit the inventory or remove its
+cache namespace when a deliberately fresh build is needed.
+
+To identify whether a slow hardware run is spending time preparing firmware or
+performing the board operation, add `--hardware-timings`. It reports each
+recipe's cold, warm, or in-session build duration and each hardware node's
+pytest setup, call, and teardown durations:
+
+```sh
+.venv/bin/python -m pytest --hardware-timings \
+  tests/hardware -m hardware \
+  --hardware-inventory /path/to/hardware.yaml
+```
+
+The timing option does not change test selection or execution.
+
 ## Common external-test setup
 
 Test-owned pipe reads have deadlines, including partial-line and EOF waits.

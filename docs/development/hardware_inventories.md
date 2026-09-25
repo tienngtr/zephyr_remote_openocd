@@ -77,6 +77,15 @@ cannot escape that tree. Absolute application paths may name external trees.
 `cmake_args` are passed after `--`. Both are arrays in which each YAML item is
 one complete argument.
 
+Hardware tests keep their build output under the repository's ignored
+`.scratch/hardware/` directory. The build namespace is derived from the full
+inventory and checkout path, so different inventories remain independent while
+repeated runs can reuse incremental Zephyr builds. The test harness uses
+`--pristine=never` and supplies per-namespace Zephyr and ccache directories;
+an explicit `-DUSER_CACHE_DIR=...` in a build's `cmake_args` is preserved.
+Remove the matching `build-cache-<inventory-hash>` directory when a fresh build
+is required.
+
 A profile selects one build. Every operation in that profile shares its build,
 `probe_serial`, `runner_args`, and `environment`. Profiles do not inherit. A
 profile environment key is valid only when the selected host lists it in

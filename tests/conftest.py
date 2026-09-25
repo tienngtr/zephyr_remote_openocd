@@ -10,9 +10,20 @@ from pathlib import Path
 
 import pytest
 
-from tests.hardware_support import HardwarePreparation, PreparedOperation
-from tests.hardware_support import prepared_hardware as _prepared_hardware
+from tests.hardware_support import (
+    BuildTiming,
+    HardwarePreparation,
+    PreparedOperation,
+    hardware_cache_root,
+)
 from tests.inventory import Inventory, InventoryError, load_inventory
+
+_HARDWARE_BUILD_TIMINGS = pytest.StashKey[list[BuildTiming]]()
+_HARDWARE_TEST_TIMINGS = pytest.StashKey[list[tuple[str, str, float]]]()
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.stash[_HARDWARE_TEST_TIMINGS] = []
 
 
 @pytest.fixture(scope="session")
@@ -53,6 +64,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         action="store_true",
         default=False,
         help="fail the run if any test is skipped during external validation",
+    )
+    group.addoption(
+        "--hardware-timings",
+        action="store_true",
+        default=False,
+        help="report hardware build and pytest phase timings",
     )
 
 
@@ -127,6 +144,39 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[object]):
+    del call
+    outcome = yield
+    report = outcome.get_result()
+    if item.get_closest_marker("hardware") is not None:
+        item.config.stash[_HARDWARE_TEST_TIMINGS].append(
+            (report.nodeid, report.when, report.duration)
+        )
+
+
+def pytest_terminal_summary(
+    terminalreporter: pytest.TerminalReporter,
+    exitstatus: int,
+    config: pytest.Config,
+) -> None:
+    """Print opt-in timings for external hardware validation."""
+    del exitstatus
+    if not config.getoption("--hardware-timings"):
+        return
+    build_timings = config.stash.get(_HARDWARE_BUILD_TIMINGS, [])
+    test_timings = config.stash.get(_HARDWARE_TEST_TIMINGS, [])
+    if not build_timings and not test_timings:
+        return
+    terminalreporter.write_sep("=", "hardware timings")
+    for timing in build_timings:
+        terminalreporter.write_line(
+            f"build {timing.target}:{timing.build} {timing.cache_state} {timing.duration:.2f}s"
+        )
+    for nodeid, phase, duration in test_timings:
+        terminalreporter.write_line(f"test {phase} {duration:.2f}s {nodeid}")
+
+
 def _profile_record(
     request: pytest.FixtureRequest,
     preparation: HardwarePreparation,
@@ -188,5 +238,16 @@ def ssh_settings(hardware_inventory: Inventory):
     return hardware_inventory.hosts[0]
 
 
-# Re-export the session fixture so external modules can request it by name.
-prepared_hardware = _prepared_hardware
+@pytest.fixture(scope="session")
+def prepared_hardware(
+    hardware_inventory: Inventory, pytestconfig: pytest.Config
+) -> HardwarePreparation:
+    cache_root = hardware_cache_root(hardware_inventory)
+    preparation = HardwarePreparation(
+        hardware_inventory,
+        cache_root / "builds",
+        cache_root / "configs",
+        cache_root=cache_root / "caches",
+    )
+    pytestconfig.stash[_HARDWARE_BUILD_TIMINGS] = preparation.build_timings
+    return preparation

@@ -27,6 +27,7 @@ from tests.hardware_support import (
     FlashFixture,
     HardwarePreparation,
     elf_memory_witness,
+    hardware_cache_root,
 )
 from tests.inventory import Inventory, load_inventory
 from tests.inventory_samples import inventory_document
@@ -116,6 +117,50 @@ def test_preparation_retries_failed_build_and_caches_success(tmp_path, monkeypat
     assert environment["ZEPHYR_REMOTE_OPENOCD_CONFIG"] == str(flash.target.config_path)
     selected = resolve_remote(load_config(flash.target.config_path), remote_name="host")
     assert selected.ssh_host == inventory.host("host").ssh_host
+
+
+def test_hardware_cache_root_isolated_by_inventory_and_checkout(tmp_path: Path) -> None:
+    first_path = tmp_path / "first.yaml"
+    first_path.write_text(yaml.safe_dump(inventory_document(), sort_keys=False))
+    first = load_inventory(first_path)
+    second_path = tmp_path / "second.yaml"
+    second_path.write_text(yaml.safe_dump(inventory_document(), sort_keys=False))
+    second = load_inventory(second_path)
+
+    assert hardware_cache_root(first, repository_root=tmp_path / "checkout") != (
+        hardware_cache_root(second, repository_root=tmp_path / "checkout")
+    )
+    assert hardware_cache_root(first, repository_root=tmp_path / "checkout") != (
+        hardware_cache_root(first, repository_root=tmp_path / "other-checkout")
+    )
+
+
+def test_preparation_reuses_warm_build_with_redirected_caches(tmp_path: Path) -> None:
+    preparation, _inventory, build_root = _preparation_with_unavailable_recipe(tmp_path)
+    cache_root = tmp_path / "cache"
+    preparation = HardwarePreparation(
+        preparation.inventory,
+        build_root,
+        tmp_path / "configs",
+        cache_root=cache_root,
+    )
+    elf = build_root / "target" / "application" / "zephyr" / "zephyr.elf"
+    elf.parent.mkdir(parents=True)
+    elf.write_bytes(b"existing build")
+    (elf.parents[1] / "CMakeCache.txt").write_text("cached")
+
+    with patch("tests.hardware_support.subprocess.run", autospec=True) as run:
+        run.return_value = subprocess.CompletedProcess([], 0, "")
+        preparation.prepare("target:profile", "debug")
+
+    command = run.call_args.args[0]
+    assert command[command.index("-d") + 1] == str(build_root / "target" / "application")
+    assert "--pristine=never" in command
+    assert f"-DUSER_CACHE_DIR={cache_root / 'zephyr-cache'}" in command
+    environment = run.call_args.kwargs["env"]
+    assert environment["CCACHE_DIR"] == str(cache_root / "ccache")
+    assert environment["CCACHE_TEMPDIR"] == str(cache_root / "ccache-tmp")
+    assert preparation.build_timings[-1].cache_state == "warm"
 
 
 def test_elf_memory_witness_finds_bytes_that_distinguish_images(tmp_path: Path) -> None:

@@ -4,11 +4,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import socket
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import pytest
 from elftools.elf.elffile import ELFFile
@@ -32,6 +35,27 @@ from tests.inventory import (
     render_product_config,
 )
 from tests.support import ROOT
+
+
+@dataclass(frozen=True)
+class BuildTiming:
+    """Measured preparation of one inventory build recipe."""
+
+    target: str
+    build: str
+    cache_state: Literal["cold", "warm", "session", "failed"]
+    duration: float
+
+
+def hardware_cache_root(inventory: Inventory, *, repository_root: Path = ROOT) -> Path:
+    """Return an isolated persistent cache directory for one inventory checkout."""
+    digest = hashlib.sha256()
+    digest.update(str(repository_root.resolve()).encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(str(inventory.path).encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(inventory.path.read_bytes())
+    return repository_root / ".scratch" / "hardware" / f"build-cache-{digest.hexdigest()[:16]}"
 
 
 def free_loopback_ports(count: int) -> tuple[int, ...]:
@@ -200,13 +224,22 @@ type PreparedOperation = (
 
 
 class HardwarePreparation:
-    """Lazily prepare selected operations, caching builds per pytest session."""
+    """Lazily prepare selected operations with persistent incremental builds."""
 
-    def __init__(self, inventory: Inventory, build_root: Path, config_root: Path):
+    def __init__(
+        self,
+        inventory: Inventory,
+        build_root: Path,
+        config_root: Path,
+        *,
+        cache_root: Path | None = None,
+    ):
         self.inventory = inventory
         self.build_root = build_root
         self.config_root = config_root
+        self.cache_root = cache_root or build_root.parent / "cache"
         self.built: set[tuple[str, str]] = set()
+        self.build_timings: list[BuildTiming] = []
 
     def prepare(self, identifier: str, operation_name: str) -> PreparedOperation:
         target_name, profile_name = identifier.split(":", 1)
@@ -218,6 +251,7 @@ class HardwarePreparation:
         host = self.inventory.host(target.host)
         toolchain = self.inventory.toolchain(target.toolchain) if target.toolchain else None
         config_path = self.config_root / f"{host.name}.yaml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(render_product_config(host), encoding="utf-8")
         build_dir = self._prepare_build(target, build_environment, profile.build, config_path)
         prepared = self._prepared_target(
@@ -298,13 +332,19 @@ class HardwarePreparation:
         config_path: Path,
     ) -> Path:
         build_dir = self.build_root / target.name / build_name
-        build_dir.parent.mkdir(exist_ok=True)
+        build_dir.parent.mkdir(parents=True, exist_ok=True)
         build_key = (target.name, build_name)
         if build_key not in self.built:
             recipe = target.build(build_name)
             application = Path(recipe.application)
             if not application.is_absolute():
                 application = build_environment.zephyr_base / application
+            cache_state: Literal["cold", "warm"] = (
+                "warm"
+                if (build_dir / "CMakeCache.txt").is_file()
+                and (build_dir / "zephyr" / "zephyr.elf").is_file()
+                else "cold"
+            )
             command = [
                 str(build_environment.west),
                 "build",
@@ -314,9 +354,13 @@ class HardwarePreparation:
                 "-d",
                 str(build_dir),
                 *recipe.west_args,
+                "--pristine=never",
             ]
-            if recipe.cmake_args:
-                command.extend(("--", *recipe.cmake_args))
+            cmake_args = list(recipe.cmake_args)
+            if not any(argument.startswith("-DUSER_CACHE_DIR=") for argument in cmake_args):
+                cmake_args.append(f"-DUSER_CACHE_DIR={self.cache_root / 'zephyr-cache'}")
+            if cmake_args:
+                command.extend(("--", *cmake_args))
             environment = os.environ.copy()
             for name in (
                 "ZEPHYR_REMOTE_OPENOCD_REMOTE",
@@ -324,30 +368,41 @@ class HardwarePreparation:
                 "ZRO_RECORD_OPENOCD_VERSION",
             ):
                 environment.pop(name, None)
+            self.cache_root.mkdir(parents=True, exist_ok=True)
+            environment.setdefault("CCACHE_DIR", str(self.cache_root / "ccache"))
+            environment.setdefault("CCACHE_TEMPDIR", str(self.cache_root / "ccache-tmp"))
             environment.update(
                 EXTRA_ZEPHYR_MODULES=str(ROOT),
                 ZEPHYR_REMOTE_OPENOCD_CONFIG=str(config_path),
             )
-            result = subprocess.run(
-                command,
-                cwd=build_environment.zephyr_base.parent,
-                env=environment,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                check=False,
-                timeout=600,
+            started = time.monotonic()
+            try:
+                result = subprocess.run(
+                    command,
+                    cwd=build_environment.zephyr_base.parent,
+                    env=environment,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    check=False,
+                    timeout=600,
+                )
+            except BaseException:
+                self.build_timings.append(
+                    BuildTiming(target.name, build_name, "failed", time.monotonic() - started)
+                )
+                raise
+            self.build_timings.append(
+                BuildTiming(
+                    target.name,
+                    build_name,
+                    cache_state if result.returncode == 0 else "failed",
+                    time.monotonic() - started,
+                )
             )
             if result.returncode:
                 pytest.fail(f"build recipe {target.name}:{recipe.name} failed:\n{result.stdout}")
             self.built.add(build_key)
+        else:
+            self.build_timings.append(BuildTiming(target.name, build_name, "session", 0.0))
         return build_dir
-
-
-@pytest.fixture(scope="session")
-def prepared_hardware(hardware_inventory: Inventory, tmp_path_factory: pytest.TempPathFactory):
-    return HardwarePreparation(
-        hardware_inventory,
-        tmp_path_factory.mktemp("hardware_builds"),
-        tmp_path_factory.mktemp("hardware_inventory"),
-    )
