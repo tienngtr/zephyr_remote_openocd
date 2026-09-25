@@ -58,7 +58,7 @@ error checks.
 
 ## Testing and Validation
 
-Follow [`docs/development/testing.md`](docs/development/testing.md) for the
+Follow `docs/development/test_design.md` for the
 canonical test-design and regression-value guidance, including use of real
 production objects, constrained test doubles, deterministic synchronization,
 and treating excessive test difficulty as a production-design signal.
