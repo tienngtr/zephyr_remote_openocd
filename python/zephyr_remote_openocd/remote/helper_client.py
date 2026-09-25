@@ -25,7 +25,14 @@ from .protocol import (
     write_start,
     write_stop,
 )
-from .session import SessionError, _SessionState
+from .session import (
+    SessionError,
+    _HelperError,
+    _SessionClosed,
+    _SessionObservations,
+    _SessionSnapshot,
+    _StopWritten,
+)
 from .ssh import ManagedSshProcess, SshCommand, _stop_process
 
 # The helper gives a supervised child five seconds to exit after SIGTERM,
@@ -58,7 +65,9 @@ class _HelperClient:
         self._host = host
         self._deployment = deployment
         self._output_handler = output_handler
-        self._state = _SessionState()
+        self._observations = _SessionObservations()
+        self._error_reported = False
+        self._error_report_lock = threading.Lock()
         self._reader_thread: threading.Thread | None = None
         self._process: ManagedSshProcess | None = None
         self._allocation: SessionAllocation | None = None
@@ -84,7 +93,10 @@ class _HelperClient:
 
     @property
     def openocd_returncode(self) -> int | None:
-        return self._state.openocd_returncode
+        ending = self._observations.snapshot().ending
+        if isinstance(ending, _SessionClosed) and ending.reason == "process_exit":
+            return ending.returncode
+        return None
 
     def start_process(self, process: RemoteProcess, services: Iterable[Service]) -> str:
         service_list = tuple(services)
@@ -97,10 +109,21 @@ class _HelperClient:
         return address
 
     def recorded_openocd_exit(self) -> int | None:
-        return self._state.recorded_openocd_exit()
+        snapshot = self._observations.snapshot()
+        if snapshot.reader_failure is not None:
+            raise self._reader_failure(snapshot.reader_failure)
+        if isinstance(snapshot.ending, _HelperError):
+            self._mark_error_reported()
+            raise snapshot.ending.error
+        unexpected_close = self._unexpected_requested_close(snapshot)
+        if unexpected_close is not None:
+            raise unexpected_close
+        if isinstance(snapshot.ending, _SessionClosed):
+            return snapshot.ending.returncode
+        return None
 
     def wait_for_change(self, timeout: float | None) -> None:
-        self._state.wait_for_change(timeout)
+        self._observations.wait_for_change(timeout)
 
     def timeout_expired(self, timeout: float) -> subprocess.TimeoutExpired:
         """Build the public wait timeout using this control process's command."""
@@ -112,15 +135,12 @@ class _HelperClient:
         logical_error: BaseException | None = None
         cleanup_errors: list[BaseException] = []
 
-        close_before_stop = self._state.close_reason
+        close_before_stop = self._observations.snapshot()
         helper_status = helper.poll()
-        if close_before_stop == "requested":
-            logical_error = SessionError(
-                "helper reported SESSION_CLOSED(reason='requested') before STOP"
-            )
-        elif (
-            helper_status is None and close_before_stop is None and not self._state.has_error_event
-        ):
+        unexpected_close = self._unexpected_requested_close(close_before_stop)
+        if unexpected_close is not None:
+            logical_error = unexpected_close
+        elif helper_status is None and close_before_stop.ending is None:
             if self._reader_thread is None:
                 self._start_event_drain()
             if helper.stdin is None:
@@ -130,20 +150,33 @@ class _HelperClient:
                 def write_requested_stop() -> None:
                     write_stop(cast(BinaryIO, helper.stdin))
 
+                stop_result = None
                 try:
-                    close_before_stop = self._state.request_stop(write_requested_stop)
+                    stop_result = self._observations.request_stop(write_requested_stop)
                 except BaseException as error:
                     logical_error = error
                 else:
-                    if close_before_stop == "requested":
-                        logical_error = SessionError(
-                            "helper reported SESSION_CLOSED(reason='requested') before STOP"
-                        )
+                    unexpected_close = self._unexpected_requested_close(
+                        self._observations.snapshot()
+                    )
+                    if unexpected_close is not None:
+                        logical_error = unexpected_close
                 try:
                     helper.stdin.close()
                 except BaseException as error:
                     cleanup_errors.append(error)
-                if logical_error is None and not self._state.has_error_event:
+                ending = self._observations.snapshot().ending
+                if (
+                    logical_error is None
+                    and not isinstance(ending, _HelperError)
+                    and (
+                        isinstance(stop_result, _StopWritten)
+                        or (
+                            isinstance(stop_result, _SessionClosed)
+                            and stop_result.reason == "process_exit"
+                        )
+                    )
+                ):
                     try:
                         helper.wait(timeout=HELPER_STOP_TIMEOUT)
                     except BaseException as error:
@@ -168,18 +201,27 @@ class _HelperClient:
 
         self._emit_diagnostic()
 
-        reader_eof = self._state.reader_failure_has_eof_cause()
-        reader_failure = self._state.reader_failure()
+        snapshot = self._observations.snapshot()
+        reader_eof = isinstance(
+            snapshot.reader_failure.__cause__ if snapshot.reader_failure is not None else None,
+            EOFError,
+        )
+        reader_failure = (
+            self._reader_failure(snapshot.reader_failure)
+            if snapshot.reader_failure is not None
+            else None
+        )
         if reader_failure is not None and not reader_eof:
             logical_error = logical_error or reader_failure
 
         if logical_error is None:
-            logical_error = self._state.take_unreported_error_event()
+            logical_error = self._take_unreported_helper_error()
 
-        close_reason = self._state.close_reason
-        if logical_error is None and not self._state.has_error_event:
+        ending = self._observations.snapshot().ending
+        if logical_error is None and not isinstance(ending, _HelperError):
             helper_status = helper.poll()
-            if close_reason not in {"requested", "process_exit"}:
+            close_reason = ending.reason if isinstance(ending, _SessionClosed) else None
+            if close_reason is None:
                 logical_error = SessionError(
                     "helper shutdown did not produce "
                     "SESSION_CLOSED(reason='requested' or 'process_exit') "
@@ -238,7 +280,9 @@ class _HelperClient:
             session_error = SessionError(
                 f"remote helper error: {message.get('message', 'unknown error')}"
             )
-            self._state.record_error_event(session_error, reported=foreground)
+            self._observations.record_error_event(session_error)
+            if foreground:
+                self._mark_error_reported()
             raise session_error
         return message
 
@@ -287,16 +331,19 @@ class _HelperClient:
         if event["type"] == "CHILD_OUTPUT" and self._output_handler is not None:
             self._output_handler(event["stream"], event["payload"], event["line_end"])
         elif event["type"] == "SESSION_CLOSED":
-            self._state.record_close(event["reason"], event["returncode"])
+            self._observations.record_close(event["reason"], event["returncode"])
 
     def _drain_events(self) -> None:
         try:
             while True:
                 self._dispatch(self._read_event(foreground=False))
         except BaseException as error:
-            if self._state.error_event is error:
+            snapshot = self._observations.snapshot()
+            if isinstance(snapshot.ending, _HelperError) and snapshot.ending.error is error:
                 return
-            close_reason = self._state.close_reason
+            close_reason = (
+                snapshot.ending.reason if isinstance(snapshot.ending, _SessionClosed) else None
+            )
             helper = self._process_or_error()
             if isinstance(error.__cause__, EOFError):
                 helper_status = helper.poll()
@@ -317,7 +364,7 @@ class _HelperClient:
                 failure = SessionError(detail)
                 failure.__cause__ = error.__cause__
                 error = failure
-            self._state.record_reader_failure(error)
+            self._observations.record_reader_failure(error)
 
     def _join_reader(self, timeout: float = 2.0) -> bool:
         if self._reader_thread is None:
@@ -339,6 +386,35 @@ class _HelperClient:
                     self._output_handler("stderr", fragment, line_end)
         except BaseException:
             return
+
+    def _mark_error_reported(self) -> None:
+        with self._error_report_lock:
+            self._error_reported = True
+
+    def _take_unreported_helper_error(self) -> SessionError | None:
+        with self._error_report_lock:
+            ending = self._observations.snapshot().ending
+            if not isinstance(ending, _HelperError) or self._error_reported:
+                return None
+            self._error_reported = True
+            return ending.error
+
+    @staticmethod
+    def _unexpected_requested_close(snapshot: _SessionSnapshot) -> SessionError | None:
+        ending = snapshot.ending
+        if (
+            isinstance(ending, _SessionClosed)
+            and ending.reason == "requested"
+            and not snapshot.stop_requested
+        ):
+            return SessionError("helper reported SESSION_CLOSED(reason='requested') before STOP")
+        return None
+
+    @staticmethod
+    def _reader_failure(error: BaseException) -> SessionError:
+        failure = SessionError(f"helper event stream failed: {error}")
+        failure.__cause__ = error
+        return failure
 
     def _process_or_error(self) -> ManagedSshProcess:
         if self._process is None:
