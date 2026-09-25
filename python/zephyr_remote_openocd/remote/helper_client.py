@@ -19,7 +19,8 @@ from .deploy import DeploymentResult
 from .model import RemoteProcess, Service, SessionAllocation
 from .protocol import (
     EventOrder,
-    decode_message,
+    ProtocolError,
+    decode_single_frame,
     read_message,
     write_start,
     write_stop,
@@ -257,11 +258,11 @@ class _HelperClient:
                 chunk = os.read(descriptor, 1)
                 if not chunk:
                     if pending:
-                        return decode_message(bytes(pending))
+                        raise ProtocolError("protocol frame is missing its LF delimiter")
                     raise EOFError("helper control channel closed")
                 pending.extend(chunk)
                 if chunk == b"\n":
-                    return decode_message(bytes(pending))
+                    return decode_single_frame(bytes(pending))
         finally:
             selector.close()
 

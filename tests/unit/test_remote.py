@@ -48,7 +48,9 @@ from zephyr_remote_openocd.remote.protocol import (
     EventOrder,
     ProtocolError,
     decode_message,
+    decode_single_frame,
     encode_message,
+    read_message,
     validate_deployment_response,
     validate_helper_event,
     validate_openocd_version_response,
@@ -71,6 +73,31 @@ TEST_PROCESS = RemoteProcess(("test-process",))
 
 
 class TestProtocol:
+    @pytest.mark.parametrize(
+        "response",
+        (
+            pytest.param(encode_message("HELLO").rstrip(b"\n"), id="missing-lf"),
+            pytest.param(encode_message("HELLO") + b"\n", id="multiple-lf"),
+            pytest.param(encode_message("HELLO")[:-1] + b" \n", id="trailing-space"),
+            pytest.param(b" " + encode_message("HELLO"), id="leading-space"),
+            pytest.param(encode_message("HELLO") + b"{}\n", id="second-object"),
+        ),
+    )
+    def test_decode_single_frame_rejects_extra_or_missing_framing(self, response):
+        with pytest.raises(ProtocolError):
+            decode_single_frame(response)
+
+    def test_decode_single_frame_accepts_one_frame(self):
+        response = encode_message("HELLO", value=3)
+
+        assert decode_single_frame(response) == {"version": 1, "type": "HELLO", "value": 3}
+
+    def test_read_message_rejects_frame_without_lf(self):
+        frame = encode_message("HELLO", value=3).rstrip(b"\n")
+
+        with pytest.raises(ProtocolError):
+            read_message(io.BytesIO(frame))
+
     def test_round_trip_and_rejections(self):
         assert decode_message(encode_message("HELLO", value=3))["value"] == 3
         for invalid in (
@@ -386,6 +413,19 @@ def test_deployment_wraps_invalid_utf8_response():
 
     with pytest.raises(deploy_module.DeploymentError, match="invalid deployment response"):
         deploy_module.deploy_helper(ssh, "host", source=b"helper source")
+
+
+def test_deployment_rejects_response_without_lf():
+    source = b"helper source"
+    response = encode_message(
+        "DEPLOYED",
+        status="deployed",
+        path="/home/test/helper.py",
+        sha256=hashlib.sha256(source).hexdigest(),
+    ).rstrip(b"\n")
+
+    with pytest.raises(deploy_module.DeploymentError):
+        deploy_module.deploy_helper(DeploymentReply(0, response, b""), "host", source=source)
 
 
 def test_deployment_reports_nonzero_ssh_status_and_diagnostic():

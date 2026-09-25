@@ -924,6 +924,8 @@ class ControlSession:
         if not line:
             return False
         try:
+            if not line.endswith(b"\n"):
+                raise ValueError("protocol frame is missing its LF delimiter")
             message = json.loads(line)
             return self.dispatch(message)
         except Exception as exc:

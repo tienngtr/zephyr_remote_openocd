@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import io
 import subprocess
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -17,6 +19,7 @@ from zephyr_remote_openocd.remote.model import (
     SessionAllocation,
     SessionDescriptor,
 )
+from zephyr_remote_openocd.remote.protocol import encode_message
 from zephyr_remote_openocd.remote.session import SessionClosedError, SessionError
 from zephyr_remote_openocd.remote.ssh import SshCommand
 
@@ -128,6 +131,46 @@ def test_version_query_reports_ssh_failure_status_and_diagnostic(monkeypatch):
     message = str(raised.value)
     assert str(ssh_exit_status) in message
     assert "Permission denied" in message
+
+
+def test_version_query_rejects_response_without_lf(monkeypatch):
+    response = encode_message("OPENOCD_VERSION", output="OpenOCD 0.12.0").rstrip(b"\n")
+
+    class ReplyCommand(SshCommand):
+        def run(self, host, remote_command, *, input_data=None, timeout=15):
+            return subprocess.CompletedProcess(remote_command, 0, response, b"")
+
+    monkeypatch.setattr(
+        backend_module,
+        "deploy_helper",
+        lambda _ssh_command, _host: DeploymentResult("/helper.py", "digest", False),
+    )
+
+    with pytest.raises(SessionError):
+        query_remote_openocd_version(ReplyCommand(), "target", ("openocd",))
+
+
+def test_staging_rejects_response_without_lf(monkeypatch):
+    archive = SimpleNamespace(
+        stream=io.BytesIO(), files=(), directories=(), byte_count=0, sha256="0" * 64
+    )
+    response = encode_message(
+        "STAGED", byte_count=0, sha256=archive.sha256, files=[], directories=[]
+    ).rstrip(b"\n")
+
+    class ReplyCommand(SshCommand):
+        def run_stream(self, host, remote_command, stream, *, timeout=60):
+            return subprocess.CompletedProcess(remote_command, 0, response, b"")
+
+    monkeypatch.setattr(backend_module, "build_archive", lambda _files: archive)
+    request = RemoteSessionRequest("target", ReplyCommand(), RemoteProcess(("openocd",)))
+    session = RemoteSession(request, DeploymentResult("/helper.py", "digest", False))
+    cast(Any, session)._helper = SimpleNamespace(
+        allocation=SimpleNamespace(remote_workspace="/workspace")
+    )
+
+    with pytest.raises(SessionError):
+        session._stage(())
 
 
 def test_closed_session_exposes_only_cached_openocd_result():
