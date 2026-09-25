@@ -998,19 +998,15 @@ OpenOCD process.
 
 ### REQ-FUNC-HELP-006
 
-The persistent helper contract SHALL use version value `1`, one strict
-`START` command, and strict validation at both the client and helper
-boundaries. Unknown wire fields SHALL be rejected. Readiness SHALL be
-immediate for generic processes with no required output sentinel. For a process
-with required output sentinels, the helper SHALL report readiness only after
-each sentinel has appeared as a complete trimmed output line.
-`CHILD_OUTPUT` SHALL carry ordered, bounded, UTF-8-decoded fragments from the
-identified child stream and omit `LF` delimiters. Its Boolean `line_end` field
-SHALL be true only when that fragment is followed by an actual child `LF`; a
-fragment with `line_end` false SHALL have a non-empty payload. `SESSION_CLOSED`
-SHALL identify orderly session closure and follow relay completion. `ERROR`
-SHALL identify failure. Either event SHALL end the session, with no subsequent
-event. Loss of the control transport MAY prevent delivery of a final event.
+The client and helper SHALL validate the persistent control contract before
+acting on commands or events. The helper SHALL report readiness only after the
+configured process-readiness conditions are met. A process with no configured
+readiness conditions SHALL be ready immediately. The helper SHALL relay child
+output to the client in order. Orderly session closure and helper failure SHALL
+remain distinguishable, and either SHALL end the session. Loss of the control
+transport MAY prevent delivery of a final outcome. The exact Protocol v1
+messages, framing, ordering, and validation rules are defined in
+[`protocol.md`](../architecture/protocol.md).
 
 ### REQ-FUNC-HELP-007
 
@@ -1021,9 +1017,11 @@ be serialized for concurrent deployments.
 
 ### REQ-FUNC-HELP-008
 
-Each persistent `START` service list SHALL contain unique service names and
-unique `remote_port` values within that request. Client domain validation and
-helper wire validation SHALL reject duplicate values before process startup.
+Service configuration SHALL be validated before process startup. The client
+and helper SHALL independently validate the portions of the service contract
+available at their respective boundaries. The exact Protocol v1 request
+fields and validation rules are defined in
+[`protocol.md`](../architecture/protocol.md).
 
 ### REQ-FUNC-HELP-009
 
