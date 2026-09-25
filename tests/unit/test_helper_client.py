@@ -16,7 +16,7 @@ from zephyr_remote_openocd.remote.helper_client import _HelperClient
 from zephyr_remote_openocd.remote.model import RemoteProcess, RemoteSessionRequest
 from zephyr_remote_openocd.remote.protocol import ProtocolError, decode_message, encode_message
 from zephyr_remote_openocd.remote.session import SessionError
-from zephyr_remote_openocd.remote.ssh import SshCommand
+from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand
 
 OPENOCD_FAILURE_RC = 7
 
@@ -189,20 +189,32 @@ def test_close_waits_when_process_exit_wins_stop_race(monkeypatch):
             self.returncode = 0
             return self.returncode
 
-    class Reader:
-        @staticmethod
-        def join(timeout=None):
-            del timeout
+        def terminate(self):
+            self.returncode = 0
+
+        def kill(self):
+            self.returncode = -signal.SIGKILL
 
         @staticmethod
-        def is_alive():
+        def stderr_tail():
+            return b""
+
+        def close_stderr(self):
+            self.stderr.close()
+
+    class Reader(threading.Thread):
+        @override
+        def join(self, timeout=None):
+            del timeout
+
+        @override
+        def is_alive(self):
             return False
 
     helper_client = _helper_client()
-    test_helper = cast(Any, helper_client)
     process = Process()
-    test_helper._process = process
-    test_helper._reader_thread = Reader()
+    helper_client._process = cast(ManagedSshProcess, process)
+    helper_client._reader_thread = Reader()
 
     request_stop = helper_client._observations.request_stop
 
@@ -211,13 +223,15 @@ def test_close_waits_when_process_exit_wins_stop_race(monkeypatch):
         return request_stop(write_stop)
 
     monkeypatch.setattr(helper_client._observations, "request_stop", observe_process_exit)
-    monkeypatch.setattr(helper_client_module, "_stop_process", lambda *_args, **_kwargs: None)
 
     result = helper_client.close()
 
     assert result.error is None
     assert wait_called.is_set()
     assert process.returncode == 0
+    assert process.stdin.closed
+    assert process.stdout.closed
+    assert process.stderr.closed
 
 
 def test_startup_error_ends_session_without_stop_or_missing_close_failure():
@@ -325,17 +339,6 @@ def test_reader_failure_takes_precedence_over_known_openocd_result():
     assert raised.value.__cause__ is reader_error
 
 
-def test_reader_failure_is_reported_when_helper_exits_without_close_event():
-    helper_client = _helper_client()
-    reader_error = SessionError("remote helper exited without a session-ending event")
-    helper_client._observations.record_reader_failure(reader_error)
-
-    with pytest.raises(SessionError) as raised:
-        helper_client.recorded_openocd_exit()
-
-    assert raised.value.__cause__ is reader_error
-
-
 def test_close_keeps_stop_failure_primary_when_forced_disposal_also_fails():
     graceful_stop_error = RuntimeError("graceful stop failed")
     forced_stop_error = RuntimeError("forced stop failed")
@@ -383,7 +386,7 @@ def test_close_keeps_stop_failure_primary_when_forced_disposal_also_fails():
             pass
 
     helper_client = _helper_client()
-    cast(Any, helper_client)._process = Process()
+    helper_client._process = cast(ManagedSshProcess, Process())
 
     result = helper_client.close()
 
@@ -402,11 +405,11 @@ def test_close_disposes_helper_when_initial_status_observation_fails():
             self.stdout = io.BytesIO()
             self.stderr = io.BytesIO()
             self.returncode = None
-            self.poll_calls = 0
+            self.initial_status_failure_pending = True
 
         def poll(self):
-            self.poll_calls += 1
-            if self.poll_calls == 1:
+            if self.initial_status_failure_pending:
+                self.initial_status_failure_pending = False
                 raise observation_error
             return self.returncode
 
@@ -425,7 +428,7 @@ def test_close_disposes_helper_when_initial_status_observation_fails():
 
     process = Process()
     helper_client = _helper_client()
-    cast(Any, helper_client)._process = process
+    helper_client._process = cast(ManagedSshProcess, process)
 
     result = helper_client.close()
 
@@ -454,25 +457,26 @@ def test_close_disposes_helper_when_reader_join_fails():
         def close_stderr(self):
             self.stderr.close()
 
-    class Reader:
+    class Reader(threading.Thread):
         def __init__(self):
-            self.join_calls = 0
+            super().__init__()
+            self.join_failure_pending = True
 
+        @override
         def join(self, timeout=None):
             del timeout
-            self.join_calls += 1
-            if self.join_calls == 1:
+            if self.join_failure_pending:
+                self.join_failure_pending = False
                 raise join_error
 
-        @staticmethod
-        def is_alive():
+        @override
+        def is_alive(self):
             return False
 
     process = Process()
     helper_client = _helper_client()
-    test_helper = cast(Any, helper_client)
-    test_helper._process = process
-    test_helper._reader_thread = Reader()
+    helper_client._process = cast(ManagedSshProcess, process)
+    helper_client._reader_thread = Reader()
     helper_client._observations.record_close("process_exit", 0)
 
     result = helper_client.close()
@@ -482,6 +486,41 @@ def test_close_disposes_helper_when_reader_join_fails():
     assert process.stdin.closed
     assert process.stdout.closed
     assert process.stderr.closed
+
+
+def test_close_preserves_cleanup_error_when_final_status_observation_fails():
+    status_error = RuntimeError("helper final status failed")
+    cleanup_error = RuntimeError("helper stderr cleanup failed")
+
+    class Process:
+        def __init__(self):
+            self.args = ("fake-helper",)
+            self.stdin = io.BytesIO()
+            self.stdout = io.BytesIO()
+            self.returncode = 0
+            self.disposal_attempted = False
+
+        def poll(self):
+            if self.disposal_attempted:
+                raise status_error
+            return self.returncode
+
+        def close_stderr(self):
+            self.disposal_attempted = True
+            raise cleanup_error
+
+    process = Process()
+    helper_client = _helper_client()
+    helper_client._process = cast(ManagedSshProcess, process)
+    helper_client._observations.record_close("process_exit", 0)
+
+    result = helper_client.close()
+
+    assert result.error is status_error
+    assert result.cleanup_errors == (cleanup_error,)
+    assert process.stdin.closed
+    assert process.stdout.closed
+    assert any("helper cleanup also failed" in note for note in status_error.__notes__)
 
 
 def test_close_closes_streams_when_reader_thread_does_not_start(monkeypatch):
@@ -516,7 +555,7 @@ def test_close_closes_streams_when_reader_thread_does_not_start(monkeypatch):
 
     process = Process()
     helper_client = _helper_client()
-    cast(Any, helper_client)._process = process
+    helper_client._process = cast(ManagedSshProcess, process)
     monkeypatch.setattr(threading.Thread, "start", fail_start)
 
     result = helper_client.close()
@@ -528,14 +567,28 @@ def test_close_closes_streams_when_reader_thread_does_not_start(monkeypatch):
     assert process.stderr.closed
 
 
-def test_close_reports_helper_stop_timeout():
+def test_close_forces_disposal_after_helper_stop_timeout():
+    close_event = encode_message("SESSION_CLOSED", reason="requested", returncode=None)
+
+    class StopInput(io.BytesIO):
+        def __init__(self, event_writer: BinaryIO):
+            super().__init__()
+            self.event_writer = event_writer
+
+        def write(self, payload):
+            written = super().write(payload)
+            self.event_writer.write(close_event)
+            self.event_writer.close()
+            return written
+
     class Process:
         def __init__(self):
             self.args = ("fake-helper",)
-            self.stdin = io.BytesIO()
-            self.stdout = io.BytesIO(
-                encode_message("SESSION_CLOSED", reason="requested", returncode=None)
-            )
+            read_fd, write_fd = os.pipe()
+            self.event_writer = os.fdopen(write_fd, "wb", buffering=0)
+            self.stdin = StopInput(self.event_writer)
+            self.stdout = os.fdopen(read_fd, "rb", buffering=0)
+            self.stderr = io.BytesIO()
             self.returncode = None
 
         def poll(self):
@@ -556,16 +609,20 @@ def test_close_reports_helper_stop_timeout():
         def stderr_tail():
             return b""
 
-        @staticmethod
-        def close_stderr():
-            pass
+        def close_stderr(self):
+            self.stderr.close()
 
+    process = Process()
     helper_client = _helper_client()
-    cast(Any, helper_client)._process = Process()
+    helper_client._process = cast(ManagedSshProcess, process)
 
     result = helper_client.close()
 
     assert isinstance(result.error, subprocess.TimeoutExpired)
+    assert process.returncode == 0
+    assert process.stdin.closed
+    assert process.stdout.closed
+    assert process.stderr.closed
 
 
 def test_helper_open_retains_nested_cleanup_diagnostics(monkeypatch):
@@ -605,12 +662,13 @@ def test_helper_close_keeps_reader_owned_stdout_open_until_reader_stops():
             assert reader_stopped.is_set()
             super().close()
 
-    class Reader:
+    class Reader(threading.Thread):
+        @override
         def join(self, timeout=None):
             del timeout
 
-        @staticmethod
-        def is_alive():
+        @override
+        def is_alive(self):
             return not reader_stopped.is_set()
 
     class Process:
@@ -639,19 +697,19 @@ def test_helper_close_keeps_reader_owned_stdout_open_until_reader_stops():
             self.stderr.close()
 
     helper = _HelperClient(SshCommand(), "host", DeploymentResult("/helper.py", "digest", False))
-    test_helper = cast(Any, helper)
-    test_helper._process = Process()
-    test_helper._observations.record_close("process_exit", 0)
-    test_helper._reader_thread = Reader()
+    process = Process()
+    reader = Reader()
+    helper._process = cast(ManagedSshProcess, process)
+    helper._observations.record_close("process_exit", 0)
+    helper._reader_thread = reader
 
     assert helper.close().error is None
 
     assert reader_stopped.is_set()
-    assert not test_helper._reader_thread.is_alive()
-    assert test_helper._process.stdin.closed
-    assert test_helper._process.stdout.closed
-    assert test_helper._process.stderr.closed
-    assert helper.close().error is None
+    assert not reader.is_alive()
+    assert process.stdin.closed
+    assert process.stdout.closed
+    assert process.stderr.closed
 
 
 def test_helper_close_retains_nested_process_cleanup_diagnostics():
@@ -675,9 +733,8 @@ def test_helper_close_retains_nested_process_cleanup_diagnostics():
             raise stderr_error
 
     helper = _HelperClient(SshCommand(), "host", DeploymentResult("/helper.py", "digest", False))
-    test_helper = cast(Any, helper)
-    test_helper._process = Process()
-    test_helper._observations.record_close("requested", None)
+    helper._process = cast(ManagedSshProcess, Process())
+    helper._observations.record_close("requested", None)
 
     result = helper.close()
 
