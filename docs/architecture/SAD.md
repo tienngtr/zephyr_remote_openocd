@@ -251,9 +251,10 @@ merged. Remote `~` paths are expanded using the SSH user's actual home only
 during a real operation; recording keeps them unresolved.
 
 `scripts/user/validate_configuration.py` is a no-I/O front end to this loader and
-resolver. Its optional configuration path follows the product default and
-`ZEPHYR_REMOTE_OPENOCD_CONFIG`. It resolves an explicit `--remote`, otherwise
-the file's `default_remote`; it does not consult
+resolver. A non-empty `ZEPHYR_REMOTE_OPENOCD_CONFIG` overrides the product
+default configuration path, and a leading current-user `~` is expanded before
+the file is read. The validator resolves an explicit `--remote`, otherwise the
+file's `default_remote`; it does not consult
 `ZEPHYR_REMOTE_OPENOCD_REMOTE`, so shell state cannot silently change the
 summary. With no selected remote it reports structural validity and available
 definitions. It requires the target file to exist, prints commands as argv and
@@ -428,13 +429,15 @@ remote_openocd
 
 ## 15. Automatic Default Regeneration
 
-The module adds:
+The module adds the effective configuration path as a CMake configure
+dependency. By default, that path is:
 
 ```text
 ~/.config/zephyr_remote_openocd/config.yaml
 ```
 
-to the CMake configure dependencies.
+A non-empty `ZEPHYR_REMOTE_OPENOCD_CONFIG` selects the effective path for both
+configuration loading and dependency registration.
 
 Expected flow:
 
@@ -1174,10 +1177,13 @@ replacement, omits `LF` delimiters, and emits ordered `CHILD_OUTPUT` fragments
 with `line_end` metadata. `line_end` belongs only to `CHILD_OUTPUT` and is true
 only when the omitted delimiter was an actual child `LF`. A bounded chunk and
 an actual `LF` therefore remain distinct. Long newline-free output becomes
-visible before the child exits. `SESSION_CLOSED` follows relay completion and
-is an orderly session-close event; `ERROR` is a failure event. Both end the
-session and are followed by no further event. Readiness matching recognizes
-each required sentinel only as a complete trimmed line, so a fragment boundary
+visible before the child exits. Fragment order is preserved within each child
+stream. Events from stdout and stderr are serialized in helper-observed order;
+no ordering relationship between writes to different child streams is
+guaranteed. `SESSION_CLOSED` follows relay completion and is an orderly
+session-close event; `ERROR` is a failure event. Both are session-ending events
+and are followed by no further event. Readiness matching recognizes each
+required sentinel only as a complete trimmed line, so a fragment boundary
 cannot make a sentinel appear.
 
 This includes:

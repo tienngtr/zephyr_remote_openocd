@@ -459,6 +459,12 @@ structural success and the available definitions. A missing target file SHALL
 be an actionable validation failure rather than being treated as empty runtime
 configuration.
 
+### REQ-FUNC-CONFIG-014
+
+A non-empty `ZEPHYR_REMOTE_OPENOCD_CONFIG` environment variable SHALL override
+the default configuration path. A leading current-user `~` in the override
+SHALL be expanded before the configuration is read.
+
 ---
 
 ## 9. Runner Availability and Selection
@@ -1001,11 +1007,11 @@ OpenOCD process.
 The client and helper SHALL validate the persistent control contract before
 acting on commands or events. The helper SHALL report readiness only after the
 configured process-readiness conditions are met. A process with no configured
-readiness conditions SHALL be ready immediately. The helper SHALL relay child
-output to the client in order. Orderly session closure and helper failure SHALL
-remain distinguishable, and either SHALL end the session. Loss of the control
-transport MAY prevent delivery of a final outcome. The exact Protocol v1
-messages, framing, ordering, and validation rules are defined in
+readiness conditions SHALL be ready immediately. The helper SHALL preserve
+child-output ordering within each stream. Orderly session closure and helper
+failure SHALL remain distinguishable, and either SHALL end the session. Loss
+of the control transport MAY prevent delivery of a final outcome. The exact
+Protocol v1 messages, framing, ordering, and validation rules are defined in
 [`protocol.md`](../architecture/protocol.md).
 
 ### REQ-FUNC-HELP-007

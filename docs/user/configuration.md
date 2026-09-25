@@ -53,12 +53,12 @@ After that works, uncomment `default_remote: lab` if desired. Keep
 to `remote_openocd` and run `west build` to regenerate the build's runner
 configuration.
 
-Set `ZEPHYR_REMOTE_OPENOCD_CONFIG` to read a different file; its contents are
-YAML regardless of its filename extension. The validator uses the same override
-when no configuration path is passed. An explicit validator `--remote` takes
-precedence over `default_remote`; unlike a real runner operation, validation
-deliberately ignores `ZEPHYR_REMOTE_OPENOCD_REMOTE` so its result is
-deterministic.
+Set a non-empty `ZEPHYR_REMOTE_OPENOCD_CONFIG` to read a different file; a
+leading current-user `~` is expanded, and the file contents are YAML regardless
+of the filename extension. The validator uses the same override when no
+configuration path is passed. An explicit validator `--remote` takes precedence
+over `default_remote`; unlike a real runner operation, validation deliberately
+ignores `ZEPHYR_REMOTE_OPENOCD_REMOTE` so its result is deterministic.
 
 The complete machine-readable contract is
 [`configuration.schema.json`](../../python/zephyr_remote_openocd/resources/configuration.schema.json), and
