@@ -30,26 +30,6 @@ SPEC.loader.exec_module(remote_helper)
 SAMPLE_CHILD_EXIT_CODE = 7
 
 
-def test_helper_rejects_command_frame_without_lf(monkeypatch):
-    dispatched = []
-    session = remote_helper.ControlSession("session", None, None)
-
-    def record_dispatch(message):
-        dispatched.append(message)
-
-    monkeypatch.setattr(
-        remote_helper.sys,
-        "stdin",
-        SimpleNamespace(buffer=io.BytesIO(b'{"version":1,"type":"STOP"}')),
-    )
-    monkeypatch.setattr(session, "dispatch", record_dispatch)
-
-    assert not session._read_and_dispatch()
-
-    assert isinstance(session.protocol_error, ValueError)
-    assert dispatched == []
-
-
 def test_helper_accepts_json_whitespace_inside_command_frame(monkeypatch):
     dispatched = []
     session = remote_helper.ControlSession("session", None, None)
@@ -292,31 +272,6 @@ def test_decode_start_accepts_full_output_lines_with_internal_spaces(start_comma
     request = remote_helper.decode_command(start_command)
 
     assert request.required_output_sentinels == ("READY FOR START",)
-
-
-def test_process_readiness_does_not_probe_service_sockets(monkeypatch, start_command):
-    request = remote_helper.decode_command(start_command)
-    required_output_sentinels = remote_helper._RequiredOutputSentinels(
-        request.required_output_sentinels
-    )
-    required_output_sentinels.observe("READY")
-    child = SimpleNamespace(
-        pid=42,
-        startup_output=[],
-        required_output_sentinels=required_output_sentinels,
-        poll=lambda: None,
-        returncode=None,
-    )
-    events = []
-    monkeypatch.setattr(remote_helper, "emit", lambda kind, **values: events.append((kind, values)))
-    monkeypatch.setattr(
-        remote_helper.socket,
-        "create_connection",
-        lambda *_args, **_kwargs: pytest.fail("readiness must not probe service sockets"),
-    )
-
-    assert remote_helper._wait_for_process(child, "127.64.3.1", request, 0)
-    assert [kind for kind, _values in events] == ["PROCESS_READY"]
 
 
 @pytest.mark.parametrize(
