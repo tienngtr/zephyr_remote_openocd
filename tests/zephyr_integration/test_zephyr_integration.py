@@ -35,8 +35,6 @@ class TestZephyrIntegration:
     scratch: Path
     fake_openocd: Path
     cache: Path
-    ccache: Path
-    ccache_tmp: Path
     build_in_tree: Path
     build_out_tree: Path
     build_without_openocd: Path
@@ -72,8 +70,6 @@ class TestZephyrIntegration:
         cls.fake_openocd.write_text("#!/bin/sh\nprintf 'Open On-Chip Debugger 0.12.0\\n'\n")
         cls.fake_openocd.chmod(cls.fake_openocd.stat().st_mode | stat.S_IXUSR)
         cls.cache = cls.scratch / "zephyr_cache"
-        cls.ccache = cls.scratch / "ccache"
-        cls.ccache_tmp = cls.scratch / "ccache_tmp"
         cls.build_in_tree = cls.scratch / "build_in_tree"
         cls.build_out_tree = cls.scratch / "build_out_tree"
         cls.build_without_openocd = cls.scratch / "build_without_openocd"
@@ -150,8 +146,6 @@ class TestZephyrIntegration:
                 "EXTRA_ZEPHYR_MODULES": str(ROOT),
                 "ZEPHYR_REMOTE_OPENOCD_CONFIG": str(cls.config),
                 "ZRO_RECORD": "1",
-                "CCACHE_DIR": str(cls.ccache),
-                "CCACHE_TEMPDIR": str(cls.ccache_tmp),
             }
         )
         env.update(extra_env or {})
@@ -302,8 +296,6 @@ class TestZephyrIntegration:
                     "EXTRA_ZEPHYR_MODULES": str(distribution),
                     "ZEPHYR_REMOTE_OPENOCD_CONFIG": str(config),
                     "ZRO_RECORD": "1",
-                    "CCACHE_DIR": str(root / "ccache"),
-                    "CCACHE_TEMPDIR": str(root / "ccache_tmp"),
                 }
             )
 
