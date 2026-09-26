@@ -314,8 +314,8 @@ class SshCommand:
     argv_prefix: tuple[str, ...] = ("ssh",)
 
     def __post_init__(self) -> None:
-        if not self.argv_prefix or not all(self.argv_prefix):
-            raise ValueError("SSH command must contain at least one non-empty argument")
+        if not self.argv_prefix or not self.argv_prefix[0]:
+            raise ValueError("SSH command must contain a non-empty executable")
 
     def argv(self, host: str, remote_command: str) -> list[str]:
         if not host:

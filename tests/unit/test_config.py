@@ -9,6 +9,7 @@ from zephyr_remote_openocd.config import (
     load_config,
     resolve_remote,
 )
+from zephyr_remote_openocd.remote.ssh import SshCommand
 
 from tests.support import ROOT
 
@@ -212,6 +213,26 @@ remotes:
     assert selected.openocd_command == ("~/bin/openocd", "--debug", "")
     assert selected.ssh_command == ("ssh", "-F", "/a file")
     assert str(selected.path_mappings[0].remote) == "~/remote"
+
+
+def test_schema_valid_empty_ssh_argument_reaches_final_argv(tmp_path: Path):
+    config = load_text(
+        tmp_path,
+        """remotes:
+  lab:
+    openocd_command: [openocd]
+    ssh_command: [ssh-wrapper, '']
+""",
+    )
+
+    selected = resolve_remote(config, "lab")
+
+    assert SshCommand(selected.ssh_command).argv("machine", "remote command") == [
+        "ssh-wrapper",
+        "",
+        "machine",
+        "remote command",
+    ]
 
 
 def test_ssh_executable_under_current_home_is_expanded(monkeypatch, tmp_path: Path):
