@@ -203,10 +203,10 @@ class RemoteSession:
             return self.openocd_returncode
         helper = self._helper_or_error()
         result = helper.recorded_openocd_exit()
-        if result is not None:
+        if result is not None and result != 0:
             return result
         self._forwards.check_health()
-        return helper.recorded_openocd_exit()
+        return result if result is not None else helper.recorded_openocd_exit()
 
     def wait_for_openocd_exit(self, timeout: float | None = None) -> int:
         if self.closed:

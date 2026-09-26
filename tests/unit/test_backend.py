@@ -342,6 +342,29 @@ def test_check_openocd_exit_returns_completed_result_before_forward_health():
     assert session.check_openocd_exit() == OPENOCD_FAILURE_RC
 
 
+def test_check_openocd_exit_propagates_forward_failure_after_successful_openocd_exit():
+    forwarding_error = SessionError(f"SSH forwarding exited with status {FORWARD_FAILURE_RC}")
+
+    class Helper(_BlockedHelper):
+        @override
+        def recorded_openocd_exit(self) -> int | None:
+            return 0
+
+    class Forwards(_BlockedForwards):
+        @override
+        def check_health(self) -> None:
+            raise forwarding_error
+
+    session = _make_session()
+    session._helper = Helper()
+    session._forwards = Forwards()
+
+    with pytest.raises(SessionError) as raised:
+        session.check_openocd_exit()
+
+    assert raised.value is forwarding_error
+
+
 def test_close_attempts_all_cleanup_once_and_preserves_first_failure():
     session = _make_session()
     first_error = RuntimeError("forward cleanup failed")
