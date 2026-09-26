@@ -50,8 +50,12 @@ west flash -r remote_openocd --remote lab
 
 After that works, uncomment `default_remote: lab` if desired. Keep
 `default_runner: openocd` to preserve local OpenOCD as the default, or change it
-to `remote_openocd` and run `west build` to regenerate the build's runner
-configuration.
+to `remote_openocd`. Once this module is already configured into the build, the
+next ordinary `west flash` or `west debug` performs its pre-run incremental
+build and refreshes the generated runner configuration. Run `west build` for
+explicit regeneration, or run `west build --cmake-only -d <build>` first if the
+build directory predates activation of this module. A `--no-rebuild` runner
+command intentionally consumes existing generated state.
 
 Set a non-empty `ZEPHYR_REMOTE_OPENOCD_CONFIG` to read a different file; a
 leading current-user `~` is expanded, and the file contents are YAML regardless

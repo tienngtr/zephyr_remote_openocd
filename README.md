@@ -95,13 +95,25 @@ runner and will be used together with `samples/hello_world` to provide a
 concrete example. From a Zephyr workspace, run:
 
 ```sh
-west build -p always -b stm32f746g_disco samples/hello_world
+west build -b stm32f746g_disco samples/hello_world
+```
+
+For this fresh build, the normal configuration step adds `remote_openocd` to
+the available runners. If the build directory was configured before this
+module was activated in `EXTRA_ZEPHYR_MODULES`, explicitly reconfigure it
+without making it pristine:
+
+```sh
+west build --cmake-only
+```
+
+In either case, you should see both `openocd` and `remote_openocd` listed:
+
+```sh
 west flash --context
 ```
 
-A pristine build is needed to add `remote_openocd` to available runners of the
-build. You should see that both `openocd` and `remote_openocd` are listed.
-Subsequent builds can use the normal incremental `west build` command. Now run:
+Now run:
 
 ```sh
 west flash -r remote_openocd --remote lab
@@ -110,9 +122,13 @@ west flash -r remote_openocd --remote lab
 to flash the board through the remote OpenOCD. Uncomment `default_remote: lab`
 in the configuration if you want to omit `--remote lab` later.
 
-The built-in local runner remains the default. To make `remote_openocd` the
-default, update `default_runner` and run an incremental `west build` so CMake
-regenerates the runner configuration.
+The built-in local runner remains the default. Once this module is already
+configured into the build, update `default_runner` and run `west flash` or
+`west debug` normally; their pre-run incremental build refreshes the generated
+runner configuration. An ordinary `west build` remains an explicit
+regeneration option. A pristine build or full firmware compile is not required
+solely for this change, while `--no-rebuild` intentionally consumes existing
+generated state.
 
 ## How it works
 

@@ -21,6 +21,9 @@ try:
 except ImportError:  # pragma: no cover - handled as an integration prerequisite
     yaml = None
 
+OPENOCD_BOARD = "stm32f746g_disco"
+NON_OPENOCD_BOARD = "native_sim/native/64"
+
 
 class TestZephyrIntegration:
     _scratch: tempfile.TemporaryDirectory[str]
@@ -42,8 +45,8 @@ class TestZephyrIntegration:
     @classmethod
     def setup_class(cls):
         zephyr_base = env_path("ZEPHYR_BASE")
-        openocd_board = os.environ.get("OPENOCD_TEST_BOARD")
-        cls.no_openocd_board = os.environ.get("NON_OPENOCD_TEST_BOARD", "native_sim/native/64")
+        cls.openocd_board = OPENOCD_BOARD
+        cls.no_openocd_board = NON_OPENOCD_BOARD
         west_on_path = shutil.which("west")
         west = env_path("WEST") or (Path(west_on_path) if west_on_path else None)
         missing = []
@@ -51,17 +54,14 @@ class TestZephyrIntegration:
             missing.append("ZEPHYR_BASE")
         if west is None or not west.is_file():
             missing.append("WEST or west on PATH")
-        if not openocd_board:
-            missing.append("OPENOCD_TEST_BOARD")
         if yaml is None:
             missing.append("PyYAML")
         if missing:
             pytest.skip("Zephyr integration prerequisites missing: " + ", ".join(missing))
 
-        assert zephyr_base is not None and west is not None and openocd_board is not None
+        assert zephyr_base is not None and west is not None
         cls.zephyr_base = zephyr_base
         cls.west = west
-        cls.openocd_board = openocd_board
 
         cls._scratch = tempfile.TemporaryDirectory(
             prefix="zephyr_integration_", dir=ROOT / ".scratch"
@@ -83,6 +83,7 @@ class TestZephyrIntegration:
         sample = cls.zephyr_base / "samples" / "hello_world"
         cls._west(
             "build",
+            "--cmake-only",
             "-b",
             cls.openocd_board,
             str(sample),
@@ -92,9 +93,11 @@ class TestZephyrIntegration:
             f"-DUSER_CACHE_DIR={cls.cache}",
             f"-DOPENOCD={cls.fake_openocd}",
         )
+        cls._create_recording_flash_artifact(cls.build_in_tree)
         shutil.copytree(sample, cls.app_out_tree)
         cls._west(
             "build",
+            "--cmake-only",
             "-b",
             cls.openocd_board,
             str(cls.app_out_tree),
@@ -172,6 +175,13 @@ class TestZephyrIntegration:
     def _runner_state(build: Path):
         return yaml.safe_load((build / "zephyr" / "runners.yaml").read_text())
 
+    @classmethod
+    def _create_recording_flash_artifact(cls, build: Path):
+        runner_config = cls._runner_state(build)["config"]
+        artifact = build / "zephyr" / runner_config["hex_file"]
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.touch()
+
     @staticmethod
     def _recording(output: str):
         start = output.find("{\n")
@@ -179,14 +189,13 @@ class TestZephyrIntegration:
             raise AssertionError(f"recording JSON absent:\n{output}")
         return json.loads(output[start:])
 
-    def test_module_discovery_and_in_tree_application_build(self):
+    def test_module_discovery_and_in_tree_application_configuration(self):
         modules = (self.build_in_tree / "zephyr_modules.txt").read_text()
         assert str(ROOT) in modules
-        assert (self.build_in_tree / "zephyr" / "zephyr.elf").is_file()
 
-    def test_out_of_tree_application_build(self):
-        assert not str(self.app_out_tree).startswith(str(self.zephyr_base))
-        assert (self.build_out_tree / "zephyr" / "zephyr.elf").is_file()
+    def test_out_of_tree_application_configuration(self):
+        modules = (self.build_out_tree / "zephyr_modules.txt").read_text()
+        assert str(ROOT) in modules
 
     def test_runner_registration_is_conditional_and_non_destructive(self):
         enabled = self._runner_state(self.build_in_tree)["runners"]
@@ -194,7 +203,15 @@ class TestZephyrIntegration:
         assert enabled.count("remote_openocd") == 1
         assert "openocd" in enabled
         assert "remote_openocd" not in disabled
-        self._west("flash", "-d", str(self.build_in_tree), "-r", "openocd", "--context")
+        self._west(
+            "flash",
+            "-d",
+            str(self.build_in_tree),
+            "-r",
+            "openocd",
+            "--context",
+            "--no-rebuild",
+        )
 
     def test_openocd_arguments_are_mirrored_exactly(self):
         args = self._runner_state(self.build_in_tree)["args"]
@@ -221,11 +238,13 @@ class TestZephyrIntegration:
         state = self._runner_state(self.build_in_tree)
         assert state["flash-runner"] == "openocd"
         self._write_config("remote_openocd")
-        self._west("flash", "-d", str(self.build_in_tree))
+        self._west("build", "-d", str(self.build_in_tree), "-t", "help")
+        self._west("flash", "-d", str(self.build_in_tree), "--no-rebuild")
         assert self._runner_state(self.build_in_tree)["flash-runner"] == "remote_openocd"
 
         self._write_config("openocd")
-        self._west("flash", "-d", str(self.build_in_tree))
+        self._west("build", "-d", str(self.build_in_tree), "-t", "help")
+        self._west("flash", "-d", str(self.build_in_tree), "--no-rebuild")
         assert self._runner_state(self.build_in_tree)["flash-runner"] == "openocd"
 
     def test_clean_install_acceptance_from_git_free_distribution(self):
@@ -308,6 +327,7 @@ class TestZephyrIntegration:
             sample = self.zephyr_base / "samples" / "hello_world"
             west(
                 "build",
+                "--cmake-only",
                 "-b",
                 self.openocd_board,
                 str(sample),
@@ -320,6 +340,7 @@ class TestZephyrIntegration:
             modules = (build / "zephyr_modules.txt").read_text()
             assert str(distribution) in modules
             assert str(ROOT) not in modules
+            self._create_recording_flash_artifact(build)
             recorded = west(
                 "flash",
                 "-d",

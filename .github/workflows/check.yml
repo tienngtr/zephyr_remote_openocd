@@ -118,7 +118,6 @@ jobs:
       - name: Run full Zephyr integration suite
         env:
           ZEPHYR_BASE: ${{ runner.temp }}/zephyr-workspace/zephyr
-          OPENOCD_TEST_BOARD: stm32f746g_disco
         run: |
           mkdir -p .scratch
           pytest tests/zephyr_integration -m zephyr \

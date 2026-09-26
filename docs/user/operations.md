@@ -16,7 +16,7 @@ for the OpenOCD-capable `stm32f746g_disco` board, inspect the available
 runners, and select the `lab` remote from your configuration:
 
 ```sh
-west build -p always -b stm32f746g_disco samples/hello_world
+west build -b stm32f746g_disco samples/hello_world
 west flash --context
 west flash -r remote_openocd --remote lab
 west debug -r remote_openocd --remote lab

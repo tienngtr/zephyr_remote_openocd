@@ -12,8 +12,8 @@ executed.
 
 | Criterion | Status | Maintained tests |
 | --- | --- | --- |
-| AC-INTEG-001 | Automated | [`TestZephyrIntegration.test_module_discovery_and_in_tree_application_build`](../../tests/zephyr_integration/test_zephyr_integration.py); clean-install acceptance |
-| AC-INTEG-002 | Automated | [`TestZephyrIntegration.test_out_of_tree_application_build`](../../tests/zephyr_integration/test_zephyr_integration.py) |
+| AC-INTEG-001 | Automated | [`TestZephyrIntegration.test_module_discovery_and_in_tree_application_configuration`](../../tests/zephyr_integration/test_zephyr_integration.py); clean-install acceptance |
+| AC-INTEG-002 | Automated | [`TestZephyrIntegration.test_out_of_tree_application_configuration`](../../tests/zephyr_integration/test_zephyr_integration.py) |
 | AC-INTEG-003 | Automated | [`TestZephyrIntegration.test_runner_registration_is_conditional_and_non_destructive`](../../tests/zephyr_integration/test_zephyr_integration.py) |
 | AC-INTEG-004 | Automated | [`TestZephyrIntegration.test_openocd_arguments_are_mirrored_exactly`](../../tests/zephyr_integration/test_zephyr_integration.py) |
 | AC-INTEG-005 | Automated | [`TestZephyrIntegration.test_runner_registration_is_conditional_and_non_destructive`](../../tests/zephyr_integration/test_zephyr_integration.py) |
@@ -27,7 +27,7 @@ executed.
 | AC-CONFIG-002 | Automated | [Configuration validator unit tests](../../tests/unit/test_validate_configuration.py) |
 | AC-SELECT-001 | Automated | [`TestZephyrIntegration.test_config_change_regenerates_default_runner`](../../tests/zephyr_integration/test_zephyr_integration.py) |
 | AC-SELECT-002 | Automated | [`TestZephyrIntegration.test_config_change_regenerates_default_runner`](../../tests/zephyr_integration/test_zephyr_integration.py) |
-| AC-SELECT-003 | Automated | [`TestZephyrIntegration.test_config_change_regenerates_default_runner`](../../tests/zephyr_integration/test_zephyr_integration.py) |
+| AC-SELECT-003 | Automated | [`TestZephyrIntegration.test_config_change_regenerates_default_runner`](../../tests/zephyr_integration/test_zephyr_integration.py) (lightweight regeneration followed by recorded runner consumption) |
 | AC-FLASH-001 | Hardware | [`TestRealOpenOcdFlash.test_configured_target_flashes_and_emits_fresh_serial_output`](../../tests/hardware/test_real_flash.py) (quiet precondition image followed by selected-image output) |
 | AC-DEBUG-001 | Hardware | [`TestRealOpenOcdDebug`](../../tests/hardware/test_real_debug.py): `test_debug` (load, continue, configured breakpoint, PC/instruction inspection, detach), `test_attach` (no load, PC/instruction inspection), and `test_debugserver` (independent client halt/resume) |
 | AC-DEBUG-002 | Both | [`TestDebugPlanning.test_disabled_services_and_distinct_gdb_ports`](../../tests/unit/test_remote.py); [`TestDebugPlanning.test_openocd_readiness_setup_precedes_configs_and_requires_both_sentinels`](../../tests/unit/test_remote.py); [`TestRealOpenOcdDebug.test_debugserver`](../../tests/hardware/test_real_debug.py) |

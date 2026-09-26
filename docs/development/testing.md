@@ -21,10 +21,12 @@ The maintained suite uses pytest. The ordinary `.venv/bin/python -m pytest`
 command runs only hardware-free unit and local-process tests. GitHub Actions
 runs four independent validation jobs: the self-contained suite, static
 checks, the SSH suite against an isolated SSH server container, and the full
-Zephyr 4.4 suite with a real workspace and SDK. The SSH server has its own
-filesystem, process namespace, and network namespace; the tests use the real
-SSH client and server. External layers remain explicit locally, so a normal
-contributor run never needs SSH, a Zephyr checkout, or lab hardware:
+Zephyr 4.4 integration suite with a real workspace and SDK. That suite runs
+real Zephyr CMake configuration and west runner commands in recording mode;
+it does not compile or execute firmware. The SSH server has its own filesystem,
+process namespace, and network namespace; the tests use the real SSH client
+and server. External layers remain explicit locally, so a normal contributor
+run never needs SSH, a Zephyr checkout, or lab hardware:
 
 ```sh
 .venv/bin/python -m pytest
@@ -124,8 +126,19 @@ requested and is not a substitute for testing the configured remote executable.
 
 The focused adapter contract tests need only the Zephyr source and its Python
 runner dependencies, not a board, SDK, or firmware build. GitHub Actions also
-runs these alongside the full Zephyr integration suite, which performs real
-`west build` operations for Zephyr 4.4 without a physical board:
+runs these alongside the full Zephyr integration suite. The integration suite
+uses real Zephyr 4.4 `west build --cmake-only` configuration for module
+discovery, runner metadata, and clean-install coverage, then invokes real
+`west flash` and `west debug` commands with `--no-rebuild` in recording mode;
+it requires the SDK/toolchain for CMake discovery but does not compile or link
+`samples/hello_world`. It uses fixed `stm32f746g_disco` and
+`native_sim/native/64` board configurations and does not require hardware:
+the configuration-regeneration acceptance uses `west build -d <build> -t help`
+as a lightweight test-only mechanism for exercising the same build dependency
+and regeneration path without compiling firmware. It then uses recorded
+`west flash --no-rebuild` to consume the updated state. User documentation
+continues to recommend ordinary `west flash` or `west debug` after the module
+is configured into the build; explicit `west build` is also available.
 
 ```sh
 ZEPHYR_BASE=/path/to/zephyr \
@@ -177,7 +190,6 @@ Run the desired layers explicitly:
 
 ZEPHYR_BASE=/path/to/zephyr \
 WEST=/path/to/west \
-OPENOCD_TEST_BOARD=stm32f746g_disco \
 .venv/bin/python -m pytest --require-external-tests \
   tests/zephyr_integration -m zephyr
 

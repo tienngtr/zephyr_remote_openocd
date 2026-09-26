@@ -27,8 +27,10 @@ usage, limitations, and the optional injected OpenOCD version.
 ## Common symptoms
 
 **`remote_openocd` is not listed by `west flash --context`.** Ensure the module
-is in `EXTRA_ZEPHYR_MODULES`, then rebuild or regenerate the application so west
-reloads its runners.
+is in `EXTRA_ZEPHYR_MODULES`. If the build directory predates activation of the
+module, explicitly reconfigure it with `west build --cmake-only -d <build>`.
+Otherwise, a normal `west build`, `west flash`, or `west debug` reloads its
+runners; a pristine build is not required.
 
 **No remote is selected.** Pass `--remote NAME`, set
 `ZEPHYR_REMOTE_OPENOCD_REMOTE`, or configure `default_remote`. The selected
@@ -65,6 +67,9 @@ it. Missing values are never forwarded as empty strings.
 forwarded port, not the remote OpenOCD port, and that the west process is still
 running.
 
-**Editing the configuration has no effect.** Re-run `west build` after changing
-the default runner or use explicit `-r remote_openocd`; west stores runner
-selection in generated build metadata.
+**Editing the configuration has no effect.** Once the module is configured into
+the build, run `west flash` or `west debug` normally after changing the default
+runner; their pre-run incremental build updates generated runner metadata. You
+can also run `west build` explicitly. A `--no-rebuild` command intentionally
+uses existing metadata, and a pristine build or full firmware compile is not
+required solely to regenerate it.
