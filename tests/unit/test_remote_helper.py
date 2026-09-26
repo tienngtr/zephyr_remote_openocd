@@ -146,6 +146,77 @@ class _ChunkStream:
         return self.chunks.pop(0)
 
 
+def test_relay_emits_short_fragment_while_pipe_remains_open(monkeypatch):
+    class ObservedPipe:
+        def __init__(self, stream):
+            self.stream = stream
+            self.read_count = 0
+            self.second_read_started = threading.Event()
+            self.third_read_started = threading.Event()
+
+        def read(self, size):
+            self.read_count += 1
+            if self.read_count == 2:
+                self.second_read_started.set()
+            elif self.read_count == 3:
+                self.third_read_started.set()
+            return self.stream.read(size)
+
+    events = []
+    monkeypatch.setattr(
+        remote_helper,
+        "emit",
+        lambda kind, **values: events.append((kind, values)),
+    )
+    required_output_sentinels = remote_helper._RequiredOutputSentinels(("READY",))
+    captured: list[Any] = []
+    read_descriptor, write_descriptor = os.pipe()
+    reader = os.fdopen(read_descriptor, "rb", buffering=0)
+    writer = os.fdopen(write_descriptor, "wb", buffering=0)
+    stream = ObservedPipe(reader)
+    relay_thread = threading.Thread(
+        target=remote_helper.relay,
+        args=(stream, "stdout", required_output_sentinels, captured),
+    )
+    relay_thread.start()
+    try:
+        writer.write(b"READY")
+        assert stream.second_read_started.wait(5)
+
+        assert not writer.closed
+        assert not reader.closed
+        assert relay_thread.is_alive()
+        assert not required_output_sentinels.ready
+        assert events == [
+            (
+                "CHILD_OUTPUT",
+                {"stream": "stdout", "payload": "READY", "line_end": False},
+            )
+        ]
+        assert [(item.stream, item.payload, item.line_end) for item in captured] == [
+            ("stdout", "READY", False)
+        ]
+
+        writer.write(b"\n")
+        assert stream.third_read_started.wait(5)
+
+        assert required_output_sentinels.ready
+        assert events[-1] == (
+            "CHILD_OUTPUT",
+            {"stream": "stdout", "payload": "", "line_end": True},
+        )
+        assert (captured[-1].stream, captured[-1].payload, captured[-1].line_end) == (
+            "stdout",
+            "",
+            True,
+        )
+    finally:
+        writer.close()
+        relay_thread.join(5)
+        reader.close()
+    assert not relay_thread.is_alive()
+
+
 def test_relay_emits_bounded_fragments_and_preserves_utf8(monkeypatch):
     monkeypatch.setattr(remote_helper, "RELAY_CHUNK_SIZE", 4)
     events = []
@@ -172,19 +243,23 @@ def test_relay_emits_bounded_fragments_and_preserves_utf8(monkeypatch):
         "abc",
         "defg",
         "",
-        "xyz",
+        "xy",
+        "z",
         "vali",
-        "d €",
+        "d ",
+        "€",
         "inva",
         "lid ",
-        "�tai",
-        "l",
+        "�",
+        "tail",
     ]
     assert [event["line_end"] for event in output_events] == [
         True,
         False,
         True,
+        False,
         True,
+        False,
         False,
         True,
         False,
@@ -204,7 +279,9 @@ def test_relay_emits_bounded_fragments_and_preserves_utf8(monkeypatch):
         True,
         False,
         True,
+        False,
         True,
+        False,
         False,
         True,
         False,

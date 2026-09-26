@@ -349,6 +349,9 @@ def relay(
                 emit_fragment("".join(pending))
             return
         consume(decoder.decode(chunk, final=False))
+        if pending:
+            emit_fragment("".join(pending))
+            pending.clear()
 
 
 def is_bind_collision(output: list[_CapturedFragment]):
