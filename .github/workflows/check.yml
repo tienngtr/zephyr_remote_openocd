@@ -6,7 +6,7 @@ on:
   push:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: checks-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -24,9 +24,8 @@ jobs:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/install-dev-tools
       - name: Run self-contained tests with coverage
-        run: >-
-          pytest --cov --cov-config=.coveragerc --cov-report=
-      - name: Prepare self-contained coverage data
+        run: pytest --cov --cov-config=.coveragerc --cov-report=
+      - name: Prepare self-contained tests coverage data
         run: mv .coverage .coverage.self-contained-tests
       - uses: actions/upload-artifact@v7
         with:
@@ -45,28 +44,24 @@ jobs:
         run: |
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
-          ssh-keygen -q -t ed25519 -N '' -C zro-github-ci \
-            -f ~/.ssh/zro_ci_ed25519
+          ssh-keygen -q -t ed25519 -N '' -C zro-github-ci -f ~/.ssh/zro_ci_ed25519
           : > ~/.ssh/zro_ci_known_hosts
       - name: Build SSH server image
         run: docker build -t zro-ci-ssh-server:local tests/ci/ssh_server
       - name: Start SSH server container
         run: |
           public_key="$(cat ~/.ssh/zro_ci_ed25519.pub)"
-          docker run --detach --name zro-ci-ssh \
-            --publish 127.0.0.1:22222:22 \
-            --env "CI_AUTHORIZED_KEY=$public_key" \
+          docker run -d --name zro-ci-ssh -p 127.0.0.1:22222:22 -e "CI_AUTHORIZED_KEY=$public_key" \
             zro-ci-ssh-server:local
       - name: Wait for authenticated SSH and required remote tools
         run: |
           deadline=$((SECONDS + 120))
-          until ssh -F tests/ci/ssh/ssh_config ci-ssh \
-            'python3 --version && openocd --version'; do
+          until ssh -F tests/ci/ssh/ssh_config ci-ssh 'python3 --version && openocd --version'; do
             if (( SECONDS >= deadline )); then
               echo 'SSH server or required remote tool did not become ready.' >&2
               exit 1
             fi
-            sleep 0.25
+            sleep 1
           done
       - name: Run SSH integration suite
         run: >-
@@ -74,7 +69,7 @@ jobs:
           --hardware-inventory tests/ci/ssh/hardware.yaml
           --require-external-tests
           --cov --cov-config=.coveragerc --cov-report=
-      - name: Prepare SSH coverage data
+      - name: Prepare SSH integration coverage data
         run: mv .coverage .coverage.ssh-integration
       - uses: actions/upload-artifact@v7
         with:
@@ -95,8 +90,7 @@ jobs:
       - name: Install Zephyr build host dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends --yes \
-            ccache device-tree-compiler gperf libssl-dev ninja-build
+          sudo apt-get install --no-install-recommends -y ccache device-tree-compiler gperf libssl-dev ninja-build
       # The clean-install test requires module paths outside the project root.
       - name: Initialize Zephyr 4.4.0 workspace
         run: >-
@@ -112,11 +106,15 @@ jobs:
           west update --narrow -o=--depth=1
           python -m pip install -r "$ZEPHYR_BASE/scripts/requirements-base.txt"
           printf 'WEST=%s\n' "$(command -v west)" >> "$GITHUB_ENV"
-      - name: Install the Zephyr 4.4 SDK toolchain
+      - name: Determine Zephyr SDK to use
+        id: sdk
         run: |
-          export ZEPHYR_BASE="$RUNNER_TEMP/zephyr-workspace/zephyr"
-          west sdk install --install-base "$RUNNER_TEMP/zephyr-sdk" \
-            --gnu-toolchains arm-zephyr-eabi
+          sdk_version="$(cat "$RUNNER_TEMP/zephyr-workspace/zephyr/SDK_VERSION")"
+          printf 'version=%s\n' "$sdk_version" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/setup-zephyr-sdk
+        with:
+          sdk_version: ${{ steps.sdk.outputs.version }}
+          toolchain: arm-zephyr-eabi
       - name: Run full Zephyr integration suite
         env:
           ZEPHYR_BASE: ${{ runner.temp }}/zephyr-workspace/zephyr
@@ -126,7 +124,7 @@ jobs:
           pytest tests/zephyr_integration -m zephyr \
             --require-external-tests \
             --cov --cov-config=.coveragerc --cov-report=
-      - name: Prepare Zephyr coverage data
+      - name: Prepare Zephyr integration coverage data
         run: mv .coverage .coverage.zephyr-integration
       - uses: actions/upload-artifact@v7
         with:

@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: Apache-2.0
+
+name: Install Zephyr SDK
+description: Download, cache, and install a selected Zephyr SDK toolchain
+inputs:
+  sdk_version:
+    description: Zephyr SDK version to install
+    required: true
+  toolchain:
+    description: Zephyr SDK toolchain to install
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Try restoring cached Zephyr SDK
+      id: cache-zephyr-sdk
+      uses: actions/cache@v6
+      with:
+        path: ${{ runner.temp }}/zephyr-sdk
+        key: zephyr-sdk-${{ runner.os }}-${{ runner.arch }}-${{ inputs.sdk_version }}-${{ inputs.toolchain }}
+    - name: Download Zephyr SDK
+      if: steps.cache-zephyr-sdk.outputs.cache-hit != 'true'
+      env:
+        SDK_BASE: https://github.com/zephyrproject-rtos/sdk-ng/releases/download
+        SDK_FILE: zephyr-sdk-${{ inputs.sdk_version }}_linux-x86_64_minimal.tar.xz
+        SDK_VERSION: ${{ inputs.sdk_version }}
+      shell: bash
+      run: |
+        wget --progress=dot:giga "${SDK_BASE}/v${SDK_VERSION}/${SDK_FILE}" -O "$RUNNER_TEMP/$SDK_FILE"
+        mkdir -p "$RUNNER_TEMP/zephyr-sdk"
+        tar xJf "$RUNNER_TEMP/$SDK_FILE" -C "$RUNNER_TEMP/zephyr-sdk" --strip-components=1
+    - name: Set up the Zephyr SDK toolchain
+      shell: bash
+      working-directory: ${{ runner.temp }}/zephyr-sdk
+      env:
+        SDK_TOOLCHAIN: ${{ inputs.toolchain }}
+      run: |
+        ./setup.sh -t "$SDK_TOOLCHAIN"
+        if [ ! -d sysroots ]; then
+          ./setup.sh -h
+        fi
+        ./setup.sh -c
