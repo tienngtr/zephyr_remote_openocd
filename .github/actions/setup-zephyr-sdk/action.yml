@@ -36,7 +36,5 @@ runs:
         SDK_TOOLCHAIN: ${{ inputs.toolchain }}
       run: |
         ./setup.sh -t "$SDK_TOOLCHAIN"
-        if [ ! -d sysroots ]; then
-          ./setup.sh -h
-        fi
+        rm -rf -- hosttools
         ./setup.sh -c
