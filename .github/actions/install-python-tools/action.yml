@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
-name: Install developer tools
-description: Set up Python and install the repository developer tools
+name: Install Python and developer PyPI packages
+description: Set up Python and install repository developer pip packages
 runs:
   using: composite
   steps:
@@ -10,6 +10,6 @@ runs:
         python-version: "3.12"
         cache: pip
         cache-dependency-path: requirements_dev.txt
-    - name: Install developer tools
+    - name: Install developer pip packages
       shell: bash
       run: python -m pip install -r requirements_dev.txt

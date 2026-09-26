@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/install-dev-tools
+      - uses: ./.github/actions/install-python-tools
       - name: Run static checks
         run: python scripts/contributor/static_check.py
 
@@ -22,11 +22,11 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/install-dev-tools
-      - name: Run self-contained tests with coverage
+      - uses: ./.github/actions/install-python-tools
+      - name: Run self-contained tests
+        env:
+          COVERAGE_FILE: .coverage.self-contained-tests
         run: pytest --cov --cov-config=.coveragerc --cov-report=
-      - name: Prepare self-contained tests coverage data
-        run: mv .coverage .coverage.self-contained-tests
       - uses: actions/upload-artifact@v7
         with:
           name: coverage-self-contained-tests
@@ -39,7 +39,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/install-dev-tools
+      - uses: ./.github/actions/install-python-tools
       - name: Create ephemeral SSH credentials
         run: |
           mkdir -p ~/.ssh
@@ -64,13 +64,13 @@ jobs:
             sleep 1
           done
       - name: Run SSH integration suite
+        env:
+          COVERAGE_FILE: .coverage.ssh-integration
         run: >-
           pytest tests/ssh_integration -m ssh
           --hardware-inventory tests/ci/ssh/hardware.yaml
           --require-external-tests
           --cov --cov-config=.coveragerc --cov-report=
-      - name: Prepare SSH integration coverage data
-        run: mv .coverage .coverage.ssh-integration
       - uses: actions/upload-artifact@v7
         with:
           name: coverage-ssh-integration
@@ -86,11 +86,11 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/install-dev-tools
-      - name: Install Zephyr build host dependencies
+      - uses: ./.github/actions/install-python-tools
+      - name: Install reduced Zephyr build host dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y ccache device-tree-compiler gperf libssl-dev ninja-build
+          sudo apt-get install --no-install-recommends -y ninja-build openocd
       # The clean-install test requires module paths outside the project root.
       - name: Initialize Zephyr 4.4.0 workspace
         run: >-
@@ -106,7 +106,7 @@ jobs:
           west update --narrow -o=--depth=1
           python -m pip install -r "$ZEPHYR_BASE/scripts/requirements-base.txt"
           printf 'WEST=%s\n' "$(command -v west)" >> "$GITHUB_ENV"
-      - name: Determine Zephyr SDK to use
+      - name: Determine version of Zephyr SDK to use
         id: sdk
         run: |
           sdk_version="$(cat "$RUNNER_TEMP/zephyr-workspace/zephyr/SDK_VERSION")"
@@ -117,14 +117,14 @@ jobs:
           toolchain: arm-zephyr-eabi
       - name: Run full Zephyr integration suite
         env:
+          COVERAGE_FILE: .coverage.zephyr-integration
+          OPENOCD_DEFAULT_PATH: /usr/share/openocd/scripts
           ZEPHYR_BASE: ${{ runner.temp }}/zephyr-workspace/zephyr
         run: |
           mkdir -p .scratch
           pytest tests/zephyr_integration -m zephyr \
             --require-external-tests \
             --cov --cov-config=.coveragerc --cov-report=
-      - name: Prepare Zephyr integration coverage data
-        run: mv .coverage .coverage.zephyr-integration
       - uses: actions/upload-artifact@v7
         with:
           name: coverage-zephyr-integration

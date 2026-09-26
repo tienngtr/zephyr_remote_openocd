@@ -9,16 +9,28 @@ inputs:
   toolchain:
     description: Zephyr SDK toolchain to install
     required: true
+  install_host_tools:
+    description: Install the Zephyr SDK host tools
+    required: false
+    default: false
 runs:
   using: composite
   steps:
-    - name: Try restoring cached Zephyr SDK
+    - name: Try cached Zephyr SDK
       id: cache-zephyr-sdk
       uses: actions/cache@v6
       with:
         path: ${{ runner.temp }}/zephyr-sdk
-        key: zephyr-sdk-${{ runner.os }}-${{ runner.arch }}-${{ inputs.sdk_version }}-${{ inputs.toolchain }}
-    - name: Download Zephyr SDK
+        key: >-
+          ${{
+            format(
+              'zephyr-sdk-cache-v1-{0}-{1}-{2}-host-tools',
+              inputs.sdk_version,
+              inputs.toolchain,
+              inputs.install_host_tools == 'true' && 'with' || 'without'
+            )
+          }}
+    - name: Download minimal Zephyr SDK
       if: steps.cache-zephyr-sdk.outputs.cache-hit != 'true'
       env:
         SDK_BASE: https://github.com/zephyrproject-rtos/sdk-ng/releases/download
@@ -29,14 +41,19 @@ runs:
         wget --progress=dot:giga "${SDK_BASE}/v${SDK_VERSION}/${SDK_FILE}" -O "$RUNNER_TEMP/$SDK_FILE"
         mkdir -p "$RUNNER_TEMP/zephyr-sdk"
         tar xJf "$RUNNER_TEMP/$SDK_FILE" -C "$RUNNER_TEMP/zephyr-sdk" --strip-components=1
-    - name: Set up the Zephyr SDK toolchain
+    - name: Install additional Zephyr SDK components
+      if: steps.cache-zephyr-sdk.outputs.cache-hit != 'true'
       shell: bash
       working-directory: ${{ runner.temp }}/zephyr-sdk
       env:
         SDK_TOOLCHAIN: ${{ inputs.toolchain }}
+        INSTALL_HOST_TOOLS: ${{ inputs.install_host_tools }}
       run: |
         ./setup.sh -t "$SDK_TOOLCHAIN"
-        if [ ! -d sysroots ]; then
+        if [ "$INSTALL_HOST_TOOLS" = "true" ]; then
           ./setup.sh -h
         fi
-        ./setup.sh -c
+    - name: Register Zephyr SDK CMake package
+      shell: bash
+      working-directory: ${{ runner.temp }}/zephyr-sdk
+      run: ./setup.sh -c
