@@ -1271,6 +1271,20 @@ class TestDebugPlanning:
             with pytest.raises(DebugPlanError, match="gdb_port must be enabled"):
                 build_debug_plan(self.inputs(Path(directory), gdb_port="disabled"), PathPlanner(()))
 
+    @pytest.mark.parametrize(
+        ("changes", "message"),
+        (
+            ({"gdb_client_port": 4444}, "local service ports"),
+            ({"gdb_port": 4444}, "remote service ports"),
+        ),
+        ids=("local", "remote"),
+    )
+    def test_ordinary_service_port_collisions_fail_during_planning(
+        self, tmp_path: Path, changes: dict[str, int], message: str
+    ):
+        with pytest.raises(DebugPlanError, match=message):
+            build_debug_plan(self.inputs(tmp_path, **changes), PathPlanner(()))
+
     def test_version_parsing_and_thread_info_decision(self):
         old = parse_openocd_version("Open On-Chip Debugger 0.11.0")
         development = parse_openocd_version("Open On-Chip Debugger 0.11.0+dev")

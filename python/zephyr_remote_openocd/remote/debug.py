@@ -7,7 +7,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from .model import RemoteProcess, Service
+from .model import DuplicateServiceError, RemoteProcess, Service, validated_services
 from .openocd_plan import plan_openocd_base
 from .paths import REMOTE_ADDRESS_PLACEHOLDER, PathPlanner
 
@@ -142,6 +142,10 @@ def _plan_debug_services(inputs: DebugInputs) -> DebugServicePlan:
         services.append(Service("tcl", remote_tcl, remote_tcl))
     if remote_telnet is not None:
         services.append(Service("telnet", remote_telnet, remote_telnet))
+    try:
+        validated_services(services)
+    except DuplicateServiceError as error:
+        raise DebugPlanError(str(error)) from error
 
     rtt_requested = inputs.command == "rtt" or inputs.rtt_server
     rtt_service = None
