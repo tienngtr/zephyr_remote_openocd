@@ -90,7 +90,8 @@ jobs:
       - name: Install Zephyr build host dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y ccache device-tree-compiler gperf libssl-dev ninja-build
+          sudo apt-get install --no-install-recommends -y \
+            ccache device-tree-compiler gperf libssl-dev ninja-build openocd
       # The clean-install test requires module paths outside the project root.
       - name: Initialize Zephyr 4.4.0 workspace
         run: >-
@@ -117,6 +118,7 @@ jobs:
           toolchain: arm-zephyr-eabi
       - name: Run full Zephyr integration suite
         env:
+          OPENOCD_DEFAULT_PATH: /usr/share/openocd/scripts
           ZEPHYR_BASE: ${{ runner.temp }}/zephyr-workspace/zephyr
           OPENOCD_TEST_BOARD: stm32f746g_disco
         run: |
