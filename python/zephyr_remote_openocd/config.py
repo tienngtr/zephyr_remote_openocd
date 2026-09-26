@@ -168,6 +168,8 @@ def _read_config_text(config_path: Path) -> str:
         raise ConfigError(
             f"configuration {config_path} does not resolve to an existing file"
         ) from error
+    except UnicodeDecodeError as error:
+        raise ConfigError(f"cannot decode configuration {config_path} as UTF-8: {error}") from error
     except OSError as error:
         raise ConfigError(f"cannot read configuration {config_path}: {error}") from error
     if not text.strip():
