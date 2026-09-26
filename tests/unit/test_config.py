@@ -26,6 +26,19 @@ def test_defaults_when_file_is_absent(tmp_path: Path):
     assert config.remotes == {}
 
 
+def test_invalid_utf8_configuration_is_actionable(tmp_path: Path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_bytes(b"default_runner: \xff\n")
+
+    with pytest.raises(
+        ConfigError,
+        match=r"cannot decode configuration .*config\.yaml as UTF-8",
+    ) as error:
+        load_config(config_path)
+
+    assert isinstance(error.value.__cause__, UnicodeDecodeError)
+
+
 def test_dangling_configuration_symlink_is_actionable(tmp_path: Path):
     config_path = tmp_path / "config.yaml"
     config_path.symlink_to(tmp_path / "missing.yaml")
