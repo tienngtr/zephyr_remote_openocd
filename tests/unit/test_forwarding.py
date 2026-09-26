@@ -205,13 +205,130 @@ def test_forward_manager_rejects_a_service_already_forwarded(monkeypatch):
         manager.close()
 
 
+def test_failed_forward_batch_rolls_back_all_processes_and_allows_retry(monkeypatch):
+    services = (Service("gdb", 32188, 3333), Service("tcl", 32199, 6333))
+    failed_processes = (_ForwardProcess(None), _ForwardProcess(None))
+    retry_processes = (_ForwardProcess(None), _ForwardProcess(None))
+    command = _ForwardCommand(*failed_processes, *retry_processes)
+    manager = _ForwardManager(command, "host")
+    readiness = iter((True, False, True, True))
+    monkeypatch.setattr(_ForwardManager, "_preflight", staticmethod(lambda _service: None))
+    monkeypatch.setattr(
+        _ForwardManager,
+        "_await_ready",
+        staticmethod(lambda *_args: next(readiness)),
+    )
+
+    with pytest.raises(SessionError):
+        manager.start(services, "127.64.0.1")
+
+    assert [process.terminate_calls for process in failed_processes] == [1, 1]
+    assert [process.close_stderr_calls for process in failed_processes] == [1, 1]
+    has_forwards_after_failure = manager.has_forwards
+    assert not has_forwards_after_failure
+
+    manager.start(services, "127.64.0.1")
+    assert manager.has_forwards
+    manager.close()
+    assert [process.terminate_calls for process in failed_processes] == [1, 1]
+    assert [process.terminate_calls for process in retry_processes] == [1, 1]
+    assert [process.close_stderr_calls for process in failed_processes] == [1, 1]
+    assert [process.close_stderr_calls for process in retry_processes] == [1, 1]
+
+
+def test_failed_forward_batch_keeps_startup_error_and_cleanup_diagnostics(monkeypatch):
+    services = (Service("gdb", 32210, 3333), Service("tcl", 32221, 6333))
+    first_cleanup_error = RuntimeError("first rollback failed")
+    first_stream_error = RuntimeError("first stream cleanup failed")
+    second_cleanup_error = RuntimeError("second rollback failed")
+    processes = (
+        _ForwardProcess(
+            None,
+            terminate_error=first_cleanup_error,
+            close_stderr_error=first_stream_error,
+        ),
+        _ForwardProcess(None, terminate_error=second_cleanup_error),
+    )
+    manager = _ForwardManager(_ForwardCommand(*processes), "host")
+    startup_error = KeyboardInterrupt("startup interrupted")
+    readiness_calls = 0
+
+    def await_ready(*_args):
+        nonlocal readiness_calls
+        readiness_calls += 1
+        if readiness_calls == 2:
+            raise startup_error
+        return True
+
+    monkeypatch.setattr(_ForwardManager, "_preflight", staticmethod(lambda _service: None))
+    monkeypatch.setattr(_ForwardManager, "_await_ready", staticmethod(await_ready))
+
+    with pytest.raises(KeyboardInterrupt) as raised:
+        manager.start(services, "127.64.0.1")
+
+    assert raised.value is startup_error
+    assert [process.terminate_calls for process in processes] == [1, 1]
+    assert [process.close_stderr_calls for process in processes] == [1, 1]
+    notes = raised.value.__notes__
+    assert any("first rollback failed" in note for note in notes)
+    assert any("first stream cleanup failed" in note for note in notes)
+    assert any("second rollback failed" in note for note in notes)
+    assert not manager.has_forwards
+    manager.close()
+    assert [process.close_stderr_calls for process in processes] == [1, 1]
+
+
+def test_failed_later_forward_batch_preserves_committed_processes(monkeypatch):
+    committed_service = Service("gdb", 32232, 3333)
+    failed_services = (Service("tcl", 32243, 6333), Service("telnet", 32254, 4444))
+    committed_process = _ForwardProcess(None)
+    failed_processes = (_ForwardProcess(None), _ForwardProcess(None))
+    manager = _ForwardManager(
+        _ForwardCommand(committed_process, *failed_processes),
+        "host",
+    )
+    readiness = iter((True, True, False))
+    monkeypatch.setattr(_ForwardManager, "_preflight", staticmethod(lambda _service: None))
+    monkeypatch.setattr(
+        _ForwardManager,
+        "_await_ready",
+        staticmethod(lambda *_args: next(readiness)),
+    )
+
+    manager.start((committed_service,), "127.64.0.1")
+    with pytest.raises(SessionError):
+        manager.start(failed_services, "127.64.0.1")
+
+    assert committed_process.terminate_calls == 0
+    assert [process.terminate_calls for process in failed_processes] == [1, 1]
+    assert committed_process.close_stderr_calls == 0
+    assert [process.close_stderr_calls for process in failed_processes] == [1, 1]
+    assert manager.has_forwards
+
+    manager.close()
+    assert committed_process.terminate_calls == 1
+    assert [process.terminate_calls for process in failed_processes] == [1, 1]
+    assert committed_process.close_stderr_calls == 1
+    assert [process.close_stderr_calls for process in failed_processes] == [1, 1]
+
+
 class _ForwardProcess:
-    def __init__(self, returncode):
+    def __init__(
+        self,
+        returncode,
+        *,
+        terminate_error: BaseException | None = None,
+        close_stderr_error: BaseException | None = None,
+    ):
         self.stdin = io.BytesIO()
         self.stdout = None
         self.stderr = None
         self.returncode = returncode
         self.args = ("fake-forward",)
+        self.terminate_error = terminate_error
+        self.close_stderr_error = close_stderr_error
+        self.terminate_calls = 0
+        self.close_stderr_calls = 0
 
     def poll(self):
         return self.returncode
@@ -220,6 +337,9 @@ class _ForwardProcess:
         return self.returncode
 
     def terminate(self):
+        self.terminate_calls += 1
+        if self.terminate_error is not None:
+            raise self.terminate_error
         self.returncode = 0
 
     def kill(self):
@@ -229,7 +349,9 @@ class _ForwardProcess:
         return b""
 
     def close_stderr(self):
-        pass
+        self.close_stderr_calls += 1
+        if self.close_stderr_error is not None:
+            raise self.close_stderr_error
 
 
 class _PreflightSocket:
