@@ -808,6 +808,28 @@ class SupervisedChild:
         _raise_cleanup_errors(errors)
 
 
+def _rollback_spawned_process(process):
+    errors = []
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except BaseException as error:
+        errors.append(error)
+    try:
+        process.wait(timeout=CHILD_REAP_TIMEOUT)
+    except BaseException as error:
+        errors.append(error)
+    for stream in (process.stdout, process.stderr):
+        if stream is None or stream.closed:
+            continue
+        try:
+            stream.close()
+        except BaseException as error:
+            errors.append(error)
+    _raise_cleanup_errors(errors)
+
+
 def _spawn_child(argv, *, cwd=None, environment=None, required_output_sentinels=()):
     process = subprocess.Popen(
         argv,
@@ -818,7 +840,14 @@ def _spawn_child(argv, *, cwd=None, environment=None, required_output_sentinels=
         stderr=subprocess.PIPE,
         start_new_session=True,
     )
-    return SupervisedChild(process, required_output_sentinels)
+    try:
+        return SupervisedChild(process, required_output_sentinels)
+    except BaseException as error:
+        try:
+            _rollback_spawned_process(process)
+        except BaseException as cleanup_error:
+            error.add_note(f"child ownership rollback also failed: {cleanup_error}")
+        raise
 
 
 def _expanded_argv(request, work, address):
@@ -866,6 +895,8 @@ class ControlSession:
         self.child: SupervisedChild | None = None
         self.protocol_error: BaseException | None = None
         self.stopping = False
+        self._child_starting = False
+        self._signal_pending = False
 
     @classmethod
     def create(cls):
@@ -888,12 +919,27 @@ class ControlSession:
             address = allocate_service_address(ports) if ports else random_address()
             argv, replacements = _expanded_argv(request, self.work, address)
             _check_required_paths(request.required_paths, replacements)
-            self.child = _spawn_child(
-                argv,
-                cwd=self.work / "staged",
-                environment=_child_environment(request),
-                required_output_sentinels=request.required_output_sentinels,
-            )
+            self._child_starting = True
+            try:
+                self.child = _spawn_child(
+                    argv,
+                    cwd=self.work / "staged",
+                    environment=_child_environment(request),
+                    required_output_sentinels=request.required_output_sentinels,
+                )
+            except BaseException as error:
+                if self._signal_pending:
+                    self._signal_pending = False
+                    try:
+                        self.cleanup()
+                    except BaseException as cleanup_error:
+                        error.add_note(f"deferred signal cleanup also failed: {cleanup_error}")
+                self._child_starting = False
+                raise
+            self._child_starting = False
+            if self._signal_pending:
+                self._signal_pending = False
+                self.handle_signal()
             self.child.start_relays(capture_startup=True)
             if _wait_for_process(self.child, address, request, attempt):
                 return
@@ -974,6 +1020,9 @@ class ControlSession:
             raise cleanup_error
 
     def handle_signal(self, *_):
+        if self._child_starting:
+            self._signal_pending = True
+            return
         if not self.cleanup():
             return
         raise SystemExit(0)

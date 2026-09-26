@@ -446,6 +446,47 @@ def test_relay_real_child_flushes_newline_free_output_before_exit(monkeypatch):
         child.terminate()
 
 
+def test_spawn_child_rolls_back_process_when_ownership_wrapper_fails(monkeypatch):
+    original_popen = remote_helper.subprocess.Popen
+    processes = []
+    process_pidfds = []
+    failure = RuntimeError("injected child ownership failure")
+
+    def capture_popen(*args, **kwargs):
+        process = original_popen(*args, **kwargs)
+        processes.append(process)
+        process_pidfds.append(os.pidfd_open(process.pid))
+        return process
+
+    def fail_child_ownership(*_args, **_kwargs):
+        raise failure
+
+    monkeypatch.setattr(remote_helper.subprocess, "Popen", capture_popen)
+    monkeypatch.setattr(remote_helper, "SupervisedChild", fail_child_ownership)
+    try:
+        with pytest.raises(RuntimeError) as raised:
+            remote_helper._spawn_child((sys.executable, "-c", "import signal; signal.pause()"))
+
+        assert raised.value is failure
+        assert len(processes) == 1
+        _assert_pidfd_exited(process_pidfds[0])
+        assert processes[0].returncode is not None
+        assert processes[0].stdout is not None and processes[0].stdout.closed
+        assert processes[0].stderr is not None and processes[0].stderr.closed
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                with suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGKILL)
+                with suppress(BaseException):
+                    process.wait(timeout=5)
+            for stream in (process.stdout, process.stderr):
+                if stream is not None and not stream.closed:
+                    stream.close()
+        for process_pidfd in process_pidfds:
+            os.close(process_pidfd)
+
+
 def test_bind_collision_detection_reassembles_same_stream_chunks_across_interleaving():
     output = [
         remote_helper._CapturedFragment("stderr", "Address already in", False),
@@ -631,6 +672,81 @@ def test_control_session_ignores_signal_while_cleaning(tmp_path):
     assert session.stopping
     assert not workspace.exists()
     assert not session.cleanup()
+
+
+def test_control_session_signal_handler_after_spawn_terminates_child(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    (workspace / "staged").mkdir(parents=True)
+    lock = (workspace / remote_helper.SESSION_LOCK).open("w+b")
+    session = remote_helper.ControlSession("session", workspace, lock)
+    original_spawn_child = remote_helper._spawn_child
+    spawned = []
+    child_pidfds = []
+
+    def spawn_then_signal(*args, **kwargs):
+        child = original_spawn_child(*args, **kwargs)
+        spawned.append(child)
+        child_pidfds.append(os.pidfd_open(child.pid))
+        session.handle_signal(signal.SIGTERM, None)
+        return child
+
+    request = remote_helper.StartRequest(
+        (sys.executable, "-c", "import signal; signal.pause()"),
+        (),
+        (),
+        (),
+        (),
+        30.0,
+        3,
+    )
+    monkeypatch.setattr(remote_helper, "_spawn_child", spawn_then_signal)
+    try:
+        with pytest.raises(SystemExit) as raised:
+            session._start_process(request)
+
+        assert raised.value.code == 0
+        assert len(spawned) == 1
+        _assert_pidfd_exited(child_pidfds[0])
+        assert not workspace.exists()
+        assert lock.closed
+    finally:
+        for child in spawned:
+            _cleanup_test_child(child, None)
+        for child_pidfd in child_pidfds:
+            os.close(child_pidfd)
+
+
+def test_control_session_deferred_signal_preserves_spawn_failure(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    (workspace / "staged").mkdir(parents=True)
+    lock = (workspace / remote_helper.SESSION_LOCK).open("w+b")
+    session = remote_helper.ControlSession("session", workspace, lock)
+    spawn_resumed = []
+    failure = OSError("injected spawn failure")
+
+    def signal_then_fail(*_args, **_kwargs):
+        session.handle_signal()
+        spawn_resumed.append(True)
+        raise failure
+
+    request = remote_helper.StartRequest(
+        ("openocd",),
+        (),
+        (),
+        (),
+        (),
+        30.0,
+        1,
+    )
+    monkeypatch.setattr(remote_helper, "_spawn_child", signal_then_fail)
+
+    with pytest.raises(OSError) as raised:
+        session._start_process(request)
+
+    assert raised.value is failure
+    assert spawn_resumed == [True]
+    assert not workspace.exists()
+    assert lock.closed
 
 
 def test_control_session_natural_exit_cleans_before_close_event(tmp_path, monkeypatch):
