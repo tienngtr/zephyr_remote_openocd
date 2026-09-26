@@ -131,7 +131,7 @@ uses real Zephyr 4.4 `west build --cmake-only` configuration for module
 discovery, runner metadata, and clean-install coverage, then invokes real
 `west flash` and `west debug` commands with `--no-rebuild` in recording mode;
 it requires the SDK/toolchain for CMake discovery but does not compile or link
-`samples/hello_world`. It uses fixed `stm32f746g_disco` and
+`samples/hello_world`. It uses fixed `rpi_pico` and
 `native_sim/native/64` board configurations and does not require hardware:
 the configuration-regeneration acceptance uses `west build -d <build> -t help`
 as a lightweight test-only mechanism for exercising the same build dependency

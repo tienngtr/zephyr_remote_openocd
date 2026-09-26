@@ -21,7 +21,7 @@ try:
 except ImportError:  # pragma: no cover - handled as an integration prerequisite
     yaml = None
 
-OPENOCD_BOARD = "stm32f746g_disco"
+OPENOCD_BOARD = "rpi_pico"
 NON_OPENOCD_BOARD = "native_sim/native/64"
 
 

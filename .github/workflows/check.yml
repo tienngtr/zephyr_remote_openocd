@@ -102,7 +102,7 @@ jobs:
           workspace="$RUNNER_TEMP/zephyr-workspace"
           export ZEPHYR_BASE="$workspace/zephyr"
           cd "$workspace"
-          west config manifest.project-filter -- '-.*,+cmsis,+cmsis_6,+hal_stm32'
+          west config manifest.project-filter -- '-.*,+cmsis,+hal_rpi_pico'
           west update --narrow -o=--depth=1
           python -m pip install -r "$ZEPHYR_BASE/scripts/requirements-base.txt"
           printf 'WEST=%s\n' "$(command -v west)" >> "$GITHUB_ENV"
