@@ -180,10 +180,8 @@ def test_hardware_cache_root_uses_build_inputs_and_checkout(tmp_path: Path) -> N
     )
 
 
-def test_configured_build_environment_controls_process_and_cache_identity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    first_document = inventory_document(zephyr_base=str(tmp_path), west=sys.executable)
+def test_configured_build_environment_affects_cache_identity(tmp_path: Path) -> None:
+    first_document = inventory_document()
     first_document["build_environments"]["environment"]["environment"] = {
         "ZEPHYR_TOOLCHAIN_VARIANT": "zephyr",
         "ZEPHYR_SDK_INSTALL_DIR": "/opt/zephyr-sdk-a",
@@ -209,9 +207,23 @@ def test_configured_build_environment_controls_process_and_cache_identity(
         second.build_environment("environment"), repository_root=tmp_path / "checkout"
     )
 
+
+def test_preparation_uses_only_configured_build_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    document = inventory_document(zephyr_base=str(tmp_path), west=sys.executable)
+    document["build_environments"]["environment"]["environment"] = {
+        "ZEPHYR_TOOLCHAIN_VARIANT": "zephyr",
+        "ZEPHYR_SDK_INSTALL_DIR": "/opt/zephyr-sdk-a",
+    }
+    inventory_path = tmp_path / "hardware.yaml"
+    inventory_path.write_text(yaml.safe_dump(document, sort_keys=False))
+    inventory = load_inventory(inventory_path)
+
     monkeypatch.setenv("ZEPHYR_TOOLCHAIN_VARIANT", "ambient")
+    monkeypatch.setenv("CMAKE_PREFIX_PATH", "/ambient/cmake-prefix")
     preparation = HardwarePreparation(
-        first,
+        inventory,
         tmp_path / "builds",
         tmp_path / "configs",
         cache_root=tmp_path / "cache",
@@ -223,6 +235,7 @@ def test_configured_build_environment_controls_process_and_cache_identity(
     environment = run.call_args.kwargs["env"]
     assert environment["ZEPHYR_TOOLCHAIN_VARIANT"] == "zephyr"
     assert environment["ZEPHYR_SDK_INSTALL_DIR"] == "/opt/zephyr-sdk-a"
+    assert "CMAKE_PREFIX_PATH" not in environment
 
 
 def test_shared_hardware_cache_uses_build_environment_and_checkout(tmp_path: Path) -> None:
