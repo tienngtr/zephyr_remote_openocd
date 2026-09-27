@@ -6,6 +6,7 @@ import os
 import struct
 import subprocess
 import sys
+from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
@@ -29,6 +30,7 @@ from tests.hardware_support import (
     HardwarePreparation,
     elf_memory_witness,
     hardware_cache_root,
+    hardware_shared_cache_root,
 )
 from tests.inventory import Inventory, load_inventory, render_product_config
 from tests.inventory_samples import inventory_document
@@ -125,19 +127,50 @@ def test_preparation_retries_failed_build_and_caches_success(tmp_path, monkeypat
     assert selected.ssh_host == inventory.host("host").ssh_host
 
 
-def test_hardware_cache_root_isolated_by_inventory_and_checkout(tmp_path: Path) -> None:
+def test_hardware_cache_root_uses_build_inputs_and_checkout(tmp_path: Path) -> None:
     first_path = tmp_path / "first.yaml"
-    first_path.write_text(yaml.safe_dump(inventory_document(), sort_keys=False))
+    document = inventory_document()
+    first_path.write_text(yaml.safe_dump(document, sort_keys=False))
     first = load_inventory(first_path)
-    second_path = tmp_path / "second.yaml"
-    second_path.write_text(yaml.safe_dump(inventory_document(), sort_keys=False))
-    second = load_inventory(second_path)
 
-    assert hardware_cache_root(first, repository_root=tmp_path / "checkout") != (
+    unrelated_document = deepcopy(document)
+    unrelated_document["targets"]["target"]["serial"]["console"]["device"] = "/dev/other"
+    second_path = tmp_path / "second.yaml"
+    second_path.write_text(yaml.safe_dump(unrelated_document, sort_keys=False))
+    second = load_inventory(second_path)
+    assert hardware_cache_root(first, repository_root=tmp_path / "checkout") == (
         hardware_cache_root(second, repository_root=tmp_path / "checkout")
+    )
+
+    build_document = deepcopy(document)
+    build_document["targets"]["target"]["builds"]["application"]["cmake_args"] = [
+        "-DCONFIG_ASSERT=y"
+    ]
+    build_path = tmp_path / "build.yaml"
+    build_path.write_text(yaml.safe_dump(build_document, sort_keys=False))
+    changed_build = load_inventory(build_path)
+    assert hardware_cache_root(first, repository_root=tmp_path / "checkout") != (
+        hardware_cache_root(changed_build, repository_root=tmp_path / "checkout")
     )
     assert hardware_cache_root(first, repository_root=tmp_path / "checkout") != (
         hardware_cache_root(first, repository_root=tmp_path / "other-checkout")
+    )
+
+
+def test_shared_hardware_cache_uses_build_environment_and_checkout(tmp_path: Path) -> None:
+    inventory_path = tmp_path / "hardware.yaml"
+    inventory_path.write_text(yaml.safe_dump(inventory_document(), sort_keys=False))
+    inventory = load_inventory(inventory_path)
+    environment = inventory.build_environment("environment")
+
+    first = hardware_shared_cache_root(environment, repository_root=tmp_path / "checkout")
+    assert first == hardware_shared_cache_root(environment, repository_root=tmp_path / "checkout")
+    assert first != hardware_shared_cache_root(
+        replace(environment, zephyr_base=tmp_path / "other-zephyr"),
+        repository_root=tmp_path / "checkout",
+    )
+    assert first != hardware_shared_cache_root(
+        environment, repository_root=tmp_path / "other-checkout"
     )
 
 

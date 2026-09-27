@@ -5,10 +5,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import socket
 import subprocess
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -48,14 +50,55 @@ class BuildTiming:
 
 
 def hardware_cache_root(inventory: Inventory, *, repository_root: Path = ROOT) -> Path:
-    """Return an isolated persistent cache directory for one inventory checkout."""
-    digest = hashlib.sha256()
-    digest.update(str(repository_root.resolve()).encode("utf-8"))
-    digest.update(b"\0")
-    digest.update(str(inventory.path).encode("utf-8"))
-    digest.update(b"\0")
-    digest.update(inventory.path.read_bytes())
+    """Return a persistent build directory for compatible inventory inputs."""
+    build_inputs = {
+        "repository_root": str(repository_root.resolve()),
+        "build_environments": [
+            {
+                "name": environment.name,
+                "zephyr_base": str(environment.zephyr_base.resolve()),
+                "west": str(environment.west.resolve()),
+            }
+            for environment in sorted(inventory.build_environments, key=lambda item: item.name)
+        ],
+        "targets": [
+            {
+                "name": target.name,
+                "host": target.host,
+                "build_environment": target.build_environment,
+                "builds": [
+                    {
+                        "name": recipe.name,
+                        "application": recipe.application,
+                        "board": recipe.board,
+                        "west_args": recipe.west_args,
+                        "cmake_args": recipe.cmake_args,
+                    }
+                    for recipe in sorted(target.builds, key=lambda item: item.name)
+                ],
+            }
+            for target in sorted(inventory.targets, key=lambda item: item.name)
+        ],
+    }
+    digest = hashlib.sha256(
+        json.dumps(build_inputs, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
     return repository_root / ".scratch" / "hardware" / f"build-cache-{digest.hexdigest()[:16]}"
+
+
+def hardware_shared_cache_root(
+    environment: BuildEnvironment, *, repository_root: Path = ROOT
+) -> Path:
+    """Return compiler and Zephyr caches shared by compatible builds."""
+    shared_inputs = {
+        "repository_root": str(repository_root.resolve()),
+        "zephyr_base": str(environment.zephyr_base.resolve()),
+        "west": str(environment.west.resolve()),
+    }
+    digest = hashlib.sha256(
+        json.dumps(shared_inputs, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
+    return repository_root / ".scratch" / "hardware" / f"shared-cache-{digest.hexdigest()[:16]}"
 
 
 def free_loopback_ports(count: int) -> tuple[int, ...]:
@@ -232,12 +275,17 @@ class HardwarePreparation:
         build_root: Path,
         config_root: Path,
         *,
-        cache_root: Path | None = None,
+        cache_root: Path | Callable[[BuildEnvironment], Path] | None = None,
     ):
         self.inventory = inventory
         self.build_root = build_root
         self.config_root = config_root
-        self.cache_root = cache_root or build_root.parent / "cache"
+        configured_cache_root = cache_root or build_root.parent / "cache"
+        self._cache_root = (
+            configured_cache_root
+            if callable(configured_cache_root)
+            else lambda _environment: configured_cache_root
+        )
         self.built: set[tuple[str, str]] = set()
         self.build_timings: list[BuildTiming] = []
 
@@ -347,6 +395,7 @@ class HardwarePreparation:
                 and (build_dir / "zephyr" / "zephyr.elf").is_file()
                 else "cold"
             )
+            cache_root = self._cache_root(build_environment)
             command = [
                 str(build_environment.west),
                 "build",
@@ -361,7 +410,7 @@ class HardwarePreparation:
             if cache_state == "cold":
                 cmake_args = list(recipe.cmake_args)
                 if not any(argument.startswith("-DUSER_CACHE_DIR=") for argument in cmake_args):
-                    cmake_args.append(f"-DUSER_CACHE_DIR={self.cache_root / 'zephyr-cache'}")
+                    cmake_args.append(f"-DUSER_CACHE_DIR={cache_root / 'zephyr-cache'}")
                 if cmake_args:
                     command.extend(("--", *cmake_args))
             environment = os.environ.copy()
@@ -371,9 +420,9 @@ class HardwarePreparation:
                 "ZRO_RECORD_OPENOCD_VERSION",
             ):
                 environment.pop(name, None)
-            self.cache_root.mkdir(parents=True, exist_ok=True)
-            environment.setdefault("CCACHE_DIR", str(self.cache_root / "ccache"))
-            environment.setdefault("CCACHE_TEMPDIR", str(self.cache_root / "ccache-tmp"))
+            cache_root.mkdir(parents=True, exist_ok=True)
+            environment.setdefault("CCACHE_DIR", str(cache_root / "ccache"))
+            environment.setdefault("CCACHE_TEMPDIR", str(cache_root / "ccache-tmp"))
             environment.update(
                 EXTRA_ZEPHYR_MODULES=str(ROOT),
                 ZEPHYR_REMOTE_OPENOCD_CONFIG=str(config_path),

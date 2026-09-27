@@ -37,12 +37,13 @@ run never needs SSH, a Zephyr checkout, or lab hardware:
 
 Hardware preparation reuses incremental Zephyr build directories between
 pytest runs. The cache is stored below
-`.scratch/hardware/build-cache-<inventory-hash>/`; the hash includes the
-complete inventory, its path, and the repository checkout path, so separate
-inventories and checkouts do not share build artifacts. Zephyr's
-`USER_CACHE_DIR` and ccache are redirected into the same ignored cache
-namespace when the environment does not already specify a ccache directory,
-while an explicit inventory `USER_CACHE_DIR` remains authoritative.
+`.scratch/hardware/build-cache-<build-input-hash>/`; the hash includes the
+repository checkout and inventory fields that define builds, but excludes
+transport, serial, and operation settings. Zephyr's `USER_CACHE_DIR` and
+ccache use a separate `shared-cache-<environment-hash>/` namespace keyed by
+the repository checkout and Zephyr build environment. Compatible inventories
+therefore retain compiler and Zephyr caches when their test settings change.
+An explicit inventory `USER_CACHE_DIR` remains authoritative.
 The harness requests `--pristine=never`; edit the inventory or remove its
 cache namespace when a deliberately fresh build is needed. Cold builds pass
 the inventory's CMake arguments and redirected Zephyr cache to west. Warm
