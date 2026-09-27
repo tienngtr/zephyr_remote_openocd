@@ -54,24 +54,10 @@ class TestRealSemihosting:
             args.extend(("--", *runner_args))
         return args
 
-    def _flash(self, fixture: SemihostingFixture) -> None:
-        result = subprocess.run(
-            self._west(fixture, "flash"),
-            cwd=fixture.target.workspace,
-            env=self._environment(fixture),
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            check=False,
-            timeout=240,
-        )
-        assert result.returncode == 0, result.stdout
-
     def test_direct_semihosting_console_normal_completion(
         self, semihosting_fixture: SemihostingFixture
     ) -> None:
         fixture = semihosting_fixture
-        self._flash(fixture)
         command = self._west(fixture, "debug", gdb_init=fixture.operation.gdb_commands)
         process = subprocess.Popen(
             command,
