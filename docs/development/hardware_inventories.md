@@ -126,7 +126,9 @@ Flash uses an application-specific serial pattern to distinguish the selected
 image from stale firmware. Its precondition build must be different from the
 profile build. `output_patterns` match combined west/OpenOCD output;
 `assert_bindto` additionally requires evidence that remote OpenOCD used its
-allocated loopback address.
+allocated loopback address. The precondition must be quiet with respect to the
+selected image pattern; the harness treats that as a fixture invariant rather
+than opening a second serial session to observe a timed quiet period.
 
 Attach has the same distinct-precondition requirement. It derives identifying
 bytes from that ELF and verifies that attaching does not replace them.
