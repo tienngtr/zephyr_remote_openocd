@@ -68,6 +68,11 @@ class ProcessOutputMonitor:
         self._thread.join(timeout)
         if self._thread.is_alive():
             raise AssertionError("process output reader did not terminate")
+        try:
+            if self._error is not None:
+                raise AssertionError(f"process output read failed: {self._error}") from self._error
+        finally:
+            self._stream.close()
 
 
 def assert_semihosting_acceptance(returncode: int | None, output: str, pattern: str) -> None:

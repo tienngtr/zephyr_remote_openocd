@@ -109,7 +109,7 @@ class TestRealRtt:
         return text
 
     @staticmethod
-    def _abort(process):
+    def _terminate(process):
         if process.poll() is None:
             process.send_signal(signal.SIGINT)
             try:
@@ -117,9 +117,17 @@ class TestRealRtt:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
+
+    @staticmethod
+    def _close_streams(process):
         for stream in (process.stdin, process.stdout, process.stderr):
             if stream is not None and not stream.closed:
                 stream.close()
+
+    @classmethod
+    def _abort(cls, process):
+        cls._terminate(process)
+        cls._close_streams(process)
 
     @staticmethod
     def _exchange_rtt(connection: socket.socket, fixture: RttFixture) -> None:
@@ -271,5 +279,8 @@ class TestRealRtt:
             process.wait(timeout=20)
         finally:
             release.touch()
-            self._abort(process)
-            output.join(timeout=10)
+            self._terminate(process)
+            try:
+                output.join(timeout=10)
+            finally:
+                self._close_streams(process)
