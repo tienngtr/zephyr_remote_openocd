@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,6 +15,9 @@ from .paths import REMOTE_ADDRESS_PLACEHOLDER, PathPlanner
 
 class FlashPlanError(RuntimeError):
     pass
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -205,6 +209,11 @@ def build_flash_plan(
         (f"bindto {REMOTE_ADDRESS_PLACEHOLDER}",),
     )
     image = _plan_image(inputs, planner)
+    if image.kind == "bin" and (inputs.verify or inputs.verify_only) and not inputs.verify_command:
+        _LOGGER.warning(
+            "BIN verification requested but no verify command is available; "
+            "skipping verification to preserve Zephyr 4.4 OpenOCD runner behavior"
+        )
 
     process = RemoteProcess(
         _flash_argv(inputs, base, image),

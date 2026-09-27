@@ -742,7 +742,8 @@ Commands executed by remote OpenOCD SHALL reference remote paths for remotely ac
 
 ### REQ-FUNC-FLASH-004
 
-Applicable OpenOCD flash behavior SHALL be preserved, including:
+Applicable flash behavior of the Zephyr 4.4.0 OpenOCD runner SHALL be preserved,
+including:
 
 - erase;
 - load;
