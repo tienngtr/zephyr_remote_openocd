@@ -7,7 +7,72 @@ from __future__ import annotations
 import os
 import re
 import selectors
+import threading
 import time
+from typing import BinaryIO
+
+
+class ProcessOutputMonitor:
+    """Continuously capture a process pipe and signal observable output."""
+
+    def __init__(self, stream: BinaryIO):
+        self._stream = stream
+        self._fd = stream.fileno()
+        self._output = bytearray()
+        self._condition = threading.Condition()
+        self._finished = False
+        self._error: BaseException | None = None
+        self._thread = threading.Thread(target=self._read, daemon=True)
+        self._thread.start()
+
+    def _read(self) -> None:
+        try:
+            while chunk := os.read(self._fd, 4096):
+                with self._condition:
+                    self._output.extend(chunk)
+                    self._condition.notify_all()
+        except BaseException as error:
+            with self._condition:
+                self._error = error
+        finally:
+            with self._condition:
+                self._finished = True
+                self._condition.notify_all()
+
+    @property
+    def text(self) -> str:
+        with self._condition:
+            return bytes(self._output).decode("utf-8", "replace")
+
+    def wait_for(self, pattern: str, timeout: float) -> None:
+        deadline = time.monotonic() + timeout
+        encoded = pattern.encode()
+        with self._condition:
+            while encoded not in self._output:
+                if self._error is not None:
+                    raise AssertionError(
+                        f"process output read failed: {self._error}"
+                    ) from self._error
+                if self._finished:
+                    raise AssertionError(
+                        f"process output ended before {pattern!r} was observed:\n{self.text}"
+                    )
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise AssertionError(
+                        f"pattern {pattern!r} not observed before timeout:\n{self.text}"
+                    )
+                self._condition.wait(remaining)
+
+    def join(self, timeout: float) -> None:
+        self._thread.join(timeout)
+        if self._thread.is_alive():
+            raise AssertionError("process output reader did not terminate")
+        try:
+            if self._error is not None:
+                raise AssertionError(f"process output read failed: {self._error}") from self._error
+        finally:
+            self._stream.close()
 
 
 def assert_semihosting_acceptance(returncode: int | None, output: str, pattern: str) -> None:

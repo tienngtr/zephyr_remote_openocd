@@ -38,7 +38,6 @@ from tests.inventory import (
 )
 from tests.support import ROOT
 
-
 _BUILD_ENVIRONMENT_PASSTHROUGH = (
     "HOME",
     "LANG",
@@ -54,9 +53,7 @@ _BUILD_ENVIRONMENT_PASSTHROUGH = (
 
 def _build_process_environment(environment: BuildEnvironment) -> dict[str, str]:
     result = {
-        name: os.environ[name]
-        for name in _BUILD_ENVIRONMENT_PASSTHROUGH
-        if name in os.environ
+        name: os.environ[name] for name in _BUILD_ENVIRONMENT_PASSTHROUGH if name in os.environ
     }
     result.update(environment.environment)
     return result
