@@ -41,7 +41,6 @@ targets:
           flash:
             # The precondition must differ from the profile's selected build.
             precondition_build: minimal
-            quiescence_timeout: 2
             serial:
               endpoint: console
               pattern: Hello World

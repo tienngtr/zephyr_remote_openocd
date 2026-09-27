@@ -108,7 +108,6 @@ class SerialExpectation:
 @dataclass(frozen=True)
 class FlashOperation:
     precondition_build: str
-    quiescence_timeout: float
     serial: SerialExpectation
     output_patterns: tuple[str, ...]
     assert_bindto: bool
@@ -384,7 +383,6 @@ def _operation(
                 path,
                 f"{location}.precondition_build",
             ),
-            float(raw["quiescence_timeout"]),
             SerialExpectation(endpoint, serial_raw["pattern"], float(serial_raw["timeout"])),
             tuple(raw.get("output_patterns", [])),
             raw.get("assert_bindto", False),

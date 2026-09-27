@@ -143,7 +143,6 @@ def test_preparation_retries_failed_build_and_caches_success(tmp_path, monkeypat
     assert flash.target.id == debug.target.id
     assert "--serial=probe" in flash.target.runner_args
     assert flash.precondition_build_dir == build_root / "target" / "precondition"
-    assert flash.operation.quiescence_timeout == 2
     environment = run.call_args.kwargs["env"]
     assert "ZEPHYR_REMOTE_OPENOCD_REMOTE" not in environment
     assert environment["ZEPHYR_REMOTE_OPENOCD_CONFIG"] == str(flash.target.config_path)
