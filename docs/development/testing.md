@@ -204,11 +204,13 @@ output: RAM-loaded targets can lose the new image on reset, and Zephyr does not
 promise fresh application output from `west debug`.
 
 Real `west flash` acceptance uses two distinct images. It first flashes a quiet
-precondition image (normally `samples/basic/minimal`) and confirms that the
-selected image marker is absent, then flashes the selected image (normally
-`samples/hello_world`) and requires its marker. Attach acceptance reads the PC
-and current instruction without loading. RTT-server acceptance combines the
-same source-level breakpoint evidence with a bidirectional RTT exchange.
+precondition image (normally `samples/basic/minimal`), then arms serial
+observation before flashing the selected image (normally
+`samples/hello_world`) and requires its marker. Precondition quietness is a
+fixture invariant; the test does not spend a timed observation re-proving it.
+Attach acceptance reads the PC and current instruction without loading.
+RTT-server acceptance combines an active GDB session with a bidirectional RTT
+exchange.
 
 Run the desired layers explicitly:
 

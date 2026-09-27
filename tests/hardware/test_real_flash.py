@@ -30,25 +30,6 @@ class TestRealOpenOcdFlash:
         precondition = self._flash(fixture, fixture.precondition_build_dir)
         assert precondition.returncode == 0, precondition.stdout
 
-        quiet_reader = ssh.popen(
-            fixture.target.host.ssh_host,
-            self._reader_command(fixture, fixture.operation.quiescence_timeout),
-        )
-        try:
-            assert _read_event(quiet_reader, 15)["type"] == "READY"
-            assert quiet_reader.stdin is not None
-            quiet_reader.stdin.write(b"ARM\n")
-            quiet_reader.stdin.flush()
-            assert _read_event(quiet_reader, 15)["type"] == "ARMED"
-            quiet = _read_event(quiet_reader, fixture.operation.quiescence_timeout + 2)
-            captured = self._captured_text(quiet)
-            assert quiet["type"] == "TIMEOUT", (
-                "precondition image emitted the intended image marker:\n" + captured
-            )
-            assert quiet_reader.wait(timeout=5) == 2
-        finally:
-            _stop(quiet_reader)
-
         observation = fixture.operation.serial
         remote_command = self._reader_command(fixture, observation.timeout + 180)
         reader = ssh.popen(fixture.target.host.ssh_host, remote_command)

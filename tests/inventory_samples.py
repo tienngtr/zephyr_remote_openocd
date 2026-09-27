@@ -51,7 +51,6 @@ def inventory_document(*, zephyr_base: str = "/zephyr", west: str = "/west") -> 
                         "operations": {
                             "flash": {
                                 "precondition_build": "precondition",
-                                "quiescence_timeout": 2,
                                 "serial": {
                                     "endpoint": "console",
                                     "pattern": "ready",

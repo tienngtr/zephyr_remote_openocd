@@ -62,7 +62,6 @@ targets:
         operations:
           flash:
             precondition_build: minimal
-            quiescence_timeout: 2
             serial:
               endpoint: console
               pattern: Hello World

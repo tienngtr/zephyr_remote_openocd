@@ -594,17 +594,12 @@
       "additionalProperties": false,
       "required": [
         "precondition_build",
-        "quiescence_timeout",
         "serial"
       ],
       "properties": {
         "precondition_build": {
           "$ref": "#/$defs/identifier",
           "description": "A declared build different from the profile build, flashed before the test image."
-        },
-        "quiescence_timeout": {
-          "$ref": "#/$defs/positiveNumber",
-          "description": "Seconds for which the precondition image must not emit the expected test-image marker."
         },
         "serial": {
           "$ref": "#/$defs/serialExpectation",

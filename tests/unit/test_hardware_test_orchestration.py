@@ -1,8 +1,40 @@
 # SPDX-License-Identifier: Apache-2.0
 
+from subprocess import CompletedProcess
 from unittest.mock import MagicMock, patch
 
+from tests.hardware.test_real_flash import TestRealOpenOcdFlash as _FlashTest
 from tests.hardware.test_real_semihosting import TestRealSemihosting as _SemihostingTest
+
+
+def test_flash_uses_one_serial_reader_for_selected_image_output() -> None:
+    fixture = MagicMock()
+    fixture.operation.serial.timeout = 30
+    fixture.operation.output_patterns = ()
+    reader = MagicMock()
+    reader.wait.return_value = 0
+    ssh = MagicMock()
+    ssh.popen.return_value = reader
+    flashes = [CompletedProcess([], 0, ""), CompletedProcess([], 0, "")]
+
+    with (
+        patch("tests.hardware.test_real_flash.SshCommand", return_value=ssh),
+        patch.object(_FlashTest, "_flash", side_effect=flashes),
+        patch.object(_FlashTest, "_reader_command", return_value="serial-reader"),
+        patch.object(_FlashTest, "_assert_bindto"),
+        patch(
+            "tests.hardware.test_real_flash._read_event",
+            side_effect=(
+                {"type": "READY"},
+                {"type": "ARMED"},
+                {"type": "MATCH", "data": ""},
+            ),
+        ),
+        patch("tests.hardware.test_real_flash._stop"),
+    ):
+        _FlashTest().test_configured_target_flashes_and_emits_fresh_serial_output(fixture)
+
+    ssh.popen.assert_called_once()
 
 
 def test_semihosting_uses_debug_as_the_only_programming_command() -> None:
