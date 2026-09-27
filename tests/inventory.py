@@ -59,6 +59,7 @@ class BuildEnvironment:
     name: str
     zephyr_base: Path
     west: Path
+    environment: tuple[tuple[str, str], ...]
 
 
 @dataclass(frozen=True)
@@ -312,6 +313,7 @@ def _build_environment(name: str, raw: dict[str, Any], path: Path) -> BuildEnvir
         name,
         _local_path(raw["zephyr_base"], path, f"{location}.zephyr_base"),
         _local_path(raw["west"], path, f"{location}.west"),
+        tuple(sorted(raw.get("environment", {}).items())),
     )
 
 

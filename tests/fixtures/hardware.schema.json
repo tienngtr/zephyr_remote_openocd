@@ -157,6 +157,21 @@
           "examples": [
             "/work/zephyrproject/.venv/bin/west"
           ]
+        },
+        "environment": {
+          "description": "Build-affecting environment values passed to west. Declare toolchain and SDK selection here so persistent build identity remains deterministic.",
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "description": "Literal environment value passed without shell expansion.",
+            "not": {
+              "pattern": "\\u0000"
+            }
+          },
+          "default": {}
         }
       }
     },

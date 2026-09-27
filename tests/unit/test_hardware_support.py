@@ -181,6 +181,51 @@ def test_hardware_cache_root_uses_build_inputs_and_checkout(tmp_path: Path) -> N
     )
 
 
+def test_configured_build_environment_controls_process_and_cache_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first_document = inventory_document(zephyr_base=str(tmp_path), west=sys.executable)
+    first_document["build_environments"]["environment"]["environment"] = {
+        "ZEPHYR_TOOLCHAIN_VARIANT": "zephyr",
+        "ZEPHYR_SDK_INSTALL_DIR": "/opt/zephyr-sdk-a",
+    }
+    first_path = tmp_path / "first.yaml"
+    first_path.write_text(yaml.safe_dump(first_document, sort_keys=False))
+    first = load_inventory(first_path)
+
+    second_document = deepcopy(first_document)
+    second_document["build_environments"]["environment"]["environment"][
+        "ZEPHYR_SDK_INSTALL_DIR"
+    ] = "/opt/zephyr-sdk-b"
+    second_path = tmp_path / "second.yaml"
+    second_path.write_text(yaml.safe_dump(second_document, sort_keys=False))
+    second = load_inventory(second_path)
+
+    assert hardware_cache_root(first, repository_root=tmp_path / "checkout") != (
+        hardware_cache_root(second, repository_root=tmp_path / "checkout")
+    )
+    assert hardware_shared_cache_root(
+        first.build_environment("environment"), repository_root=tmp_path / "checkout"
+    ) != hardware_shared_cache_root(
+        second.build_environment("environment"), repository_root=tmp_path / "checkout"
+    )
+
+    monkeypatch.setenv("ZEPHYR_TOOLCHAIN_VARIANT", "ambient")
+    preparation = HardwarePreparation(
+        first,
+        tmp_path / "builds",
+        tmp_path / "configs",
+        cache_root=tmp_path / "cache",
+    )
+    with patch("tests.hardware_support.subprocess.run", autospec=True) as run:
+        run.return_value = subprocess.CompletedProcess([], 0, "")
+        preparation.prepare("target:profile", "debug")
+
+    environment = run.call_args.kwargs["env"]
+    assert environment["ZEPHYR_TOOLCHAIN_VARIANT"] == "zephyr"
+    assert environment["ZEPHYR_SDK_INSTALL_DIR"] == "/opt/zephyr-sdk-a"
+
+
 def test_shared_hardware_cache_uses_build_environment_and_checkout(tmp_path: Path) -> None:
     inventory_path = tmp_path / "hardware.yaml"
     inventory_path.write_text(yaml.safe_dump(inventory_document(), sort_keys=False))

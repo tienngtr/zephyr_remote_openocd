@@ -39,6 +39,29 @@ from tests.inventory import (
 from tests.support import ROOT
 
 
+_BUILD_ENVIRONMENT_PASSTHROUGH = (
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "PATH",
+    "PATHEXT",
+    "SYSTEMROOT",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+)
+
+
+def _build_process_environment(environment: BuildEnvironment) -> dict[str, str]:
+    result = {
+        name: os.environ[name]
+        for name in _BUILD_ENVIRONMENT_PASSTHROUGH
+        if name in os.environ
+    }
+    result.update(environment.environment)
+    return result
+
+
 @dataclass(frozen=True)
 class BuildTiming:
     """Measured preparation of one inventory build recipe."""
@@ -58,6 +81,7 @@ def hardware_cache_root(inventory: Inventory, *, repository_root: Path = ROOT) -
                 "name": environment.name,
                 "zephyr_base": str(environment.zephyr_base.resolve()),
                 "west": str(environment.west.resolve()),
+                "environment": _build_process_environment(environment),
             }
             for environment in sorted(inventory.build_environments, key=lambda item: item.name)
         ],
@@ -94,6 +118,7 @@ def hardware_shared_cache_root(
         "repository_root": str(repository_root.resolve()),
         "zephyr_base": str(environment.zephyr_base.resolve()),
         "west": str(environment.west.resolve()),
+        "environment": _build_process_environment(environment),
     }
     digest = hashlib.sha256(
         json.dumps(shared_inputs, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -416,13 +441,7 @@ class HardwarePreparation:
                     cmake_args.append(f"-DUSER_CACHE_DIR={cache_root / 'zephyr-cache'}")
                 if cmake_args:
                     command.extend(("--", *cmake_args))
-            environment = os.environ.copy()
-            for name in (
-                "ZEPHYR_REMOTE_OPENOCD_REMOTE",
-                "ZRO_RECORD",
-                "ZRO_RECORD_OPENOCD_VERSION",
-            ):
-                environment.pop(name, None)
+            environment = _build_process_environment(build_environment)
             cache_root.mkdir(parents=True, exist_ok=True)
             environment.setdefault("CCACHE_DIR", str(cache_root / "ccache"))
             environment.setdefault("CCACHE_TEMPDIR", str(cache_root / "ccache-tmp"))
