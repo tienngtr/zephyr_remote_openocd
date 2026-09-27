@@ -15,6 +15,7 @@ from tests.hardware_support import (
     HardwarePreparation,
     PreparedOperation,
     hardware_cache_root,
+    hardware_shared_cache_root,
 )
 from tests.inventory import Inventory, InventoryError, load_inventory
 
@@ -247,7 +248,7 @@ def prepared_hardware(
         hardware_inventory,
         cache_root / "builds",
         cache_root / "configs",
-        cache_root=cache_root / "caches",
+        cache_root=hardware_shared_cache_root,
     )
     pytestconfig.stash[_HARDWARE_BUILD_TIMINGS] = preparation.build_timings
     return preparation

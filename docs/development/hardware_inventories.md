@@ -73,6 +73,18 @@ Each target references one `host` and one `build_environment`. A target-level
 board override. Relative application paths resolve beneath `zephyr_base` and
 cannot escape that tree. Absolute application paths may name external trees.
 
+Declare build-affecting variables such as `ZEPHYR_TOOLCHAIN_VARIANT` and
+`ZEPHYR_SDK_INSTALL_DIR` in the build environment's `environment` mapping.
+The harness passes a small host baseline (`HOME`, locale, `PATH`, platform
+command lookup, and temporary-directory variables) plus those explicit values;
+other ambient variables do not reach west. Both sets participate in persistent
+build and shared-cache identity, so changing toolchain selection cannot reuse
+stale CMake state.
+
+Existing inventories remain valid because the mapping is optional. If a build
+previously relied on ambient SDK, toolchain, or CMake variables, move those
+values into this mapping before running hardware tests.
+
 `west_args` are inserted before the application and CMake separator;
 `cmake_args` are passed after `--`. Both are arrays in which each YAML item is
 one complete argument.
@@ -97,7 +109,7 @@ profile environment key is valid only when the selected host lists it in
 | --- | --- |
 | `ssh_command` | `[ssh]` |
 | `forward_env`, `path_mappings`, `toolchains`, `serial` | Empty |
-| `west_args`, `cmake_args`, `runner_args`, `environment` | Empty |
+| `west_args`, `cmake_args`, `runner_args`, build/profile `environment` | Empty |
 | `data_bits`, `parity`, `stop_bits`, `flow_control` | `8`, `none`, `1`, `none` |
 | `output_patterns`, `gdb_commands` | Empty |
 | `assert_bindto` | `false` |

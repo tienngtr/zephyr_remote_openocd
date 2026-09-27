@@ -7,6 +7,9 @@ build_environments:
   zephyr44:
     zephyr_base: /path/to/zephyr
     west: /path/to/zephyrproject/.venv/bin/west
+    environment:
+      ZEPHYR_TOOLCHAIN_VARIANT: zephyr
+      ZEPHYR_SDK_INSTALL_DIR: /path/to/zephyr-sdk
 
 toolchains:
   arm:
