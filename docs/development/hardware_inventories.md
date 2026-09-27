@@ -89,14 +89,19 @@ values into this mapping before running hardware tests.
 `cmake_args` are passed after `--`. Both are arrays in which each YAML item is
 one complete argument.
 
+Keep files named by OpenOCD `--config` runner arguments in a dedicated support
+directory. Zephyr adds each config file's parent as an OpenOCD search path, and
+the remote runner recursively stages unmapped search paths. Do not place those
+files directly beside `.scratch/hardware/` build caches or other unrelated
+content.
+
 Hardware tests keep their build output under the repository's ignored
-`.scratch/hardware/` directory. The build namespace is derived from the full
-inventory and checkout path, so different inventories remain independent while
-repeated runs can reuse incremental Zephyr builds. The test harness uses
-`--pristine=never` and supplies per-namespace Zephyr and ccache directories;
-an explicit `-DUSER_CACHE_DIR=...` in a build's `cmake_args` is preserved.
-Remove the matching `build-cache-<inventory-hash>` directory when a fresh build
-is required.
+`.scratch/hardware/` directory. Build namespaces include the checkout and
+build-relevant inventory fields, while compatible inventories share
+environment-scoped Zephyr and ccache directories. The test harness uses
+`--pristine=never`; an explicit `-DUSER_CACHE_DIR=...` in a build's
+`cmake_args` is preserved. Remove the matching `build-cache-<build-input-hash>`
+directory when a fresh build is required.
 
 A profile selects one build. Every operation in that profile shares its build,
 `probe_serial`, `runner_args`, and `environment`. Profiles do not inherit. A
