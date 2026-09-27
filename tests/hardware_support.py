@@ -252,7 +252,9 @@ class HardwarePreparation:
         toolchain = self.inventory.toolchain(target.toolchain) if target.toolchain else None
         config_path = self.config_root / f"{host.name}.yaml"
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(render_product_config(host), encoding="utf-8")
+        rendered_config = render_product_config(host)
+        if not config_path.is_file() or config_path.read_text(encoding="utf-8") != rendered_config:
+            config_path.write_text(rendered_config, encoding="utf-8")
         build_dir = self._prepare_build(target, build_environment, profile.build, config_path)
         prepared = self._prepared_target(
             target, profile, host, build_environment, toolchain, build_dir, config_path
@@ -356,11 +358,12 @@ class HardwarePreparation:
                 *recipe.west_args,
                 "--pristine=never",
             ]
-            cmake_args = list(recipe.cmake_args)
-            if not any(argument.startswith("-DUSER_CACHE_DIR=") for argument in cmake_args):
-                cmake_args.append(f"-DUSER_CACHE_DIR={self.cache_root / 'zephyr-cache'}")
-            if cmake_args:
-                command.extend(("--", *cmake_args))
+            if cache_state == "cold":
+                cmake_args = list(recipe.cmake_args)
+                if not any(argument.startswith("-DUSER_CACHE_DIR=") for argument in cmake_args):
+                    cmake_args.append(f"-DUSER_CACHE_DIR={self.cache_root / 'zephyr-cache'}")
+                if cmake_args:
+                    command.extend(("--", *cmake_args))
             environment = os.environ.copy()
             for name in (
                 "ZEPHYR_REMOTE_OPENOCD_REMOTE",

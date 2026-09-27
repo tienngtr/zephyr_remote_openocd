@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import struct
 import subprocess
 import sys
@@ -29,7 +30,7 @@ from tests.hardware_support import (
     elf_memory_witness,
     hardware_cache_root,
 )
-from tests.inventory import Inventory, load_inventory
+from tests.inventory import Inventory, load_inventory, render_product_config
 from tests.inventory_samples import inventory_document
 
 
@@ -87,6 +88,11 @@ def test_preparation_builds_only_requested_recipes(tmp_path):
     }
     assert not (build_root / "unavailable").exists()
     assert not (build_root / "target" / "unused").exists()
+    assert all("--" in command for command in commands)
+    assert all(
+        any(argument.startswith("-DUSER_CACHE_DIR=") for argument in command)
+        for command in commands
+    )
 
 
 def test_preparation_retries_failed_build_and_caches_success(tmp_path, monkeypatch):
@@ -148,6 +154,10 @@ def test_preparation_reuses_warm_build_with_redirected_caches(tmp_path: Path) ->
     elf.parent.mkdir(parents=True)
     elf.write_bytes(b"existing build")
     (elf.parents[1] / "CMakeCache.txt").write_text("cached")
+    config_path = tmp_path / "configs" / "host.yaml"
+    config_path.write_text(render_product_config(preparation.inventory.host("host")))
+    unchanged_timestamp = 1_000_000_000_000_000_000
+    os.utime(config_path, ns=(unchanged_timestamp, unchanged_timestamp))
 
     with patch("tests.hardware_support.subprocess.run", autospec=True) as run:
         run.return_value = subprocess.CompletedProcess([], 0, "")
@@ -156,11 +166,13 @@ def test_preparation_reuses_warm_build_with_redirected_caches(tmp_path: Path) ->
     command = run.call_args.args[0]
     assert command[command.index("-d") + 1] == str(build_root / "target" / "application")
     assert "--pristine=never" in command
-    assert f"-DUSER_CACHE_DIR={cache_root / 'zephyr-cache'}" in command
+    assert "--" not in command
+    assert not any(argument.startswith("-DUSER_CACHE_DIR=") for argument in command)
     environment = run.call_args.kwargs["env"]
     assert environment["CCACHE_DIR"] == str(cache_root / "ccache")
     assert environment["CCACHE_TEMPDIR"] == str(cache_root / "ccache-tmp")
     assert preparation.build_timings[-1].cache_state == "warm"
+    assert config_path.stat().st_mtime_ns == unchanged_timestamp
 
 
 def test_elf_memory_witness_finds_bytes_that_distinguish_images(tmp_path: Path) -> None:

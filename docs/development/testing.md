@@ -44,7 +44,11 @@ inventories and checkouts do not share build artifacts. Zephyr's
 namespace when the environment does not already specify a ccache directory,
 while an explicit inventory `USER_CACHE_DIR` remains authoritative.
 The harness requests `--pristine=never`; edit the inventory or remove its
-cache namespace when a deliberately fresh build is needed.
+cache namespace when a deliberately fresh build is needed. Cold builds pass
+the inventory's CMake arguments and redirected Zephyr cache to west. Warm
+builds omit the CMake argument section so west can run Ninja directly without
+an otherwise redundant CMake configure step. Generated product configurations
+are only rewritten when their contents change, preserving Ninja's no-op path.
 
 To identify whether a slow hardware run is spending time preparing firmware or
 performing the board operation, add `--hardware-timings`. It reports each
