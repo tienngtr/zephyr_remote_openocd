@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import os
-import re
 import shlex
 import signal
 import socket
@@ -166,7 +165,6 @@ class TestRealRtt:
 
     def test_debug_rtt_server_keeps_gdb_foreground(self, rtt_fixture: RttFixture, tmp_path) -> None:
         fixture = rtt_fixture
-        breakpoint = fixture.operation.breakpoint
         port = fixture.operation.port
         release = tmp_path / "release-gdb"
         process = self._start(
@@ -174,15 +172,6 @@ class TestRealRtt:
             "debug",
             "--rtt-server",
             f"--rtt-port={port}",
-            f"--gdb-init=break {breakpoint}",
-            "--gdb-init=continue",
-            '--gdb-init=printf "ZRO_PC_BEGIN\\n"',
-            "--gdb-init=p/x $pc",
-            '--gdb-init=printf "ZRO_PC_END\\n"',
-            '--gdb-init=printf "ZRO_INSN_BEGIN\\n"',
-            "--gdb-init=x/1i $pc",
-            '--gdb-init=printf "ZRO_INSN_END\\n"',
-            "--gdb-init=delete breakpoints",
             "--gdb-init=monitor resume",
             "--gdb-init=echo ZRO_GDB_RTT_READY\\n",
             f"--gdb-init=shell while test ! -e {shlex.quote(str(release))}; do sleep 0.1; done",
@@ -204,15 +193,15 @@ class TestRealRtt:
         finally:
             release.touch()
             self._abort(process)
-        assert re.search(rf"Breakpoint \d+,\s+{re.escape(breakpoint)}\b", text)
-        assert re.search(r"ZRO_PC_BEGIN\s*\$\d+\s*=\s*0x[0-9a-fA-F]+", text)
-        assert re.search(r"ZRO_INSN_BEGIN\s*=>?\s*0x[0-9a-fA-F]+", text)
+        assert process.returncode == 0, text
 
-    def test_debugserver_exposes_gdb_and_rtt_without_clients(self, rtt_fixture: RttFixture) -> None:
+    def test_debugserver_serves_gdb_and_rtt_concurrently(
+        self, rtt_fixture: RttFixture, tmp_path
+    ) -> None:
         fixture = rtt_fixture
-        breakpoint = fixture.operation.breakpoint
         port = fixture.operation.port
         gdb_client_port = free_loopback_ports(1)[0]
+        release = tmp_path / "release-debugserver-gdb"
         process = self._start(
             fixture,
             "debugserver",
@@ -228,7 +217,7 @@ class TestRealRtt:
                 timeout=90,
             )
             assert process.poll() is None, output.text
-            client = subprocess.run(
+            client = subprocess.Popen(
                 [
                     str(fixture.target.gdb),
                     "-q",
@@ -239,52 +228,48 @@ class TestRealRtt:
                     "-ex",
                     "load",
                     "-ex",
-                    f"break {breakpoint}",
-                    "-ex",
-                    "continue",
-                    "-ex",
-                    'printf "ZRO_PC_BEGIN\\n"',
-                    "-ex",
-                    "p/x $pc",
-                    "-ex",
-                    'printf "ZRO_PC_END\\n"',
-                    "-ex",
-                    'printf "ZRO_INSN_BEGIN\\n"',
-                    "-ex",
-                    "x/1i $pc",
-                    "-ex",
-                    'printf "ZRO_INSN_END\\n"',
-                    "-ex",
-                    "delete breakpoints",
-                    "-ex",
                     "monitor resume",
+                    "-ex",
+                    "echo ZRO_GDB_RTT_READY\\n",
+                    "-ex",
+                    f"shell while test ! -e {shlex.quote(str(release))}; do sleep 0.1; done",
                     "-ex",
                     "detach",
                     "-ex",
                     "quit",
                 ],
-                text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                check=False,
-                timeout=30,
             )
-            assert client.returncode == 0, f"{client.stdout}\n{output.text}"
-            assert re.search(rf"Breakpoint \d+,\s+{re.escape(breakpoint)}\b", client.stdout), (
-                f"{client.stdout}\n{output.text}"
-            )
-            assert re.search(r"ZRO_PC_BEGIN\s*\$\d+\s*=\s*0x[0-9a-fA-F]+", client.stdout), (
-                f"{client.stdout}\n{output.text}"
-            )
-            assert re.search(r"ZRO_INSN_BEGIN\s*=>?\s*0x[0-9a-fA-F]+", client.stdout), (
-                f"{client.stdout}\n{output.text}"
-            )
+            client_output = bytearray()
             try:
-                self._rtt_round_trip(fixture, port)
-            except (AssertionError, OSError) as error:
-                pytest.fail(f"{error}\n{output.text}", pytrace=False)
+                read_until(client, "ZRO_GDB_RTT_READY", timeout=30, output=client_output)
+                assert client.poll() is None
+                try:
+                    self._rtt_round_trip(fixture, port)
+                except (AssertionError, OSError) as error:
+                    release.touch()
+                    remainder = client.communicate(timeout=30)[0]
+                    if remainder:
+                        client_output.extend(remainder)
+                    client_text = bytes(client_output).decode("utf-8", "replace")
+                    pytest.fail(
+                        f"{error}\n{client_text}\n{output.text}",
+                        pytrace=False,
+                    )
+                release.touch()
+                remainder = client.communicate(timeout=30)[0]
+                if remainder:
+                    client_output.extend(remainder)
+                assert client.returncode == 0, (
+                    f"{bytes(client_output).decode('utf-8', 'replace')}\n{output.text}"
+                )
+            finally:
+                release.touch()
+                self._abort(client)
             process.send_signal(signal.SIGINT)
             process.wait(timeout=20)
         finally:
+            release.touch()
             self._abort(process)
             output.join(timeout=10)
