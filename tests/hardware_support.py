@@ -434,7 +434,10 @@ class HardwarePreparation:
             ]
             if cache_state == "cold":
                 cmake_args = list(recipe.cmake_args)
-                if not any(argument.startswith("-DUSER_CACHE_DIR=") for argument in cmake_args):
+                if not any(
+                    argument.startswith(("-DUSER_CACHE_DIR=", "-DUSER_CACHE_DIR:"))
+                    for argument in cmake_args
+                ):
                     cmake_args.append(f"-DUSER_CACHE_DIR={cache_root / 'zephyr-cache'}")
                 if cmake_args:
                     command.extend(("--", *cmake_args))

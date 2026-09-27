@@ -97,6 +97,30 @@ def test_preparation_builds_only_requested_recipes(tmp_path):
     )
 
 
+def test_preparation_preserves_typed_user_cache_dir(tmp_path: Path) -> None:
+    preparation, inventory, build_root = _preparation_with_unavailable_recipe(tmp_path)
+    original_target = inventory.target("target")
+    typed_cache = "-DUSER_CACHE_DIR:PATH=/inventory/cache"
+    builds = tuple(
+        replace(recipe, cmake_args=(typed_cache,)) if recipe.name == "application" else recipe
+        for recipe in original_target.builds
+    )
+    target = replace(original_target, builds=builds)
+    inventory = replace(
+        inventory,
+        targets=tuple(target if item.name == target.name else item for item in inventory.targets),
+    )
+    preparation = HardwarePreparation(inventory, build_root, tmp_path / "configs")
+
+    with patch("tests.hardware_support.subprocess.run", autospec=True) as run:
+        run.return_value = subprocess.CompletedProcess([], 0, "")
+        preparation.prepare("target:profile", "debug")
+
+    command = run.call_args.args[0]
+    definitions = [argument for argument in command if argument.startswith("-DUSER_CACHE_DIR")]
+    assert definitions == [typed_cache]
+
+
 def test_preparation_retries_failed_build_and_caches_success(tmp_path, monkeypatch):
     preparation, inventory, build_root = _preparation_with_unavailable_recipe(tmp_path)
     monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_REMOTE", "developer_remote")
