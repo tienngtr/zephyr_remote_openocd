@@ -15,7 +15,7 @@ import time
 import pytest
 
 from tests.hardware_support import RttFixture, free_loopback_ports
-from tests.process_support import read_until
+from tests.process_support import ProcessOutputMonitor, read_until
 from tests.support import ROOT
 
 pytestmark = [pytest.mark.hardware, pytest.mark.destructive]
@@ -79,48 +79,6 @@ class TestRealRtt:
                 time.sleep(min(0.1, remaining))
         message = f"RTT endpoint 127.0.0.1:{port} did not become ready"
         raise AssertionError(message) from last_error
-
-    @staticmethod
-    def _wait_for_gdb(fixture: RttFixture, port: int, timeout: float, process, diagnostics) -> None:
-        command = [
-            str(fixture.target.gdb),
-            "-q",
-            "-batch",
-            str(fixture.target.elf_file),
-            "-ex",
-            f"target extended-remote 127.0.0.1:{port}",
-            "-ex",
-            "detach",
-            "-ex",
-            "quit",
-        ]
-        deadline = time.monotonic() + timeout
-        last_output = ""
-        while (remaining := deadline - time.monotonic()) > 0:
-            if process.poll() is not None:
-                raise AssertionError(
-                    f"west exited before GDB endpoint 127.0.0.1:{port} became ready:\n"
-                    + diagnostics()
-                )
-            try:
-                result = subprocess.run(
-                    command,
-                    text=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    check=False,
-                    timeout=min(10, remaining),
-                )
-            except subprocess.TimeoutExpired as error:
-                last_output = str(error)
-            else:
-                if result.returncode == 0:
-                    return
-                last_output = result.stdout
-            time.sleep(min(0.1, remaining))
-        raise AssertionError(
-            f"GDB endpoint 127.0.0.1:{port} did not become ready:\n{last_output}\n{diagnostics()}"
-        )
 
     def _program(self, fixture: RttFixture) -> None:
         result = subprocess.run(
@@ -250,86 +208,83 @@ class TestRealRtt:
         assert re.search(r"ZRO_PC_BEGIN\s*\$\d+\s*=\s*0x[0-9a-fA-F]+", text)
         assert re.search(r"ZRO_INSN_BEGIN\s*=>?\s*0x[0-9a-fA-F]+", text)
 
-    def test_debugserver_exposes_gdb_and_rtt_without_clients(
-        self, rtt_fixture: RttFixture, tmp_path
-    ) -> None:
+    def test_debugserver_exposes_gdb_and_rtt_without_clients(self, rtt_fixture: RttFixture) -> None:
         fixture = rtt_fixture
         breakpoint = fixture.operation.breakpoint
         port = fixture.operation.port
         gdb_client_port = free_loopback_ports(1)[0]
-        output_path = tmp_path / "debugserver-rtt.log"
-        with output_path.open("wb") as log:
-            process = self._start(
-                fixture,
-                "debugserver",
-                "--rtt-server",
-                f"--rtt-port={port}",
-                f"--gdb-client-port={gdb_client_port}",
-                stdout=log,
+        process = self._start(
+            fixture,
+            "debugserver",
+            "--rtt-server",
+            f"--rtt-port={port}",
+            f"--gdb-client-port={gdb_client_port}",
+        )
+        assert process.stdout is not None
+        output = ProcessOutputMonitor(process.stdout)
+        try:
+            output.wait_for(
+                f"Remote OpenOCD GDB server available at 127.0.0.1:{gdb_client_port}",
+                timeout=90,
             )
-            output = bytearray()
-
-            def diagnostics() -> str:
-                log.flush()
-                return output_path.read_bytes().decode("utf-8", "replace")
-
+            assert process.poll() is None, output.text
+            client = subprocess.run(
+                [
+                    str(fixture.target.gdb),
+                    "-q",
+                    "-batch",
+                    str(fixture.target.elf_file),
+                    "-ex",
+                    f"target extended-remote 127.0.0.1:{gdb_client_port}",
+                    "-ex",
+                    "load",
+                    "-ex",
+                    f"break {breakpoint}",
+                    "-ex",
+                    "continue",
+                    "-ex",
+                    'printf "ZRO_PC_BEGIN\\n"',
+                    "-ex",
+                    "p/x $pc",
+                    "-ex",
+                    'printf "ZRO_PC_END\\n"',
+                    "-ex",
+                    'printf "ZRO_INSN_BEGIN\\n"',
+                    "-ex",
+                    "x/1i $pc",
+                    "-ex",
+                    'printf "ZRO_INSN_END\\n"',
+                    "-ex",
+                    "delete breakpoints",
+                    "-ex",
+                    "monitor resume",
+                    "-ex",
+                    "detach",
+                    "-ex",
+                    "quit",
+                ],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+                timeout=30,
+            )
+            assert client.returncode == 0, f"{client.stdout}\n{output.text}"
+            assert re.search(rf"Breakpoint \d+,\s+{re.escape(breakpoint)}\b", client.stdout), (
+                f"{client.stdout}\n{output.text}"
+            )
+            assert re.search(r"ZRO_PC_BEGIN\s*\$\d+\s*=\s*0x[0-9a-fA-F]+", client.stdout), (
+                f"{client.stdout}\n{output.text}"
+            )
+            assert re.search(r"ZRO_INSN_BEGIN\s*=>?\s*0x[0-9a-fA-F]+", client.stdout), (
+                f"{client.stdout}\n{output.text}"
+            )
             try:
-                self._wait_for_gdb(fixture, gdb_client_port, 90, process, diagnostics)
-                client = subprocess.run(
-                    [
-                        str(fixture.target.gdb),
-                        "-q",
-                        "-batch",
-                        str(fixture.target.elf_file),
-                        "-ex",
-                        f"target extended-remote 127.0.0.1:{gdb_client_port}",
-                        "-ex",
-                        "load",
-                        "-ex",
-                        f"break {breakpoint}",
-                        "-ex",
-                        "continue",
-                        "-ex",
-                        'printf "ZRO_PC_BEGIN\\n"',
-                        "-ex",
-                        "p/x $pc",
-                        "-ex",
-                        'printf "ZRO_PC_END\\n"',
-                        "-ex",
-                        'printf "ZRO_INSN_BEGIN\\n"',
-                        "-ex",
-                        "x/1i $pc",
-                        "-ex",
-                        'printf "ZRO_INSN_END\\n"',
-                        "-ex",
-                        "delete breakpoints",
-                        "-ex",
-                        "monitor resume",
-                        "-ex",
-                        "detach",
-                        "-ex",
-                        "quit",
-                    ],
-                    text=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    check=False,
-                    timeout=30,
-                )
-                assert client.returncode == 0, f"{client.stdout}\n{diagnostics()}"
-                assert re.search(rf"Breakpoint \d+,\s+{re.escape(breakpoint)}\b", client.stdout), (
-                    f"{client.stdout}\n{diagnostics()}"
-                )
-                assert re.search(r"ZRO_PC_BEGIN\s*\$\d+\s*=\s*0x[0-9a-fA-F]+", client.stdout), (
-                    f"{client.stdout}\n{diagnostics()}"
-                )
-                assert re.search(r"ZRO_INSN_BEGIN\s*=>?\s*0x[0-9a-fA-F]+", client.stdout), (
-                    f"{client.stdout}\n{diagnostics()}"
-                )
-                try:
-                    self._rtt_round_trip(fixture, port)
-                except (AssertionError, OSError) as error:
-                    pytest.fail(f"{error}\n{diagnostics()}", pytrace=False)
-                self._finish(fixture, process, output, interrupt=True)
-            finally:
-                self._abort(process)
+                self._rtt_round_trip(fixture, port)
+            except (AssertionError, OSError) as error:
+                pytest.fail(f"{error}\n{output.text}", pytrace=False)
+            process.send_signal(signal.SIGINT)
+            process.wait(timeout=20)
+        finally:
+            self._abort(process)
+            output.join(timeout=10)
