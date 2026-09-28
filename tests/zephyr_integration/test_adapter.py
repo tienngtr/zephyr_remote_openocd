@@ -754,11 +754,12 @@ def test_recording_runs_real_adapter_without_external_io(
     if command == "flash":
         assert request["services"] == []
     else:
-        assert request["services"] == [
-            {"name": "gdb", "local_port": 3333, "remote_port": 3333},
-            {"name": "tcl", "local_port": 6333, "remote_port": 6333},
-            {"name": "telnet", "local_port": 4444, "remote_port": 4444},
-        ]
+        services = {item["name"]: item for item in request["services"]}
+        assert services == {
+            "gdb": {"name": "gdb", "local_port": 3333, "remote_port": 3333},
+            "tcl": {"name": "tcl", "local_port": 6333, "remote_port": 6333},
+            "telnet": {"name": "telnet", "local_port": 4444, "remote_port": 4444},
+        }
         assert result["thread_info"]["requested"] is thread_info
         assert result["thread_info"]["version_source"] == ("injected" if thread_info else None)
     if command == "rtt":
