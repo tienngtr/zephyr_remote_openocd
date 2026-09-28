@@ -7,11 +7,17 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from tests.support import ROOT
 
 
 def _configure_module(
-    tmp_path: Path, override: str, *, home_name: str = "home"
+    tmp_path: Path,
+    override: str,
+    *,
+    generator: str | None = None,
+    home_name: str = "home",
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     home = tmp_path / home_name
     source = tmp_path / "source"
@@ -43,8 +49,11 @@ def _configure_module(
             "ZEPHYR_REMOTE_OPENOCD_CONFIG": override,
         }
     )
+    command = ["cmake", "-S", str(source), "-B", str(build)]
+    if generator is not None:
+        command.extend(("-G", generator))
     result = subprocess.run(
-        ["cmake", "-S", str(source), "-B", str(build)],
+        command,
         env=environment,
         text=True,
         stdout=subprocess.PIPE,
@@ -53,6 +62,25 @@ def _configure_module(
         timeout=30,
     )
     return result, build / "zro-result.txt"
+
+
+def _build_module(build: Path, *, home: Path, override: str) -> subprocess.CompletedProcess[str]:
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "HOME": str(home),
+            "ZEPHYR_REMOTE_OPENOCD_CONFIG": override,
+        }
+    )
+    return subprocess.run(
+        ["cmake", "--build", str(build)],
+        env=environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+        timeout=30,
+    )
 
 
 def test_cmake_empty_config_override_uses_default_path(tmp_path: Path):
@@ -86,3 +114,39 @@ def test_cmake_tilde_expansion_treats_home_as_literal(tmp_path: Path):
 
     assert result.returncode == 0, result.stdout
     assert report.read_text().splitlines() == [str(selected), "remote_openocd"]
+
+
+@pytest.mark.parametrize("generator", ("Ninja", "Unix Makefiles"))
+@pytest.mark.parametrize(
+    "override_name",
+    (None, "custom[*?].yaml"),
+    ids=("default-location", "override-location"),
+)
+def test_cmake_config_presence_changes_regenerate_default_runner(
+    tmp_path: Path, generator: str, override_name: str | None
+):
+    home = tmp_path / "home"
+    if override_name is None:
+        config = home / ".config" / "zephyr_remote_openocd" / "config.yaml"
+        override = ""
+    else:
+        config = tmp_path / override_name
+        override = str(config)
+
+    result, report = _configure_module(tmp_path, override, generator=generator)
+
+    assert result.returncode == 0, result.stdout
+    assert report.read_text().splitlines() == [str(config), "openocd"]
+
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text("default_runner: remote_openocd\n")
+    result = _build_module(report.parent, home=home, override=override)
+
+    assert result.returncode == 0, result.stdout
+    assert report.read_text().splitlines() == [str(config), "remote_openocd"]
+
+    config.unlink()
+    result = _build_module(report.parent, home=home, override=override)
+
+    assert result.returncode == 0, result.stdout
+    assert report.read_text().splitlines() == [str(config), "openocd"]

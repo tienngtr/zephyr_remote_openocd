@@ -19,6 +19,17 @@ endif()
 # A normal incremental build asks CMake to reconfigure when this file changes.
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_zro_config}")
 
+# Track creation and deletion without treating glob characters in the
+# user-selected path as patterns.
+set(_zro_config_glob "${_zro_config}")
+string(REPLACE "[" "[[]" _zro_config_glob "${_zro_config_glob}")
+string(REPLACE "*" "[*]" _zro_config_glob "${_zro_config_glob}")
+string(REPLACE "?" "[?]" _zro_config_glob "${_zro_config_glob}")
+file(GLOB _zro_config_presence
+     CONFIGURE_DEPENDS
+     LIST_DIRECTORIES false
+     "${_zro_config_glob}")
+
 string(MAKE_C_IDENTIFIER openocd _zro_openocd_id)
 string(MAKE_C_IDENTIFIER remote_openocd _zro_remote_id)
 get_property(_zro_openocd_args GLOBAL PROPERTY

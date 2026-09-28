@@ -122,7 +122,7 @@ class TestZephyrIntegration:
             scratch.cleanup()
 
     @classmethod
-    def _write_config(cls, default_runner: str):
+    def _write_config(cls, default_runner: str, *, path: Path | None = None):
         content = (
             f"default_runner: {default_runner}\n"
             "default_remote: record_only\n"
@@ -134,7 +134,7 @@ class TestZephyrIntegration:
             "    path_mappings:\n"
             "      /: /recorded\n"
         )
-        cls.config.write_text(content)
+        (path or cls.config).write_text(content)
 
     @classmethod
     def _west(cls, *args: str, check: bool = True, extra_env=None):
@@ -240,6 +240,51 @@ class TestZephyrIntegration:
         self._west("build", "-d", str(self.build_in_tree), "-t", "help")
         self._west("flash", "-d", str(self.build_in_tree), "--no-rebuild")
         assert self._runner_state(self.build_in_tree)["flash-runner"] == "openocd"
+
+    def test_created_config_regenerates_default_runner(self):
+        with tempfile.TemporaryDirectory(
+            prefix="zro_created_config_", dir=ROOT / ".scratch"
+        ) as directory:
+            root = Path(directory)
+            build = root / "build"
+            config = root / "created-config.yaml"
+            config_environment = {"ZEPHYR_REMOTE_OPENOCD_CONFIG": str(config)}
+            sample = self.zephyr_base / "samples" / "hello_world"
+            self._west(
+                "build",
+                "--cmake-only",
+                "-b",
+                self.openocd_board,
+                str(sample),
+                "-d",
+                str(build),
+                "--",
+                f"-DUSER_CACHE_DIR={self.cache}",
+                f"-DOPENOCD={self.fake_openocd}",
+                extra_env=config_environment,
+            )
+            self._create_recording_flash_artifact(build)
+            assert self._runner_state(build)["flash-runner"] == "openocd"
+
+            self._write_config("remote_openocd", path=config)
+            self._west(
+                "build",
+                "-d",
+                str(build),
+                "-t",
+                "help",
+                extra_env=config_environment,
+            )
+            result = self._west(
+                "flash",
+                "-d",
+                str(build),
+                "--no-rebuild",
+                extra_env=config_environment,
+            )
+
+            assert self._runner_state(build)["flash-runner"] == "remote_openocd"
+            assert self._recording(result.stdout)["command"] == "flash"
 
     def test_clean_install_acceptance_from_git_free_distribution(self):
         """A copied module works through EXTRA_ZEPHYR_MODULES alone."""
