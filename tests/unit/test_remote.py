@@ -1272,6 +1272,39 @@ class TestDebugPlanning:
                 build_debug_plan(self.inputs(Path(directory), gdb_port="disabled"), PathPlanner(()))
 
     @pytest.mark.parametrize(
+        ("command", "changes", "expected"),
+        (
+            pytest.param("debug", {}, ("gdb", "tcl", "telnet"), id="debug"),
+            pytest.param("attach", {}, ("gdb", "tcl", "telnet"), id="attach"),
+            pytest.param("debugserver", {}, ("gdb", "tcl", "telnet"), id="debugserver"),
+            pytest.param(
+                "debug",
+                {"rtt_address": 0x2000, "rtt_server": True},
+                ("gdb", "tcl", "telnet", "rtt"),
+                id="debug-with-rtt-server",
+            ),
+            pytest.param(
+                "debugserver",
+                {"rtt_address": 0x2000, "rtt_server": True},
+                ("gdb", "tcl", "telnet", "rtt"),
+                id="debugserver-with-rtt-server",
+            ),
+            pytest.param(
+                "rtt",
+                {"rtt_address": 0x2000},
+                ("gdb",),
+                id="standalone-rtt-before-deferred-forward",
+            ),
+        ),
+    )
+    def test_forwarded_services_match_selected_operation(
+        self, tmp_path: Path, command: str, changes: dict, expected: tuple[str, ...]
+    ):
+        plan = build_debug_plan(self.inputs(tmp_path, command, **changes), PathPlanner(()))
+
+        assert tuple(service.name for service in plan.forwarded_services) == expected
+
+    @pytest.mark.parametrize(
         ("changes", "message"),
         (
             ({"gdb_client_port": 4444}, "local service ports"),

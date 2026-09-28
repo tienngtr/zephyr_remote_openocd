@@ -513,6 +513,7 @@ def _debug_request(runner, selected, plan):
         plan.process,
         plan.staged_files,
         plan.services,
+        forwarded_services=plan.forwarded_services,
     )
 
 
@@ -533,6 +534,10 @@ def _request_record(request):
         "services": [
             {"name": item.name, "local_port": item.local_port, "remote_port": item.remote_port}
             for item in request.services
+        ],
+        "forwarded_services": [
+            {"name": item.name, "local_port": item.local_port, "remote_port": item.remote_port}
+            for item in request.forwarded_services
         ],
     }
     if request.process is not None:

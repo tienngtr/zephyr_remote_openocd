@@ -184,8 +184,8 @@ class RemoteSession:
         service_list = tuple(services)
         helper = self._helper_or_error()
         address = helper.start_process(self.request.process, service_list)
-        if service_list:
-            self._forwards.start(service_list, address)
+        if self.request.forwarded_services:
+            self._forwards.start(self.request.forwarded_services, address)
         self.descriptor = SessionDescriptor(helper.allocation, address)
         return self.descriptor
 

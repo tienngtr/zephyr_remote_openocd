@@ -74,12 +74,20 @@ class RemoteSessionRequest:
     process: RemoteProcess
     staged_files: tuple[StagedEntry, ...] = field(default_factory=tuple)
     services: tuple[Service, ...] = field(default_factory=tuple)
+    forwarded_services: tuple[Service, ...] | None = None
 
     def __post_init__(self) -> None:
         if not self.host:
             raise ValueError("remote host must not be empty")
         object.__setattr__(self, "staged_files", tuple(self.staged_files))
-        object.__setattr__(self, "services", validated_services(self.services))
+        services = validated_services(self.services)
+        forwarded_services = (
+            services
+            if self.forwarded_services is None
+            else validated_services(self.forwarded_services)
+        )
+        object.__setattr__(self, "services", services)
+        object.__setattr__(self, "forwarded_services", forwarded_services)
 
 
 @dataclass(frozen=True)

@@ -94,6 +94,7 @@ class DebugPlan:
     rtt_service: Service | None
     rtt_setup: str | None
     launches_rtt_client: bool
+    forwarded_services: tuple[Service, ...]
 
 
 @dataclass(frozen=True)
@@ -105,6 +106,7 @@ class DebugServicePlan:
     remote_tcl: int | None
     remote_telnet: int | None
     services: tuple[Service, ...]
+    forwarded_services: tuple[Service, ...]
     rtt_service: Service | None
 
 
@@ -148,6 +150,7 @@ def _plan_debug_services(inputs: DebugInputs) -> DebugServicePlan:
         raise DebugPlanError(str(error)) from error
 
     rtt_requested = inputs.command == "rtt" or inputs.rtt_server
+    forwarded_services = list(services) if inputs.command != "rtt" else [services[0]]
     rtt_service = None
     if rtt_requested:
         if inputs.rtt_address is None:
@@ -159,12 +162,14 @@ def _plan_debug_services(inputs: DebugInputs) -> DebugServicePlan:
         rtt_service = Service("rtt", rtt_port, rtt_port)
         if inputs.command != "rtt":
             services.append(rtt_service)
+            forwarded_services.append(rtt_service)
     return DebugServicePlan(
         remote_gdb,
         local_gdb,
         remote_tcl,
         remote_telnet,
         tuple(services),
+        tuple(forwarded_services),
         rtt_service,
     )
 
@@ -296,4 +301,5 @@ def build_debug_plan(
         services.rtt_service,
         _rtt_setup(inputs),
         inputs.command == "rtt",
+        services.forwarded_services,
     )

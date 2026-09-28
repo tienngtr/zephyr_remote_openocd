@@ -109,6 +109,53 @@ def test_open_rolls_back_failed_acquisition_once(monkeypatch):
     assert cleanup_calls == 1
 
 
+def test_start_process_preflights_full_services_but_forwards_selected_services():
+    gdb = Service("gdb", 3333, 3333)
+    telnet = Service("telnet", 4444, 4444)
+    request = RemoteSessionRequest(
+        "host",
+        SshCommand(),
+        RemoteProcess(("openocd",)),
+        services=(gdb, telnet),
+        forwarded_services=(gdb,),
+    )
+    session = RemoteSession(request, DeploymentResult("/helper.py", "digest", False))
+
+    class Helper(_BlockedHelper):
+        def __init__(self) -> None:
+            self.started_services: tuple[Service, ...] | None = None
+
+        @property
+        @override
+        def allocation(self) -> SessionAllocation:
+            return SessionAllocation("session", "/workspace")
+
+        @override
+        def start_process(self, process: RemoteProcess, services: Iterable[Service]) -> str:
+            del process
+            self.started_services = tuple(services)
+            return "127.64.0.1"
+
+    class Forwards(_BlockedForwards):
+        def __init__(self) -> None:
+            self.started_services: tuple[Service, ...] | None = None
+
+        @override
+        def start(self, services: Iterable[Service], remote_address: str) -> None:
+            assert remote_address == "127.64.0.1"
+            self.started_services = tuple(services)
+
+    helper = Helper()
+    forwards = Forwards()
+    session._helper = helper
+    session._forwards = forwards
+
+    session._start_process(request.services)
+
+    assert helper.started_services == (gdb, telnet)
+    assert forwards.started_services == (gdb,)
+
+
 def test_open_retains_nested_rollback_cleanup_diagnostics(monkeypatch):
     request = RemoteSessionRequest("host", SshCommand(), RemoteProcess(("openocd",)))
     deployment = DeploymentResult("/helper.py", "digest", False)

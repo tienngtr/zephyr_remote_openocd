@@ -42,12 +42,12 @@ west debugserver -r remote_openocd --rtt-server
 ```
 
 `remote_openocd` acts like Zephyr's built-in `openocd` runner for the supported
-west workflows, but runs OpenOCD on the configured remote host and forwards its
-enabled services to the local machine over SSH. Standalone `rtt` configures RTT
-through batch GDB and launches the local channel-0 client. The two
-`--rtt-server` forms expose the endpoint but do not launch a local RTT client.
-Every enabled GDB, Tcl, and telnet service is forwarded; disabled services have
-no local listener or readiness requirement.
+west workflows, but runs OpenOCD on the configured remote host and forwards the
+services needed by the selected operation over SSH. Debug, attach, and
+debugserver forward enabled GDB, Tcl, and telnet services; their
+`--rtt-server` forms also forward RTT. Standalone `rtt` forwards GDB for batch
+setup, then forwards RTT before launching the local channel-0 client.
+Disabled services have no listener or readiness requirement.
 
 Direct semihosting uses ordinary user-supplied OpenOCD commands, typically
 through `--cmd-pre-init`, and the existing OpenOCD stdout/stderr relay. It is

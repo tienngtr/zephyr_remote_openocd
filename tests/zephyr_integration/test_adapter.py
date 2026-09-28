@@ -40,6 +40,7 @@ def _debug_plan(
     gdb_argv: tuple[str, ...] | None = None,
     services: tuple[Service, ...] = (),
     rtt_service: Service | None = None,
+    forwarded_services: tuple[Service, ...] | None = None,
 ) -> DebugPlan:
     return DebugPlan(
         RemoteProcess(("openocd",)),
@@ -52,6 +53,7 @@ def _debug_plan(
         rtt_service,
         None,
         rtt_service is not None,
+        services if forwarded_services is None else forwarded_services,
     )
 
 
@@ -226,6 +228,28 @@ def test_operation_build_queries_version_without_session(runner_api, monkeypatch
         selected.openocd_command,
     )
     assert len(versions) == 1
+
+
+def test_debug_request_uses_only_operation_services(runner_api, tmp_path):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
+    selected = ResolvedRemote(
+        "lab",
+        tmp_path / "config.yaml",
+        "host",
+        ("openocd",),
+        ("ssh",),
+        (),
+        (),
+    )
+    gdb = Service("gdb", 3333, 3333)
+    telnet = Service("telnet", 4444, 4444)
+    plan = _debug_plan(services=(gdb, telnet), forwarded_services=(gdb,))
+
+    request = runner_module._debug_request(Mock(), selected, plan)
+
+    assert request.services == (gdb, telnet)
+    assert request.forwarded_services == (gdb,)
 
 
 @pytest.mark.parametrize(

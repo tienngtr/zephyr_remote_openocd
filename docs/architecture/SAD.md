@@ -677,7 +677,7 @@ Flow:
 ```text
 start remote OpenOCD
        |
-establish enabled GDB/Tcl/telnet transports
+establish GDB transport
        |
 run local batch GDB (standalone west rtt)
        |
@@ -779,8 +779,11 @@ Possible services include:
 Disabled services have no local listener.
 
 The forward manager owns the local SSH-forward processes and their local
-loopback endpoints. The corresponding remote listeners remain owned by
-OpenOCD.
+loopback endpoints. The selected operation determines which enabled remote
+listeners are forwarded: GDB, Tcl, and telnet for debug, attach, and
+debugserver; those services plus RTT when an RTT server is requested; and GDB
+followed by RTT for standalone rtt. The corresponding remote listeners remain
+owned by OpenOCD.
 
 ---
 
