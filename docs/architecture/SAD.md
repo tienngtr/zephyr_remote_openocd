@@ -480,6 +480,12 @@ The compatibility policy is:
 > the class's non-private interface, but that code remains version-specific and
 > confined to the Zephyr compatibility layer.
 
+Applicable Zephyr OpenOCD command and workflow behavior is reused where it does
+not conflict with remote execution, transport ownership, or lifecycle
+supervision. In particular, the remote runner owns the remote bind address and
+service-port topology because it must allocate remote ports and construct SSH
+forwards before local clients can use them.
+
 The Zephyr 4.4 adapter reuses `capabilities()` and the constructor. It overrides
 `name()`, `do_create()`, `do_add_parser()`, and `do_run()`. The parser override
 delegates to `OpenOcdBinaryRunner.do_add_parser()` before adding `--remote`.
@@ -677,7 +683,7 @@ Flow:
 ```text
 start remote OpenOCD
        |
-establish enabled GDB/Tcl/telnet transports
+establish runner-selected GDB/Tcl/telnet transports
        |
 run local batch GDB (standalone west rtt)
        |
@@ -753,6 +759,11 @@ preflight collisions, then releases those sockets before starting OpenOCD.
 OpenOCD owns the actual enabled GDB, Tcl, telnet, and RTT listeners on the
 allocated address; the helper neither creates nor probes those listeners.
 
+Flash requests no services and therefore creates no local forwards. Persistent
+operations request GDB and each non-disabled Tcl/telnet service. RTT remains
+operation-dependent. This topology is derived from the operation and runner
+options, not from runtime discovery of the effective OpenOCD configuration.
+
 No board-specific addressing is involved.
 
 ---
@@ -780,7 +791,9 @@ Disabled services have no local listener.
 
 The forward manager owns the local SSH-forward processes and their local
 loopback endpoints. The corresponding remote listeners remain owned by
-OpenOCD.
+OpenOCD. A successfully created local forward proves only that SSH accepted the
+forward; it does not prove that OpenOCD has a listener behind the remote
+endpoint.
 
 ---
 
@@ -1149,23 +1162,25 @@ before those files. These are runner-owned session and transport properties,
 so a configuration-triggered `init` cannot create listeners with pre-runner
 defaults. Board configuration files own probe and target setup. A board or user
 configuration that overrides the runner's bind address or service ports
-conflicts with the remote-session contract. The hook runs after OpenOCD
-initialization has created its GDB listener. The adapter then appends a
-startup-complete echo after the full server startup sequence.
+is outside the supported compatibility boundary. The runner does not attempt
+to statically inspect arbitrary Tcl for conflicting commands. The hook runs
+after OpenOCD initialization has created its GDB listener. The adapter then
+appends a startup-complete echo after the full server startup sequence.
 Each complete trimmed output sentinel proves one lifecycle fact; the helper emits
 `PROCESS_READY` only after both have been observed, in either order and on
 either child stream. The init hook therefore covers explicit `init`,
 config-triggered initialization, and OpenOCD's normal automatic initialization
 when `--no-init` is used.
 
-The helper allocates a session loopback address and preflights requested ports
-for bind collisions. OpenOCD remains the owner of its enabled GDB, Tcl, telnet,
-and RTT listeners. Readiness covers process lifecycle sentinels; it does not
-wait for remote service sockets to become connectable. Tcl and telnet are
-compatibility endpoints, and their remote socket connectability is not a
+The helper allocates a session loopback address and preflights runner-selected
+ports for bind collisions. OpenOCD remains the owner of its enabled GDB, Tcl,
+telnet, and RTT listeners. Readiness covers process lifecycle sentinels; it
+does not wait for remote service sockets to become connectable. Tcl and telnet
+are compatibility endpoints, and their remote socket connectability is not a
 readiness condition. Their configured local forwarding processes still start
-as part of `RemoteSession.open()`; a local forwarding startup failure prevents
-the session from opening. If RTT server startup is part of the sequence,
+as part of `RemoteSession.open()` when their runner port options are enabled; a
+local forwarding startup failure prevents the session from opening. If RTT
+server startup is part of the sequence,
 successful `rtt server start` precedes the startup-complete sentinel, so
 readiness follows that command causally.
 Generic processes with no required sentinels are ready immediately. The

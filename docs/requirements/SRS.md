@@ -194,7 +194,8 @@ The project has the following primary goals:
 5. Support concurrent use by multiple developers.
 6. Preserve ordinary local OpenOCD operation.
 7. Minimize remote-host administration.
-8. Reuse applicable Zephyr OpenOCD runner behavior.
+8. Reuse applicable Zephyr OpenOCD runner behavior where it does not conflict
+   with remote execution, transport ownership, or lifecycle supervision.
 9. Keep Zephyr-version-specific integration isolated from the generic remote subsystem.
 10. Support Linux as the local platform.
 11. Avoid imposing a particular SSH-key or SSH-agent arrangement on developers.
@@ -803,14 +804,20 @@ Probe-selection information available through the structured runner interface SH
 
 ### REQ-FUNC-SVC-001
 
-The custom runner SHALL locally expose required enabled remote OpenOCD services.
+The custom runner SHALL select local forwarding from the requested operation
+and runner options rather than by discovering the effective remote OpenOCD
+configuration.
 
-Relevant services include:
+The forwarding topology SHALL be:
 
-- GDB;
-- Tcl;
-- telnet;
-- RTT.
+- no local forwards for `flash`;
+- GDB for persistent operations;
+- Tcl and telnet for persistent operations unless the corresponding runner
+  port option is `disabled`;
+- RTT when the selected operation requests an RTT endpoint.
+
+A local forward does not guarantee that a corresponding remote listener is
+available.
 
 ### REQ-FUNC-SVC-002
 
@@ -823,7 +830,12 @@ Local forwarded services SHALL bind only to local loopback interfaces.
 ### REQ-FUNC-SVC-004
 
 Remote OpenOCD services created for a remote-runner session SHALL bind only
-to remote loopback addresses.
+to the runner-allocated remote loopback address. The remote bind address and
+service-port topology are runner-owned transport properties. Board or user Tcl
+that overrides `bindto`, `gdb_port`, `tcl_port`, `telnet_port`, or another
+runner-owned service port is outside the supported compatibility boundary.
+The runner SHALL NOT be required to statically inspect arbitrary Tcl for such
+overrides.
 
 ### REQ-FUNC-SVC-005
 
@@ -1034,6 +1046,10 @@ and helper SHALL independently validate the portions of the service contract
 available at their respective boundaries. The exact Protocol v1 request
 fields and validation rules are defined in
 [`protocol.md`](../architecture/protocol.md).
+
+This validation applies to the runner-selected transport topology; it does not
+discover or validate the effective service state produced by arbitrary OpenOCD
+Tcl.
 
 ### REQ-FUNC-HELP-009
 
@@ -1365,6 +1381,13 @@ independent GDB client to halt and resume the target.
 ### AC-DEBUG-002
 
 Different GDB server/client ports work correctly when supported by the runner interface.
+
+
+### AC-SVC-001
+
+`flash` creates no local forwards. Persistent operations expose GDB and each
+non-disabled Tcl/telnet service using the runner-selected ports. RTT exposure
+remains operation-dependent.
 
 
 ### AC-RTT-001

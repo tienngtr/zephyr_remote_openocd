@@ -41,13 +41,23 @@ west debug -r remote_openocd --rtt-server
 west debugserver -r remote_openocd --rtt-server
 ```
 
-`remote_openocd` acts like Zephyr's built-in `openocd` runner for the supported
-west workflows, but runs OpenOCD on the configured remote host and forwards its
-enabled services to the local machine over SSH. Standalone `rtt` configures RTT
-through batch GDB and launches the local channel-0 client. The two
-`--rtt-server` forms expose the endpoint but do not launch a local RTT client.
-Every enabled GDB, Tcl, and telnet service is forwarded; disabled services have
-no local listener or readiness requirement.
+`remote_openocd` reuses applicable behavior from Zephyr's built-in `openocd`
+runner for the supported west workflows, but runs OpenOCD on the configured
+remote host and owns the network topology needed for remote execution. A flash
+operation is one-shot and creates no SSH forwards. Persistent operations
+forward GDB plus Tcl and telnet unless the corresponding runner port option is
+`disabled`. Standalone `rtt` configures RTT through batch GDB and then adds its
+forward before launching the local channel-0 client. The two `--rtt-server`
+forms expose the RTT endpoint with the initial persistent forwards but do not
+launch a local RTT client.
+
+Forward selection follows the operation and runner port options; the runner
+does not inspect arbitrary board or user Tcl to discover effective services.
+The remote bind address and service-port settings are runner-owned transport
+properties. Tcl that overrides `bindto`, `gdb_port`, `tcl_port`, `telnet_port`,
+or another runner-owned service port is unsupported. A local forward confirms
+only the SSH endpoint; it does not guarantee that OpenOCD has a listener behind
+it.
 
 Direct semihosting uses ordinary user-supplied OpenOCD commands, typically
 through `--cmd-pre-init`, and the existing OpenOCD stdout/stderr relay. It is
