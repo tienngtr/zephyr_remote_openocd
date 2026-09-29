@@ -141,9 +141,10 @@ the runner's compatibility guarantees.
 
 ## Stop and uninstall
 
-Remote sessions relay OpenOCD output locally and clean up automatically after
-success, failure, interruption, or SSH loss. Stop active west operations before
-removing the module.
+Remote sessions relay OpenOCD output locally. If the local SSH client detects
+loss, the runner fails the local operation and attempts local cleanup; the
+remote helper cleans up OpenOCD after it observes control-channel loss. Stop
+active west operations before removing the module.
 
 Delete the module copy and, if it is no longer needed, the configuration created
 by setup:

@@ -1057,6 +1057,31 @@ SSH invocation timeout. That timeout bounds the local SSH command invocation;
 it does not provide the persistent session's process-group supervision or
 descendant cleanup guarantee.
 
+SSH loss has independent local and remote observations. Local detection is
+delegated to the configured SSH client and local operating system; remote
+detection is delegated to the remote SSH service, operating system, and the
+helper's control-channel observation. The runner does not impose a bound on
+either detection latency or on the interval between the two observations. A
+local SSH failure does not prove that the remote helper has begun cleaning up:
+
+```text
+underlying connection becomes unusable
+        |
+        +--> local SSH client/OS detects loss
+        |          |
+        |          +--> local operation fails
+        |               bounded local cleanup attempt
+        |
+        +--> remote SSH service/OS delivers EOF or signal
+                   |
+                   +--> helper observes control loss
+                        bounded OpenOCD process-group cleanup
+```
+
+Only the cleanup attempt on each side is bounded, beginning after that side
+observes loss. The project does not bound the interval from local detection to
+remote OpenOCD termination.
+
 The helper's `ControlSession` owns the workspace, control selector, command
 dispatch, signal handlers, and final cleanup. A `SupervisedChild` owns the
 configured OpenOCD process, output relays, readiness observation, termination,
@@ -1100,7 +1125,13 @@ then marks the session closed. A later `close()` is harmless, but does not
 resume a partially failed cleanup transaction or retain resources solely for
 that purpose.
 
-Unexpected controlling-session loss follows the same cleanup path.
+Unexpected controlling-session loss is handled independently on each side. The
+local runner reports transport failure and attempts bounded local cleanup after
+local detection. The helper performs bounded OpenOCD process-group cleanup only
+after it observes control-channel EOF or a termination signal. Neither side's
+cleanup bound includes its own detection latency, and the project does not add
+a separate network-loss polling deadline or bound the interval between the
+observations.
 Each session holds an advisory lock in its workspace. When allocating a new
 session, the helper opportunistically removes session workspaces older than 24
 hours when their lock is no longer held or lock creation never completed. This
@@ -1286,7 +1317,8 @@ Expose OpenOCD's normal acquisition failure.
 
 ### SSH loss
 
-Fail the local operation and clean the remote OpenOCD session.
+Fail the local operation after local SSH loss is detected. Clean the remote
+OpenOCD session after the helper observes control-channel loss.
 
 ---
 
@@ -1365,6 +1397,8 @@ Selected for the current architecture:
 - condition-driven session-close synchronization;
 - bounded local forwarding-process health polling;
 - no persistent artifact cache;
-- fail-fast cleanup after SSH loss.
+- local and remote cleanup are bounded after their respective loss
+  observations; detection timing and the interval between observations are
+  delegated to the SSH and operating-system layers.
 
 ---

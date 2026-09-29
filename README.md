@@ -141,7 +141,7 @@ generated state.
 4. SSH forwarding exposes OpenOCD's enabled GDB, Tcl, telnet, and RTT services
    on local loopback ports.
 5. The runner coordinates output relay and cleanup when the session exits, is
-   interrupted, or loses SSH connectivity.
+   interrupted, or detects that SSH connectivity was lost.
 
 ## Next steps
 

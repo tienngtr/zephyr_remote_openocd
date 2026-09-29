@@ -18,6 +18,15 @@ of the SSH control connection. A failure message containing a session workspace
 or forwarding endpoint is useful diagnostic evidence; do not remove another
 user's workspace.
 
+Local SSH-loss detection is controlled by the configured SSH client and local
+operating system. Remote helper detection is separate: the helper begins
+bounded OpenOCD process cleanup only after the remote SSH service/operating
+system delivers control-channel EOF or a termination signal. Local detection
+does not guarantee when remote cleanup begins, and the project does not bound
+that interval. Configure client-side keepalive or timeout behavior through
+`ssh_command` if different local detection behavior is required; it does not
+control remote detection timing.
+
 Contributors can set `ZRO_RECORD=1` to inspect the runner's generated JSON plan
 without starting SSH, OpenOCD, GDB, forwarding, or hardware access. This checks
 plan construction, not deployment or real command behavior. See
