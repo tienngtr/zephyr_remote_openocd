@@ -1070,6 +1070,44 @@ class TestRealProcessHelper:
                     if stream is not None and not stream.closed:
                         stream.close()
 
+    def test_helper_preserves_inherited_environment_when_request_omits_name(self):
+        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        with tempfile.TemporaryDirectory() as directory:
+            environment = os.environ.copy()
+            environment["XDG_RUNTIME_DIR"] = directory
+            environment["ZRO_TEST_REMOTE_INHERITED"] = "remote-value"
+            process = subprocess.Popen(
+                [sys.executable, str(helper), "control"],
+                env=environment,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            try:
+                assert process.stdin is not None and process.stdout is not None
+                read_line(process.stdout)
+                process.stdin.write(
+                    start_frame(
+                        [
+                            sys.executable,
+                            "-c",
+                            "import os; print(os.environ['ZRO_TEST_REMOTE_INHERITED'])",
+                        ]
+                    )
+                )
+                process.stdin.flush()
+                events = [json.loads(line) for line in read_lines(process.stdout)]
+                output = next(event for event in events if event["type"] == "CHILD_OUTPUT")
+                assert output["payload"] == "remote-value"
+                assert process.wait(timeout=5) == 0
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=5)
+                for stream in (process.stdin, process.stdout, process.stderr):
+                    if stream is not None and not stream.closed:
+                        stream.close()
+
     @pytest.mark.parametrize(
         ("frame", "close_input"),
         (

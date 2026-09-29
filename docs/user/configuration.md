@@ -195,7 +195,10 @@ remotes:
 
 Here the mapping key is inspected locally, its value is used remotely, and
 `OPENOCD_ADAPTER_SERIAL` is sent only if it is set in the local environment.
-Unmapped required inputs continue to be staged automatically.
+If it is absent locally, its name and value are omitted from the request, but a
+same-named value already present in the remote helper environment may remain
+available to OpenOCD. Unmapped required inputs continue to be staged
+automatically.
 
 ## Defaults and inheritance
 
@@ -260,4 +263,6 @@ requested operation, and remote home expansion during a real operation.
 
 `forward_env` contains names whose current local values may be sent to remote
 OpenOCD. Values are never stored in configuration. Missing local variables are
-warned about and omitted when the remote is used.
+warned about and omitted from the request when the remote is used. This does
+not unset a same-named variable already present in the remote helper
+environment; that remote value may remain available to OpenOCD.

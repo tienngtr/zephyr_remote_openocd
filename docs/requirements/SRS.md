@@ -656,8 +656,13 @@ Runtime values may influence probe, adapter, or target configuration while OpenO
 If an allow-listed variable is absent locally, the runner SHALL:
 
 1. emit a non-fatal warning;
-2. omit the variable remotely;
+2. omit the variable and its local value from the `START` request's
+   `environment` object;
 3. continue execution.
+
+This requirement means that the local value is not forwarded. It does not
+request removal of a same-named variable from the helper's inherited
+environment; the remote value, if present, may remain available to OpenOCD.
 
 ---
 

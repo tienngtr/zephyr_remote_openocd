@@ -60,7 +60,9 @@ ensure its path is normalized.
 of the form `allow-listed environment variable NAME is absent; omitting it`
 means `NAME` appears in `forward_env` but is not set locally. Export it before
 starting west, or remove it from `forward_env` if remote OpenOCD does not need
-it. Missing values are never forwarded as empty strings.
+it. Missing values are never forwarded as empty strings. Omitting a missing
+local value also does not unset a same-named variable already present in the
+remote helper environment; that remote value may remain available to OpenOCD.
 
 **A GDB client cannot connect.** Use the local endpoint printed by
 `debugserver` or an RTT-server operation. Check that the client uses the local
