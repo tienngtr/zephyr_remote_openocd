@@ -1085,15 +1085,20 @@ operation. Such failures SHALL remain distinct from OpenOCD exit status.
 
 ### REQ-FUNC-HELP-012
 
-Remote OpenOCD SHALL execute within a helper-owned process-group boundary.
-Loss or termination of the controlling session SHALL trigger bounded cleanup
-of that owned process group and associated session resources. Cleanup SHALL
-attempt to terminate the complete owned process group and release the OpenOCD
-leader and owned relay resources. Diagnosis of surviving descendants when
-observable SHOULD be provided, but failure of best-effort descendant
-inspection SHALL NOT by itself make otherwise successful process-group
-cleanup fail. The exact signal, wait, inspection, escalation, reaping, and
-relay-cleanup algorithm belongs in the SAD.
+REQ-FUNC-HELP-012 applies to OpenOCD launched as the persistent process of a
+remote-runner session. Finite one-shot helper operations, including OpenOCD
+version probing, are not persistent session processes and are outside the
+scope of the persistent helper's process-group supervision contract.
+
+The persistent remote OpenOCD process SHALL execute within a helper-owned
+process-group boundary. Loss or termination of the controlling session SHALL
+trigger bounded cleanup of that owned process group and associated session
+resources. Cleanup SHALL attempt to terminate the complete owned process group
+and release the OpenOCD leader and owned relay resources. Diagnosis of
+surviving descendants when observable SHOULD be provided, but failure of
+best-effort descendant inspection SHALL NOT by itself make otherwise
+successful process-group cleanup fail. The exact signal, wait, inspection,
+escalation, reaping, and relay-cleanup algorithm belongs in the SAD.
 
 ---
 

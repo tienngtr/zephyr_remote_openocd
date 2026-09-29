@@ -1046,9 +1046,16 @@ returns only a usable session, and is released once through cleanup-only
 respective resources and cleanup transactions beneath this boundary. A session
 is one-shot and cannot be reopened or restarted.
 
-OpenOCD executes in a helper-supervised process group and session. The process
-group is the helper's ownership boundary for generic cleanup hygiene, including
-processes that outlive the OpenOCD leader.
+OpenOCD launched as the persistent process of a remote-runner session executes
+in a helper-supervised process group and session. The process group is the
+helper's ownership boundary for generic cleanup hygiene, including processes
+that outlive the OpenOCD leader. This process-group supervision contract does
+not apply to finite one-shot helper operations.
+
+In particular, `openocd-version` is a finite one-shot operation subject to its
+SSH invocation timeout. That timeout bounds the local SSH command invocation;
+it does not provide the persistent session's process-group supervision or
+descendant cleanup guarantee.
 
 The helper's `ControlSession` owns the workspace, control selector, command
 dispatch, signal handlers, and final cleanup. A `SupervisedChild` owns the
