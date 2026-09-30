@@ -1267,6 +1267,15 @@ readiness follows that command causally.
 Generic processes with no required sentinels are ready immediately. The
 startup timeout is 30 seconds.
 
+The readiness timeout bounds the wait in the absence of another terminal
+condition. The current helper observes readiness and child exit after
+control-input waits of at most `CHILD_POLL_INTERVAL`; a final polling
+observation may therefore process either slightly after the nominal deadline,
+with tolerance bounded by one polling interval. `STOP`, EOF, and protocol
+failures remain responsive throughout the readiness wait. This is observation
+granularity, not a hard real-time cutoff; future implementations preserve the
+observable semantics without having to use polling.
+
 ---
 
 ## 41. OpenOCD stdout/stderr
