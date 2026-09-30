@@ -1063,6 +1063,8 @@ OpenOCD process. Remote SSH/operating-system detection latency is outside this
 requirement's bound. Local SSH-client detection SHALL NOT be treated as remote
 helper observation, and the project SHALL NOT bound the interval from local
 detection to remote OpenOCD termination.
+The helper SHALL continue observing control input while process readiness is
+pending, without waiting for readiness success, failure, or timeout.
 
 ### REQ-FUNC-HELP-006
 

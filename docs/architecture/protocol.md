@@ -53,6 +53,12 @@ bounded and use an incremental UTF-8 decoder. A sentinel is recognized only
 when the complete trimmed line is observed; a fragment that merely matches a
 sentinel prefix does not make the process ready.
 
+While readiness is pending, the helper continues consuming control frames.
+`STOP` and stdin EOF end the session without waiting for readiness or emitting
+`PROCESS_READY`; malformed or unexpected commands cause protocol failure and
+cleanup. Incomplete frames remain buffered until their LF arrives, and EOF
+with an incomplete frame is a protocol error.
+
 `STOP` has no fields other than `version` and `type`. On successful cleanup, it
 terminates the child process group, removes the workspace, emits `SESSION_CLOSED`
 with `reason: "requested"` and `returncode: null`, and exits. A cleanup failure

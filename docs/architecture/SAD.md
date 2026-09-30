@@ -1122,6 +1122,16 @@ configures the actual GDB, Tcl, telnet, and RTT listeners. The helper does not
 probe listener connectability. This keeps process resources attached to one
 owner across success, failure, EOF, and signal paths.
 
+The control session retains raw stdin bytes in one incremental LF frame reader
+shared by the normal control loop and process-readiness wait. Partial frames
+return control to supervision until more bytes arrive; complete buffered frames
+are dispatched in order without requiring another OS readability event. EOF
+with an incomplete frame is a protocol error. While readiness is pending, the
+helper continues checking child exit and required output sentinels while also
+consuming control input. `STOP`, EOF, and invalid commands end startup and
+perform session cleanup without first emitting `PROCESS_READY`. Address
+collision retries retain the same control reader.
+
 Cleanup sends `SIGTERM` to the owned group and waits a bounded grace period for
 the leader. It then checks whether the group still exists. If so, the helper
 may inspect `/proc` once and warn about observable non-leader members before

@@ -24,6 +24,7 @@ import tarfile
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path, PurePosixPath
 from typing import NamedTuple
@@ -864,12 +865,21 @@ def _child_environment(request):
     return environment
 
 
-def _wait_for_process(child, address, request, attempt):
+def _wait_for_process(
+    child: SupervisedChild,
+    address: str,
+    request: StartRequest,
+    attempt: int,
+    service_control: Callable[[float], bool],
+) -> bool | None:
+    """Return True when ready, False for collision retry, or None on control closure."""
     if child.required_output_sentinels.ready:
         emit("PROCESS_READY", remote_address=address, child_pid=child.pid)
         return True
     deadline = time.monotonic() + request.readiness_timeout
-    while time.monotonic() < deadline:
+    while (remaining := deadline - time.monotonic()) > 0:
+        if not service_control(min(CHILD_POLL_INTERVAL, remaining)):
+            return None
         if child.poll() is not None:
             child.terminate()
             if (
@@ -881,8 +891,34 @@ def _wait_for_process(child, address, request, attempt):
         if child.required_output_sentinels.ready:
             emit("PROCESS_READY", remote_address=address, child_pid=child.pid)
             return True
-        time.sleep(CHILD_POLL_INTERVAL)
     raise RuntimeError("process readiness timed out")
+
+
+class _ControlFrameReader:
+    """Retain raw control bytes across selector waits and command dispatch."""
+
+    def __init__(self, descriptor: int, selector: selectors.BaseSelector):
+        self._descriptor = descriptor
+        self._selector = selector
+        self._buffer = bytearray()
+
+    def read_frame(self, timeout: float) -> bytes | None:
+        """Return one LF frame, empty bytes for EOF, or None when incomplete."""
+        if b"\n" not in self._buffer:
+            if not self._selector.select(timeout):
+                return None
+            chunk = os.read(self._descriptor, RELAY_CHUNK_SIZE)
+            if not chunk:
+                if self._buffer:
+                    raise ValueError("protocol frame is missing its LF delimiter")
+                return b""
+            self._buffer.extend(chunk)
+        delimiter = self._buffer.find(b"\n")
+        if delimiter < 0:
+            return None
+        frame = bytes(self._buffer[: delimiter + 1])
+        del self._buffer[: delimiter + 1]
+        return frame
 
 
 class ControlSession:
@@ -897,6 +933,7 @@ class ControlSession:
         self.stopping = False
         self._child_starting = False
         self._signal_pending = False
+        self._control_input: _ControlFrameReader | None = None
 
     @classmethod
     def create(cls):
@@ -910,7 +947,7 @@ class ControlSession:
             remote_workspace=str(self.work),
         )
 
-    def _start_process(self, request):
+    def _start_process(self, request: StartRequest) -> bool:
         if self.child is not None:
             raise ValueError("START is only valid once")
         ports = [service.remote_port for service in request.services]
@@ -941,8 +978,13 @@ class ControlSession:
                 self._signal_pending = False
                 self.handle_signal()
             self.child.start_relays(capture_startup=True)
-            if _wait_for_process(self.child, address, request, attempt):
-                return
+            ready = _wait_for_process(
+                self.child, address, request, attempt, self._read_and_dispatch
+            )
+            if ready is None:
+                return False
+            if ready:
+                return True
             self.child = None
         raise RuntimeError(
             "process address collision retry exhausted after "
@@ -952,8 +994,7 @@ class ControlSession:
     def dispatch(self, message):
         request = decode_command(message)
         if isinstance(request, StartRequest):
-            self._start_process(request)
-            return True
+            return self._start_process(request)
         if isinstance(request, StopRequest):
             self.cleanup()
             emit("SESSION_CLOSED", reason="requested", returncode=None)
@@ -968,13 +1009,14 @@ class ControlSession:
         emit("SESSION_CLOSED", reason="process_exit", returncode=returncode)
         return True
 
-    def _read_and_dispatch(self):
-        line = sys.stdin.buffer.readline()
-        if not line:
-            return False
+    def _read_and_dispatch(self, timeout: float = 0.2) -> bool:
+        assert self._control_input is not None
         try:
-            if not line.endswith(b"\n"):
-                raise ValueError("protocol frame is missing its LF delimiter")
+            line = self._control_input.read_frame(timeout)
+            if line is None:
+                return True
+            if not line:
+                return False
             message = json.loads(line)
             return self.dispatch(message)
         except Exception as exc:
@@ -990,10 +1032,12 @@ class ControlSession:
                 selector = selectors.DefaultSelector()
                 try:
                     selector.register(sys.stdin.buffer, selectors.EVENT_READ)
+                    self._control_input = _ControlFrameReader(sys.stdin.buffer.fileno(), selector)
                     while not self._child_finished():
-                        if selector.select(0.2) and not self._read_and_dispatch():
+                        if not self._read_and_dispatch():
                             break
                 finally:
+                    self._control_input = None
                     selector.close()
             except BaseException as exc:
                 operation_error = exc

@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import fcntl
 import importlib.util
-import io
+import json
 import math
 import os
 import select
+import selectors
 import signal
 import sys
 import threading
@@ -30,25 +31,165 @@ SPEC.loader.exec_module(remote_helper)
 SAMPLE_CHILD_EXIT_CODE = 7
 
 
-def test_helper_accepts_json_whitespace_inside_command_frame(monkeypatch):
-    dispatched = []
-    session = remote_helper.ControlSession("session", None, None)
+@pytest.fixture
+def control_pipe(monkeypatch):
+    read_fd, write_fd = os.pipe()
+    with os.fdopen(read_fd, "rb") as reader, os.fdopen(write_fd, "wb", buffering=0) as writer:
+        monkeypatch.setattr(remote_helper.sys, "stdin", SimpleNamespace(buffer=reader))
+        yield reader, writer
 
-    def record_dispatch(message):
-        dispatched.append(message)
-        return False
 
-    monkeypatch.setattr(
-        remote_helper.sys,
-        "stdin",
-        SimpleNamespace(buffer=io.BytesIO(b' \t{"version":1,"type":"STOP"} \t\r\n')),
+@pytest.mark.parametrize(
+    ("interruption", "expected_error", "batch"),
+    (
+        pytest.param(None, None, False, id="eof"),
+        pytest.param(b'{"version":1,"type":"STOP"}\n', None, False, id="stop"),
+        pytest.param(b'{"version":1,"type":"STOP"}\n', None, True, id="batched-stop"),
+        pytest.param(b"not-json\n", json.JSONDecodeError, False, id="malformed-json"),
+        pytest.param(b'{"version":1,"type":"STOP"}', ValueError, False, id="incomplete-eof"),
+        pytest.param(b'{"version":1,"type":"UNKNOWN"}\n', ValueError, False, id="unexpected"),
+        pytest.param(b"START", ValueError, False, id="duplicate-start"),
+    ),
+)
+def test_control_session_services_input_during_readiness(
+    tmp_path, monkeypatch, control_pipe, interruption, expected_error, batch
+):
+    _reader, writer = control_pipe
+    workspace = tmp_path / "workspace"
+    (workspace / "staged").mkdir(parents=True)
+    lock = (workspace / remote_helper.SESSION_LOCK).open("w+b")
+    events = []
+    start = (
+        json.dumps(
+            {
+                "version": 1,
+                "type": "START",
+                "argv": ["openocd"],
+                "environment": {},
+                "required_paths": [],
+                "services": [],
+                "required_output_sentinels": ["not-ready"],
+                "readiness_timeout": 30,
+                "literal_prefix": 1,
+            }
+        ).encode()
+        + b"\n"
     )
-    monkeypatch.setattr(session, "dispatch", record_dispatch)
+    writer.write(start + interruption if batch else start)
 
-    assert not session._read_and_dispatch()
+    class Child:
+        pid = 123
+        returncode: int | None = None
+        required_output_sentinels = remote_helper._RequiredOutputSentinels(("not-ready",))
+        startup_output = ()
 
-    assert session.protocol_error is None
-    assert dispatched == [{"version": 1, "type": "STOP"}]
+        def __init__(self):
+            self.terminated = False
+
+        def start_relays(self, *, capture_startup):
+            del capture_startup
+            if batch:
+                return
+            if interruption is None:
+                writer.close()
+            else:
+                writer.write(start if interruption == b"START" else interruption)
+                if not interruption.endswith(b"\n") and interruption != b"START":
+                    writer.close()
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.terminated = True
+            self.returncode = -signal.SIGTERM
+
+    child = Child()
+
+    def record_event(kind, **values):
+        if kind in ("SESSION_CLOSED", "ERROR"):
+            assert child.terminated
+            assert not workspace.exists()
+            assert lock.closed
+        events.append((kind, values))
+
+    def forbid_unserviced_wait(_seconds):
+        raise RuntimeError("readiness waited without servicing control input")
+
+    monkeypatch.setattr(remote_helper, "emit", record_event)
+    monkeypatch.setattr(remote_helper, "_spawn_child", lambda *_args, **_kwargs: child)
+    # Keep readiness pending indefinitely: control observation must end the session.
+    monkeypatch.setattr(remote_helper.time, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(remote_helper.time, "sleep", forbid_unserviced_wait)
+    session = remote_helper.ControlSession("session", workspace, lock)
+
+    session.run()
+
+    assert child.terminated
+    assert not workspace.exists()
+    assert lock.closed
+    assert not any(kind == "PROCESS_READY" for kind, _values in events)
+    if expected_error is not None:
+        assert isinstance(session.protocol_error, expected_error)
+        assert events[-1][0] == "ERROR"
+        assert events[-1][1]["code"] == "PROTOCOL_ERROR"
+    else:
+        assert session.protocol_error is None
+        if interruption is None:
+            assert [kind for kind, _values in events] == ["SESSION_CREATED"]
+        else:
+            assert events[-1] == ("SESSION_CLOSED", {"reason": "requested", "returncode": None})
+
+
+def test_helper_accepts_json_whitespace_inside_command_frame(tmp_path, control_pipe, capsys):
+    _reader, writer = control_pipe
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    with (workspace / remote_helper.SESSION_LOCK).open("w+b") as lock:
+        session = remote_helper.ControlSession("session", workspace, lock)
+        writer.write(b' \t{"version":1,"type":"STOP"} \t\r\n')
+
+        session.run()
+
+        assert session.protocol_error is None
+        assert not workspace.exists()
+        assert lock.closed
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert events[-1]["type"] == "SESSION_CLOSED"
+    assert events[-1]["reason"] == "requested"
+
+
+def test_control_frames_retain_partial_bytes_without_waiting_for_lf(control_pipe):
+    reader, writer = control_pipe
+    with selectors.DefaultSelector() as selector:
+        selector.register(reader, selectors.EVENT_READ)
+        frames = remote_helper._ControlFrameReader(reader.fileno(), selector)
+        # Split a UTF-8 character as well as the frame itself.
+        writer.write(b'{"value":"\xc3')
+        assert frames.read_frame(0) is None
+        assert frames.read_frame(0) is None
+        writer.write(b'\xa9"}')
+        assert frames.read_frame(0) is None
+        writer.write(b"\n")
+        assert json.loads(frames.read_frame(0)) == {"value": "é"}
+        writer.close()
+        assert frames.read_frame(0) == b""
+
+
+def test_control_frames_keep_batched_frames_and_incomplete_tail(control_pipe):
+    reader, writer = control_pipe
+    with selectors.DefaultSelector() as selector:
+        selector.register(reader, selectors.EVENT_READ)
+        frames = remote_helper._ControlFrameReader(reader.fileno(), selector)
+        writer.write(b'{"value":1}\n{"value":2}\n{"value":')
+        assert json.loads(frames.read_frame(0)) == {"value": 1}
+        # All bytes were consumed from the pipe; later frames belong to the reader.
+        assert not selector.select(0)
+        assert json.loads(frames.read_frame(0)) == {"value": 2}
+        assert frames.read_frame(0) is None
+        writer.close()
+        with pytest.raises(ValueError):
+            frames.read_frame(0)
 
 
 def _wait_for_descendant(path):
@@ -784,7 +925,9 @@ def test_control_session_natural_exit_cleans_before_close_event(tmp_path, monkey
     ]
 
 
-def test_control_session_natural_exit_cleanup_failure_emits_error_event(tmp_path, monkeypatch):
+def test_control_session_natural_exit_cleanup_failure_emits_error_event(
+    tmp_path, monkeypatch, control_pipe
+):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     lock = (workspace / remote_helper.SESSION_LOCK).open("w+b")
@@ -805,32 +948,22 @@ def test_control_session_natural_exit_cleanup_failure_emits_error_event(tmp_path
         lambda kind, **values: events.append((kind, values)),
     )
     original_rmtree = remote_helper.shutil.rmtree
+    failure = OSError("injected workspace removal failure")
 
     def fail_workspace_removal(path):
         if path == workspace:
-            raise OSError("injected workspace removal failure")
+            raise failure
         original_rmtree(path)
 
-    class Selector:
-        def register(self, *_args):
-            pass
-
-        def close(self):
-            pass
-
     monkeypatch.setattr(remote_helper.shutil, "rmtree", fail_workspace_removal)
-    monkeypatch.setattr(remote_helper.selectors, "DefaultSelector", Selector)
     session = remote_helper.ControlSession("session", workspace, lock)
     session.child = Child()
 
-    helper_status = 0
-    try:
+    with pytest.raises(OSError) as raised:
         session.run()
-    except Exception as exc:
-        remote_helper.error(exc)
-        helper_status = 1
+    assert raised.value is failure
+    remote_helper.error(raised.value)
 
-    assert helper_status != 0
     assert [kind for kind, _values in events] == ["SESSION_CREATED", "ERROR"]
     assert isinstance(events[-1][1]["message"], str)
     assert events[-1][1]["message"]
@@ -842,7 +975,9 @@ def test_control_session_natural_exit_cleanup_failure_emits_error_event(tmp_path
     original_rmtree(workspace)
 
 
-def test_protocol_error_remains_primary_when_cleanup_also_fails(tmp_path, monkeypatch):
+def test_protocol_error_remains_primary_when_cleanup_also_fails(
+    tmp_path, monkeypatch, control_pipe
+):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     lock = (workspace / remote_helper.SESSION_LOCK).open("w+b")
@@ -859,27 +994,14 @@ def test_protocol_error_remains_primary_when_cleanup_also_fails(tmp_path, monkey
             raise OSError("injected workspace removal failure")
         original_rmtree(path)
 
-    class Selector:
-        def register(self, *_args):
-            pass
-
-        def select(self, _timeout):
-            return [(None, None)]
-
-        def close(self):
-            pass
-
     session = remote_helper.ControlSession("session", workspace, lock)
     monkeypatch.setattr(remote_helper.ControlSession, "create", lambda: session)
     monkeypatch.setattr(remote_helper.shutil, "rmtree", fail_workspace_removal)
-    monkeypatch.setattr(remote_helper.selectors, "DefaultSelector", Selector)
     monkeypatch.setattr(remote_helper.signal, "signal", lambda *_args: None)
     monkeypatch.setattr(remote_helper.sys, "argv", ["remote_helper.py", "control"])
 
-    class Stdin:
-        buffer = io.BytesIO(b"not-json\n")
-
-    monkeypatch.setattr(remote_helper.sys, "stdin", Stdin())
+    _reader, writer = control_pipe
+    writer.write(b"not-json\n")
 
     with pytest.raises(SystemExit) as raised:
         remote_helper.main()

@@ -1405,6 +1405,70 @@ class TestRealProcessHelper:
                 if child_pidfd is not None:
                     os.close(child_pidfd)
 
+    @pytest.mark.parametrize("close_input", (True, False), ids=("eof", "stop"))
+    def test_helper_control_loss_during_readiness_cleans_child_and_workspace(
+        self, tmp_path, close_input
+    ):
+        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        environment = os.environ.copy()
+        environment["XDG_RUNTIME_DIR"] = str(tmp_path)
+        process = subprocess.Popen(
+            [sys.executable, str(helper), "control"],
+            env=environment,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        child_pid = None
+        child_pidfd = None
+        try:
+            assert process.stdout is not None and process.stdin is not None
+            created = json.loads(read_line(process.stdout))
+            workspace = Path(created["remote_workspace"])
+            process.stdin.write(
+                start_frame(
+                    [
+                        sys.executable,
+                        "-c",
+                        "import os, signal; print(os.getpid(), flush=True); signal.pause()",
+                    ],
+                    required_output_sentinels=["not-ready"],
+                )
+            )
+            process.stdin.flush()
+            # Child output is a handshake that startup is pending, not a readiness sentinel.
+            output = json.loads(read_line(process.stdout))
+            assert output["type"] == "CHILD_OUTPUT"
+            child_pid = int(output["payload"])
+            child_pidfd = os.pidfd_open(child_pid)
+            if close_input:
+                process.stdin.close()
+            else:
+                process.stdin.write(encode_message("STOP"))
+                process.stdin.flush()
+
+            events = [json.loads(line) for line in read_lines(process.stdout, timeout=10)]
+
+            assert process.wait(timeout=10) == 0
+            assert not any(event["type"] in ("PROCESS_READY", "ERROR") for event in events)
+            if not close_input:
+                assert events[-1]["type"] == "SESSION_CLOSED"
+                assert events[-1]["reason"] == "requested"
+            assert not workspace.exists()
+            _assert_pidfd_exited(child_pidfd)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+            if child_pid is not None:
+                with suppress(ProcessLookupError):
+                    os.killpg(child_pid, signal.SIGKILL)
+            for stream in (process.stdin, process.stdout, process.stderr):
+                if stream is not None and not stream.closed:
+                    stream.close()
+            if child_pidfd is not None:
+                os.close(child_pidfd)
+
     def test_helper_eof_cleans_child_and_workspace(self):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
         with tempfile.TemporaryDirectory() as directory:
