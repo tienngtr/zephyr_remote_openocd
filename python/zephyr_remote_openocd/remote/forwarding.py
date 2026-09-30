@@ -9,16 +9,57 @@ import secrets
 import selectors
 import shlex
 import socket
+import subprocess
 import time
 from collections.abc import Iterable
+from dataclasses import dataclass
+from typing import Literal
 
 from .cleanup import _add_failure_note, _raise_cleanup_errors
 from .model import DuplicateServiceError, Service, validated_services
 from .session import SessionError
-from .ssh import ManagedSshProcess, SshCommand, _stop_process
+from .ssh import ManagedSshProcess, SshCommand, SshProcessStartError, _stop_process
 
 FORWARD_START_TIMEOUT = 10.0
 FORWARD_HEALTH_INTERVAL = 0.25
+
+
+class ForwardStartError(SessionError):
+    """Distinguish unavailable forwarding from failed startup rollback."""
+
+    def __init__(
+        self,
+        service: Service,
+        cause: Exception,
+        cleanup_errors: tuple[BaseException, ...],
+    ) -> None:
+        super().__init__(str(cause))
+        self.service = service
+        self.cause = cause
+        self.cleanup_errors = cleanup_errors
+        for note in getattr(cause, "__notes__", ()):
+            self.add_note(note)
+
+
+@dataclass(frozen=True)
+class ForwardFailure:
+    service: Service
+    returncode: int
+    diagnostic: str
+
+    def as_error(self) -> SessionError:
+        suffix = f": {self.diagnostic}" if self.diagnostic else ""
+        return SessionError(
+            f"SSH forwarding for {self.service.name} on "
+            f"127.0.0.1:{self.service.local_port} exited with status {self.returncode}{suffix}"
+        )
+
+
+@dataclass(frozen=True)
+class ForwardAdvisory:
+    service: Service
+    phase: Literal["startup", "runtime"]
+    failure: SessionError
 
 
 class _ForwardManager:
@@ -29,6 +70,11 @@ class _ForwardManager:
         self._host = host
         self._processes: list[ManagedSshProcess] = []
         self._services: list[Service] = []
+        self._reported: set[Service] = set()
+
+    @property
+    def services(self) -> tuple[Service, ...]:
+        return tuple(self._services)
 
     @property
     def has_forwards(self) -> bool:
@@ -93,11 +139,11 @@ class _ForwardManager:
             raise SessionError(f"{error.subject} must remain unique") from error
 
         pending_processes: list[ManagedSshProcess] = []
+        advisories = [message for service in service_list if (message := self._preflight(service))]
+        active_service = None
         try:
-            advisories = [
-                message for service in service_list if (message := self._preflight(service))
-            ]
             for service in service_list:
+                active_service = service
                 spec = f"127.0.0.1:{service.local_port}:{remote_address}:{service.remote_port}"
                 sentinel = "ZRO_FORWARD_" + secrets.token_hex(16)
                 process = self._ssh_command.popen(
@@ -133,32 +179,45 @@ class _ForwardManager:
             committed_processes = [*self._processes, *pending_processes]
             committed_services = [*self._services, *service_list]
         except BaseException as error:
+            cleanup_errors = (
+                list(error.cleanup_errors) if isinstance(error, SshProcessStartError) else []
+            )
             for process in pending_processes:
                 try:
                     _stop_process(process)
                 except BaseException as cleanup_error:
+                    cleanup_errors.append(cleanup_error)
                     _add_failure_note(
                         error,
                         "forward startup cleanup also failed",
                         cleanup_error,
                     )
+            if active_service is not None and isinstance(
+                error, (SessionError, OSError, subprocess.SubprocessError, SshProcessStartError)
+            ):
+                raise ForwardStartError(active_service, error, tuple(cleanup_errors)) from error
             raise
         self._processes = committed_processes
         self._services = committed_services
 
-    def check_health(self) -> None:
-        """Raise if an owned SSH forwarding process has exited."""
-        for process in self._processes:
+    def check_health(self) -> tuple[ForwardFailure, ...]:
+        """Report newly observed exits without deciding service criticality."""
+        failures = []
+        for service, process in zip(self._services, self._processes, strict=True):
+            if service in self._reported:
+                continue
             forward_status = process.poll()
             if forward_status is not None:
-                detail = self._diagnostic(process)
-                suffix = f": {detail}" if detail else ""
-                raise SessionError(f"SSH forwarding exited with status {forward_status}{suffix}")
+                failures.append(ForwardFailure(service, forward_status, self._diagnostic(process)))
+                self._reported.add(service)
+        return tuple(failures)
 
     def close(self) -> None:
         """Attempt to dispose every owned forward once."""
         pending = self._processes
         self._processes = []
+        self._services = []
+        self._reported.clear()
         errors = []
         for process in pending:
             try:

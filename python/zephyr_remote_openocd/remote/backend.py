@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import logging
 import shlex
 import subprocess
 import time
@@ -12,7 +13,13 @@ from typing import Protocol
 
 from .cleanup import _add_failure_note, _raise_cleanup_errors
 from .deploy import DeploymentResult, deploy_helper
-from .forwarding import FORWARD_HEALTH_INTERVAL, _ForwardManager
+from .forwarding import (
+    FORWARD_HEALTH_INTERVAL,
+    ForwardAdvisory,
+    ForwardFailure,
+    ForwardStartError,
+    _ForwardManager,
+)
 from .helper_client import _HelperClient, _HelperCloseResult
 from .model import (
     RemoteProcess,
@@ -32,6 +39,18 @@ from .protocol import (
 from .session import SessionClosedError, SessionError
 from .ssh import SshCommand
 from .staging import build_archive
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def _log_forward_advisory(advisory: ForwardAdvisory) -> None:
+    _LOGGER.warning(
+        "Auxiliary %s forwarding %s failure on 127.0.0.1:%s: %s",
+        advisory.service.name,
+        advisory.phase,
+        advisory.service.local_port,
+        advisory.failure,
+    )
 
 
 def _one_shot_failure_detail(stdout: bytes, stderr: bytes) -> str:
@@ -94,9 +113,12 @@ class _SessionForwards(Protocol):
     @property
     def has_forwards(self) -> bool: ...
 
+    @property
+    def services(self) -> tuple[Service, ...]: ...
+
     def start(self, services: Iterable[Service], remote_address: str) -> None: ...
 
-    def check_health(self) -> None: ...
+    def check_health(self) -> tuple[ForwardFailure, ...]: ...
 
     def close(self) -> None: ...
 
@@ -109,6 +131,8 @@ class RemoteSession:
         request: RemoteSessionRequest,
         deployment: DeploymentResult,
         output_handler: Callable[[str, str, bool], None] | None = None,
+        *,
+        advisory_handler: Callable[[ForwardAdvisory], None] | None = None,
     ) -> None:
         self.request = request
         self.deployment = deployment
@@ -116,6 +140,14 @@ class RemoteSession:
         self._helper: _SessionHelper | None = None
         self.closed = False
         self.descriptor: SessionDescriptor | None = None
+        self._advisory_handler = advisory_handler or _log_forward_advisory
+        self._required_services: set[Service] = set()
+        self._forward_failures: dict[Service, SessionError] = {}
+        self._warned_services: set[Service] = set()
+
+    @property
+    def forwarded_services(self) -> tuple[Service, ...]:
+        return self._forwards.services
 
     @property
     def openocd_returncode(self) -> int | None:
@@ -127,9 +159,10 @@ class RemoteSession:
         request: RemoteSessionRequest,
         *,
         output_handler: Callable[[str, str, bool], None] | None = None,
+        advisory_handler: Callable[[ForwardAdvisory], None] | None = None,
     ) -> RemoteSession:
         deployment = deploy_helper(request.ssh_command, request.host)
-        session = cls(request, deployment, output_handler)
+        session = cls(request, deployment, output_handler, advisory_handler=advisory_handler)
         session._helper = _HelperClient.open(
             request.ssh_command,
             request.host,
@@ -184,19 +217,52 @@ class RemoteSession:
         service_list = tuple(services)
         helper = self._helper_or_error()
         address = helper.start_process(self.request.process, service_list)
-        if service_list:
-            self._forwards.start(service_list, address)
         self.descriptor = SessionDescriptor(helper.allocation, address)
+        auxiliary = set(self.request.auxiliary_services)
+        self.forward(tuple(service for service in service_list if service not in auxiliary))
+        self.forward(self.request.auxiliary_services, required=False)
         return self.descriptor
 
-    def forward(self, services: Iterable[Service]) -> None:
+    def forward(self, services: Iterable[Service], *, required: bool = True) -> None:
         if self.closed:
             raise SessionClosedError("remote session is closed")
         if self.descriptor is None:
             raise SessionError("remote session is not ready for additional forwarding")
         service_list = tuple(services)
-        if service_list:
+        if required and service_list:
             self._forwards.start(service_list, self.descriptor.remote_address)
+            self._required_services.update(service_list)
+        elif not required:
+            for service in service_list:
+                try:
+                    self._forwards.start((service,), self.descriptor.remote_address)
+                except ForwardStartError as error:
+                    if error.cleanup_errors:
+                        raise
+                    self._advisory_handler(ForwardAdvisory(service, "startup", error))
+
+    def mark_auxiliary(self, services: Iterable[Service]) -> None:
+        """Reclassify owned forwards after their required phase completes."""
+        if self.closed:
+            raise SessionClosedError("remote session is closed")
+        service_set = set(services)
+        if not service_set.issubset(self._forwards.services):
+            raise SessionError("only owned forwarding services can become auxiliary")
+        self._required_services.difference_update(service_set)
+
+    def _check_forward_health(self) -> None:
+        for failure in self._forwards.check_health():
+            self._forward_failures[failure.service] = failure.as_error()
+        required_failure = None
+        for service, error in self._forward_failures.items():
+            if service in self._required_services:
+                if required_failure is None:
+                    required_failure = error
+            elif service not in self._warned_services:
+                self._advisory_handler(ForwardAdvisory(service, "runtime", error))
+                self._warned_services.add(service)
+        if required_failure is not None:
+            raise required_failure
 
     def check_openocd_exit(self) -> int | None:
         if self.closed:
@@ -205,7 +271,7 @@ class RemoteSession:
         result = helper.recorded_openocd_exit()
         if result is not None and result != 0:
             return result
-        self._forwards.check_health()
+        self._check_forward_health()
         return result if result is not None else helper.recorded_openocd_exit()
 
     def wait_for_openocd_exit(self, timeout: float | None = None) -> int:

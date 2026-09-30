@@ -74,12 +74,17 @@ class RemoteSessionRequest:
     process: RemoteProcess
     staged_files: tuple[StagedEntry, ...] = field(default_factory=tuple)
     services: tuple[Service, ...] = field(default_factory=tuple)
+    auxiliary_services: tuple[Service, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         if not self.host:
             raise ValueError("remote host must not be empty")
         object.__setattr__(self, "staged_files", tuple(self.staged_files))
         object.__setattr__(self, "services", validated_services(self.services))
+        auxiliary = validated_services(self.auxiliary_services)
+        if not set(auxiliary).issubset(self.services):
+            raise ValueError("auxiliary services must belong to the initial service topology")
+        object.__setattr__(self, "auxiliary_services", auxiliary)
 
 
 @dataclass(frozen=True)

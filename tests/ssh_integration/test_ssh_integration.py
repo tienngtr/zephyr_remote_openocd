@@ -371,8 +371,10 @@ class TestSshTransportIntegration:
             forward.terminate()
             forward.wait(timeout=20)
 
-            with pytest.raises(SessionError, match="SSH forwarding exited"):
+            with pytest.raises(SessionError) as raised:
                 session.check_openocd_exit()
+            assert "gdb" in str(raised.value)
+            assert f"127.0.0.1:{local_port}" in str(raised.value)
 
             session.close()
         finally:

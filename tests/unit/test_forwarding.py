@@ -44,19 +44,64 @@ class _ForwardCommand(SshCommand):
         return next(self.processes)
 
 
-def test_forward_manager_raises_when_ssh_forward_exits():
-    class Forward:
-        def poll(self):
-            return FORWARD_FAILURE_RC
+def test_forward_health_reports_service_identity_once(monkeypatch):
+    services = (Service("gdb", 32100, 3333), Service("tcl", 32101, 6333))
+    processes = (_ForwardProcess(None), _ForwardProcess(None))
+    manager = _ForwardManager(_ForwardCommand(*processes), "host")
+    monkeypatch.setattr(_ForwardManager, "_preflight", staticmethod(lambda _service: None))
+    monkeypatch.setattr(_ForwardManager, "_await_ready", staticmethod(lambda *_args: True))
+    manager.start(services, "127.64.0.1")
+    for process in processes:
+        process.returncode = FORWARD_FAILURE_RC
+    failures = manager.check_health()
+    assert tuple(failure.service for failure in failures) == services
+    assert all(failure.returncode == FORWARD_FAILURE_RC for failure in failures)
+    assert all(failure.diagnostic == "" for failure in failures)
+    assert manager.check_health() == ()
+    assert manager.services == services
+    manager.close()
+    assert [process.close_stderr_calls for process in processes] == [1, 1]
 
-        def stderr_tail(self):
-            return b"forward failed"
 
-    manager = _ForwardManager(SshCommand(), "host")
-    manager._processes = [cast(Any, Forward())]
+@pytest.mark.parametrize("rollback_fails", (False, True))
+def test_failed_start_exposes_rollback_outcome(monkeypatch, rollback_fails):
+    service = Service("tcl", 32101, 6333)
+    cleanup_error = RuntimeError("rollback disposal failed")
+    process = _ForwardProcess(None, close_stderr_error=cleanup_error if rollback_fails else None)
+    manager = _ForwardManager(_ForwardCommand(process), "host")
+    monkeypatch.setattr(_ForwardManager, "_preflight", staticmethod(lambda _service: None))
+    monkeypatch.setattr(_ForwardManager, "_await_ready", staticmethod(lambda *_args: False))
+    with pytest.raises(SessionError) as raised:
+        manager.start((service,), "127.64.0.1")
+    error = raised.value
+    assert isinstance(error, forwarding_module.ForwardStartError)
+    assert error.service == service
+    assert isinstance(error.cause, SessionError)
+    assert error.cleanup_errors == ((cleanup_error,) if rollback_fails else ())
+    assert not manager.has_forwards
+    manager.close()
+    assert process.terminate_calls == 1
+    assert process.close_stderr_calls == 1
 
-    with pytest.raises(SessionError):
-        manager.check_health()
+
+def test_process_creation_failure_has_service_identity_without_ownership(monkeypatch):
+    cause = OSError("cannot start configured SSH client")
+
+    class Command(_ForwardCommand):
+        @override
+        def popen(self, host: str, remote_command: str, *extra_args: str) -> Any:
+            raise cause
+
+    service = Service("tcl", 32101, 6333)
+    manager = _ForwardManager(Command(), "host")
+    monkeypatch.setattr(_ForwardManager, "_preflight", staticmethod(lambda _service: None))
+    with pytest.raises(SessionError) as raised:
+        manager.start((service,), "127.64.0.1")
+    assert isinstance(raised.value, forwarding_module.ForwardStartError)
+    assert raised.value.service == service
+    assert raised.value.cause is cause
+    assert raised.value.cleanup_errors == ()
+    assert not manager.has_forwards
 
 
 @pytest.mark.timeout(5)

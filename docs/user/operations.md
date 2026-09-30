@@ -51,6 +51,22 @@ forward before launching the local channel-0 client. The two `--rtt-server`
 forms expose the RTT endpoint with the initial persistent forwards but do not
 launch a local RTT client.
 
+Service availability has command-specific requirements:
+
+| Command | Required forwarding | Best-effort forwarding |
+| --- | --- | --- |
+| `debug`, `attach`, `debugserver` | GDB | Enabled Tcl and telnet |
+| `debug --rtt-server`, `debugserver --rtt-server` | GDB | Enabled Tcl/telnet and RTT |
+| `rtt` | GDB during setup, then RTT | Enabled Tcl/telnet; GDB after setup |
+| `flash` | None | None |
+
+Auxiliary services are attempted independently. Their occupied local ports,
+startup failures, or later forwarding exits produce warnings while the required
+interface remains usable. Runtime warnings appear at the next session health
+check; during interactive GDB this can be after GDB exits. Required forwarding
+failure fails the operation. Failure to clean up an acquired SSH process also
+fails the operation, including an auxiliary attempt whose rollback fails.
+
 Forward selection follows the operation and runner port options; the runner
 does not inspect arbitrary board or user Tcl to discover effective services.
 The remote bind address and service-port settings are runner-owned transport
@@ -112,7 +128,9 @@ the client detaches.
 configures channel 0 before launching the local RTT client. The command ends
 when the client exits. With `--rtt-server`, for example
 `west debugserver -r remote_openocd --remote lab --rtt-server`, the runner
-prints both forwarded endpoints but leaves GDB and the RTT client to the user.
+prints successfully forwarded endpoints but leaves GDB and the RTT client to
+the user. If optional RTT forwarding fails, its warning does not prevent GDB
+use and the runner does not report that RTT endpoint as available.
 The RTT endpoint is a raw TCP channel at `127.0.0.1:5555` by default. Connect a
 client such as `telnet 127.0.0.1 5555`, using the port printed by the runner.
 Select another local and remote RTT port with `--rtt-port`, for example

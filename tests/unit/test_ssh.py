@@ -444,8 +444,12 @@ def test_drain_startup_error_is_primary_when_process_cleanup_fails(monkeypatch):
         def kill(self):
             raise RuntimeError("process kill failed")
 
-        def wait(self):
-            return self.returncode
+        def terminate(self):
+            pass
+
+        def wait(self, timeout=None):
+            assert timeout is not None and math.isfinite(timeout) and timeout > 0
+            raise subprocess.TimeoutExpired("fake-ssh", timeout)
 
     process = Process()
 
@@ -460,3 +464,109 @@ def test_drain_startup_error_is_primary_when_process_cleanup_fails(monkeypatch):
         SshCommand(("fake-ssh",)).popen("host", "ignored")
     assert raised.value is startup_error
     assert any("process kill failed" in note for note in raised.value.__notes__)
+
+
+def test_acquisition_rollback_uses_bounded_process_waits(monkeypatch):
+    startup_error = OSError("stderr drain startup failed")
+    waits: list[float | None] = []
+    wait_errors: list[subprocess.TimeoutExpired] = []
+
+    class Process:
+        stdin = io.BytesIO()
+        stdout = io.BytesIO()
+        stderr = io.BytesIO()
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            pass
+
+        def wait(self, timeout=None):
+            waits.append(timeout)
+            error = subprocess.TimeoutExpired("configured-ssh", timeout)
+            wait_errors.append(error)
+            raise error
+
+    process = Process()
+
+    def fail_start(_drain):
+        raise startup_error
+
+    monkeypatch.setattr(ssh_module.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(ssh_module._StderrDrain, "start", fail_start)
+    with pytest.raises(ssh_module.SshProcessStartError) as raised:
+        SshCommand(("configured-ssh",)).popen("host", "ignored")
+
+    assert waits and all(timeout is not None and 0 < timeout < math.inf for timeout in waits)
+    assert raised.value.cause is startup_error
+    assert set(raised.value.cleanup_errors) == set(wait_errors)
+    assert process.stdin.closed and process.stdout.closed and process.stderr.closed
+
+
+def test_acquisition_rollback_attempts_every_stream_and_retains_all_failures(monkeypatch):
+    startup_error = OSError("stderr drain startup failed")
+    terminate_error = OSError("process terminate failed")
+    kill_error = OSError("process kill failed")
+    stdin_error = OSError("stdin close failed")
+    stdout_error = OSError("stdout close failed")
+    stderr_error = OSError("stderr close failed")
+
+    class FailingStream(io.BytesIO):
+        def __init__(self, error):
+            super().__init__()
+            self.error = error
+            self.close_attempts = 0
+
+        @override
+        def close(self):
+            self.close_attempts += 1
+            super().close()
+            raise self.error
+
+    class Process:
+        stdin = FailingStream(stdin_error)
+        stdout = FailingStream(stdout_error)
+        stderr = FailingStream(stderr_error)
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            raise terminate_error
+
+        def kill(self):
+            raise kill_error
+
+        def wait(self, timeout=None):
+            raise AssertionError("wait is not expected after failed process signals")
+
+    process = Process()
+
+    def fail_start(_drain):
+        raise startup_error
+
+    monkeypatch.setattr(ssh_module.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(ssh_module._StderrDrain, "start", fail_start)
+    with pytest.raises(ssh_module.SshProcessStartError) as raised:
+        SshCommand(("configured-ssh",)).popen("host", "ignored")
+
+    try:
+        assert [
+            stream.close_attempts for stream in (process.stdin, process.stdout, process.stderr)
+        ] == [1, 1, 1]
+        assert raised.value.cause is startup_error
+        assert set(raised.value.cleanup_errors) == {
+            terminate_error,
+            kill_error,
+            stdin_error,
+            stdout_error,
+            stderr_error,
+        }
+    finally:
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if not stream.closed:
+                io.BytesIO.close(stream)

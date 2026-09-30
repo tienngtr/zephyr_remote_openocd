@@ -10,6 +10,7 @@ import pytest
 from zephyr_remote_openocd.remote import backend as backend_module
 from zephyr_remote_openocd.remote.backend import RemoteSession, query_remote_openocd_version
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
+from zephyr_remote_openocd.remote.forwarding import ForwardFailure
 from zephyr_remote_openocd.remote.helper_client import _HelperClient, _HelperCloseResult
 from zephyr_remote_openocd.remote.model import (
     RemoteProcess,
@@ -57,6 +58,10 @@ class _BlockedHelper:
 
 class _BlockedForwards:
     @property
+    def services(self) -> tuple[Service, ...]:
+        raise AssertionError("services is not expected")
+
+    @property
     def has_forwards(self) -> bool:
         raise AssertionError("has_forwards is not expected")
 
@@ -64,7 +69,7 @@ class _BlockedForwards:
         del services, remote_address
         raise AssertionError("start() is not expected")
 
-    def check_health(self) -> None:
+    def check_health(self) -> tuple[ForwardFailure, ...]:
         raise AssertionError("check_health() is not expected")
 
     def close(self) -> None:
@@ -352,7 +357,7 @@ def test_check_openocd_exit_propagates_forward_failure_after_successful_openocd_
 
     class Forwards(_BlockedForwards):
         @override
-        def check_health(self) -> None:
+        def check_health(self) -> tuple[ForwardFailure, ...]:
             raise forwarding_error
 
     session = _make_session()
@@ -460,9 +465,10 @@ def test_wait_for_openocd_exit_observes_forward_failure():
             return True
 
         @override
-        def check_health(self) -> None:
+        def check_health(self) -> tuple[ForwardFailure, ...]:
             if self.failed:
                 raise SessionError(f"SSH forwarding exited with status {FORWARD_FAILURE_RC}")
+            return ()
 
     session = _make_session()
     forwards = Forwards()
@@ -514,8 +520,8 @@ def test_wait_for_openocd_exit_raises_helper_timeout_at_deadline(monkeypatch):
             return False
 
         @override
-        def check_health(self) -> None:
-            pass
+        def check_health(self) -> tuple[ForwardFailure, ...]:
+            return ()
 
     helper = Helper()
     session = _make_session()

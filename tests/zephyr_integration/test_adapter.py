@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import logging
 import os
 import socket
 import subprocess
@@ -17,7 +18,8 @@ from unittest.mock import Mock, create_autospec
 import pytest
 from zephyr_remote_openocd.config import ConfigError, PathMapping, ResolvedRemote
 from zephyr_remote_openocd.remote import RemoteSession
-from zephyr_remote_openocd.remote.debug import DebugPlan
+from zephyr_remote_openocd.remote.debug import DebugInputs, DebugPlan, build_debug_plan
+from zephyr_remote_openocd.remote.forwarding import ForwardStartError
 from zephyr_remote_openocd.remote.model import (
     RemoteProcess,
     RemoteSessionRequest,
@@ -25,8 +27,10 @@ from zephyr_remote_openocd.remote.model import (
     SessionAllocation,
     SessionDescriptor,
 )
+from zephyr_remote_openocd.remote.paths import PathPlanner
 from zephyr_remote_openocd.remote.ssh import SshCommand
 
+from tests.forwarding_support import GDB, RTT, TCL, TELNET, ForwardingHarness
 from tests.support import env_path
 
 pytestmark = pytest.mark.zephyr
@@ -452,38 +456,148 @@ def test_background_openocd_result_does_not_replace_foreground_failure(
 def test_rtt_execution_defers_forward_until_after_gdb(runner_api, monkeypatch):
     from zephyr_remote_openocd.zephyr44 import runner as runner_module
 
-    calls = []
+    harness = ForwardingHarness(monkeypatch)
+    session = harness.open()
+    harness.ssh.process(RTT)
     runner = Mock()
-    runner.run_client.side_effect = lambda _argv: calls.append("gdb")
-    session = Mock(spec=RemoteSession)
-    session.forward.side_effect = lambda _services: calls.append("forward")
-    session.check_openocd_exit.return_value = OPENOCD_FAILURE_RC
-    rtt_service = Service("rtt", 19021, 19021)
-    plan = _debug_plan(gdb_argv=("gdb", "--batch"), rtt_service=rtt_service)
+    plan = _debug_plan(gdb_argv=("gdb", "--batch"), services=(GDB, TCL, TELNET), rtt_service=RTT)
     observed_returncodes: list[int] = []
 
+    def batch_gdb(_argv):
+        assert RTT not in session.forwarded_services
+        harness.ssh.process(GDB).returncode = 13
+
+    runner.run_client.side_effect = batch_gdb
+
     def run_rtt(_port, poll):
-        calls.append("rtt")
-        return poll()
+        assert RTT in session.forwarded_services
+        assert poll() is None
+        return 0
 
     client = Mock(side_effect=run_rtt)
     monkeypatch.setattr(runner_module, "run_rtt_client", client)
 
-    returncode = runner_module._execute_rtt(
-        runner,
-        plan,
-        session,
-        observed_returncodes.append,
-    )
+    try:
+        returncode = runner_module._execute_rtt(runner, plan, session, observed_returncodes.append)
+        assert [advisory.service for advisory in harness.advisories] == [GDB]
+        assert observed_returncodes == []
+        assert returncode == 0
+        assert not session.closed
+    finally:
+        session.close()
 
-    assert calls == ["gdb", "forward", "rtt"]
-    session.forward.assert_called_once_with((rtt_service,))
-    client.assert_called_once()
-    assert client.call_args.args[0] == rtt_service.local_port
-    session.check_openocd_exit.assert_called_once_with()
-    assert observed_returncodes == [OPENOCD_FAILURE_RC]
-    session.close.assert_not_called()
-    assert returncode == OPENOCD_FAILURE_RC
+
+def _forwarding_operation(runner_api, monkeypatch, tmp_path, command, harness, rtt_server=False):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
+    plan = build_debug_plan(
+        DebugInputs(
+            command,
+            "openocd",
+            "gdb",
+            str(tmp_path / "app.elf"),
+            (),
+            (),
+            "init-sentinel",
+            "complete-sentinel",
+            rtt_address=0x20000000,
+            rtt_server=rtt_server,
+        ),
+        PathPlanner(()),
+    )
+    selected = ResolvedRemote(
+        "chosen",
+        tmp_path / "config.yaml",
+        "host",
+        ("openocd",),
+        harness.ssh.argv_prefix,
+        (),
+        (),
+    )
+    monkeypatch.setattr(runner_module, "SshCommand", lambda _prefix: harness.ssh)
+    runner = create_autospec(runner_api[1], instance=True)
+    runner.logger = logging.getLogger("test.remote_openocd.forwarding")
+    for service in (*plan.services, *((plan.rtt_service,) if plan.rtt_service else ())):
+        harness.ssh.process(service)
+    return runner, runner_module._debug_request(runner, selected, plan), plan
+
+
+@pytest.mark.parametrize("command", ("debug", "attach", "debugserver"))
+def test_required_gdb_startup_failure_aborts_operation(runner_api, monkeypatch, tmp_path, command):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
+    harness = ForwardingHarness(monkeypatch)
+    runner, request, plan = _forwarding_operation(
+        runner_api, monkeypatch, tmp_path, command, harness
+    )
+    harness.ssh.process(GDB).ready = False
+    with pytest.raises(ForwardStartError):
+        runner_module._execute_operation(runner, command, request, plan)
+    runner.run_client.assert_not_called()
+    assert harness.helper.close_calls == 1
+
+
+@pytest.mark.parametrize("command", ("debug", "debugserver"))
+@pytest.mark.parametrize("phase", ("startup", "runtime"))
+def test_optional_rtt_failure_preserves_gdb_operation(
+    runner_api, monkeypatch, tmp_path, caplog, command, phase
+):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
+    harness = ForwardingHarness(monkeypatch)
+    runner, request, plan = _forwarding_operation(
+        runner_api,
+        monkeypatch,
+        tmp_path,
+        command,
+        harness,
+        rtt_server=True,
+    )
+    if phase == "startup":
+        harness.ssh.process(RTT).ready = False
+
+    def exit_after_health_observation():
+        harness.helper.openocd_returncode = 0
+
+    def fail_auxiliary_during_foreground():
+        assert harness.ssh.process(GDB).returncode is None
+        harness.ssh.process(RTT).returncode = 13
+        harness.helper.on_wait = exit_after_health_observation
+
+    harness.helper.on_wait = fail_auxiliary_during_foreground
+    runner.run_client.side_effect = lambda _argv: fail_auxiliary_during_foreground()
+    with caplog.at_level(logging.INFO, logger=runner.logger.name):
+        runner_module._execute_operation(runner, command, request, plan)
+    warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "rtt" in warnings[0].getMessage().lower()
+    assert str(RTT.local_port) in warnings[0].getMessage()
+    if phase == "startup":
+        assert not any("RTT server available" in record.getMessage() for record in caplog.records)
+    if command == "debug":
+        runner.run_client.assert_called_once()
+    assert harness.helper.close_calls == 1
+    assert harness.ssh.process(GDB).mock.close_stderr.call_count == 1
+
+
+@pytest.mark.parametrize("failure", ("batch-gdb", "rtt-forward"))
+def test_standalone_rtt_setup_failure_never_launches_client(
+    runner_api, monkeypatch, tmp_path, failure
+):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
+    harness = ForwardingHarness(monkeypatch)
+    runner, request, plan = _forwarding_operation(runner_api, monkeypatch, tmp_path, "rtt", harness)
+    if failure == "batch-gdb":
+        runner.run_client.side_effect = subprocess.CalledProcessError(9, ("gdb",))
+    else:
+        harness.ssh.process(RTT).ready = False
+    client = Mock(side_effect=AssertionError("RTT client cannot start after setup failure"))
+    monkeypatch.setattr(runner_module, "run_rtt_client", client)
+    with pytest.raises((subprocess.CalledProcessError, ForwardStartError)):
+        runner_module._execute_operation(runner, "rtt", request, plan)
+    client.assert_not_called()
+    assert harness.helper.close_calls == 1
 
 
 def test_rtt_cleanup_failure_does_not_replace_observed_openocd_failure(runner_api, monkeypatch):
@@ -495,7 +609,8 @@ def test_rtt_cleanup_failure_does_not_replace_observed_openocd_failure(runner_ap
     session.openocd_returncode = OPENOCD_FAILURE_RC
     session.check_openocd_exit.return_value = OPENOCD_FAILURE_RC
     rtt_service = Service("rtt", 19021, 19021)
-    plan = _debug_plan(gdb_argv=("gdb", "--batch"), rtt_service=rtt_service)
+    session.forwarded_services = (rtt_service,)
+    plan = _debug_plan(gdb_argv=("gdb", "--batch"), services=(GDB,), rtt_service=rtt_service)
     rtt_cleanup_error = RuntimeError("RTT connection cleanup failed")
 
     def run_rtt(_port, poll):
@@ -663,7 +778,9 @@ def forbid_external_io(monkeypatch):
         guard.assert_not_called()  # Also catch accidentally suppressed I/O failures.
 
 
-@pytest.mark.parametrize("command", ("flash", "debug", "attach", "debugserver", "rtt"))
+@pytest.mark.parametrize(
+    "command", ("flash", "debug", "attach", "debugserver", "rtt", "debug-rtt", "debugserver-rtt")
+)
 @pytest.mark.parametrize("thread_info", (False, True))
 def test_recording_runs_real_adapter_without_external_io(
     runner_api,
@@ -676,6 +793,8 @@ def test_recording_runs_real_adapter_without_external_io(
 ):
     from zephyr_remote_openocd.zephyr44 import runner as runner_module
 
+    rtt_server = command.endswith("-rtt")
+    command = command.removesuffix("-rtt")
     core, _, remote = runner_api
     build = tmp_path / "build"
     (build / "zephyr").mkdir(parents=True)
@@ -724,6 +843,7 @@ def test_recording_runs_real_adapter_without_external_io(
             "--rtt-port=19021",
             "--flash-address=0x20000000",
             "--cmd-load=flash write_image",
+            *(["--rtt-server"] if rtt_server else []),
         ]
     )
     runner = remote.create(cfg, args)
@@ -756,9 +876,36 @@ def test_recording_runs_real_adapter_without_external_io(
     else:
         services = {item["name"]: item for item in request["services"]}
         assert services == {
-            "gdb": {"name": "gdb", "local_port": 3333, "remote_port": 3333},
-            "tcl": {"name": "tcl", "local_port": 6333, "remote_port": 6333},
-            "telnet": {"name": "telnet", "local_port": 4444, "remote_port": 4444},
+            "gdb": {
+                "name": "gdb",
+                "local_port": 3333,
+                "remote_port": 3333,
+                "criticality": "required",
+            },
+            "tcl": {
+                "name": "tcl",
+                "local_port": 6333,
+                "remote_port": 6333,
+                "criticality": "auxiliary",
+            },
+            "telnet": {
+                "name": "telnet",
+                "local_port": 4444,
+                "remote_port": 4444,
+                "criticality": "auxiliary",
+            },
+            **(
+                {
+                    "rtt": {
+                        "name": "rtt",
+                        "local_port": 19021,
+                        "remote_port": 19021,
+                        "criticality": "auxiliary",
+                    }
+                }
+                if rtt_server
+                else {}
+            ),
         }
         assert result["thread_info"]["requested"] is thread_info
         assert result["thread_info"]["version_source"] == ("injected" if thread_info else None)

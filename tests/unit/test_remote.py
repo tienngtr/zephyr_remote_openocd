@@ -35,6 +35,7 @@ from zephyr_remote_openocd.remote.flash import (
 from zephyr_remote_openocd.remote.model import (
     RemotePathCheck,
     RemoteProcess,
+    RemoteSessionRequest,
     Service,
     StagedDirectory,
     StagedFile,
@@ -690,6 +691,34 @@ class TestStaging:
 
 class TestRemoteModels:
     @pytest.mark.parametrize(
+        "auxiliary",
+        (
+            (Service("unknown", 5555, 5555),),
+            (Service("tcl", 6334, 6333),),
+            (Service("tcl", 6333, 6333), Service("tcl", 6333, 6333)),
+        ),
+        ids=("unknown", "different-port", "duplicate"),
+    )
+    def test_request_auxiliary_services_require_initial_membership(self, auxiliary):
+        with pytest.raises(ValueError):
+            RemoteSessionRequest(
+                "host",
+                SshCommand(),
+                TEST_PROCESS,
+                services=(Service("gdb", 3333, 3333), Service("tcl", 6333, 6333)),
+                auxiliary_services=auxiliary,
+            )
+
+    def test_request_defaults_to_required_services(self):
+        service = Service("tcl", 6333, 6333)
+        assert (
+            RemoteSessionRequest(
+                "host", SshCommand(), TEST_PROCESS, services=(service,)
+            ).auxiliary_services
+            == ()
+        )
+
+    @pytest.mark.parametrize(
         "sentinels",
         ("READY", b"READY"),
         ids=("string", "bytes"),
@@ -1180,6 +1209,11 @@ class TestDebugPlanning:
                 "set _ZEPHYR_BOARD_SERIAL probe"
             ) < server.process.argv.index("-f")
             assert "reset init" in server.process.argv
+            for plan in (debug, attach, server):
+                assert plan.auxiliary_services == (
+                    Service("tcl", 6333, 6333),
+                    Service("telnet", 4444, 4444),
+                )
 
     @pytest.mark.parametrize(
         ("no_init", "config_triggers_init"),
@@ -1336,6 +1370,11 @@ class TestDebugPlanning:
                 "telnet": Service("telnet", 4444, 4444),
             }
             assert plan.rtt_service == Service("rtt", 5566, 5566)
+            assert plan.auxiliary_services == (
+                Service("tcl", 6333, 6333),
+                Service("telnet", 4444, 4444),
+            )
+            assert plan.rtt_service not in plan.services
             assert plan.rtt_setup == "batch_gdb"
             assert plan.launches_rtt_client
             assert "--batch" in plan.gdb_argv
@@ -1360,6 +1399,11 @@ class TestDebugPlanning:
                 )
                 services = {item.name: item for item in plan.services}
                 assert services["rtt"] == Service("rtt", 5577, 5577)
+                assert plan.auxiliary_services == (
+                    Service("tcl", 6333, 6333),
+                    Service("telnet", 4444, 4444),
+                    Service("rtt", 5577, 5577),
+                )
                 assert "rtt server start 5577 0" in plan.process.argv
                 assert plan.rtt_setup == "openocd_startup"
                 assert not plan.launches_rtt_client

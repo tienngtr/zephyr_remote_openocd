@@ -138,8 +138,9 @@ generated state.
 3. The local control client communicates with the helper over SSH to stage the
    build and board-support files and start OpenOCD; the helper supervises the
    remote process and emits structured lifecycle and output events.
-4. SSH forwarding exposes OpenOCD's enabled GDB, Tcl, telnet, and RTT services
-   on local loopback ports.
+4. SSH forwarding exposes required OpenOCD services on local loopback ports
+   and independently attempts auxiliary Tcl, telnet, and optional RTT services.
+   Auxiliary availability failures warn; resource-cleanup failures remain fatal.
 5. The runner coordinates output relay and cleanup when the session exits, is
    interrupted, or detects that SSH connectivity was lost.
 

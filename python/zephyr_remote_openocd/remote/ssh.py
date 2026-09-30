@@ -23,6 +23,17 @@ _PROCESS_TERM_TIMEOUT = 5.0
 _PROCESS_KILL_TIMEOUT = 1.0
 
 
+class SshProcessStartError(RuntimeError):
+    """Preserve the rollback outcome when managed-process acquisition fails."""
+
+    def __init__(self, cause: Exception, cleanup_errors: tuple[BaseException, ...]) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
+        self.cleanup_errors = cleanup_errors
+        for note in getattr(cause, "__notes__", ()):
+            self.add_note(note)
+
+
 class _StderrDrain:
     """Consume a process stderr pipe while retaining a bounded byte tail."""
 
@@ -117,25 +128,16 @@ class ManagedSshProcess:
             process.stderr = None
             return cls(process, drain)
         except BaseException as error:
-            cleanup_errors: list[BaseException] = []
-            try:
-                if process.poll() is None:
-                    process.kill()
-                    process.wait()
-            except BaseException as cleanup_error:
-                cleanup_errors.append(cleanup_error)
-            try:
-                drain.close()
-            except BaseException as cleanup_error:
-                cleanup_errors.append(cleanup_error)
+            rollback_process = ManagedSshProcess(process, drain)
+            termination = _terminate_process(rollback_process)
+            cleanup_errors = list(termination.secondary_errors)
+            if termination.primary_error is not None:
+                cleanup_errors.insert(0, termination.primary_error)
+            cleanup_errors.extend(_dispose_process_streams(rollback_process, close_streams=True))
             for cleanup_failure in cleanup_errors:
                 error.add_note(f"SSH process startup cleanup failed: {cleanup_failure}")
-            try:
-                for stream in (process.stdin, process.stdout):
-                    if stream is not None and not stream.closed:
-                        stream.close()
-            except BaseException as cleanup_error:
-                error.add_note(f"SSH process stream cleanup failed: {cleanup_error}")
+            if isinstance(error, (OSError, subprocess.SubprocessError)):
+                raise SshProcessStartError(error, tuple(cleanup_errors)) from error
             raise
 
     @property

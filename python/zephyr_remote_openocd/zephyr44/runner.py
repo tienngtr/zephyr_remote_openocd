@@ -21,6 +21,7 @@ from zephyr_remote_openocd.config import (
     resolve_remote,
 )
 from zephyr_remote_openocd.remote import (
+    ForwardAdvisory,
     RemoteSession,
     RemoteSessionRequest,
     query_remote_openocd_version,
@@ -144,7 +145,11 @@ def _build_operation(runner, command, selected):
 
 
 def _execute_operation(runner, command, request, plan):
-    session = RemoteSession.open(request, output_handler=_write_output)
+    session = RemoteSession.open(
+        request,
+        output_handler=_write_output,
+        advisory_handler=lambda advisory: _report_forward_advisory(runner, advisory),
+    )
     assert session.descriptor is not None
     descriptor = session.descriptor
     operation_error = None
@@ -227,7 +232,7 @@ def _add_failure_diagnostic(primary, prefix, secondary):
 def _execute_started_operation(runner, command, plan, session, observe_openocd_exit):
     if command == "rtt":
         return _execute_rtt(runner, plan, session, observe_openocd_exit)
-    _report_rtt_service(runner, plan)
+    _report_rtt_service(runner, plan, session)
     if command in {"debug", "attach"}:
         return _execute_gdb_client(runner, plan, session)
     return _execute_server(runner, command, plan, session)
@@ -245,8 +250,9 @@ def _execute_rtt(runner, plan, session, observe_openocd_exit):
     assert plan.rtt_service is not None
     runner.require(plan.gdb_argv[0])
     runner.run_client(list(plan.gdb_argv))
-    session.forward((plan.rtt_service,))
-    _report_rtt_service(runner, plan)
+    session.mark_auxiliary(tuple(service for service in plan.services if service.name == "gdb"))
+    session.forward((plan.rtt_service,), required=True)
+    _report_rtt_service(runner, plan, session)
 
     def check_openocd_exit():
         returncode = session.check_openocd_exit()
@@ -268,12 +274,24 @@ def _execute_server(runner, command, plan, session):
     return session.wait_for_openocd_exit()
 
 
-def _report_rtt_service(runner, plan):
-    if plan is not None and plan.rtt_service is not None:
+def _report_rtt_service(runner, plan, session):
+    if plan is not None and plan.rtt_service in session.forwarded_services:
         runner.logger.info(
             "Remote OpenOCD RTT server available at 127.0.0.1:%s",
             plan.rtt_service.local_port,
         )
+
+
+def _report_forward_advisory(runner, advisory: ForwardAdvisory) -> None:
+    runner.logger.warning(
+        "Auxiliary %s forwarding %s failure on 127.0.0.1:%s: %s",
+        advisory.service.name,
+        advisory.phase,
+        advisory.service.local_port,
+        advisory.failure,
+    )
+    for note in getattr(advisory.failure, "__notes__", ()):
+        runner.logger.warning("Auxiliary %s forwarding diagnostic: %s", advisory.service.name, note)
 
 
 def _record_runner(runner, command, selected):
@@ -513,6 +531,7 @@ def _debug_request(runner, selected, plan):
         plan.process,
         plan.staged_files,
         plan.services,
+        plan.auxiliary_services,
     )
 
 
@@ -531,7 +550,12 @@ def _request_record(request):
             for item in request.staged_files
         ],
         "services": [
-            {"name": item.name, "local_port": item.local_port, "remote_port": item.remote_port}
+            {
+                "name": item.name,
+                "local_port": item.local_port,
+                "remote_port": item.remote_port,
+                "criticality": "auxiliary" if item in request.auxiliary_services else "required",
+            }
             for item in request.services
         ],
     }

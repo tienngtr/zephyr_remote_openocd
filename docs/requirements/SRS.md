@@ -821,6 +821,29 @@ The forwarding topology SHALL be:
   port option is `disabled`;
 - RTT when the selected operation requests an RTT endpoint.
 
+Selected topology and service criticality SHALL be distinct:
+
+| Operation | Required initially | Required in foreground | Auxiliary services |
+| --- | --- | --- | --- |
+| `debug` | GDB | GDB | Tcl, telnet, separately requested RTT |
+| `attach` | GDB | GDB | Tcl, telnet |
+| `debugserver` | GDB | GDB | Tcl, telnet, separately requested RTT |
+| `rtt` | GDB for batch setup | RTT after batch setup | Tcl, telnet; GDB after setup |
+| `flash` | None | None | None |
+
+Required forwarding startup or runtime failure SHALL fail the operation.
+Auxiliary forwards SHALL be attempted independently, so failure of one cannot
+roll back another committed forward. Auxiliary startup failure SHOULD warn
+and allow the required operation to continue only when startup rollback
+succeeds. Auxiliary runtime failure SHOULD warn at the next session health
+observation and SHALL NOT terminate an otherwise usable required operation.
+Concurrent supervision or interruption of interactive GDB is not required.
+
+Standalone RTT forwarding SHALL remain deferred until successful batch GDB
+setup. After that setup succeeds, GDB forwarding SHALL become auxiliary before
+RTT forwarding is established as required. Forwarding failures SHALL be
+classified using service criticality at observation time.
+
 A local forward does not guarantee that a corresponding remote listener is
 available.
 
@@ -844,11 +867,15 @@ overrides.
 
 ### REQ-FUNC-SVC-005
 
-If a required local service port is occupied, the operation SHALL fail rather than silently choose another port.
+If a required local service port is occupied, the operation SHALL fail rather
+than silently choose another port. An occupied auxiliary local port SHOULD
+produce an advisory and allow the required operation to continue, provided
+rollback of the failed forwarding attempt succeeds.
 
 ### REQ-FUNC-SVC-006
 
-A local-port conflict SHALL identify the affected service and port.
+A local-port conflict error or advisory SHALL identify the affected service
+and port.
 
 ---
 
@@ -1097,8 +1124,13 @@ When an operation failure has already been established, later cleanup failures,
 session/infrastructure failures, or OpenOCD-result observations SHALL NOT
 replace that failure. Later failures and relevant OpenOCD results SHOULD remain
 available as diagnostic information. When no earlier failure exists, helper,
-protocol, SSH/control, forwarding, or required-shutdown failure SHALL fail the
-operation. Such failures SHALL remain distinct from OpenOCD exit status.
+protocol, SSH/control, required-service forwarding, or required-shutdown
+failure SHALL fail the operation. Auxiliary-service startup or runtime
+forwarding failure SHOULD be advisory, provided failed startup rollback
+succeeds. Cleanup and resource-ownership failures SHALL remain operation-fatal
+regardless of service criticality; this includes failed rollback of an
+auxiliary startup attempt and failed later disposal of an owned auxiliary
+process. Such failures SHALL remain distinct from OpenOCD exit status.
 
 ### REQ-FUNC-HELP-012
 
@@ -1416,9 +1448,14 @@ Different GDB server/client ports work correctly when supported by the runner in
 
 ### AC-SVC-001
 
-`flash` creates no local forwards. Persistent operations expose GDB and each
-non-disabled Tcl/telnet service using the runner-selected ports. RTT exposure
-remains operation-dependent.
+`flash` creates no local forwards. Persistent operations require initial GDB
+forwarding and independently attempt each enabled auxiliary Tcl/telnet service
+using runner-selected ports. Auxiliary startup and runtime failure warns
+without failing usable required forwarding. Optional RTT forwarding remains
+auxiliary for debugging commands; standalone RTT requires it after successful
+batch GDB setup and reclassifies GDB as auxiliary. Failed auxiliary startup
+rollback or later resource disposal remains operation-fatal, subject to
+existing failure precedence.
 
 
 ### AC-RTT-001

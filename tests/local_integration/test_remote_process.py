@@ -1868,13 +1868,24 @@ sys.exit({HELPER_FAILURE_RC})
             RemoteSessionRequest("local", command, TEST_PROCESS),
             DeploymentResult("/helper.py", "digest", False),
         )
+        helper_exited = threading.Event()
+        drain_events = helper_client._drain_events
+
+        def drain_after_exit():
+            assert helper_exited.wait(5)
+            drain_events()
+
         try:
-            helper_client.start_process(TEST_PROCESS, ())
-            command.process.wait(timeout=5)
+            with patch.object(helper_client, "_drain_events", side_effect=drain_after_exit):
+                helper_client.start_process(TEST_PROCESS, ())
+                command.process.wait(timeout=5)
+                helper_exited.set()
+                assert helper_client._join_reader(timeout=5)
             with pytest.raises(SessionError):
                 helper_client.recorded_openocd_exit()
             assert helper_client.openocd_returncode == 0
         finally:
+            helper_exited.set()
             with suppress(BaseException):
                 helper_client.close()
 

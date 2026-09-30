@@ -683,7 +683,7 @@ Flow:
 ```text
 start remote OpenOCD
        |
-establish runner-selected GDB/Tcl/telnet transports
+establish required GDB; independently attempt auxiliary Tcl/telnet
        |
 run local batch GDB (standalone west rtt)
        |
@@ -691,7 +691,7 @@ run local batch GDB (standalone west rtt)
        +-- RTT start
        +-- RTT server start <port>
        |
-establish RTT transport
+mark GDB auxiliary; establish required RTT transport
        |
 launch local RTT client
 ```
@@ -709,6 +709,14 @@ OpenOCD owns the RTT listener; the helper does not probe it. These operations
 expose the endpoint but do not launch a local RTT client. Standalone `rtt` reuses the
 same remote OpenOCD version and Zephyr thread-info decision as debug/attach.
 No GDB RSP observer is needed.
+
+GDB forwarding is required during standalone batch setup. After setup succeeds,
+the adapter explicitly marks the owned GDB forward auxiliary and starts the
+deferred RTT forward as required. A GDB exit first observed after this
+transition is advisory; an RTT-forward exit remains fatal. Optional RTT
+forwarding for `debug --rtt-server` and `debugserver --rtt-server` is auxiliary
+throughout. RTT endpoint availability is reported only after its local forward
+commits successfully.
 
 ---
 
@@ -794,6 +802,29 @@ loopback endpoints. The corresponding remote listeners remain owned by
 OpenOCD. A successfully created local forward proves only that SSH accepted the
 forward; it does not prove that OpenOCD has a listener behind the remote
 endpoint.
+
+`RemoteSessionRequest.services` describes the initial topology supplied to the
+helper. Its `auxiliary_services` subset identifies initial best-effort services;
+all other initial services are required. Omitting the subset preserves the
+generic all-required default. Standalone RTT remains separate in the debug
+plan and is forwarded only after batch GDB setup succeeds.
+
+The session starts required forwards in one atomic batch, then attempts each
+auxiliary service in its own one-service batch. Each manager call remains
+transactional: failure rolls back that call's pending processes and preserves
+previously committed forwards. `ForwardStartError` exposes the failed service,
+startup cause, and explicit rollback cleanup errors. The session warns only
+when an auxiliary attempt rolled back successfully. Failed rollback remains
+fatal; pending processes receive one bounded cleanup attempt and need not be
+adopted into committed ownership for a retry.
+
+The manager reports newly observed exits with service identity and transport
+diagnostics. The session retains those facts, classifies them using current
+criticality, and emits each auxiliary runtime advisory once. Required failures
+remain fatal on repeated health observations. Structured `ForwardAdvisory`
+values reach an injected callback; the Zephyr adapter formats them through its
+normal warning logger. Cleanup attempts every committed process, and resource
+disposal failure remains fatal regardless of service criticality.
 
 ---
 
@@ -1216,8 +1247,10 @@ telnet, and RTT listeners. Readiness covers process lifecycle sentinels; it
 does not wait for remote service sockets to become connectable. Tcl and telnet
 are compatibility endpoints, and their remote socket connectability is not a
 readiness condition. Their configured local forwarding processes still start
-as part of `RemoteSession.open()` when their runner port options are enabled; a
-local forwarding startup failure prevents the session from opening. If RTT
+as independent auxiliary attempts during `RemoteSession.open()` when their
+runner port options are enabled. Only required-forward startup failure or
+failed startup rollback prevents the session from opening; auxiliary
+unavailability with successful rollback is advisory. If RTT
 server startup is part of the sequence,
 successful `rtt server start` precedes the startup-complete sentinel, so
 readiness follows that command causally.
@@ -1265,12 +1298,19 @@ OpenOCD status, or perform runner-level error arbitration.
 `openocd_returncode` is populated only by the natural OpenOCD termination
 event. `check_openocd_exit()` is non-blocking, and
 `wait_for_openocd_exit()` waits for that event without implying cleanup.
-Forwarding-process health may be checked with bounded local polling while
-waiting; no watcher thread or remote/network polling is required.
+Forwarding-process health is checked at the existing foreground session
+observation points and with bounded local polling while waiting. Auxiliary
+failure warns at the next health observation. Interactive GDB has no concurrent
+forwarding watcher; warnings may therefore wait until its foreground client
+call returns. Background GDB supervision remains separate work.
 
 The first already-established foreground operation failure remains primary.
-If no earlier failure exists, a helper, protocol, SSH/control, forwarding, or
-required cleanup failure becomes the operation failure. A later OpenOCD result
+If no earlier failure exists, a helper, protocol, SSH/control,
+required-service forwarding, or required cleanup failure becomes the operation
+failure. Auxiliary service startup failure is advisory only after successful
+rollback, and auxiliary runtime exits are advisory. Cleanup and
+resource-ownership failures remain fatal regardless of service criticality.
+A later OpenOCD result
 or session/infrastructure failure is retained as diagnostic information when it
 cannot replace the primary failure. The following table defines the required
 outcomes:

@@ -3,6 +3,7 @@
 """Board-independent remote session API."""
 
 from .backend import RemoteSession, query_remote_openocd_version
+from .forwarding import ForwardAdvisory
 from .model import (
     RemotePathCheck,
     RemoteProcess,
@@ -17,6 +18,7 @@ from .model import (
 from .session import SessionClosedError, SessionError
 
 __all__ = [
+    "ForwardAdvisory",
     "RemotePathCheck",
     "RemoteProcess",
     "RemoteSession",
