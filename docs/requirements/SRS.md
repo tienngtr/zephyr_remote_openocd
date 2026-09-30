@@ -1131,6 +1131,12 @@ succeeds. Cleanup and resource-ownership failures SHALL remain operation-fatal
 regardless of service criticality; this includes failed rollback of an
 auxiliary startup attempt and failed later disposal of an owned auxiliary
 process. Such failures SHALL remain distinct from OpenOCD exit status.
+Session-fatal helper, protocol, or control observations recorded while a
+foreground local client is running SHALL be acted upon when foreground control
+next returns to the session. The runner is not required to asynchronously
+interrupt the local client solely because such an observation was recorded. A
+failure that itself removes required transport MAY naturally cause the local
+client to return earlier.
 
 ### REQ-FUNC-HELP-012
 
