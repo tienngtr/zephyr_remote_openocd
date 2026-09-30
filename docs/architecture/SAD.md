@@ -1304,11 +1304,11 @@ failure warns at the next health observation. Interactive GDB has no concurrent
 forwarding watcher; warnings may therefore wait until its foreground client
 call returns. Background GDB supervision remains separate work.
 Session-fatal helper, protocol, or control observations recorded while a
-foreground local client is running are acted upon when foreground control next
-returns to the session. The runner is not required to asynchronously interrupt
-the local client solely because such an observation was recorded. A failure
-that itself removes required transport may naturally cause the local client to
-return earlier.
+foreground local client is running are acted upon at the next session health
+observation after foreground control returns from the local client. The runner
+is not required to asynchronously interrupt the local client solely because
+such an observation was recorded. A failure that itself removes required
+transport may naturally cause the local client to return earlier.
 
 The first already-established foreground operation failure remains primary.
 If no earlier failure exists, a helper, protocol, SSH/control,
