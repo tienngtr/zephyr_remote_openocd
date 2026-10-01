@@ -1048,13 +1048,17 @@ another owner merely because cleanup encountered an error.
 SIGINT blocked, while preserving the caller's controlling terminal and
 foreground process group for interactive SSH authentication. The launch thread
 temporarily blocks SIGINT so the child inherits that mask across exec, then
-restores its exact previous mask before starting the stderr drain. Other threads'
-masks and process-wide signal handlers remain unchanged. Terminal SIGINT intended
-for GDB therefore leaves these transports running without detaching them from
-the terminal or subjecting authentication reads to background-group SIGTTIN.
+establishes managed ownership and starts the stderr drain before restoring its
+exact previous mask. The drain inherits blocked SIGINT and stops through pipe EOF
+and explicit cleanup. Existing threads' masks and process-wide signal handlers
+remain unchanged. Terminal SIGINT intended for GDB therefore leaves these
+transports running without detaching them from the terminal or subjecting
+authentication reads to background-group SIGTTIN.
 Explicit lifecycle cleanup still terminates and reaps each owned SSH process
 directly. If restoring the launch thread's mask delivers a pending interruption,
-the transport boundary rolls back the acquired process before propagating it.
+the transport boundary rolls back the managed process before propagating it. The
+ownership transition and return remain inside the rollback guard, including the
+interval after mask restoration.
 
 `ManagedSshProcess` remains a narrow ownership wrapper rather than a session
 abstraction. It delegates process status and termination to the underlying

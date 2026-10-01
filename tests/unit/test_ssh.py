@@ -130,19 +130,41 @@ def test_long_lived_launch_restores_calling_thread_signal_mask(tmp_path, start_f
         executor.submit(launch).result(timeout=30)
 
 
-def test_pending_sigint_during_launch_reaps_acquired_transport(monkeypatch):
+@pytest.mark.parametrize("interrupt_boundary", ["spawn", "unmasked"])
+def test_sigint_during_launch_reaps_acquired_transport(monkeypatch, interrupt_boundary):
     popen = subprocess.Popen
+    pthread_sigmask = signal.pthread_sigmask
+    previous_trace = sys.gettrace()
     acquired = []
+    unmasked = False
 
     def launch(*args, **kwargs):
         process = popen(*args, **kwargs)
         acquired.append(process)
-        # If launch temporarily blocks SIGINT, restoring the caller's mask
-        # delivers this pending interruption at the acquisition boundary.
-        signal.raise_signal(signal.SIGINT)
+        if interrupt_boundary == "spawn":
+            signal.raise_signal(signal.SIGINT)
         return process
 
+    def restore_mask(how, mask):
+        nonlocal unmasked
+        previous = pthread_sigmask(how, mask)
+        if how == signal.SIG_SETMASK:
+            unmasked = True
+        return previous
+
+    def interrupt_after_unmask(frame, event, arg):
+        nonlocal unmasked
+        # Deliver at the first caller instruction after restoration returns,
+        # rather than from inside pthread_sigmask's protected call.
+        if event == "line" and frame.f_code is SshCommand.popen.__code__ and unmasked:
+            unmasked = False
+            signal.raise_signal(signal.SIGINT)
+        return interrupt_after_unmask
+
     monkeypatch.setattr(subprocess, "Popen", launch)
+    if interrupt_boundary == "unmasked":
+        monkeypatch.setattr(signal, "pthread_sigmask", restore_mask)
+        sys.settrace(interrupt_after_unmask)
     try:
         with pytest.raises(KeyboardInterrupt):
             SshCommand((sys.executable, "-c", "import sys; sys.stdin.read()")).popen(
@@ -153,6 +175,7 @@ def test_pending_sigint_during_launch_reaps_acquired_transport(monkeypatch):
         assert acquired[0].stdin.closed
         assert acquired[0].stdout.closed
     finally:
+        sys.settrace(previous_trace)
         for process in acquired:
             if process.poll() is None:
                 process.kill()
