@@ -782,7 +782,7 @@ def forbid_external_io(monkeypatch):
     "command", ("flash", "debug", "attach", "debugserver", "rtt", "debug-rtt", "debugserver-rtt")
 )
 @pytest.mark.parametrize("thread_info", (False, True))
-def test_recording_runs_real_adapter_without_external_io(
+def test_recording_runs_real_runner_integration_without_external_io(
     runner_api,
     tmp_path,
     monkeypatch,

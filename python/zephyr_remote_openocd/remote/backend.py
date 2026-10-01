@@ -247,7 +247,7 @@ class RemoteSession:
             raise SessionClosedError("remote session is closed")
         service_set = set(services)
         if not service_set.issubset(self._forwards.services):
-            raise SessionError("only owned forwarding services can become auxiliary")
+            raise SessionError("only owned forwards can become best-effort")
         self._required_services.difference_update(service_set)
 
     def _check_forward_health(self) -> None:

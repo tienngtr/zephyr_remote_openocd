@@ -21,7 +21,7 @@ pytestmark = [pytest.mark.hardware, pytest.mark.destructive]
 
 
 class TestRealRtt:
-    """Validate channel-0 RTT and the two persistent server variants."""
+    """Validate channel-0 RTT and the two RTT server variants."""
 
     def _environment(self, fixture: RttFixture) -> dict[str, str]:
         environment = os.environ.copy()

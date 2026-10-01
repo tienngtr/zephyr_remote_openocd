@@ -189,7 +189,7 @@ def test_mark_auxiliary_requires_owned_service(harness, unknown):
         session.close()
 
 
-def test_late_observed_gdb_exit_uses_current_rtt_criticality(harness):
+def test_late_observed_gdb_exit_uses_current_rtt_forwarding_classification(harness):
     session = harness.open()
     try:
         harness.ssh.process(GDB).returncode = 13
