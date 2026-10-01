@@ -23,6 +23,9 @@ when multiple frames arrive together. An oversized complete or incomplete
 frame is a protocol error. This bounded-input requirement retains Protocol v1
 message shapes and version; callers constructing unusually large `START`
 commands must reduce their argv/environment payload to fit the bound.
+The client checks the encoded byte count, including LF, before writing any
+command bytes. The helper independently enforces the same bound on incoming
+complete and partial frames.
 
 The helper emits one `SESSION_CREATED` event before reading commands. The
 client writes commands to helper stdin and reads events from stdout. There is

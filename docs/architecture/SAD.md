@@ -1132,7 +1132,7 @@ cleanup. Observers have no independent teardown or terminal-event policy.
 Internal states are CREATED, STARTING, ACTIVE, TERMINATING, and CLOSED.
 STARTING is a state in the event loop, not a nested readiness wait: control,
 output, exit, signals, and timeout remain observable concurrently. TERMINATING
-continues draining observed output. Address-collision retries dispose the old
+continues draining observed output. Address-collision retries clean up the old
 attempt before starting another; child observations identify their owning
 attempt, so obsolete events cannot affect its replacement. Control framing
 persists across attempts. STOP, EOF, or a protocol failure during retry cleanup
@@ -1179,13 +1179,15 @@ not affect the group cleanup decision. The helper then reaps the leader with
 a finite budget, drains output observations with a shared bounded deadline,
 and cancels and awaits remaining attempt tasks before releasing their streams.
 Graceful leader waiting is async, so output can continue draining throughout
-termination. All observer tasks are disposed before the session TaskGroup ends.
+termination. The session cancels and awaits all observer tasks before its
+TaskGroup ends.
 Workspace removal and lock release are attempted once even if child cleanup
-fails. Synchronous Unix signal callbacks enqueue observations and wake the loop;
-a signal during synchronous spawn is handled after child ownership is installed,
-and subsequent signals do
-not interrupt cleanup. The coordinator keeps logical outcome and cleanup
-failures separate and applies the documented failure-precedence rule before
+fails. Unix signal callbacks record a pending signal in plain state and schedule
+its observation with `call_soon_threadsafe()`. An event-loop callback updates
+the signal queue. A pending signal prevents readiness during synchronous
+spawn; cleanup begins after child ownership is installed. Subsequent signals
+do not interrupt cleanup. The coordinator keeps logical outcome and cleanup
+failures separate and applies the documented primary-failure rule before
 emitting any terminal event. It does not continuously monitor
 the process tree, retain descendant PID history, or use descendant discovery
 to decide whether the group needs cleanup.

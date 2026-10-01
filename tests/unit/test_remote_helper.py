@@ -784,6 +784,25 @@ def test_control_session_signal_during_spawn_terminates_owned_child(
     original_spawn = remote_helper._spawn_child
     spawned = []
     events = []
+    in_signal_handler = False
+    queue_mutations_in_handler = []
+    original_handler = session.handle_signal
+    original_put = session._signals.put_nowait
+
+    def handle_signal(signum, frame=None):
+        nonlocal in_signal_handler
+        in_signal_handler = True
+        try:
+            original_handler(signum, frame)
+        finally:
+            in_signal_handler = False
+
+    def record_signal(signum):
+        queue_mutations_in_handler.append(in_signal_handler)
+        original_put(signum)
+
+    monkeypatch.setattr(session, "handle_signal", handle_signal)
+    monkeypatch.setattr(session._signals, "put_nowait", record_signal)
 
     def spawn_then_signal(*args, **kwargs):
         child = original_spawn(*args, **kwargs)
@@ -802,6 +821,7 @@ def test_control_session_signal_during_spawn_terminates_owned_child(
 
     assert len(spawned) == 1
     assert spawned[0].process.returncode is not None
+    assert queue_mutations_in_handler and not any(queue_mutations_in_handler)
     assert not any(kind == "PROCESS_READY" for kind, _ in events)
     assert not workspace.exists()
     assert lock.closed
@@ -831,7 +851,7 @@ def test_control_session_signal_during_spawn_preserves_spawn_failure(
     assert lock.closed
 
 
-def test_output_observer_failure_ends_session_and_disposes_tasks(
+def test_output_observer_failure_ends_session_and_cancels_tasks(
     tmp_path, monkeypatch, control_pipe
 ):
     _reader, writer = control_pipe

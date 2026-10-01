@@ -42,6 +42,7 @@ CHILD_POLL_INTERVAL = 0.05
 CHILD_REAP_TIMEOUT = 1
 CHILD_RELAY_JOIN_TIMEOUT = 2
 RELAY_CHUNK_SIZE = 64 * 1024
+# Keep in sync with remote/protocol.py; this file is deployed standalone.
 MAX_CONTROL_FRAME_SIZE = 1024 * 1024
 MAX_SESSION_ID_ATTEMPTS = 32
 MAX_ADDRESS_ALLOCATION_ATTEMPTS = 32
@@ -610,7 +611,7 @@ async def _readable(descriptor: int) -> None:
 
 
 class _ProtocolOutput:
-    """Session-owned nonblocking JSON output with bounded buffering and disposal."""
+    """Session-owned nonblocking JSON output with bounded buffering and cleanup."""
 
     def __init__(self):
         self.stream = sys.stdout
@@ -1082,6 +1083,7 @@ class ControlSession:
         self._deadline_task: asyncio.Task[_ObservationFailed | None] | None = None
         self._events: asyncio.Queue[_Observation] = asyncio.Queue(MAX_PENDING_OBSERVATIONS)
         self._signals: asyncio.Queue[int] = asyncio.Queue(1)
+        self._pending_signum: int | None = None
         self._tasks: asyncio.TaskGroup | None = None
         self._session_tasks: list[asyncio.Task[_ObservationFailed | None]] = []
         self._resources_released = False
@@ -1102,13 +1104,18 @@ class ControlSession:
         )
 
     def handle_signal(self, signum: int = signal.SIGTERM, _frame: FrameType | None = None) -> None:
-        # Coalesce repeated signals; the coordinator owns their consequences.
+        # Latch only plain state here: asyncio primitives are not safe to
+        # mutate from reentrant Unix signal-handler context.
+        if self._pending_signum is not None:
+            return
+        self._pending_signum = signum
+        if self._loop is not None:
+            self._loop.call_soon_threadsafe(self._enqueue_signal, signum)
+
+    def _enqueue_signal(self, signum: int) -> None:
+        # This callback runs on the loop, after the signal handler returns.
         with suppress(asyncio.QueueFull):
             self._signals.put_nowait(signum)
-        if self._loop is not None:
-            # Safe from a Python signal handler, including while the loop waits
-            # for I/O. Recording the fact synchronously also covers spawn.
-            self._loop.call_soon_threadsafe(lambda: None)
 
     async def _observe_signals(self) -> None:
         while True:
@@ -1165,7 +1172,7 @@ class ControlSession:
             failure = _ObservationFailed(source, exc, child)
             task = asyncio.current_task()
             if task is not None and task.cancelling():
-                # Cancellation must not block disposal on a full event queue.
+                # Cancellation must not block cleanup on a full event queue.
                 return failure
             await self._events.put(failure)
         return None
@@ -1214,11 +1221,13 @@ class ControlSession:
             self._observe_deadline(child, request.readiness_timeout, readiness=True),
             child,
         )
-        if not request.required_output_sentinels and self._signals.empty():
+        if not request.required_output_sentinels:
             self._ready()
 
     def _ready(self) -> None:
         assert self.child is not None
+        if self._pending_signum is not None:
+            return
         self.state = _State.ACTIVE
         if self._deadline_task is not None:
             self._deadline_task.cancel()
@@ -1564,7 +1573,7 @@ def control():
     try:
         session.run()
     except Exception as exc:
-        # The session owns ERROR delivery and bounded output disposal; never
+        # The session owns ERROR delivery and bounded output cleanup; never
         # retry a blocking stdout write after the structured scope has closed.
         raise SystemExit(1) from exc
 

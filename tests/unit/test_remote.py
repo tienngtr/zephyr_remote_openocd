@@ -74,6 +74,24 @@ TEST_PROCESS = RemoteProcess(("test-process",))
 
 
 class TestProtocol:
+    @pytest.mark.parametrize("frame_size", (1_048_576, 1_048_577))
+    def test_start_control_frame_size_includes_lf(self, frame_size):
+        template = io.BytesIO()
+        write_start(template, RemoteProcess(("child", "")), ())
+        argument = "x" * (frame_size - len(template.getvalue()))
+        process = RemoteProcess(("child", argument))
+        stream = io.BytesIO()
+
+        if frame_size == 1_048_576:
+            write_start(stream, process, ())
+            assert len(stream.getvalue()) == frame_size
+            assert stream.getvalue().endswith(b"\n")
+            assert decode_message(stream.getvalue())["argv"] == ["child", argument]
+        else:
+            with pytest.raises(ProtocolError):
+                write_start(stream, process, ())
+            assert stream.getvalue() == b""
+
     @pytest.mark.parametrize(
         "response",
         (

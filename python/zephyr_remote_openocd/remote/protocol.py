@@ -12,6 +12,8 @@ from typing import Any, BinaryIO
 from .model import RemoteProcess, Service
 
 PROTOCOL_VERSION = 1
+# The deployed helper is self-contained; keep its matching bound in sync.
+MAX_CONTROL_FRAME_SIZE = 1024 * 1024
 SHA256_HEX_DIGEST_LENGTH = 64
 _ENVELOPE_FIELDS = frozenset(("version", "type"))
 
@@ -79,7 +81,12 @@ def read_message(stream: BinaryIO) -> dict[str, Any]:
 
 
 def _write_frame(stream: BinaryIO, message_type: str, **fields: Any) -> None:
-    stream.write(encode_message(message_type, **fields))
+    frame = encode_message(message_type, **fields)
+    if len(frame) > MAX_CONTROL_FRAME_SIZE:
+        raise ProtocolError(
+            f"control frame exceeds maximum size of {MAX_CONTROL_FRAME_SIZE} bytes including LF"
+        )
+    stream.write(frame)
     stream.flush()
 
 

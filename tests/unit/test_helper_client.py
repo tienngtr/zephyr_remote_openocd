@@ -243,6 +243,21 @@ def test_close_waits_when_process_exit_wins_stop_race(monkeypatch):
     assert process.stderr.closed
 
 
+def test_large_start_is_rejected_before_helper_write():
+    helper_client, process = _open_helper_client_with_events(
+        encode_message("SESSION_CLOSED", reason="requested", returncode=None),
+    )
+    # JSON escaping makes the encoded frame oversized even though its argv
+    # contains fewer than 1 MiB of UTF-8 bytes.
+    request = RemoteProcess(("child", "é" * 200_000))
+    try:
+        with pytest.raises(ProtocolError):
+            helper_client.start_process(request, ())
+        assert process.stdin.written == b""
+    finally:
+        helper_client.close()
+
+
 def test_startup_error_ends_session_without_stop_or_missing_close_failure():
     helper_client, process = _open_helper_client_with_events(
         encode_message("ERROR", code="FAILED", message="startup failed"),
