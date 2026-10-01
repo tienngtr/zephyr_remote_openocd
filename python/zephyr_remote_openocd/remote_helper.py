@@ -6,15 +6,17 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import codecs
+import contextvars
 import fcntl
 import hashlib
+import io
 import ipaddress
 import json
 import math
 import os
 import secrets
-import selectors
 import shutil
 import signal
 import socket
@@ -22,12 +24,14 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-import threading
 import time
-from collections.abc import Callable
+from collections import deque
+from collections.abc import Coroutine, Iterable
 from contextlib import suppress
+from enum import Enum, auto
 from pathlib import Path, PurePosixPath
-from typing import NamedTuple
+from types import FrameType
+from typing import IO, Any, NamedTuple
 
 VERSION = 1
 RANGE = ipaddress.IPv4Network("127.64.0.0/10")
@@ -44,7 +48,11 @@ MAX_ADDRESS_ALLOCATION_ATTEMPTS = 32
 # 18 random bytes provide 144 bits of entropy in a compact URL-safe ID.
 SESSION_ID_RANDOM_BYTES = 18
 MAX_CAPTURED_STARTUP_FRAGMENTS = 128
-_emit_lock = threading.Lock()
+MAX_PENDING_OBSERVATIONS = 64
+MAX_PROTOCOL_OUTPUT_BYTES = 16 * 1024 * 1024
+_protocol_output: contextvars.ContextVar[_ProtocolOutput | None] = contextvars.ContextVar(
+    "protocol_output", default=None
+)
 
 
 def _raise_cleanup_errors(errors):
@@ -61,8 +69,11 @@ def emit(kind, **values):
     line = json.dumps(
         {"version": VERSION, "type": kind, **values}, separators=(",", ":"), sort_keys=True
     )
-    with _emit_lock:
+    output = _protocol_output.get()
+    if output is None:
         print(line, flush=True)
+    else:
+        output.enqueue((line + "\n").encode("utf-8"))
 
 
 def error(message, code="HELPER_ERROR"):
@@ -225,32 +236,27 @@ def random_address():
 
 
 class _RequiredOutputSentinels:
-    """Track which required complete output lines have been observed."""
+    """Session-owned state of required complete output lines."""
 
-    def __init__(self, required_output_sentinels):
-        self._seen = {sentinel: threading.Event() for sentinel in required_output_sentinels}
-        self._ready = threading.Event()
-        if not self._seen:
-            self._ready.set()
+    def __init__(self, required_output_sentinels: Iterable[str]) -> None:
+        self._unseen = set(required_output_sentinels)
 
     @property
-    def ready(self):
-        return self._ready.is_set()
+    def ready(self) -> bool:
+        return not self._unseen
 
     @property
-    def unseen(self):
-        return tuple(sentinel for sentinel, seen in self._seen.items() if not seen.is_set())
+    def unseen(self) -> tuple[str, ...]:
+        return tuple(self._unseen)
 
-    def observe(self, sentinel):
-        self._seen[sentinel].set()
-        if all(seen.is_set() for seen in self._seen.values()):
-            self._ready.set()
+    def observe(self, sentinel: str) -> None:
+        self._unseen.discard(sentinel)
 
 
 class _SentinelMatcher:
     """Recognize required startup output markers as complete trimmed lines."""
 
-    def __init__(self, required_output_sentinels):
+    def __init__(self, required_output_sentinels: _RequiredOutputSentinels) -> None:
         self.required_output_sentinels = required_output_sentinels
         self._reset_line()
 
@@ -279,81 +285,46 @@ class _SentinelMatcher:
         self._reset_line()
 
 
-class _CapturedFragment:
+class _CapturedFragment(NamedTuple):
     """Retained startup output with its stream and boundary metadata."""
 
-    __slots__ = ("stream", "payload", "line_end")
-
-    def __init__(self, stream, payload, line_end):
-        self.stream = stream
-        self.payload = payload
-        self.line_end = line_end
+    stream: str
+    payload: str
+    line_end: bool
 
 
-def relay(
-    stream,
-    stream_name,
-    required_output_sentinels=None,
-    captured=None,
-    capture_lock=None,
-):
-    """Relay bounded UTF-8 fragments while matching complete output markers."""
-    decoder = codecs.getincrementaldecoder("utf-8")("replace")
-    matcher = (
-        _SentinelMatcher(required_output_sentinels)
-        if required_output_sentinels is not None
-        else None
-    )
-    pending: list[str] = []
-    read_chunk = getattr(stream, "read1", None)
-    if read_chunk is None:
-        read_chunk = stream.read
+class _OutputDecoder:
+    """Decode one observed stream, preserving fragments and sentinel lines."""
 
-    def emit_fragment(payload, *, line_end=False):
-        if captured is not None:
-            record = _CapturedFragment(stream_name, payload, line_end)
-            if capture_lock is None:
-                captured.append(record)
-                del captured[:-MAX_CAPTURED_STARTUP_FRAGMENTS]
-            else:
-                with capture_lock:
-                    captured.append(record)
-                    del captured[:-MAX_CAPTURED_STARTUP_FRAGMENTS]
-        emit(
-            "CHILD_OUTPUT",
-            stream=stream_name,
-            payload=payload,
-            line_end=line_end,
-        )
+    def __init__(
+        self, stream_name: str, required_output_sentinels: _RequiredOutputSentinels
+    ) -> None:
+        self.stream_name = stream_name
+        self.decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        self.matcher = _SentinelMatcher(required_output_sentinels)
+        self.pending: list[str] = []
 
-    def consume(text):
-        for character in text:
+    def feed(self, chunk: bytes) -> list[_CapturedFragment]:
+        fragments = []
+
+        def fragment(line_end=False):
+            fragments.append(_CapturedFragment(self.stream_name, "".join(self.pending), line_end))
+            self.pending.clear()
+
+        for character in self.decoder.decode(chunk, final=not chunk):
             if character == "\n":
-                if matcher is not None:
-                    matcher.finish_line()
-                emit_fragment("".join(pending), line_end=True)
-                pending.clear()
+                self.matcher.finish_line()
+                fragment(line_end=True)
                 continue
-            if matcher is not None:
-                matcher.feed(character)
-            pending.append(character)
-            if len(pending) >= RELAY_CHUNK_SIZE:
-                emit_fragment("".join(pending))
-                pending.clear()
-
-    while True:
-        chunk = read_chunk(RELAY_CHUNK_SIZE)
+            self.matcher.feed(character)
+            self.pending.append(character)
+            if len(self.pending) >= RELAY_CHUNK_SIZE:
+                fragment()
         if not chunk:
-            consume(decoder.decode(b"", final=True))
-            if matcher is not None:
-                matcher.finish_line()
-            if pending:
-                emit_fragment("".join(pending))
-            return
-        consume(decoder.decode(chunk, final=False))
-        if pending:
-            emit_fragment("".join(pending))
-            pending.clear()
+            self.matcher.finish_line()
+        if self.pending:
+            fragment()
+        return fragments
 
 
 def is_bind_collision(output: list[_CapturedFragment]):
@@ -622,28 +593,193 @@ def decode_command(message):
     raise ValueError(f"unexpected command: {kind!r}")
 
 
-class SupervisedChild:
-    """Own one child process and all resources used to relay its output."""
+async def _readable(descriptor: int) -> None:
+    """Wait for fd readiness without introducing a separately buffered reader."""
+    loop = asyncio.get_running_loop()
+    ready = loop.create_future()
 
-    def __init__(self, process, required_output_sentinels=()):
+    def observed():
+        if not ready.done():
+            ready.set_result(None)
+
+    loop.add_reader(descriptor, observed)
+    try:
+        await ready
+    finally:
+        loop.remove_reader(descriptor)
+
+
+class _ProtocolOutput:
+    """Session-owned nonblocking JSON output with bounded buffering and disposal."""
+
+    def __init__(self):
+        self.stream = sys.stdout
+        try:
+            self.descriptor: int | None = self.stream.fileno()
+        except (AttributeError, io.UnsupportedOperation):
+            # In-memory callers have no Unix fd or external backpressure.
+            self.descriptor = None
+        self.frames: deque[bytes] = deque()
+        self.pending_bytes = 0
+        self.offset = 0
+        self.available = asyncio.Event()
+        self.empty = asyncio.Event()
+        self.empty.set()
+        self.failure: Exception | None = None
+        self.was_blocking = None
+        if self.descriptor is not None:
+            self.was_blocking = os.get_blocking(self.descriptor)
+            os.set_blocking(self.descriptor, False)
+
+    def enqueue(self, frame: bytes) -> None:
+        if self.failure is not None:
+            raise self.failure
+        if self.descriptor is None:
+            self.stream.write(frame.decode("utf-8"))
+            self.stream.flush()
+            return
+        if self.pending_bytes + len(frame) > MAX_PROTOCOL_OUTPUT_BYTES:
+            raise BufferError("protocol output backlog exceeded its bound")
+        self.frames.append(frame)
+        self.pending_bytes += len(frame)
+        self.empty.clear()
+        self.available.set()
+
+    async def _writable(self) -> None:
+        assert self.descriptor is not None
+        loop = asyncio.get_running_loop()
+        ready = loop.create_future()
+
+        def observed():
+            if not ready.done():
+                ready.set_result(None)
+
+        loop.add_writer(self.descriptor, observed)
+        try:
+            await ready
+        finally:
+            loop.remove_writer(self.descriptor)
+
+    async def run(self) -> None:
+        assert self.descriptor is not None
+        try:
+            while True:
+                await self.available.wait()
+                while self.frames:
+                    frame = self.frames[0]
+                    try:
+                        count = os.write(self.descriptor, memoryview(frame)[self.offset :])
+                    except BlockingIOError:
+                        await self._writable()
+                        continue
+                    self.offset += count
+                    self.pending_bytes -= count
+                    if self.offset == len(frame):
+                        self.frames.popleft()
+                        self.offset = 0
+                self.available.clear()
+                self.empty.set()
+        except Exception as exc:
+            self.failure = exc
+            self.empty.set()
+            raise
+
+    async def drain(self) -> None:
+        try:
+            async with asyncio.timeout(CHILD_RELAY_JOIN_TIMEOUT):
+                await self.empty.wait()
+        except TimeoutError as exc:
+            raise RuntimeError("protocol output did not drain before cleanup deadline") from exc
+        if self.failure is not None:
+            raise self.failure
+
+    def close(self) -> None:
+        if self.descriptor is not None and self.was_blocking is not None:
+            os.set_blocking(self.descriptor, self.was_blocking)
+        self.frames.clear()
+
+
+class _AsyncInput:
+    """One cancellable raw observation path for an owned input descriptor."""
+
+    def __init__(self, descriptor: int):
+        self.descriptor = descriptor
+        self.was_blocking = os.get_blocking(descriptor)
+        self._wake: asyncio.Future[None] | None = None
+        self._checkpoint: asyncio.Future[None] | None = None
+        self._closed = False
+        os.set_blocking(descriptor, False)
+
+    def _observed(self) -> None:
+        if self._checkpoint is not None and not self._checkpoint.done():
+            self._checkpoint.set_result(None)
+
+    def _wake_reader(self) -> None:
+        if self._wake is not None and not self._wake.done():
+            self._wake.set_result(None)
+
+    def checkpoint(self) -> asyncio.Future[None]:
+        """Request one final raw observation by this reader, without a competitor."""
+        self._checkpoint = asyncio.get_running_loop().create_future()
+        if self._closed:
+            self._observed()
+        else:
+            self._wake_reader()
+        return self._checkpoint
+
+    async def read(self) -> bytes:
+        while True:
+            try:
+                chunk = os.read(self.descriptor, RELAY_CHUNK_SIZE)
+            except BlockingIOError:
+                self._observed()
+                loop = asyncio.get_running_loop()
+                self._wake = loop.create_future()
+                loop.add_reader(self.descriptor, self._wake_reader)
+                try:
+                    await self._wake
+                finally:
+                    loop.remove_reader(self.descriptor)
+                    self._wake = None
+            else:
+                self._observed()
+                return chunk
+
+    def close(self) -> None:
+        self._closed = True
+        self._observed()
+        os.set_blocking(self.descriptor, self.was_blocking)
+
+
+class SupervisedChild:
+    """Own a process group; observe the leader before explicitly reaping it."""
+
+    def __init__(
+        self, process: subprocess.Popen[bytes], required_output_sentinels: Iterable[str] = ()
+    ) -> None:
         self.process = process
         self.required_output_sentinels = _RequiredOutputSentinels(required_output_sentinels)
         self.startup_output: list[_CapturedFragment] = []
-        self._capture_lock = threading.Lock()
-        self.relay_threads: list[threading.Thread] = []
-        self._observed_returncode = None
+        self.decoders = {
+            name: _OutputDecoder(name, self.required_output_sentinels)
+            for name in ("stdout", "stderr")
+        }
+        self.output_finished: set[str] = set()
+        self.readers: dict[str, _AsyncInput] = {}
+        self.tasks: list[asyncio.Task[_ObservationFailed | None]] = []
+        self._observed_returncode: int | None = None
 
     @property
-    def pid(self):
+    def pid(self) -> int:
         return self.process.pid
 
     @property
-    def returncode(self):
+    def returncode(self) -> int | None:
         if self._observed_returncode is not None:
             return self._observed_returncode
         return self.process.returncode
 
-    def poll(self):
+    def poll(self) -> int | None:
         if self._observed_returncode is not None:
             return self._observed_returncode
         if self.process.returncode is not None:
@@ -661,84 +797,38 @@ class SupervisedChild:
         self._observed_returncode = returncode
         return returncode
 
-    def start_relays(self, capture_startup=False):
-        if self.process.stdout is None or self.process.stderr is None:
-            raise RuntimeError("child output was not captured")
-        captured = self.startup_output if capture_startup else None
-        self.relay_threads = [
-            threading.Thread(
-                target=relay,
-                args=(
-                    self.process.stdout,
-                    "stdout",
-                    self.required_output_sentinels,
-                    captured,
-                    self._capture_lock,
-                ),
-                daemon=True,
-            ),
-            threading.Thread(
-                target=relay,
-                args=(
-                    self.process.stderr,
-                    "stderr",
-                    self.required_output_sentinels,
-                    captured,
-                    self._capture_lock,
-                ),
-                daemon=True,
-            ),
-        ]
-        for thread in self.relay_threads:
-            thread.start()
-
-    def join_relays(self):
-        deadline = time.monotonic() + CHILD_RELAY_JOIN_TIMEOUT
-        for thread in self.relay_threads:
-            # A signal may arrive before start_relays has started every thread.
-            if thread.ident is None:
-                continue
-            if thread.is_alive():
-                thread.join(timeout=max(0.0, deadline - time.monotonic()))
-
-    def _active_relays(self):
-        return tuple(thread for thread in self.relay_threads if thread.is_alive())
-
-    def close_streams(self):
-        active = self._active_relays()
-        errors: list[BaseException] = []
-        if active:
-            names = ", ".join(thread.name for thread in active)
-            errors.append(RuntimeError(f"child output relay did not stop ({names})"))
-        for stream in (self.process.stdout, self.process.stderr):
-            if stream is None or stream.closed:
-                continue
-            if active:
-                continue
+    async def wait_for_exit(self) -> int:
+        returncode = self.poll()
+        if returncode is not None:
+            return returncode
+        try:
+            descriptor = os.pidfd_open(self.pid)
+        except OSError:
+            # Older supported Linux kernels may not provide pidfds.
+            while self.poll() is None:
+                await asyncio.sleep(CHILD_POLL_INTERVAL)
+        else:
             try:
-                stream.close()
-            except BaseException as error:
-                errors.append(error)
-        _raise_cleanup_errors(errors)
+                await _readable(descriptor)
+            finally:
+                os.close(descriptor)
+        returncode = self.poll()
+        assert returncode is not None
+        return returncode
 
-    def cleanup(self):
-        self.join_relays()
-        self.close_streams()
+    async def _wait_for_leader_exit(self) -> bool:
+        try:
+            async with asyncio.timeout(CHILD_TERM_TIMEOUT):
+                await self.wait_for_exit()
+        except TimeoutError:
+            return False
+        return True
 
     def _group_exists(self):
         try:
             os.killpg(self.pid, 0)
         except ProcessLookupError:
             return False
-        return True
-
-    def _wait_for_leader_exit(self):
-        deadline = time.monotonic() + CHILD_TERM_TIMEOUT
-        while self.poll() is None:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return False
-            time.sleep(min(CHILD_POLL_INTERVAL, remaining))
         return True
 
     def _remaining_group_members(self):
@@ -762,14 +852,26 @@ class SupervisedChild:
     def _warn_remaining_group_members(self):
         members = self._remaining_group_members()
         if members:
-            print(
+            message = (
                 "warning: terminating remaining OpenOCD process-group members: "
-                + ", ".join(map(str, members)),
-                file=sys.stderr,
-                flush=True,
+                + ", ".join(map(str, members))
+                + "\n"
             )
+            try:
+                descriptor = sys.stderr.fileno()
+            except (AttributeError, io.UnsupportedOperation):
+                sys.stderr.write(message)
+                sys.stderr.flush()
+                return
+            was_blocking = os.get_blocking(descriptor)
+            try:
+                os.set_blocking(descriptor, False)
+                with suppress(BlockingIOError):
+                    os.write(descriptor, message.encode("utf-8"))
+            finally:
+                os.set_blocking(descriptor, was_blocking)
 
-    def terminate(self):
+    async def terminate(self) -> None:
         errors = []
         if self.process.returncode is None:
             group_exists = True
@@ -777,36 +879,42 @@ class SupervisedChild:
                 os.killpg(self.pid, signal.SIGTERM)
             except ProcessLookupError:
                 group_exists = False
-            except BaseException as error:
-                errors.append(error)
+            except Exception as exc:
+                errors.append(exc)
             if group_exists:
                 try:
-                    self._wait_for_leader_exit()
-                except BaseException as error:
-                    errors.append(error)
+                    await self._wait_for_leader_exit()
+                except Exception as exc:
+                    errors.append(exc)
                 try:
                     group_exists = self._group_exists()
-                except BaseException as error:
-                    errors.append(error)
+                except Exception as exc:
+                    errors.append(exc)
                     group_exists = True
                 if group_exists:
-                    with suppress(BaseException):
+                    with suppress(Exception):
                         self._warn_remaining_group_members()
                     try:
                         os.killpg(self.pid, signal.SIGKILL)
                     except ProcessLookupError:
                         pass
-                    except BaseException as error:
-                        errors.append(error)
+                    except Exception as exc:
+                        errors.append(exc)
             try:
-                returncode = self.process.wait(timeout=CHILD_REAP_TIMEOUT)
-                self._observed_returncode = returncode
-            except BaseException as error:
-                errors.append(error)
-        try:
-            self.cleanup()
-        except BaseException as error:
-            errors.append(error)
+                # Reap only after group signalling; this wait has a finite budget.
+                self._observed_returncode = self.process.wait(timeout=CHILD_REAP_TIMEOUT)
+            except Exception as exc:
+                errors.append(exc)
+        _raise_cleanup_errors(errors)
+
+    def close_streams(self) -> None:
+        errors = []
+        for stream in (self.process.stdout, self.process.stderr):
+            if stream is not None and not stream.closed:
+                try:
+                    stream.close()
+                except Exception as exc:
+                    errors.append(exc)
         _raise_cleanup_errors(errors)
 
 
@@ -866,35 +974,6 @@ def _child_environment(request):
     return environment
 
 
-def _wait_for_process(
-    child: SupervisedChild,
-    address: str,
-    request: StartRequest,
-    attempt: int,
-    service_control: Callable[[float], bool],
-) -> bool | None:
-    """Return True when ready, False for collision retry, or None on control closure."""
-    if child.required_output_sentinels.ready:
-        emit("PROCESS_READY", remote_address=address, child_pid=child.pid)
-        return True
-    deadline = time.monotonic() + request.readiness_timeout
-    while (remaining := deadline - time.monotonic()) > 0:
-        if not service_control(min(CHILD_POLL_INTERVAL, remaining)):
-            return None
-        if child.poll() is not None:
-            child.terminate()
-            if (
-                is_bind_collision(child.startup_output)
-                and attempt + 1 < MAX_ADDRESS_ALLOCATION_ATTEMPTS
-            ):
-                return False
-            raise RuntimeError(f"process exited before readiness with status {child.returncode}")
-        if child.required_output_sentinels.ready:
-            emit("PROCESS_READY", remote_address=address, child_pid=child.pid)
-            return True
-    raise RuntimeError("process readiness timed out")
-
-
 class _ControlFrames:
     """Incrementally frame bounded LF-delimited control input."""
 
@@ -920,48 +999,101 @@ class _ControlFrames:
             raise ValueError("protocol frame is missing its LF delimiter")
 
 
-class _ControlFrameReader:
-    """Retain raw control bytes across selector waits and command dispatch."""
+class _State(Enum):
+    CREATED = auto()
+    STARTING = auto()
+    ACTIVE = auto()
+    TERMINATING = auto()
+    CLOSED = auto()
 
-    def __init__(self, descriptor: int, selector: selectors.BaseSelector):
-        self._descriptor = descriptor
-        self._selector = selector
-        self._frames = _ControlFrames()
 
-    def read_frame(self, timeout: float) -> bytes | None:
-        """Return one LF frame, empty bytes for EOF, or None when incomplete."""
-        frame = self._frames.pop_frame()
-        if frame is None:
-            if not self._selector.select(timeout):
-                return None
-            chunk = os.read(self._descriptor, RELAY_CHUNK_SIZE)
-            if not chunk:
-                self._frames.finish()
-                return b""
-            self._frames.feed(chunk)
-            frame = self._frames.pop_frame()
-        return frame
+class _ControlFrame(NamedTuple):
+    frame: bytes
+
+
+class _ControlEOF(NamedTuple):
+    pass
+
+
+class _ChildOutput(NamedTuple):
+    child: SupervisedChild
+    stream: str
+    chunk: bytes
+
+
+class _ChildExited(NamedTuple):
+    child: SupervisedChild
+    returncode: int
+
+
+class _Deadline(NamedTuple):
+    child: SupervisedChild
+    readiness: bool
+    final: bool = False
+
+
+class _SignalReceived(NamedTuple):
+    signum: int
+
+
+class _ObservationFailed(NamedTuple):
+    source: str
+    exception: Exception
+    child: SupervisedChild | None = None
+
+
+class _GroupCleaned(NamedTuple):
+    child: SupervisedChild
+    exception: Exception | None
+
+
+_Observation = (
+    _ControlFrame
+    | _ControlEOF
+    | _ChildOutput
+    | _ChildExited
+    | _Deadline
+    | _SignalReceived
+    | _ObservationFailed
+    | _GroupCleaned
+)
 
 
 class ControlSession:
-    """Own the control connection, workspace, child, and lifecycle cleanup."""
+    """Sole lifecycle owner of one structured remote-helper session."""
 
-    def __init__(self, session_id, work, workspace_lock):
+    def __init__(self, session_id: str, work: Path, workspace_lock: IO[bytes]) -> None:
         self.session_id = session_id
         self.work = work
         self.workspace_lock = workspace_lock
         self.child: SupervisedChild | None = None
         self.protocol_error: BaseException | None = None
-        self.stopping = False
-        self._child_starting = False
-        self._signal_pending = False
-        self._control_input: _ControlFrameReader | None = None
+        self.operation_error: BaseException | None = None
+        self.cleanup_errors: list[BaseException] = []
+        self.state = _State.CREATED
+        self.ending = False
+        self.close_reason: str | None = None
+        self.natural_returncode: int | None = None
+        self.request: StartRequest | None = None
+        self.attempt = 0
+        self.address = ""
+        self._group_cleaned = False
+        self._startup_exit: int | None = None
+        self._deadline_task: asyncio.Task[_ObservationFailed | None] | None = None
+        self._events: asyncio.Queue[_Observation] = asyncio.Queue(MAX_PENDING_OBSERVATIONS)
+        self._signals: asyncio.Queue[int] = asyncio.Queue(1)
+        self._tasks: asyncio.TaskGroup | None = None
+        self._session_tasks: list[asyncio.Task[_ObservationFailed | None]] = []
+        self._resources_released = False
+        self._output_available = True
+        self._control_reader: _AsyncInput | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     @classmethod
-    def create(cls):
+    def create(cls) -> ControlSession:
         return cls(*new_workspace())
 
-    def announce(self):
+    def announce(self) -> None:
         emit(
             "SESSION_CREATED",
             helper="zephyr_remote_openocd",
@@ -969,161 +1101,472 @@ class ControlSession:
             remote_workspace=str(self.work),
         )
 
-    def _start_process(self, request: StartRequest) -> bool:
-        if self.child is not None:
-            raise ValueError("START is only valid once")
+    def handle_signal(self, signum: int = signal.SIGTERM, _frame: FrameType | None = None) -> None:
+        # Coalesce repeated signals; the coordinator owns their consequences.
+        with suppress(asyncio.QueueFull):
+            self._signals.put_nowait(signum)
+        if self._loop is not None:
+            # Safe from a Python signal handler, including while the loop waits
+            # for I/O. Recording the fact synchronously also covers spawn.
+            self._loop.call_soon_threadsafe(lambda: None)
+
+    async def _observe_signals(self) -> None:
+        while True:
+            await self._events.put(_SignalReceived(await self._signals.get()))
+
+    async def _observe_control(self) -> None:
+        frames = _ControlFrames()
+        reader = _AsyncInput(sys.stdin.buffer.fileno())
+        self._control_reader = reader
+        try:
+            while True:
+                chunk = await reader.read()
+                if not chunk:
+                    frames.finish()
+                    await self._events.put(_ControlEOF())
+                    return
+                frames.feed(chunk)
+                while (frame := frames.pop_frame()) is not None:
+                    await self._events.put(_ControlFrame(frame))
+        finally:
+            reader.close()
+
+    async def _observe_output(self, child: SupervisedChild, name: str, stream: IO[bytes]) -> None:
+        reader = _AsyncInput(stream.fileno())
+        child.readers[name] = reader
+        try:
+            while True:
+                chunk = await reader.read()
+                await self._events.put(_ChildOutput(child, name, chunk))
+                if not chunk:
+                    return
+        finally:
+            reader.close()
+
+    async def _observe_exit(self, child: SupervisedChild) -> None:
+        returncode = await child.wait_for_exit()
+        await self._events.put(_ChildExited(child, returncode))
+
+    async def _observe_deadline(
+        self, child: SupervisedChild, timeout: float, *, readiness: bool
+    ) -> None:
+        await asyncio.sleep(timeout)
+        await self._events.put(_Deadline(child, readiness))
+
+    async def _guard(
+        self,
+        source: str,
+        observation: Coroutine[Any, Any, None],
+        child: SupervisedChild | None = None,
+    ) -> _ObservationFailed | None:
+        try:
+            await observation
+        except Exception as exc:
+            failure = _ObservationFailed(source, exc, child)
+            task = asyncio.current_task()
+            if task is not None and task.cancelling():
+                # Cancellation must not block disposal on a full event queue.
+                return failure
+            await self._events.put(failure)
+        return None
+
+    def _observe(
+        self,
+        source: str,
+        observation: Coroutine[Any, Any, None],
+        child: SupervisedChild | None = None,
+    ) -> asyncio.Task[_ObservationFailed | None]:
+        assert self._tasks is not None
+        task = self._tasks.create_task(self._guard(source, observation, child), name=source)
+        # A task cancelled before its first turn never enters _guard.
+        task.add_done_callback(lambda _task: observation.close())
+        if child is None:
+            self._session_tasks.append(task)
+        else:
+            child.tasks.append(task)
+        return task
+
+    def _start_attempt(self) -> None:
+        assert self.request is not None
+        request = self.request
         ports = [service.remote_port for service in request.services]
-        attempts = MAX_ADDRESS_ALLOCATION_ATTEMPTS if request.required_output_sentinels else 1
-        for attempt in range(attempts):
-            address = allocate_service_address(ports) if ports else random_address()
-            argv, replacements = _expanded_argv(request, self.work, address)
-            _check_required_paths(request.required_paths, replacements)
-            self._child_starting = True
-            try:
-                self.child = _spawn_child(
-                    argv,
-                    cwd=self.work / "staged",
-                    environment=_child_environment(request),
-                    required_output_sentinels=request.required_output_sentinels,
-                )
-            except BaseException as error:
-                if self._signal_pending:
-                    self._signal_pending = False
-                    try:
-                        self.cleanup()
-                    except BaseException as cleanup_error:
-                        error.add_note(f"deferred signal cleanup also failed: {cleanup_error}")
-                self._child_starting = False
-                raise
-            self._child_starting = False
-            if self._signal_pending:
-                self._signal_pending = False
-                self.handle_signal()
-            self.child.start_relays(capture_startup=True)
-            ready = _wait_for_process(
-                self.child, address, request, attempt, self._read_and_dispatch
-            )
-            if ready is None:
-                return False
-            if ready:
-                return True
-            self.child = None
-        raise RuntimeError(
-            "process address collision retry exhausted after "
-            f"{MAX_ADDRESS_ALLOCATION_ATTEMPTS} attempts"
+        self.address = allocate_service_address(ports) if ports else random_address()
+        argv, replacements = _expanded_argv(request, self.work, self.address)
+        _check_required_paths(request.required_paths, replacements)
+        self.child = _spawn_child(
+            argv,
+            cwd=self.work / "staged",
+            environment=_child_environment(request),
+            required_output_sentinels=request.required_output_sentinels,
+        )
+        self.state = _State.STARTING
+        self._group_cleaned = False
+        self._startup_exit = None
+        child = self.child
+        for name in ("stdout", "stderr"):
+            stream = getattr(child.process, name)
+            if stream is None:
+                raise RuntimeError("child output was not captured")
+            self._observe(name, self._observe_output(child, name, stream), child)
+        self._observe("child exit", self._observe_exit(child), child)
+        self._deadline_task = self._observe(
+            "readiness deadline",
+            self._observe_deadline(child, request.readiness_timeout, readiness=True),
+            child,
+        )
+        if not request.required_output_sentinels and self._signals.empty():
+            self._ready()
+
+    def _ready(self) -> None:
+        assert self.child is not None
+        self.state = _State.ACTIVE
+        if self._deadline_task is not None:
+            self._deadline_task.cancel()
+        emit("PROCESS_READY", remote_address=self.address, child_pid=self.child.pid)
+
+    def _select_failure(self, exception: BaseException, *, protocol: bool = False) -> None:
+        if self.ending:
+            return
+        if protocol:
+            self.protocol_error = exception
+        else:
+            self.operation_error = exception
+        self.ending = True
+
+    def _command(self, frame: bytes) -> None:
+        if self.ending:
+            return
+        try:
+            request = decode_command(json.loads(frame))
+            if isinstance(request, StartRequest):
+                if self.request is not None:
+                    raise ValueError("START is only valid once")
+                self.request = request
+                self._start_attempt()
+            else:
+                self.ending = True
+                self.close_reason = "requested"
+        except Exception as exc:
+            self._select_failure(exc, protocol=True)
+
+    def _output(self, observation: _ChildOutput) -> None:
+        child = observation.child
+        if child is not self.child:
+            return
+        for fragment in child.decoders[observation.stream].feed(observation.chunk):
+            child.startup_output.append(fragment)
+            del child.startup_output[:-MAX_CAPTURED_STARTUP_FRAGMENTS]
+            if self._output_available:
+                try:
+                    emit(
+                        "CHILD_OUTPUT",
+                        stream=fragment.stream,
+                        payload=fragment.payload,
+                        line_end=fragment.line_end,
+                    )
+                except Exception as exc:
+                    self._output_available = False
+                    if self.ending:
+                        self.cleanup_errors.append(exc)
+                    else:
+                        self._select_failure(exc)
+        if not observation.chunk:
+            child.output_finished.add(observation.stream)
+        if (
+            self.state == _State.STARTING
+            and not self.ending
+            and child.required_output_sentinels.ready
+        ):
+            returncode = child.poll()
+            if returncode is None:
+                self._ready()
+            else:
+                self._exited(_ChildExited(child, returncode))
+
+    def _exited(self, observation: _ChildExited) -> None:
+        if observation.child is not self.child or self.ending:
+            return
+        if self.state == _State.STARTING:
+            self._startup_exit = observation.returncode
+            self._begin_child_cleanup()
+        elif self.state == _State.ACTIVE:
+            self.natural_returncode = observation.returncode
+            self.close_reason = "process_exit"
+            self.ending = True
+
+    async def _observe_final_readiness(self, child: SupervisedChild) -> None:
+        readers = list(child.readers.values())
+        if self._control_reader is not None:
+            readers.append(self._control_reader)
+        # Readers acknowledge one raw scan, even when the fd has no new bytes.
+        # Continue consuming the bounded queue while they publish those facts.
+        if readers:
+            await asyncio.wait([reader.checkpoint() for reader in readers])
+        await self._events.put(_Deadline(child, readiness=True, final=True))
+
+    def _final_readiness_observation(self, child: SupervisedChild) -> None:
+        if child is self.child and self.state == _State.STARTING:
+            returncode = child.poll()
+            if returncode is not None:
+                self._exited(_ChildExited(child, returncode))
+            elif child.required_output_sentinels.ready:
+                self._ready()
+            else:
+                self._select_failure(RuntimeError("process readiness timed out"), protocol=True)
+
+    def _observation_failed(self, observation: _ObservationFailed) -> None:
+        if observation.child is not None and observation.child is not self.child:
+            return
+        if observation.child is not None and observation.source in ("stdout", "stderr"):
+            observation.child.output_finished.add(observation.source)
+        if self.state == _State.TERMINATING and self.ending:
+            self.cleanup_errors.append(observation.exception)
+        else:
+            self._select_failure(observation.exception, protocol=observation.source == "control")
+
+    def _group_cleanup_finished(self, observation: _GroupCleaned) -> None:
+        if observation.child is not self.child:
+            return
+        self._group_cleaned = True
+        if observation.exception is not None:
+            self.cleanup_errors.append(observation.exception)
+        self._deadline_task = self._observe(
+            "output drain deadline",
+            self._observe_deadline(observation.child, CHILD_RELAY_JOIN_TIMEOUT, readiness=False),
+            observation.child,
         )
 
-    def dispatch(self, message):
-        request = decode_command(message)
-        if isinstance(request, StartRequest):
-            return self._start_process(request)
-        if isinstance(request, StopRequest):
-            self.cleanup()
-            emit("SESSION_CLOSED", reason="requested", returncode=None)
-            return False
-        raise ValueError(f"unexpected request: {request!r}")
+    def _deadline(self, observation: _Deadline) -> None:
+        if observation.child is not self.child:
+            return
+        if observation.readiness and self.state == _State.STARTING and not self.ending:
+            if observation.final:
+                self._final_readiness_observation(observation.child)
+            else:
+                self._observe(
+                    "final readiness observation",
+                    self._observe_final_readiness(observation.child),
+                    observation.child,
+                )
+        elif (
+            not observation.readiness
+            and self.state == _State.TERMINATING
+            and observation.child.output_finished != {"stdout", "stderr"}
+        ):
+            self.cleanup_errors.append(RuntimeError("child output relay did not stop"))
+            observation.child.output_finished.update(("stdout", "stderr"))
 
-    def _child_finished(self):
-        if self.child is None or self.child.poll() is None:
-            return False
-        returncode = self.child.returncode
-        self.cleanup()
-        emit("SESSION_CLOSED", reason="process_exit", returncode=returncode)
-        return True
+    def _handle(self, observation: _Observation) -> None:
+        if isinstance(observation, _ControlFrame):
+            self._command(observation.frame)
+        elif isinstance(observation, (_ControlEOF, _SignalReceived)):
+            self.ending = True
+        elif isinstance(observation, _ChildOutput):
+            self._output(observation)
+        elif isinstance(observation, _ChildExited):
+            self._exited(observation)
+        elif isinstance(observation, _ObservationFailed):
+            self._observation_failed(observation)
+        elif isinstance(observation, _GroupCleaned):
+            self._group_cleanup_finished(observation)
+        elif isinstance(observation, _Deadline):
+            self._deadline(observation)
 
-    def _read_and_dispatch(self, timeout: float = 0.2) -> bool:
-        assert self._control_input is not None
+    async def _clean_group(self, child: SupervisedChild) -> None:
+        failure = None
         try:
-            line = self._control_input.read_frame(timeout)
-            if line is None:
-                return True
-            if not line:
-                return False
-            message = json.loads(line)
-            return self.dispatch(message)
+            await child.terminate()
         except Exception as exc:
-            self.protocol_error = exc
-            return False
+            failure = exc
+        await self._events.put(_GroupCleaned(child, failure))
 
-    def run(self):
-        operation_error = None
-        cleanup_error = None
+    def _begin_child_cleanup(self) -> None:
+        if self.state == _State.TERMINATING:
+            return
+        assert self.child is not None
+        self.state = _State.TERMINATING
+        if self._deadline_task is not None:
+            self._deadline_task.cancel()
+        self._observe("process-group cleanup", self._clean_group(self.child), self.child)
+
+    async def _cancel(self, tasks: list[asyncio.Task[_ObservationFailed | None]]) -> None:
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with suppress(asyncio.CancelledError):
+                failure = await task
+                if failure is not None:
+                    self.cleanup_errors.append(failure.exception)
+
+    async def _finish_attempt(self) -> None:
+        assert self.child is not None
+        child = self.child
+        await self._cancel(child.tasks)
         try:
-            try:
-                self.announce()
-                selector = selectors.DefaultSelector()
+            child.close_streams()
+        except Exception as exc:
+            self.cleanup_errors.append(exc)
+        self.child = None
+        if not self.ending and not self.cleanup_errors:
+            if (
+                is_bind_collision(child.startup_output)
+                and self.attempt + 1 < MAX_ADDRESS_ALLOCATION_ATTEMPTS
+            ):
+                self.attempt += 1
                 try:
-                    selector.register(sys.stdin.buffer, selectors.EVENT_READ)
-                    self._control_input = _ControlFrameReader(sys.stdin.buffer.fileno(), selector)
-                    while not self._child_finished():
-                        if not self._read_and_dispatch():
-                            break
-                finally:
-                    self._control_input = None
-                    selector.close()
-            except BaseException as exc:
-                operation_error = exc
-        finally:
-            try:
-                self.cleanup()
-            except BaseException as exc:
-                cleanup_error = exc
+                    self._start_attempt()
+                except Exception as exc:
+                    self._select_failure(exc, protocol=True)
+                return
+            self._select_failure(
+                RuntimeError(f"process exited before readiness with status {self._startup_exit}"),
+                protocol=True,
+            )
+        self.ending = True
 
-        if self.protocol_error is not None:
-            if operation_error is not None:
-                self.protocol_error.add_note(f"session operation also failed: {operation_error}")
-            if cleanup_error is not None:
-                self.protocol_error.add_note(f"session cleanup also failed: {cleanup_error}")
-            error(self.protocol_error, "PROTOCOL_ERROR")
-            if operation_error is not None or cleanup_error is not None:
-                raise SystemExit(1)
+    def _release_workspace(self) -> None:
+        if self._resources_released:
             return
-        if operation_error is not None:
-            if cleanup_error is not None:
-                operation_error.add_note(f"session cleanup also failed: {cleanup_error}")
-            raise operation_error
-        if cleanup_error is not None:
-            raise cleanup_error
-
-    def handle_signal(self, *_):
-        if self._child_starting:
-            self._signal_pending = True
-            return
-        if not self.cleanup():
-            return
-        raise SystemExit(0)
-
-    def cleanup(self) -> bool:
-        if self.stopping:
-            return False
-        self.stopping = True
-        errors = []
-        if self.child is not None:
-            try:
-                self.child.terminate()
-            except BaseException as error:
-                errors.append(error)
+        self._resources_released = True
         try:
             shutil.rmtree(self.work)
-        except FileNotFoundError as error:
+        except FileNotFoundError as exc:
             if self.work.exists():
-                errors.append(error)
-        except BaseException as error:
-            errors.append(error)
+                self.cleanup_errors.append(exc)
+        except Exception as exc:
+            self.cleanup_errors.append(exc)
         try:
             self.workspace_lock.close()
-        except BaseException as error:
-            errors.append(error)
-        if errors:
-            _raise_cleanup_errors(errors)
-        return True
+        except Exception as exc:
+            self.cleanup_errors.append(exc)
+
+    async def _coordinate(self) -> None:
+        while self.state != _State.CLOSED:
+            if self.ending:
+                if self.child is None:
+                    self.state = _State.CLOSED
+                    break
+                self._begin_child_cleanup()
+            if (
+                self.state == _State.TERMINATING
+                and self._group_cleaned
+                and self.child is not None
+                and self.child.output_finished == {"stdout", "stderr"}
+            ):
+                await self._finish_attempt()
+                continue
+            self._handle(await self._events.get())
+            # Let owned observers and the nonblocking protocol writer progress.
+            await asyncio.sleep(0)
+
+    async def run_async(self) -> None:
+        self._loop = asyncio.get_running_loop()
+        previous_handlers = {}
+        output = None
+        output_token = None
+        final_exception: BaseException | None = None
+        writer_task = None
+        try:
+            output = _ProtocolOutput()
+            output_token = _protocol_output.set(output)
+            async with asyncio.TaskGroup() as tasks:
+                self._tasks = tasks
+                try:
+                    if output.descriptor is not None:
+                        writer_task = self._observe("protocol output", output.run())
+                    self.announce()
+                    for signum in (signal.SIGTERM, signal.SIGINT):
+                        previous_handlers[signum] = signal.getsignal(signum)
+                        signal.signal(signum, self.handle_signal)
+                    self._observe("control", self._observe_control())
+                    self._observe("signal", self._observe_signals())
+                    await self._coordinate()
+                except BaseException as exc:
+                    self._select_failure(exc)
+                    await self._coordinate()
+                finally:
+                    await self._cancel(
+                        [task for task in self._session_tasks if task is not writer_task]
+                    )
+                    self._release_workspace()
+                try:
+                    self._report_outcome()
+                except BaseException as exc:
+                    final_exception = exc
+                    if isinstance(exc, Exception):
+                        try:
+                            error(exc)
+                        except Exception as output_error:
+                            exc.add_note(f"terminal output also failed: {output_error}")
+                try:
+                    await output.drain()
+                except Exception as exc:
+                    if final_exception is None:
+                        final_exception = exc
+                    else:
+                        final_exception.add_note(f"protocol output cleanup also failed: {exc}")
+                finally:
+                    if writer_task is not None:
+                        await self._cancel([writer_task])
+        except BaseException as exc:
+            final_exception = exc
+        finally:
+            self._tasks = None
+            self._loop = None
+            self._release_workspace()
+            if output_token is not None:
+                _protocol_output.reset(output_token)
+            if output is not None:
+                try:
+                    output.close()
+                except Exception as exc:
+                    if final_exception is None:
+                        final_exception = exc
+                    else:
+                        final_exception.add_note(f"protocol output cleanup also failed: {exc}")
+            for signum, handler in previous_handlers.items():
+                try:
+                    signal.signal(signum, handler)
+                except Exception as exc:
+                    self.cleanup_errors.append(exc)
+                    if final_exception is None:
+                        final_exception = exc
+            if final_exception is not None:
+                for cleanup_error in self.cleanup_errors:
+                    if cleanup_error is not final_exception:
+                        note = f"session cleanup also failed: {cleanup_error}"
+                        if note not in getattr(final_exception, "__notes__", ()):
+                            final_exception.add_note(note)
+        if final_exception is not None:
+            raise final_exception
+
+    def _report_outcome(self) -> None:
+        failure = self.protocol_error or self.operation_error
+        if failure is not None:
+            for exc in self.cleanup_errors:
+                failure.add_note(f"session cleanup also failed: {exc}")
+            if self.protocol_error is not None:
+                error(failure, "PROTOCOL_ERROR")
+                if self.cleanup_errors:
+                    raise SystemExit(1)
+                return
+            raise failure
+        _raise_cleanup_errors(self.cleanup_errors)
+        if self.close_reason is not None:
+            emit("SESSION_CLOSED", reason=self.close_reason, returncode=self.natural_returncode)
+
+    def run(self) -> None:
+        asyncio.run(self.run_async())
 
 
 def control():
     session = ControlSession.create()
-    signal.signal(signal.SIGTERM, session.handle_signal)
-    signal.signal(signal.SIGINT, session.handle_signal)
-    session.run()
+    try:
+        session.run()
+    except Exception as exc:
+        # The session owns ERROR delivery and bounded output disposal; never
+        # retry a blocking stdout write after the structured scope has closed.
+        raise SystemExit(1) from exc
 
 
 def main():

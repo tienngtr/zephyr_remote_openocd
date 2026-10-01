@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import array
+import fcntl
 import hashlib
 import io
 import ipaddress
@@ -15,7 +17,9 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import termios
 import threading
+import time
 from collections.abc import Iterable
 from contextlib import suppress
 from pathlib import Path, PurePosixPath
@@ -1363,6 +1367,78 @@ class TestRealProcessHelper:
                 for stream in (process.stdin, process.stdout, process.stderr):
                     if stream is not None and not stream.closed:
                         stream.close()
+
+    @pytest.mark.parametrize("shutdown", ("eof", "stop", "signal"))
+    def test_helper_cleans_up_while_protocol_output_pipe_is_full(self, tmp_path, shutdown):
+        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        child_pid_file = tmp_path / "child.pid"
+        environment = os.environ.copy()
+        environment["XDG_RUNTIME_DIR"] = str(tmp_path)
+        process = subprocess.Popen(
+            [sys.executable, str(helper), "control"],
+            env=environment,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        child_pid = None
+        try:
+            assert process.stdout is not None and process.stdin is not None
+            created = json.loads(read_line(process.stdout))
+            process.stdin.write(
+                start_frame(
+                    [
+                        sys.executable,
+                        "-c",
+                        "import os,pathlib,signal,sys;"
+                        "pathlib.Path(sys.argv[1]).write_text(str(os.getpid()));"
+                        "sys.stdout.buffer.write(b'x'*(10*1024*1024));sys.stdout.flush();signal.pause()",
+                        str(child_pid_file),
+                    ],
+                    required_output_sentinels=("not-ready",),
+                )
+            )
+            process.stdin.flush()
+            capacity = fcntl.fcntl(process.stdout.fileno(), fcntl.F_GETPIPE_SZ)
+            deadline = time.monotonic() + 30
+            # Poll an explicit OS condition; expiry is only a deadlock backstop.
+            while True:
+                unread = array.array("i", [0])
+                fcntl.ioctl(process.stdout.fileno(), termios.FIONREAD, unread, True)
+                if unread[0] == capacity and child_pid_file.exists():
+                    break
+                assert time.monotonic() < deadline, "helper output pipe did not fill"
+                time.sleep(0.01)
+            child_pid = int(child_pid_file.read_text())
+            descriptor = os.pidfd_open(child_pid)
+            try:
+                if shutdown == "eof":
+                    process.stdin.close()
+                elif shutdown == "stop":
+                    process.stdin.write(encode_message("STOP"))
+                    process.stdin.flush()
+                else:
+                    process.send_signal(signal.SIGTERM)
+                process.wait(timeout=20)
+                poller = select.poll()
+                poller.register(descriptor, select.POLLIN)
+                assert poller.poll(5000), "child survived session shutdown"
+                assert not Path(created["remote_workspace"]).exists()
+            finally:
+                os.close(descriptor)
+        finally:
+            if child_pid is None and child_pid_file.exists():
+                child_pid = int(child_pid_file.read_text())
+            if child_pid is not None:
+                with suppress(ProcessLookupError):
+                    os.killpg(child_pid, signal.SIGKILL)
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+            for stream in (process.stdin, process.stdout, process.stderr):
+                if stream is not None and not stream.closed:
+                    stream.close()
 
     def test_helper_signal_cleans_child_and_workspace(self):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"

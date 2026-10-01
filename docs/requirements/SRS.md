@@ -1065,7 +1065,12 @@ The project SHALL NOT require a persistent privileged or system-wide daemon.
 
 ### REQ-FUNC-HELP-004
 
-The helper SHALL supervise remote OpenOCD.
+The helper SHALL supervise remote OpenOCD. One session coordinator SHALL own
+lifecycle decisions and terminal outcomes. Concurrent control, child-output,
+child-exit, deadline, and signal observations SHALL have a structured lifetime
+owned by that session. They SHALL NOT independently decide teardown or emit
+terminal events. The helper SHALL remain self-contained and require only the
+Python 3.12+ standard library on the remote host.
 
 ### REQ-FUNC-HELP-005
 

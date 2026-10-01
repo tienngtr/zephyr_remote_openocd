@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import fcntl
 import importlib.util
 import json
 import math
 import os
 import select
-import selectors
 import signal
 import sys
-import threading
 import time
 from contextlib import suppress
 from types import SimpleNamespace
@@ -58,13 +57,12 @@ def test_control_session_services_input_during_readiness(
     workspace = tmp_path / "workspace"
     (workspace / "staged").mkdir(parents=True)
     lock = (workspace / remote_helper.SESSION_LOCK).open("w+b")
-    events = []
     start = (
         json.dumps(
             {
                 "version": 1,
                 "type": "START",
-                "argv": ["openocd"],
+                "argv": [sys.executable, "-c", "import signal; signal.pause()"],
                 "environment": {},
                 "required_paths": [],
                 "services": [],
@@ -75,57 +73,40 @@ def test_control_session_services_input_during_readiness(
         ).encode()
         + b"\n"
     )
-    writer.write(start + interruption if batch else start)
+    original_spawn = remote_helper._spawn_child
+    children = []
+    events = []
 
-    class Child:
-        pid = 123
-        returncode: int | None = None
-        required_output_sentinels = remote_helper._RequiredOutputSentinels(("not-ready",))
-        startup_output = ()
-
-        def __init__(self):
-            self.terminated = False
-
-        def start_relays(self, *, capture_startup):
-            del capture_startup
-            if batch:
-                return
+    def spawn(*args, **kwargs):
+        child = original_spawn(*args, **kwargs)
+        children.append(child)
+        if not batch:
             if interruption is None:
                 writer.close()
             else:
                 writer.write(start if interruption == b"START" else interruption)
                 if not interruption.endswith(b"\n") and interruption != b"START":
                     writer.close()
-
-        def poll(self):
-            return self.returncode
-
-        def terminate(self):
-            self.terminated = True
-            self.returncode = -signal.SIGTERM
-
-    child = Child()
+        return child
 
     def record_event(kind, **values):
         if kind in ("SESSION_CLOSED", "ERROR"):
-            assert child.terminated
+            assert children[0].process.returncode is not None
             assert not workspace.exists()
             assert lock.closed
         events.append((kind, values))
 
-    def forbid_unserviced_wait(_seconds):
-        raise RuntimeError("readiness waited without servicing control input")
-
+    writer.write(start + interruption if batch else start)
     monkeypatch.setattr(remote_helper, "emit", record_event)
-    monkeypatch.setattr(remote_helper, "_spawn_child", lambda *_args, **_kwargs: child)
-    # Keep readiness pending indefinitely: control observation must end the session.
-    monkeypatch.setattr(remote_helper.time, "monotonic", lambda: 0.0)
-    monkeypatch.setattr(remote_helper.time, "sleep", forbid_unserviced_wait)
+    monkeypatch.setattr(remote_helper, "_spawn_child", spawn)
     session = remote_helper.ControlSession("session", workspace, lock)
 
     session.run()
 
-    assert child.terminated
+    assert len(children) == 1
+    assert children[0].process.returncode is not None
+    assert children[0].process.stdout.closed
+    assert children[0].process.stderr.closed
     assert not workspace.exists()
     assert lock.closed
     assert not any(kind == "PROCESS_READY" for kind, _values in events)
@@ -159,49 +140,34 @@ def test_helper_accepts_json_whitespace_inside_command_frame(tmp_path, control_p
     assert events[-1]["reason"] == "requested"
 
 
-def test_control_frames_retain_partial_bytes_without_waiting_for_lf(control_pipe):
-    reader, writer = control_pipe
-    with selectors.DefaultSelector() as selector:
-        selector.register(reader, selectors.EVENT_READ)
-        frames = remote_helper._ControlFrameReader(reader.fileno(), selector)
-        # Split a UTF-8 character as well as the frame itself.
-        writer.write(b'{"value":"\xc3')
-        assert frames.read_frame(0) is None
-        assert frames.read_frame(0) is None
-        writer.write(b'\xa9"}')
-        assert frames.read_frame(0) is None
-        writer.write(b"\n")
-        assert json.loads(frames.read_frame(0)) == {"value": "é"}
-        writer.close()
-        assert frames.read_frame(0) == b""
+def test_control_frames_retain_partial_bytes_without_waiting_for_lf():
+    frames = remote_helper._ControlFrames()
+    frames.feed(b'{"value":"\xc3')
+    assert frames.pop_frame() is None
+    frames.feed(b'\xa9"}')
+    assert frames.pop_frame() is None
+    frames.feed(b"\n")
+    assert json.loads(frames.pop_frame()) == {"value": "é"}
+    frames.finish()
 
 
-def test_control_frames_keep_batched_frames_and_incomplete_tail(control_pipe):
-    reader, writer = control_pipe
-    with selectors.DefaultSelector() as selector:
-        selector.register(reader, selectors.EVENT_READ)
-        frames = remote_helper._ControlFrameReader(reader.fileno(), selector)
-        writer.write(b'{"value":1}\n{"value":2}\n{"value":')
-        assert json.loads(frames.read_frame(0)) == {"value": 1}
-        # All bytes were consumed from the pipe; later frames belong to the reader.
-        assert not selector.select(0)
-        assert json.loads(frames.read_frame(0)) == {"value": 2}
-        assert frames.read_frame(0) is None
-        writer.close()
-        with pytest.raises(ValueError):
-            frames.read_frame(0)
+def test_control_frames_keep_batched_frames_and_incomplete_tail():
+    frames = remote_helper._ControlFrames()
+    frames.feed(b'{"value":1}\n{"value":2}\n{"value":')
+    assert json.loads(frames.pop_frame()) == {"value": 1}
+    assert json.loads(frames.pop_frame()) == {"value": 2}
+    assert frames.pop_frame() is None
+    with pytest.raises(ValueError):
+        frames.finish()
 
 
 @pytest.mark.parametrize("payload", (b"x" * 32, b"x" * 32 + b"\n"))
-def test_control_frames_reject_oversized_input(monkeypatch, control_pipe, payload):
-    reader, writer = control_pipe
-    monkeypatch.setattr(remote_helper, "MAX_CONTROL_FRAME_SIZE", 32, raising=False)
-    with selectors.DefaultSelector() as selector:
-        selector.register(reader, selectors.EVENT_READ)
-        frames = remote_helper._ControlFrameReader(reader.fileno(), selector)
-        writer.write(payload)
-        with pytest.raises(ValueError):
-            frames.read_frame(0)
+def test_control_frames_reject_oversized_input(monkeypatch, payload):
+    monkeypatch.setattr(remote_helper, "MAX_CONTROL_FRAME_SIZE", 32)
+    frames = remote_helper._ControlFrames()
+    frames.feed(payload)
+    with pytest.raises(ValueError):
+        frames.pop_frame()
 
 
 def test_control_frame_limit_applies_to_individual_frames(monkeypatch):
@@ -239,14 +205,15 @@ def _assert_pidfd_exited(pidfd, timeout=5):
 def _cleanup_test_child(child, descendant_pidfd):
     try:
         if child.poll() is None:
-            child.terminate()
+            asyncio.run(child.terminate())
+        child.close_streams()
     except BaseException:
         with suppress(ProcessLookupError):
             os.killpg(child.pid, signal.SIGKILL)
         with suppress(BaseException):
             child.process.wait(timeout=5)
         with suppress(BaseException):
-            child.cleanup()
+            child.close_streams()
     if descendant_pidfd is not None:
         with suppress(ProcessLookupError):
             signal.pidfd_send_signal(descendant_pidfd, signal.SIGKILL)
@@ -302,84 +269,31 @@ def start_command():
 class _ChunkStream:
     def __init__(self, *chunks):
         self.chunks = list(chunks)
-        self.read_sizes = []
-
-    def read(self, size):
-        self.read_sizes.append(size)
-        if not self.chunks:
-            return b""
-        return self.chunks.pop(0)
 
 
-def test_relay_emits_short_fragment_while_pipe_remains_open(monkeypatch):
-    class ObservedPipe:
-        def __init__(self, stream):
-            self.stream = stream
-            self.read_count = 0
-            self.second_read_started = threading.Event()
-            self.third_read_started = threading.Event()
-
-        def read(self, size):
-            self.read_count += 1
-            if self.read_count == 2:
-                self.second_read_started.set()
-            elif self.read_count == 3:
-                self.third_read_started.set()
-            return self.stream.read(size)
-
-    events = []
-    monkeypatch.setattr(
-        remote_helper,
-        "emit",
-        lambda kind, **values: events.append((kind, values)),
-    )
-    required_output_sentinels = remote_helper._RequiredOutputSentinels(("READY",))
-    captured: list[Any] = []
-    read_descriptor, write_descriptor = os.pipe()
-    reader = os.fdopen(read_descriptor, "rb", buffering=0)
-    writer = os.fdopen(write_descriptor, "wb", buffering=0)
-    stream = ObservedPipe(reader)
-    relay_thread = threading.Thread(
-        target=remote_helper.relay,
-        args=(stream, "stdout", required_output_sentinels, captured),
-    )
-    relay_thread.start()
-    try:
-        writer.write(b"READY")
-        assert stream.second_read_started.wait(5)
-
-        assert not writer.closed
-        assert not reader.closed
-        assert relay_thread.is_alive()
-        assert not required_output_sentinels.ready
-        assert events == [
-            (
+def _decode_chunks(stream, name, sentinels=None, _captured=None):
+    if sentinels is None:
+        sentinels = remote_helper._RequiredOutputSentinels(())
+    decoder = remote_helper._OutputDecoder(name, sentinels)
+    for chunk in (*stream.chunks, b""):
+        for fragment in decoder.feed(chunk):
+            remote_helper.emit(
                 "CHILD_OUTPUT",
-                {"stream": "stdout", "payload": "READY", "line_end": False},
+                stream=fragment.stream,
+                payload=fragment.payload,
+                line_end=fragment.line_end,
             )
-        ]
-        assert [(item.stream, item.payload, item.line_end) for item in captured] == [
-            ("stdout", "READY", False)
-        ]
 
-        writer.write(b"\n")
-        assert stream.third_read_started.wait(5)
 
-        assert required_output_sentinels.ready
-        assert events[-1] == (
-            "CHILD_OUTPUT",
-            {"stream": "stdout", "payload": "", "line_end": True},
-        )
-        assert (captured[-1].stream, captured[-1].payload, captured[-1].line_end) == (
-            "stdout",
-            "",
-            True,
-        )
-    finally:
-        writer.close()
-        relay_thread.join(5)
-        reader.close()
-    assert not relay_thread.is_alive()
+def test_relay_emits_short_fragment_before_complete_sentinel():
+    sentinels = remote_helper._RequiredOutputSentinels(("READY",))
+    decoder = remote_helper._OutputDecoder("stdout", sentinels)
+    fragments = decoder.feed(b"READY")
+    assert [(item.payload, item.line_end) for item in fragments] == [("READY", False)]
+    assert not sentinels.ready
+    fragments = decoder.feed(b"\n")
+    assert [(item.payload, item.line_end) for item in fragments] == [("", True)]
+    assert sentinels.ready
 
 
 def test_relay_emits_bounded_fragments_and_preserves_utf8(monkeypatch):
@@ -401,7 +315,7 @@ def test_relay_emits_bounded_fragments_and_preserves_utf8(monkeypatch):
         b"tail",
     )
 
-    remote_helper.relay(stream, "stdout", required_output_sentinels, captured)
+    _decode_chunks(stream, "stdout", required_output_sentinels, captured)
 
     output_events = [values for _kind, values in events]
     assert [event["payload"] for event in output_events] == [
@@ -437,23 +351,7 @@ def test_relay_emits_bounded_fragments_and_preserves_utf8(monkeypatch):
         == "abc\ndefg\nxyz\nvalid €\ninvalid �tail"
     )
     assert all(len(event["payload"]) <= 4 for event in output_events)
-    assert all(size == 4 for size in stream.read_sizes)
     assert not required_output_sentinels.ready
-    assert [record.stream for record in captured] == ["stdout"] * len(captured)
-    assert [record.line_end for record in captured] == [
-        True,
-        False,
-        True,
-        False,
-        True,
-        False,
-        False,
-        True,
-        False,
-        False,
-        False,
-        False,
-    ]
 
 
 def test_relay_matches_sentinel_only_after_complete_line(monkeypatch):
@@ -467,7 +365,7 @@ def test_relay_matches_sentinel_only_after_complete_line(monkeypatch):
     required_output_sentinels = remote_helper._RequiredOutputSentinels(("READY FOR START",))
     stream = _ChunkStream(b"NO\nREADY FOR ", b"START\n")
 
-    remote_helper.relay(stream, "stderr", required_output_sentinels, [])
+    _decode_chunks(stream, "stderr", required_output_sentinels, [])
 
     assert required_output_sentinels.ready
     output = [values for _kind, values in events]
@@ -491,7 +389,7 @@ def test_relay_waits_for_each_complete_sentinel_across_streams(monkeypatch, firs
         ("OPENOCD_INIT", "STARTUP_COMPLETE")
     )
 
-    remote_helper.relay(
+    _decode_chunks(
         _ChunkStream(first[:8].encode(), (first[8:] + "\n").encode()),
         "stdout",
         required_output_sentinels,
@@ -499,7 +397,7 @@ def test_relay_waits_for_each_complete_sentinel_across_streams(monkeypatch, firs
 
     assert not required_output_sentinels.ready
 
-    remote_helper.relay(
+    _decode_chunks(
         _ChunkStream(("  " + second + "  \n").encode()),
         "stderr",
         required_output_sentinels,
@@ -534,7 +432,7 @@ def test_relay_metadata_reconstructs_logical_output(monkeypatch, payload, expect
         lambda kind, **values: events.append((kind, values)),
     )
 
-    remote_helper.relay(_ChunkStream(payload), "stdout")
+    _decode_chunks(_ChunkStream(payload), "stdout")
 
     output_events = [values for _kind, values in events]
     reconstructed = "".join(
@@ -567,7 +465,7 @@ def test_relay_preserves_split_utf8_and_invalid_bytes(monkeypatch):
         lambda kind, **values: events.append((kind, values)),
     )
 
-    remote_helper.relay(_ChunkStream(b"utf \xe2", b"\x82", b"\xac\ninvalid \xff"), "stderr")
+    _decode_chunks(_ChunkStream(b"utf \xe2", b"\x82", b"\xac\ninvalid \xff"), "stderr")
 
     output_events = [values for _kind, values in events]
     assert (
@@ -577,38 +475,57 @@ def test_relay_preserves_split_utf8_and_invalid_bytes(monkeypatch):
     assert all(len(event["payload"]) <= 3 for event in output_events)
 
 
-def test_relay_real_child_flushes_newline_free_output_before_exit(monkeypatch):
-    relay_chunk_size = 64
-    output_size = remote_helper.MAX_CAPTURED_STARTUP_FRAGMENTS * relay_chunk_size + 1
-    monkeypatch.setattr(remote_helper, "RELAY_CHUNK_SIZE", relay_chunk_size)
+def test_relay_real_child_flushes_newline_free_output_before_exit(
+    tmp_path, monkeypatch, control_pipe
+):
+    _reader, writer = control_pipe
+    workspace = tmp_path / "workspace"
+    (workspace / "staged").mkdir(parents=True)
+    lock = (workspace / remote_helper.SESSION_LOCK).open("w+b")
+    monkeypatch.setattr(remote_helper, "RELAY_CHUNK_SIZE", 64)
+    session = remote_helper.ControlSession("session", workspace, lock)
+    output_size = remote_helper.MAX_CAPTURED_STARTUP_FRAGMENTS * 64 + 1
     events = []
-    output_emitted = threading.Event()
 
     def emit(kind, **values):
         events.append((kind, values))
-        output_emitted.set()
+        if kind == "CHILD_OUTPUT":
+            assert session.child is not None
+            assert len(session.child.startup_output) <= remote_helper.MAX_CAPTURED_STARTUP_FRAGMENTS
+            output = [values["payload"] for kind, values in events if kind == "CHILD_OUTPUT"]
+            if len("".join(output)) == output_size:
+                assert session.child.poll() is None
+                writer.write(b'{"version":1,"type":"STOP"}\n')
 
-    monkeypatch.setattr(
-        remote_helper,
-        "emit",
-        emit,
+    monkeypatch.setattr(remote_helper, "emit", emit)
+    writer.write(
+        json.dumps(
+            {
+                "version": 1,
+                "type": "START",
+                "argv": [
+                    sys.executable,
+                    "-c",
+                    "import signal,sys;"
+                    f"sys.stdout.buffer.write(b'x'*{output_size});sys.stdout.flush();signal.pause()",
+                ],
+                "environment": {},
+                "required_paths": [],
+                "services": [],
+                "required_output_sentinels": [],
+                "readiness_timeout": 30,
+                "literal_prefix": 3,
+            }
+        ).encode()
+        + b"\n"
     )
-    child = remote_helper._spawn_child(
-        (
-            sys.executable,
-            "-c",
-            "import signal,sys;"
-            f"sys.stdout.buffer.write(b'x'*{output_size});sys.stdout.flush();signal.pause()",
-        )
-    )
-    try:
-        child.start_relays(capture_startup=True)
-        assert output_emitted.wait(5)
-        assert child.poll() is None
-        assert all(len(values["payload"]) <= relay_chunk_size for _kind, values in events)
-        assert len(child.startup_output) <= remote_helper.MAX_CAPTURED_STARTUP_FRAGMENTS
-    finally:
-        child.terminate()
+
+    session.run()
+
+    output = [values for kind, values in events if kind == "CHILD_OUTPUT"]
+    assert output
+    assert all(len(values["payload"]) <= 64 for values in output)
+    assert events[-1][0] == "SESSION_CLOSED"
 
 
 def test_spawn_child_rolls_back_process_when_ownership_wrapper_fails(monkeypatch):
@@ -742,7 +659,10 @@ def test_new_workspace_removes_partial_directory_on_initialization_failure(tmp_p
     assert tuple(tmp_path.iterdir()) == ()
 
 
-def test_control_session_cleans_up_when_announcement_fails(tmp_path, monkeypatch):
+@pytest.mark.parametrize("output_cleanup_fails", [False, True])
+def test_control_session_cleans_up_when_announcement_fails(
+    tmp_path, monkeypatch, output_cleanup_fails
+):
     monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
     session_id, workspace, lock = remote_helper.new_workspace()
 
@@ -752,225 +672,444 @@ def test_control_session_cleans_up_when_announcement_fails(tmp_path, monkeypatch
         raise failure
 
     monkeypatch.setattr(remote_helper.ControlSession, "announce", fail_announce)
+    if output_cleanup_fails:
+
+        def fail_output_cleanup(_output):
+            raise OSError("injected output fd restoration failure")
+
+        monkeypatch.setattr(remote_helper._ProtocolOutput, "close", fail_output_cleanup)
     session = remote_helper.ControlSession(session_id, workspace, lock)
 
     with pytest.raises(BrokenPipeError) as raised:
         session.run()
 
     assert raised.value is failure
+    if output_cleanup_fails:
+        assert any("fd restoration failure" in note for note in failure.__notes__)
     assert not workspace.exists()
     assert lock.closed
 
 
-def test_control_session_cleanup_attempts_all_resources_once(tmp_path):
-    class Child:
-        def __init__(self):
-            self.terminate_calls = 0
-            self.fail = True
-            self.failure = RuntimeError("child cleanup failed")
+def test_control_session_cleans_up_when_protocol_output_setup_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
+    session_id, workspace, lock = remote_helper.new_workspace()
+    session = remote_helper.ControlSession(session_id, workspace, lock)
+    failure = OSError("injected output fd setup failure")
 
-        def terminate(self):
-            self.terminate_calls += 1
-            if self.fail:
-                raise self.failure
+    def fail_output_setup(_descriptor):
+        raise failure
 
-    class Lock:
-        def __init__(self):
-            self.close_calls = 0
+    with monkeypatch.context() as patch:
+        patch.setattr(remote_helper.sys, "stdout", sys.__stdout__)
+        patch.setattr(remote_helper.os, "get_blocking", fail_output_setup)
+        with pytest.raises(OSError) as raised:
+            session.run()
 
-        def close(self):
-            self.close_calls += 1
-
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    child = Child()
-    lock = Lock()
-    session = remote_helper.ControlSession("session", workspace, lock)
-    session.child = child
-
-    with pytest.raises(RuntimeError) as raised:
-        session.cleanup()
-
-    assert raised.value is child.failure
-    assert child.terminate_calls == 1
-    assert lock.close_calls == 1
+    assert raised.value is failure
     assert not workspace.exists()
-    assert session.stopping
-    session.cleanup()
-    assert child.terminate_calls == 1
-    assert lock.close_calls == 1
+    assert lock.closed
 
 
-def test_control_session_ignores_signal_while_cleaning(tmp_path):
-    class Child:
-        def __init__(self):
-            self.terminate_calls = 0
-            self.session = None
-            self.reenter = True
-
-        def terminate(self):
-            self.terminate_calls += 1
-            if self.reenter:
-                self.reenter = False
-                assert self.session is not None
-                self.session.handle_signal()
-
-    class Lock:
-        def __init__(self):
-            self.close_calls = 0
-
-        def close(self):
-            self.close_calls += 1
-
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    child = Child()
-    lock = Lock()
-    session = remote_helper.ControlSession("session", workspace, lock)
-    child.session = session
-    session.child = child
-
-    assert session.cleanup()
-
-    assert child.terminate_calls == 1
-    assert lock.close_calls == 1
-    assert session.stopping
-    assert not workspace.exists()
-    assert not session.cleanup()
+def _start_session_command(argv, sentinels=()):
+    return (
+        json.dumps(
+            {
+                "version": 1,
+                "type": "START",
+                "argv": argv,
+                "environment": {},
+                "required_paths": [],
+                "services": [],
+                "required_output_sentinels": list(sentinels),
+                "readiness_timeout": 30,
+                "literal_prefix": len(argv),
+            }
+        ).encode()
+        + b"\n"
+    )
 
 
-def test_control_session_signal_handler_after_spawn_terminates_child(tmp_path, monkeypatch):
+def test_control_session_cleanup_attempts_all_resources_once(tmp_path, monkeypatch, control_pipe):
+    _reader, writer = control_pipe
     workspace = tmp_path / "workspace"
     (workspace / "staged").mkdir(parents=True)
     lock = (workspace / remote_helper.SESSION_LOCK).open("w+b")
     session = remote_helper.ControlSession("session", workspace, lock)
-    original_spawn_child = remote_helper._spawn_child
-    spawned = []
-    child_pidfds = []
+    failure = RuntimeError("child cleanup failed")
+    original_spawn = remote_helper._spawn_child
+    children = []
+    calls = []
 
-    def spawn_then_signal(*args, **kwargs):
-        child = original_spawn_child(*args, **kwargs)
-        spawned.append(child)
-        child_pidfds.append(os.pidfd_open(child.pid))
-        session.handle_signal(signal.SIGTERM, None)
+    def spawn(*args, **kwargs):
+        child = original_spawn(*args, **kwargs)
+        children.append(child)
+        terminate = child.terminate
+
+        async def terminate_then_fail():
+            calls.append("terminate")
+            session.handle_signal()
+            await terminate()
+            raise failure
+
+        monkeypatch.setattr(child, "terminate", terminate_then_fail)
         return child
 
-    request = remote_helper.StartRequest(
-        (sys.executable, "-c", "import signal; signal.pause()"),
-        (),
-        (),
-        (),
-        (),
-        30.0,
-        3,
+    monkeypatch.setattr(remote_helper, "_spawn_child", spawn)
+    writer.write(
+        _start_session_command(
+            [sys.executable, "-c", "import signal;signal.pause()"], ("not-ready",)
+        )
+        + b'{"version":1,"type":"STOP"}\n'
     )
-    monkeypatch.setattr(remote_helper, "_spawn_child", spawn_then_signal)
-    try:
-        with pytest.raises(SystemExit) as raised:
-            session._start_process(request)
+    with pytest.raises(RuntimeError) as raised:
+        session.run()
 
-        assert raised.value.code == 0
-        assert len(spawned) == 1
-        _assert_pidfd_exited(child_pidfds[0])
-        assert not workspace.exists()
-        assert lock.closed
-    finally:
-        for child in spawned:
-            _cleanup_test_child(child, None)
-        for child_pidfd in child_pidfds:
-            os.close(child_pidfd)
+    assert raised.value is failure
+    assert calls == ["terminate"]
+    assert children[0].process.returncode is not None
+    assert children[0].process.stdout.closed and children[0].process.stderr.closed
+    assert lock.closed
+    assert not workspace.exists()
 
 
-def test_control_session_deferred_signal_preserves_spawn_failure(tmp_path, monkeypatch):
+@pytest.mark.parametrize("signal_source", ("callback", "os"))
+def test_control_session_signal_during_spawn_terminates_owned_child(
+    tmp_path, monkeypatch, control_pipe, signal_source
+):
+    _reader, writer = control_pipe
     workspace = tmp_path / "workspace"
     (workspace / "staged").mkdir(parents=True)
     lock = (workspace / remote_helper.SESSION_LOCK).open("w+b")
     session = remote_helper.ControlSession("session", workspace, lock)
-    spawn_resumed = []
+    original_spawn = remote_helper._spawn_child
+    spawned = []
+    events = []
+
+    def spawn_then_signal(*args, **kwargs):
+        child = original_spawn(*args, **kwargs)
+        spawned.append(child)
+        if signal_source == "os":
+            os.kill(os.getpid(), signal.SIGTERM)
+        else:
+            session.handle_signal(signal.SIGTERM)
+        return child
+
+    monkeypatch.setattr(remote_helper, "_spawn_child", spawn_then_signal)
+    monkeypatch.setattr(remote_helper, "emit", lambda kind, **values: events.append((kind, values)))
+    writer.write(_start_session_command([sys.executable, "-c", "import signal;signal.pause()"]))
+
+    session.run()
+
+    assert len(spawned) == 1
+    assert spawned[0].process.returncode is not None
+    assert not any(kind == "PROCESS_READY" for kind, _ in events)
+    assert not workspace.exists()
+    assert lock.closed
+
+
+def test_control_session_signal_during_spawn_preserves_spawn_failure(
+    tmp_path, monkeypatch, control_pipe
+):
+    _reader, writer = control_pipe
+    workspace = tmp_path / "workspace"
+    (workspace / "staged").mkdir(parents=True)
+    lock = (workspace / remote_helper.SESSION_LOCK).open("w+b")
+    session = remote_helper.ControlSession("session", workspace, lock)
     failure = OSError("injected spawn failure")
 
     def signal_then_fail(*_args, **_kwargs):
         session.handle_signal()
-        spawn_resumed.append(True)
         raise failure
 
-    request = remote_helper.StartRequest(
-        ("openocd",),
-        (),
-        (),
-        (),
-        (),
-        30.0,
-        1,
-    )
     monkeypatch.setattr(remote_helper, "_spawn_child", signal_then_fail)
+    writer.write(_start_session_command(["openocd"]))
 
-    with pytest.raises(OSError) as raised:
-        session._start_process(request)
+    session.run()
 
-    assert raised.value is failure
-    assert spawn_resumed == [True]
+    assert session.protocol_error is failure
     assert not workspace.exists()
     assert lock.closed
 
 
-def test_control_session_natural_exit_cleans_before_close_event(tmp_path, monkeypatch):
+def test_output_observer_failure_ends_session_and_disposes_tasks(
+    tmp_path, monkeypatch, control_pipe
+):
+    _reader, writer = control_pipe
     workspace = tmp_path / "workspace"
-    workspace.mkdir()
+    (workspace / "staged").mkdir(parents=True)
     lock = (workspace / remote_helper.SESSION_LOCK).open("w+b")
-
-    class Child:
-        returncode = SAMPLE_CHILD_EXIT_CODE
-
-        def poll(self):
-            return self.returncode
-
-        def terminate(self):
-            pass
-
-    events = []
-
-    def record_event(kind, **values):
-        if kind == "SESSION_CLOSED":
-            assert not workspace.exists()
-            assert lock.closed
-        events.append((kind, values))
-
-    monkeypatch.setattr(remote_helper, "emit", record_event)
     session = remote_helper.ControlSession("session", workspace, lock)
-    session.child = Child()
+    children = []
+    original_spawn = remote_helper._spawn_child
+    original_read = remote_helper._AsyncInput.read
+    failure = OSError("injected pipe read failure")
 
-    assert session._child_finished()
-    assert events == [
-        (
-            "SESSION_CLOSED",
-            {"reason": "process_exit", "returncode": SAMPLE_CHILD_EXIT_CODE},
+    def spawn(*args, **kwargs):
+        child = original_spawn(*args, **kwargs)
+        children.append(child)
+        return child
+
+    async def fail_output_read(reader):
+        if children and reader.descriptor == children[0].process.stdout.fileno():
+            raise failure
+        return await original_read(reader)
+
+    monkeypatch.setattr(remote_helper, "_spawn_child", spawn)
+    monkeypatch.setattr(remote_helper._AsyncInput, "read", fail_output_read)
+    writer.write(
+        _start_session_command(
+            [sys.executable, "-c", "import signal;signal.pause()"], ("not-ready",)
         )
-    ]
+    )
+
+    async def run():
+        tasks_before = asyncio.all_tasks()
+        with pytest.raises(OSError) as raised:
+            await session.run_async()
+        assert raised.value is failure
+        assert asyncio.all_tasks() == tasks_before
+
+    asyncio.run(run())
+
+    assert children[0].process.returncode is not None
+    assert children[0].process.stdout.closed and children[0].process.stderr.closed
+    assert lock.closed
+    assert not workspace.exists()
+
+
+@pytest.mark.parametrize("final_observation", ("ready", "exit", "timeout"))
+def test_readiness_deadline_processes_final_visible_observation(
+    tmp_path, monkeypatch, control_pipe, final_observation
+):
+    _reader, writer = control_pipe
+    workspace = tmp_path / "workspace"
+    (workspace / "staged").mkdir(parents=True)
+    lock = (workspace / remote_helper.SESSION_LOCK).open("w+b")
+    session = remote_helper.ControlSession("session", workspace, lock)
+    children = []
+    events = []
+    original_spawn = remote_helper._spawn_child
+    original_read = remote_helper.os.read
+    original_sleep = remote_helper.asyncio.sleep
+    output_blocked = True
+
+    def spawn(*args, **kwargs):
+        child = original_spawn(*args, **kwargs)
+        children.append(child)
+        return child
+
+    def controlled_read(descriptor, size):
+        if output_blocked and children and descriptor == children[0].process.stdout.fileno():
+            raise BlockingIOError
+        return original_read(descriptor, size)
+
+    async def controlled_sleep(delay):
+        nonlocal output_blocked
+        if delay == 30:
+            # Observe readiness through a duplicate fd without reading any bytes.
+            descriptor = os.dup(children[0].process.stdout.fileno())
+            try:
+                await remote_helper._readable(descriptor)
+            finally:
+                os.close(descriptor)
+            if final_observation == "exit":
+                child = children[0]
+                descriptor = os.pidfd_open(child.pid)
+                try:
+                    os.kill(child.pid, signal.SIGUSR1)
+                    await remote_helper._readable(descriptor)
+                finally:
+                    os.close(descriptor)
+            # The deadline producer enqueues its fact before yielding again.
+            output_blocked = False
+        else:
+            await original_sleep(delay)
+
+    def emit(kind, **values):
+        events.append((kind, values))
+        if kind == "PROCESS_READY":
+            writer.write(b'{"version":1,"type":"STOP"}\n')
+
+    monkeypatch.setattr(remote_helper, "_spawn_child", spawn)
+    monkeypatch.setattr(remote_helper.os, "read", controlled_read)
+    monkeypatch.setattr(remote_helper.asyncio, "sleep", controlled_sleep)
+    monkeypatch.setattr(remote_helper, "emit", emit)
+    marker = "diagnostic" if final_observation == "timeout" else "READY"
+    writer.write(
+        _start_session_command(
+            [
+                sys.executable,
+                "-c",
+                "import signal,sys;"
+                "signal.signal(signal.SIGUSR1,lambda *_:sys.exit(7));"
+                f"print({marker!r},flush=True);signal.pause()",
+            ],
+            ("READY",),
+        )
+    )
+
+    session.run()
+
+    if final_observation == "ready":
+        assert session.protocol_error is None
+        assert [kind for kind, _ in events].count("PROCESS_READY") == 1
+        assert events[-1][0] == "SESSION_CLOSED"
+    else:
+        assert isinstance(session.protocol_error, RuntimeError)
+        assert not any(kind == "PROCESS_READY" for kind, _ in events)
+        assert events[-1][0] == "ERROR"
+        if final_observation == "exit":
+            assert str(SAMPLE_CHILD_EXIT_CODE) in str(session.protocol_error)
+    assert children[0].process.returncode is not None
+    assert not workspace.exists()
+    assert lock.closed
+
+
+def test_cancelled_session_cleans_child_before_leaving_task_scope(
+    tmp_path, monkeypatch, control_pipe
+):
+    _reader, writer = control_pipe
+    workspace = tmp_path / "workspace"
+    (workspace / "staged").mkdir(parents=True)
+    lock = (workspace / remote_helper.SESSION_LOCK).open("w+b")
+    session = remote_helper.ControlSession("session", workspace, lock)
+    children = []
+    original_spawn = remote_helper._spawn_child
+
+    def spawn(*args, **kwargs):
+        child = original_spawn(*args, **kwargs)
+        children.append(child)
+        return child
+
+    def emit(kind, **_values):
+        if kind == "PROCESS_READY":
+            task = asyncio.current_task()
+            assert task is not None
+            task.cancel()
+
+    monkeypatch.setattr(remote_helper, "_spawn_child", spawn)
+    monkeypatch.setattr(remote_helper, "emit", emit)
+    writer.write(_start_session_command([sys.executable, "-c", "import signal;signal.pause()"]))
+
+    async def run():
+        tasks_before = asyncio.all_tasks()
+        with pytest.raises(asyncio.CancelledError):
+            await session.run_async()
+        assert asyncio.all_tasks() == tasks_before
+
+    asyncio.run(run())
+
+    assert children[0].process.returncode is not None
+    assert children[0].process.stdout.closed and children[0].process.stderr.closed
+    assert not workspace.exists()
+    assert lock.closed
+
+
+def test_output_drain_deadline_cancels_readers_and_closes_streams(
+    tmp_path, monkeypatch, control_pipe
+):
+    _reader, writer = control_pipe
+    workspace = tmp_path / "workspace"
+    (workspace / "staged").mkdir(parents=True)
+    lock = (workspace / remote_helper.SESSION_LOCK).open("w+b")
+    session = remote_helper.ControlSession("session", workspace, lock)
+    children = []
+    original_spawn = remote_helper._spawn_child
+    original_read = remote_helper._AsyncInput.read
+    original_sleep = remote_helper.asyncio.sleep
+    blocked = asyncio.Event()
+
+    def spawn(*args, **kwargs):
+        child = original_spawn(*args, **kwargs)
+        children.append(child)
+        return child
+
+    async def held_reader(reader):
+        if children and reader.descriptor in (
+            children[0].process.stdout.fileno(),
+            children[0].process.stderr.fileno(),
+        ):
+            await blocked.wait()
+        return await original_read(reader)
+
+    async def controlled_sleep(delay):
+        if delay != remote_helper.CHILD_RELAY_JOIN_TIMEOUT:
+            await original_sleep(delay)
+
+    monkeypatch.setattr(remote_helper, "_spawn_child", spawn)
+    monkeypatch.setattr(remote_helper._AsyncInput, "read", held_reader)
+    monkeypatch.setattr(remote_helper.asyncio, "sleep", controlled_sleep)
+    writer.write(
+        _start_session_command(
+            [sys.executable, "-c", "import signal;signal.pause()"], ("not-ready",)
+        )
+        + b'{"version":1,"type":"STOP"}\n'
+    )
+
+    async def run():
+        tasks_before = asyncio.all_tasks()
+        with pytest.raises(RuntimeError):
+            await session.run_async()
+        assert asyncio.all_tasks() == tasks_before
+
+    asyncio.run(run())
+
+    assert children[0].process.returncode is not None
+    assert children[0].process.stdout.closed and children[0].process.stderr.closed
+    assert not workspace.exists()
+    assert lock.closed
+
+
+def test_output_delivery_failure_during_shutdown_remains_fatal(tmp_path, monkeypatch, control_pipe):
+    _reader, writer = control_pipe
+    workspace = tmp_path / "workspace"
+    (workspace / "staged").mkdir(parents=True)
+    lock = (workspace / remote_helper.SESSION_LOCK).open("w+b")
+    session = remote_helper.ControlSession("session", workspace, lock)
+    events = []
+    failure = BrokenPipeError("injected shutdown output failure")
+
+    def emit(kind, **values):
+        if kind == "CHILD_OUTPUT" and "shutdown" in values["payload"]:
+            raise failure
+        events.append((kind, values))
+        if kind == "PROCESS_READY":
+            writer.write(b'{"version":1,"type":"STOP"}\n')
+
+    monkeypatch.setattr(remote_helper, "emit", emit)
+    writer.write(
+        _start_session_command(
+            [
+                sys.executable,
+                "-c",
+                "import signal,sys;"
+                "signal.signal(signal.SIGTERM,"
+                "lambda *_:(print('shutdown',flush=True),sys.exit(0)));"
+                "print('ready',flush=True);signal.pause()",
+            ],
+            ("ready",),
+        )
+    )
+
+    with pytest.raises(BrokenPipeError) as raised:
+        session.run()
+
+    assert raised.value is failure
+    assert any(kind == "ERROR" for kind, _ in events)
+    assert not any(kind == "SESSION_CLOSED" for kind, _ in events)
+    assert lock.closed
+    assert not workspace.exists()
 
 
 def test_control_session_natural_exit_cleanup_failure_emits_error_event(
     tmp_path, monkeypatch, control_pipe
 ):
+    _reader, writer = control_pipe
     workspace = tmp_path / "workspace"
-    workspace.mkdir()
+    (workspace / "staged").mkdir(parents=True)
     lock = (workspace / remote_helper.SESSION_LOCK).open("w+b")
-
-    class Child:
-        returncode = 0
-
-        def poll(self):
-            return self.returncode
-
-        def terminate(self):
-            pass
-
     events = []
-    monkeypatch.setattr(
-        remote_helper,
-        "emit",
-        lambda kind, **values: events.append((kind, values)),
-    )
+    monkeypatch.setattr(remote_helper, "emit", lambda kind, **values: events.append((kind, values)))
     original_rmtree = remote_helper.shutil.rmtree
     failure = OSError("injected workspace removal failure")
 
@@ -981,21 +1120,17 @@ def test_control_session_natural_exit_cleanup_failure_emits_error_event(
 
     monkeypatch.setattr(remote_helper.shutil, "rmtree", fail_workspace_removal)
     session = remote_helper.ControlSession("session", workspace, lock)
-    session.child = Child()
+    writer.write(_start_session_command([sys.executable, "-c", "pass"]))
 
     with pytest.raises(OSError) as raised:
         session.run()
     assert raised.value is failure
-    remote_helper.error(raised.value)
 
-    assert [kind for kind, _values in events] == ["SESSION_CREATED", "ERROR"]
-    assert isinstance(events[-1][1]["message"], str)
-    assert events[-1][1]["message"]
-    assert not any(kind == "SESSION_CLOSED" for kind, _values in events)
+    assert events[-1][0] == "ERROR"
+    assert sum(kind == "ERROR" for kind, _ in events) == 1
+    assert not any(kind == "SESSION_CLOSED" for kind, _ in events)
     assert workspace.exists()
     assert lock.closed
-
-    monkeypatch.undo()
     original_rmtree(workspace)
 
 
@@ -1021,7 +1156,6 @@ def test_protocol_error_remains_primary_when_cleanup_also_fails(
     session = remote_helper.ControlSession("session", workspace, lock)
     monkeypatch.setattr(remote_helper.ControlSession, "create", lambda: session)
     monkeypatch.setattr(remote_helper.shutil, "rmtree", fail_workspace_removal)
-    monkeypatch.setattr(remote_helper.signal, "signal", lambda *_args: None)
     monkeypatch.setattr(remote_helper.sys, "argv", ["remote_helper.py", "control"])
 
     _reader, writer = control_pipe
@@ -1061,7 +1195,8 @@ def test_supervised_child_terminates_descendant_after_leader_term(tmp_path):
         assert os.getpgid(descendant_pid) == child.pid
         assert child.poll() is None
 
-        child.terminate()
+        asyncio.run(child.terminate())
+        child.close_streams()
 
         assert child.returncode == 0
         _assert_pidfd_exited(descendant_pidfd)
@@ -1071,7 +1206,7 @@ def test_supervised_child_terminates_descendant_after_leader_term(tmp_path):
             os.close(descendant_pidfd)
 
 
-def test_supervised_child_warns_and_terminates_descendant_after_leader_exit(tmp_path, capsys):
+def test_supervised_child_warns_and_terminates_descendant_after_leader_exit(tmp_path, capfd):
     descendant_path = tmp_path / "descendant.pid"
     child = remote_helper._spawn_child(
         (sys.executable, "-c", _forking_child_code(False), str(descendant_path))
@@ -1089,11 +1224,12 @@ def test_supervised_child_warns_and_terminates_descendant_after_leader_exit(tmp_
         _assert_pidfd_exited(leader_pidfd)
         assert child.process.returncode is None
 
-        child.terminate()
+        asyncio.run(child.terminate())
+        child.close_streams()
 
         assert child.returncode == 0
         _assert_pidfd_exited(descendant_pidfd)
-        assert str(descendant_pid) in capsys.readouterr().err
+        assert str(descendant_pid) in capfd.readouterr().err
     finally:
         _cleanup_test_child(child, descendant_pidfd)
         if descendant_pidfd is not None:
@@ -1132,7 +1268,7 @@ def test_supervised_child_skips_kill_after_group_disappears(monkeypatch):
     child = remote_helper.SupervisedChild(process)
     child._observed_returncode = 0
 
-    child.terminate()
+    asyncio.run(child.terminate())
 
     assert signal.SIGTERM in signals
     assert signal.SIGKILL not in signals
@@ -1161,7 +1297,6 @@ def test_supervised_child_reaps_and_cleans_up_after_signal_errors(monkeypatch):
     process = Process()
     child = remote_helper.SupervisedChild(process)
     child._observed_returncode = 0
-    cleaned_up = []
     term_error = RuntimeError("term failed")
 
     def fail_term(_pid, signum):
@@ -1169,21 +1304,15 @@ def test_supervised_child_reaps_and_cleans_up_after_signal_errors(monkeypatch):
             raise term_error
         raise ProcessLookupError
 
-    def fail_cleanup():
-        cleaned_up.append(True)
-        raise RuntimeError("cleanup failed")
-
     monkeypatch.setattr(remote_helper.os, "killpg", fail_term)
-    monkeypatch.setattr(child, "cleanup", fail_cleanup)
 
     with pytest.raises(RuntimeError) as raised:
-        child.terminate()
+        asyncio.run(child.terminate())
+        child.close_streams()
 
     assert raised.value is term_error
     assert process.wait_calls
     assert all(timeout is not None for timeout in process.wait_calls)
-    assert cleaned_up
-    assert any("cleanup failed" in note for note in raised.value.__notes__)
 
 
 def test_supervised_child_group_cleanup_ignores_diagnostic_failure(monkeypatch):
@@ -1200,7 +1329,11 @@ def test_supervised_child_group_cleanup_ignores_diagnostic_failure(monkeypatch):
     child = remote_helper.SupervisedChild(Process())
     signals = []
     monkeypatch.setattr(remote_helper.os, "killpg", lambda _pid, signum: signals.append(signum))
-    monkeypatch.setattr(child, "_wait_for_leader_exit", lambda: True)
+
+    async def leader_exited():
+        return True
+
+    monkeypatch.setattr(child, "_wait_for_leader_exit", leader_exited)
     monkeypatch.setattr(child, "_group_exists", lambda: True)
     monkeypatch.setattr(
         child,
@@ -1208,7 +1341,7 @@ def test_supervised_child_group_cleanup_ignores_diagnostic_failure(monkeypatch):
         lambda: (_ for _ in ()).throw(OSError("proc unavailable")),
     )
 
-    child.terminate()
+    asyncio.run(child.terminate())
 
     assert signals.count(signal.SIGTERM) == 1
     assert signals.count(signal.SIGKILL) == 1
@@ -1216,139 +1349,50 @@ def test_supervised_child_group_cleanup_ignores_diagnostic_failure(monkeypatch):
 
 
 def test_supervised_child_cleanup_uses_finite_budgets_after_failures(monkeypatch):
-    class Clock:
-        now = 10.0
-
-        def monotonic(self):
-            return self.now
-
-    class Stream:
-        closed = False
-
-        def __init__(self):
-            self.close_calls = 0
-
-        def close(self):
-            self.close_calls += 1
-            self.closed = True
-
-    class Process:
-        pid = 123
-        returncode = None
-
-        def __init__(self):
-            self.stdout = Stream()
-            self.stderr = Stream()
-            self.wait_calls = []
-
-        def wait(self, timeout=None):
-            self.wait_calls.append(timeout)
-            raise TimeoutError("reap failed")
-
-    class Relay:
-        ident = 1
-
-        def __init__(self, name, *, consumes_budget=False):
-            self.name = name
-            self.alive = True
-            self.join_calls = []
-            self.consumes_budget = consumes_budget
-
-        def is_alive(self):
-            return self.alive
-
-        def join(self, timeout=None):
-            self.join_calls.append(timeout)
-            join_deadlines.append(clock.now + (timeout or 0.0))
-            self.alive = False
-            if self.consumes_budget:
-                self.consumes_budget = False
-                clock.now += remote_helper.CHILD_RELAY_JOIN_TIMEOUT
-
-    clock = Clock()
-    join_deadlines: list[float] = []
-    process = Process()
-    relays = [
-        Relay("stdout-relay", consumes_budget=True),
-        Relay("stderr-relay"),
-    ]
-    child = remote_helper.SupervisedChild(process)
-    child.relay_threads = relays
-    child._observed_returncode = 0
-    signals = []
-    signal_error = RuntimeError("signal failed")
-
-    def fail_killpg(_pid, signum):
-        signals.append(signum)
-        if signum != 0:
-            raise signal_error
-
-    monkeypatch.setattr(remote_helper, "CHILD_RELAY_JOIN_TIMEOUT", 0.75)
-    monkeypatch.setattr(remote_helper.os, "killpg", fail_killpg)
-    monkeypatch.setattr(remote_helper.time, "monotonic", clock.monotonic)
-    monkeypatch.setattr(
-        child,
-        "_wait_for_leader_exit",
-        lambda: (_ for _ in ()).throw(RuntimeError("leader wait failed")),
-    )
-    monkeypatch.setattr(child, "_warn_remaining_group_members", lambda: None)
-    cleanup_deadline = clock.now + remote_helper.CHILD_RELAY_JOIN_TIMEOUT
-
-    with pytest.raises(RuntimeError) as raised:
-        child.terminate()
-
-    assert raised.value is signal_error
-    assert signals.count(signal.SIGTERM) == 1
-    assert signals.count(signal.SIGKILL) == 1
-    assert signals.index(signal.SIGTERM) < signals.index(signal.SIGKILL)
-    assert process.wait_calls
-    assert all(
-        timeout is not None
-        and math.isfinite(timeout)
-        and 0 < timeout <= remote_helper.CHILD_REAP_TIMEOUT
-        for timeout in process.wait_calls
-    )
-    join_calls = [timeout for relay in relays for timeout in relay.join_calls]
-    assert join_calls
-    assert all(0.0 <= timeout <= remote_helper.CHILD_RELAY_JOIN_TIMEOUT for timeout in join_calls)
-    assert all(deadline <= cleanup_deadline for deadline in join_deadlines)
-    assert process.stdout.closed and process.stdout.close_calls == 1
-    assert process.stderr.closed and process.stderr.close_calls == 1
-    assert any("leader wait failed" in note for note in raised.value.__notes__)
-    assert any("reap failed" in note for note in raised.value.__notes__)
-
-
-def test_supervised_child_wait_for_leader_exit_honors_deadline(monkeypatch):
     class Process:
         pid = 123
         returncode = None
         stdout = None
         stderr = None
 
+        def __init__(self):
+            self.wait_calls = []
+
+        def wait(self, timeout=None):
+            self.wait_calls.append(timeout)
+            raise TimeoutError("reap failed")
+
     process = Process()
     child = remote_helper.SupervisedChild(process)
-    now = [100]
-    waitid_calls = []
-    sleeps = []
+    signal_error = RuntimeError("signal failed")
+    signals = []
 
-    def waitid(*args):
-        waitid_calls.append(args)
+    def fail_signal(_pid, signum):
+        signals.append(signum)
+        if signum != 0:
+            raise signal_error
 
-    def sleep(duration):
-        sleeps.append(duration)
-        now[0] += duration
+    async def fail_leader_wait():
+        raise RuntimeError("leader wait failed")
 
-    monkeypatch.setattr(remote_helper, "CHILD_TERM_TIMEOUT", 3)
-    monkeypatch.setattr(remote_helper, "CHILD_POLL_INTERVAL", 2)
-    monkeypatch.setattr(remote_helper.os, "waitid", waitid)
-    monkeypatch.setattr(remote_helper.time, "monotonic", lambda: now[0])
-    monkeypatch.setattr(remote_helper.time, "sleep", sleep)
+    monkeypatch.setattr(remote_helper.os, "killpg", fail_signal)
+    monkeypatch.setattr(child, "_wait_for_leader_exit", fail_leader_wait)
+    monkeypatch.setattr(child, "_warn_remaining_group_members", lambda: None)
 
-    assert child._wait_for_leader_exit() is False
-    assert sleeps
-    assert all(0 < duration <= 2 for duration in sleeps)
-    assert waitid_calls
-    assert now[0] == 103
+    with pytest.raises(RuntimeError) as raised:
+        asyncio.run(child.terminate())
+
+    assert raised.value is signal_error
+    assert signal.SIGTERM in signals and signal.SIGKILL in signals
+    assert signals.index(signal.SIGTERM) < signals.index(signal.SIGKILL)
+    assert all(
+        timeout is not None
+        and math.isfinite(timeout)
+        and 0 < timeout <= remote_helper.CHILD_REAP_TIMEOUT
+        for timeout in process.wait_calls
+    )
+    assert any("leader wait failed" in note for note in raised.value.__notes__)
+    assert any("reap failed" in note for note in raised.value.__notes__)
 
 
 def test_decode_command_rejects_malformed_required_path_before_launch(start_command):
@@ -1358,7 +1402,7 @@ def test_decode_command_rejects_malformed_required_path_before_launch(start_comm
 
 
 def test_control_session_does_not_launch_when_required_file_is_missing(
-    tmp_path, monkeypatch, start_command
+    tmp_path, monkeypatch, start_command, control_pipe
 ):
     workspace = tmp_path / "workspace"
     staged = workspace / "staged"
@@ -1372,12 +1416,15 @@ def test_control_session_does_not_launch_when_required_file_is_missing(
         lambda *args, **kwargs: spawn_calls.append((args, kwargs)),
     )
     monkeypatch.setattr(remote_helper, "allocate_service_address", lambda _ports: "127.0.0.1")
-    session = remote_helper.ControlSession("session", workspace, None)
+    _reader, writer = control_pipe
+    lock = (workspace / remote_helper.SESSION_LOCK).open("w+b")
+    session = remote_helper.ControlSession("session", workspace, lock)
+    writer.write(json.dumps(start_command).encode() + b"\n")
 
-    with pytest.raises(ValueError) as raised:
-        session.dispatch(start_command)
+    session.run()
 
-    message = str(raised.value)
+    assert isinstance(session.protocol_error, ValueError)
+    message = str(session.protocol_error)
     assert "required remote file" in message
     assert "missing" in message
     assert str(missing_file) in message

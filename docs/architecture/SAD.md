@@ -1120,31 +1120,73 @@ Only the cleanup attempt on each side is bounded, beginning after that side
 observes loss. The project does not bound the interval from local detection to
 remote OpenOCD termination.
 
-The helper's `ControlSession` owns the workspace, control selector, command
-dispatch, signal handlers, and final cleanup. A `SupervisedChild` owns the
-configured OpenOCD process, output relays, startup observation, termination,
-and stream closure. The helper allocates the remote loopback address and
-checks requested service ports for bind collisions before startup; OpenOCD
-owns and configures the actual GDB, Tcl, telnet, and RTT listeners. The helper
-does not probe listener connectability. This keeps process resources attached
-to one owner across success, failure, EOF, and signal paths.
+The helper's `ControlSession` is the sole lifecycle coordinator. Its synchronous
+entry point runs a Python 3.12+ standard-library asyncio session with one
+`TaskGroup`. Tasks observe control frames, stdout, stderr, leader exit,
+readiness/drain deadlines, and signals and report immutable facts through a
+bounded queue. An owned nonblocking writer serializes protocol output. The
+coordinator alone dispatches commands, changes lifecycle
+state, interprets output/readiness, selects the logical outcome, and initiates
+cleanup. Observers have no independent teardown or terminal-event policy.
 
-The control session retains raw stdin bytes in one incremental LF frame reader
-shared by the normal control loop and startup-readiness wait. Partial frames
-return control to supervision until more bytes arrive; complete buffered frames
-are dispatched in order without requiring another OS readability event. EOF
-with an incomplete frame is a protocol error. While startup readiness is
-pending, the helper continues checking child exit and required output markers while also
-consuming control input. `STOP`, EOF, and invalid commands end startup and
-perform session cleanup without first emitting `PROCESS_READY`. Address
-collision retries retain the same control reader.
+Internal states are CREATED, STARTING, ACTIVE, TERMINATING, and CLOSED.
+STARTING is a state in the event loop, not a nested readiness wait: control,
+output, exit, signals, and timeout remain observable concurrently. TERMINATING
+continues draining observed output. Address-collision retries dispose the old
+attempt before starting another; child observations identify their owning
+attempt, so obsolete events cannot affect its replacement. Control framing
+persists across attempts. STOP, EOF, or a protocol failure during retry cleanup
+prevents another launch.
+
+A `SupervisedChild` owns the configured OpenOCD process-group resources and
+per-stream decoding state, which only the coordinator consumes. Process
+creation retains `Popen(start_new_session=True)` and explicit reaping: using
+asyncio's subprocess transport would automatically reap the leader before the
+owned-group cleanup decision. The leader is observed non-destructively with
+`waitid(..., WNOWAIT)`, using pidfd readiness where supported and an async
+bounded-interval observation fallback on older Linux kernels. An unreaped
+leader protects the process-group identity until group signalling completes.
+The helper allocates the remote loopback address and checks requested service
+ports for bind collisions before startup; OpenOCD owns and configures the
+actual GDB, Tcl, telnet, and RTT listeners. The helper does not probe listener
+connectability.
+
+The control observer owns one raw async fd reader and incremental LF framer.
+Partial frames remain buffered while other observations proceed; complete
+buffered frames are dispatched in order without requiring another OS
+readability event. EOF with an incomplete frame is a protocol error. Frames
+are bounded as specified in Protocol v1. Each child stream likewise has one
+raw fd observer; the coordinator incrementally decodes its bytes for both
+output relay and readiness matching. There are no output threads, competing
+readiness readers, or application selector/buffered-reader split. `STOP`, EOF,
+and invalid commands end startup and perform session cleanup without first
+emitting `PROCESS_READY`.
+
+Protocol output uses one ordered queue with a 16 MiB byte bound. A congested
+stdout pipe cannot block control, signal, or child cleanup observations;
+exceeding the output bound is an infrastructure failure. After resource
+cleanup and terminal-event selection, the writer has a bounded drain deadline
+before cancellation and descriptor restoration. If the peer cannot receive
+the queued terminal frame, helper failure remains a transport/infrastructure
+result, not an OpenOCD exit status. Best-effort descendant diagnostics likewise
+use a nonblocking stderr write and may be dropped under backpressure.
 
 Cleanup sends `SIGTERM` to the owned group and waits a bounded grace period for
 the leader. It then checks whether the group still exists. If so, the helper
 may inspect `/proc` once and warn about observable non-leader members before
 sending `SIGKILL`. Failure or a race during this best-effort diagnostic does
-not affect the group cleanup decision. The helper then reaps the leader, joins
-output relays, and releases their streams. It does not continuously monitor
+not affect the group cleanup decision. The helper then reaps the leader with
+a finite budget, drains output observations with a shared bounded deadline,
+and cancels and awaits remaining attempt tasks before releasing their streams.
+Graceful leader waiting is async, so output can continue draining throughout
+termination. All observer tasks are disposed before the session TaskGroup ends.
+Workspace removal and lock release are attempted once even if child cleanup
+fails. Synchronous Unix signal callbacks enqueue observations and wake the loop;
+a signal during synchronous spawn is handled after child ownership is installed,
+and subsequent signals do
+not interrupt cleanup. The coordinator keeps logical outcome and cleanup
+failures separate and applies the documented failure-precedence rule before
+emitting any terminal event. It does not continuously monitor
 the process tree, retain descendant PID history, or use descendant discovery
 to decide whether the group needs cleanup.
 
@@ -1290,13 +1332,16 @@ end-to-end reachability.
 
 Generic processes with no required output markers are ready immediately. The
 startup timeout is 30 seconds. The timeout bounds the wait in the absence of
-another terminal condition. The current helper checks startup output and child
-exit after control-input waits of at most `CHILD_POLL_INTERVAL`; a final check
-may therefore occur slightly after the nominal deadline, with tolerance bounded
-by one polling interval. `STOP`, EOF, and protocol failures remain responsive
-throughout the startup wait. This is observation granularity, not a hard
-real-time cutoff; future implementations preserve the observable semantics
-without having to use polling.
+another terminal condition. The deadline is an observation, not cancellation of startup. At the deadline,
+the coordinator requests a final nonblocking scan by each existing input
+observer, continuing to consume queued facts while observers acknowledge that
+scan. It then checks leader exit/readiness before choosing a timeout. There is
+no competing reader or scheduling assumption about which coroutine runs first.
+Ready output or child exit visible at that final bounded observation may be
+processed slightly after the nominal deadline, within the former
+`CHILD_POLL_INTERVAL` observation tolerance. `STOP`, EOF, and protocol failures
+remain responsive throughout startup. This preserves observation granularity
+rather than imposing a strict timestamp cutoff or requiring readiness polling.
 
 ---
 
