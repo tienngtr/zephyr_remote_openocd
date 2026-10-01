@@ -1044,11 +1044,17 @@ another owner merely because cleanup encountered an error.
 
 ### 38.1 Local SSH subprocess ownership
 
-`SshCommand.popen()` starts each long-lived control or forwarding transport in
-its own local session, outside the interactive client's foreground process
-group. Terminal SIGINT intended for GDB therefore leaves these transports
-running. Explicit lifecycle cleanup still terminates and reaps each owned SSH
-process directly; isolation does not transfer cleanup ownership to the client.
+`SshCommand.popen()` starts each long-lived control or forwarding transport with
+SIGINT blocked, while preserving the caller's controlling terminal and
+foreground process group for interactive SSH authentication. The launch thread
+temporarily blocks SIGINT so the child inherits that mask across exec, then
+restores its exact previous mask before starting the stderr drain. Other threads'
+masks and process-wide signal handlers remain unchanged. Terminal SIGINT intended
+for GDB therefore leaves these transports running without detaching them from
+the terminal or subjecting authentication reads to background-group SIGTTIN.
+Explicit lifecycle cleanup still terminates and reaps each owned SSH process
+directly. If restoring the launch thread's mask delivers a pending interruption,
+the transport boundary rolls back the acquired process before propagating it.
 
 `ManagedSshProcess` remains a narrow ownership wrapper rather than a session
 abstraction. It delegates process status and termination to the underlying

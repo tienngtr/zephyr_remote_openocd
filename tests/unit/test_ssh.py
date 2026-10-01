@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, BinaryIO, cast, override
 from unittest.mock import patch
 
@@ -92,7 +93,6 @@ def test_long_lived_process_preserves_explicit_path_and_generated_arguments(pope
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        start_new_session=True,
     )
 
 
@@ -108,6 +108,58 @@ def test_bare_alternate_executable_is_resolved_through_path(tmp_path, monkeypatc
 
     assert result.returncode == 0
     assert json.loads(result.stdout) == ["--fixed", "target", "remote command"]
+
+
+@pytest.mark.parametrize("start_failure", [False, True])
+def test_long_lived_launch_restores_calling_thread_signal_mask(tmp_path, start_failure):
+    def launch():
+        original = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGUSR1})
+        expected = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+        try:
+            if start_failure:
+                with pytest.raises(FileNotFoundError):
+                    SshCommand((str(tmp_path / "missing-ssh"),)).popen("host", "serve")
+            else:
+                process = SshCommand((sys.executable, "-c", "pass")).popen("host", "serve")
+                _stop_process(process)
+            assert signal.pthread_sigmask(signal.SIG_BLOCK, set()) == expected
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, original)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        executor.submit(launch).result(timeout=30)
+
+
+def test_pending_sigint_during_launch_reaps_acquired_transport(monkeypatch):
+    popen = subprocess.Popen
+    acquired = []
+
+    def launch(*args, **kwargs):
+        process = popen(*args, **kwargs)
+        acquired.append(process)
+        # If launch temporarily blocks SIGINT, restoring the caller's mask
+        # delivers this pending interruption at the acquisition boundary.
+        signal.raise_signal(signal.SIGINT)
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", launch)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            SshCommand((sys.executable, "-c", "import sys; sys.stdin.read()")).popen(
+                "host", "serve"
+            )
+        assert acquired[0].poll() is not None
+        assert acquired[0].stdin is not None and acquired[0].stdout is not None
+        assert acquired[0].stdin.closed
+        assert acquired[0].stdout.closed
+    finally:
+        for process in acquired:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=30)
+            for stream in (process.stdin, process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
 
 
 def test_long_lived_process_drains_noisy_stderr_and_keeps_bounded_tail():
