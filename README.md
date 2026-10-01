@@ -135,12 +135,12 @@ generated state.
 1. West and the Zephyr build remain on the local machine.
 2. The runner uses the configured SSH command to deploy a remote helper and
    create an isolated session.
-3. The local control client communicates with the helper over SSH to stage the
-   build and board-support files and start OpenOCD; the helper supervises the
-   remote process and emits structured lifecycle and output events.
+3. The local runner communicates with the helper over SSH to stage the build
+   and board-support files and start OpenOCD; the helper supervises the remote
+   process and emits structured lifecycle and output events.
 4. SSH forwarding exposes required OpenOCD services on local loopback ports
-   and independently attempts best-effort Tcl, telnet, and optional RTT
-   services. Best-effort availability failures produce warnings; cleanup
+   and independently attempts best-effort forwarding for Tcl, telnet, and
+   optional RTT. Best-effort availability failures produce warnings; cleanup
    failures remain fatal.
 5. The runner relays output and cleans up the remote session when it exits, is
    interrupted, or detects that SSH connectivity was lost. The remote helper

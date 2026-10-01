@@ -6,8 +6,9 @@ has been executed recently.
 
 Status is classified by maintained coverage: **Automated** means unit,
 Zephyr, or SSH integration coverage; **Hardware** means a maintained
-real-hardware test requiring a configured fixture; **Both** has both forms.
-Availability of a fixture does not imply that the hardware test has been
+real-hardware test requiring a configured hardware test environment; **Both**
+has both forms. Availability of a configured hardware environment does not
+imply that the hardware test has been
 executed.
 
 | Criterion | Status | Maintained tests |
@@ -40,7 +41,7 @@ executed.
 | AC-LIFE-002 | Automated | [`TestRealProcessHelper.test_helper_eof_cleans_child_and_workspace`](../../tests/local_integration/test_remote_process.py); [`TestSshTransportIntegration.test_helper_ssh_loss_cleans_session`](../../tests/ssh_integration/test_ssh_integration.py) |
 | AC-LIFE-003 | Automated | [`test_operation_primary_failure_rules`](../../tests/zephyr_integration/test_adapter.py); [`test_rtt_cleanup_failure_does_not_replace_observed_openocd_failure`](../../tests/zephyr_integration/test_adapter.py); [`test_background_openocd_result_does_not_replace_active_operation_failure`](../../tests/zephyr_integration/test_adapter.py) |
 | AC-LIFE-004 | Automated | [`test_operation_primary_failure_rules`](../../tests/zephyr_integration/test_adapter.py); [`test_close_attempts_all_cleanup_once_and_preserves_first_failure`](../../tests/unit/test_backend.py) |
-| AC-PLAT-001 | Both | Linux [Zephyr](../../tests/zephyr_integration/) and [SSH](../../tests/ssh_integration/) integration plus [real hardware](../../tests/hardware/) fixtures |
+| AC-PLAT-001 | Both | Linux [Zephyr](../../tests/zephyr_integration/) and [SSH](../../tests/ssh_integration/) integration plus [real-hardware coverage](../../tests/hardware/) |
 | AC-SSH-001 | Automated | [SSH unit tests](../../tests/unit/test_ssh.py); [`TestConfiguredSshIntegration.test_configured_ssh_and_fixed_arguments`](../../tests/ssh_integration/test_ssh_integration.py) |
 | AC-SSH-002 | Automated | [SSH command tests](../../tests/unit/test_ssh.py); [`TestConfiguredSshIntegration`](../../tests/ssh_integration/test_ssh_integration.py) fixed-argument and alternate-name cases; [`TestSshTransportIntegration.test_forwarding_and_session_lifecycle_use_configured_client`](../../tests/ssh_integration/test_ssh_integration.py) |
 
