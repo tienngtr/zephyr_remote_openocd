@@ -92,6 +92,7 @@ def test_long_lived_process_preserves_explicit_path_and_generated_arguments(pope
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        start_new_session=True,
     )
 
 

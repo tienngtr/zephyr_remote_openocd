@@ -348,6 +348,9 @@ class SshCommand:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            # Terminal Ctrl-C belongs to the interactive client. Keep owned
+            # transports outside its group; cleanup still signals them directly.
+            start_new_session=True,
         )
         return ManagedSshProcess.from_popen(process)
 
