@@ -17,6 +17,13 @@ a non-empty string `type`. Session commands, session events, and successful
 standalone responses contain exactly their documented fields and reject unknown
 fields. Helper stdout contains protocol frames only.
 
+Control frames on helper stdin are limited to 1 MiB (1,048,576 bytes), including
+the LF delimiter. The bound applies to each frame independently, including
+when multiple frames arrive together. An oversized complete or incomplete
+frame is a protocol error. This bounded-input requirement retains Protocol v1
+message shapes and version; callers constructing unusually large `START`
+commands must reduce their argv/environment payload to fit the bound.
+
 The helper emits one `SESSION_CREATED` event before reading commands. The
 client writes commands to helper stdin and reads events from stdout. There is
 no feature negotiation beyond the required version.

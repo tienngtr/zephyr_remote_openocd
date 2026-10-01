@@ -1090,6 +1090,14 @@ of the control transport MAY prevent delivery of a final outcome. The exact
 Protocol v1 messages, framing, ordering, and validation rules are defined in
 [`protocol.md`](../architecture/protocol.md).
 
+The helper SHALL incrementally frame control input, retain incomplete frames,
+and consume complete buffered frames without requiring further input readiness.
+EOF with an incomplete frame SHALL be a protocol error. Each control frame
+SHALL be bounded to 1 MiB (1,048,576 bytes), including its LF delimiter;
+oversized complete or incomplete frames SHALL be rejected as protocol errors.
+This bound does not change Protocol v1 message shapes or version. Callers with
+larger `START` payloads SHALL reduce their argv/environment payload to fit.
+
 ### REQ-FUNC-HELP-007
 
 Helper revisions SHALL be installed atomically at a content-addressed path,

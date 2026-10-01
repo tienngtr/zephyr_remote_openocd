@@ -192,6 +192,30 @@ def test_control_frames_keep_batched_frames_and_incomplete_tail(control_pipe):
             frames.read_frame(0)
 
 
+@pytest.mark.parametrize("payload", (b"x" * 32, b"x" * 32 + b"\n"))
+def test_control_frames_reject_oversized_input(monkeypatch, control_pipe, payload):
+    reader, writer = control_pipe
+    monkeypatch.setattr(remote_helper, "MAX_CONTROL_FRAME_SIZE", 32, raising=False)
+    with selectors.DefaultSelector() as selector:
+        selector.register(reader, selectors.EVENT_READ)
+        frames = remote_helper._ControlFrameReader(reader.fileno(), selector)
+        writer.write(payload)
+        with pytest.raises(ValueError):
+            frames.read_frame(0)
+
+
+def test_control_frame_limit_applies_to_individual_frames(monkeypatch):
+    monkeypatch.setattr(remote_helper, "MAX_CONTROL_FRAME_SIZE", 32)
+    frames = remote_helper._ControlFrames()
+    frames.feed(b"x" * 31 + b"\n" + b"y" * 31 + b"\n" + b"z" * 31)
+    assert frames.pop_frame() == b"x" * 31 + b"\n"
+    assert frames.pop_frame() == b"y" * 31 + b"\n"
+    assert frames.pop_frame() is None
+    frames.feed(b"\n")
+    assert frames.pop_frame() == b"z" * 31 + b"\n"
+    frames.finish()
+
+
 def _wait_for_descendant(path):
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:

@@ -38,6 +38,7 @@ CHILD_POLL_INTERVAL = 0.05
 CHILD_REAP_TIMEOUT = 1
 CHILD_RELAY_JOIN_TIMEOUT = 2
 RELAY_CHUNK_SIZE = 64 * 1024
+MAX_CONTROL_FRAME_SIZE = 1024 * 1024
 MAX_SESSION_ID_ATTEMPTS = 32
 MAX_ADDRESS_ALLOCATION_ATTEMPTS = 32
 # 18 random bytes provide 144 bits of entropy in a compact URL-safe ID.
@@ -894,30 +895,51 @@ def _wait_for_process(
     raise RuntimeError("process readiness timed out")
 
 
+class _ControlFrames:
+    """Incrementally frame bounded LF-delimited control input."""
+
+    def __init__(self):
+        self._buffer = bytearray()
+
+    def feed(self, chunk: bytes) -> None:
+        self._buffer.extend(chunk)
+
+    def pop_frame(self) -> bytes | None:
+        delimiter = self._buffer.find(b"\n")
+        size = delimiter + 1 if delimiter >= 0 else len(self._buffer) + 1
+        if size > MAX_CONTROL_FRAME_SIZE:
+            raise ValueError("protocol frame exceeds maximum size")
+        if delimiter < 0:
+            return None
+        frame = bytes(self._buffer[: delimiter + 1])
+        del self._buffer[: delimiter + 1]
+        return frame
+
+    def finish(self) -> None:
+        if self._buffer:
+            raise ValueError("protocol frame is missing its LF delimiter")
+
+
 class _ControlFrameReader:
     """Retain raw control bytes across selector waits and command dispatch."""
 
     def __init__(self, descriptor: int, selector: selectors.BaseSelector):
         self._descriptor = descriptor
         self._selector = selector
-        self._buffer = bytearray()
+        self._frames = _ControlFrames()
 
     def read_frame(self, timeout: float) -> bytes | None:
         """Return one LF frame, empty bytes for EOF, or None when incomplete."""
-        if b"\n" not in self._buffer:
+        frame = self._frames.pop_frame()
+        if frame is None:
             if not self._selector.select(timeout):
                 return None
             chunk = os.read(self._descriptor, RELAY_CHUNK_SIZE)
             if not chunk:
-                if self._buffer:
-                    raise ValueError("protocol frame is missing its LF delimiter")
+                self._frames.finish()
                 return b""
-            self._buffer.extend(chunk)
-        delimiter = self._buffer.find(b"\n")
-        if delimiter < 0:
-            return None
-        frame = bytes(self._buffer[: delimiter + 1])
-        del self._buffer[: delimiter + 1]
+            self._frames.feed(chunk)
+            frame = self._frames.pop_frame()
         return frame
 
 
