@@ -104,7 +104,7 @@ def write_start(stream: BinaryIO, process: RemoteProcess, services: Iterable[Ser
 
 
 def write_stop(stream: BinaryIO) -> None:
-    """Serialize the parameterless persistent STOP command."""
+    """Serialize the parameterless session STOP command."""
 
     _write_frame(stream, "STOP")
 
@@ -185,7 +185,7 @@ _EVENT_VALIDATORS = {
 
 
 def validate_helper_event(message: dict[str, Any]) -> None:
-    """Validate one event in the current persistent helper contract."""
+    """Validate one event in the current session helper contract."""
 
     if not isinstance(message, dict):
         raise ProtocolError("invalid helper event fields")
@@ -271,7 +271,7 @@ def validate_deployment_response(message: dict[str, Any]) -> None:
 
 
 class EventOrder:
-    """Validate the persistent helper event lifecycle."""
+    """Validate the session helper event lifecycle."""
 
     def __init__(self) -> None:
         self._state = "new"

@@ -247,7 +247,7 @@ class _RequiredOutputSentinels:
 
 
 class _SentinelMatcher:
-    """Recognize required sentinels as complete trimmed lines."""
+    """Recognize required startup output markers as complete trimmed lines."""
 
     def __init__(self, required_output_sentinels):
         self.required_output_sentinels = required_output_sentinels
@@ -296,7 +296,7 @@ def relay(
     captured=None,
     capture_lock=None,
 ):
-    """Relay bounded UTF-8 fragments while matching complete sentinels."""
+    """Relay bounded UTF-8 fragments while matching complete output markers."""
     decoder = codecs.getincrementaldecoder("utf-8")("replace")
     matcher = (
         _SentinelMatcher(required_output_sentinels)
@@ -485,9 +485,9 @@ def _validate_required_output_sentinels(sentinels):
         and "\r" not in sentinel
         for sentinel in sentinels
     ):
-        raise ValueError("START required output sentinels are invalid")
+        raise ValueError("START required output markers are invalid")
     if len(sentinels) != len(set(sentinels)):
-        raise ValueError("START required output sentinels must be unique")
+        raise ValueError("START required output markers must be unique")
 
 
 def _validate_timeout(timeout):
@@ -720,7 +720,7 @@ class SupervisedChild:
                 errors.append(error)
         _raise_cleanup_errors(errors)
 
-    def dispose(self):
+    def cleanup(self):
         self.join_relays()
         self.close_streams()
 
@@ -803,7 +803,7 @@ class SupervisedChild:
             except BaseException as error:
                 errors.append(error)
         try:
-            self.dispose()
+            self.cleanup()
         except BaseException as error:
             errors.append(error)
         _raise_cleanup_errors(errors)

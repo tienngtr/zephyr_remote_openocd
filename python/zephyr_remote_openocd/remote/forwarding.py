@@ -99,7 +99,7 @@ class _ForwardManager:
 
     @staticmethod
     def _await_ready(process: ManagedSshProcess, sentinel: str, deadline: float) -> bool:
-        """Wait for the readiness sentinel from this exact SSH process."""
+        """Wait for the startup output marker from this exact SSH process."""
         if process.stdout is None:
             return False
         sentinel_bytes = sentinel.encode()
@@ -213,7 +213,7 @@ class _ForwardManager:
         return tuple(failures)
 
     def close(self) -> None:
-        """Attempt to dispose every owned forward once."""
+        """Attempt to clean up every owned forward once."""
         pending = self._processes
         self._processes = []
         self._services = []

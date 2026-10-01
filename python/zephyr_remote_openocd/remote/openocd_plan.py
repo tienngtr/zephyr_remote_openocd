@@ -12,7 +12,7 @@ from .paths import PathPlanner
 
 @dataclass(frozen=True)
 class OpenOcdBasePlan:
-    """Immutable command prefix shared by flash and persistent debug plans."""
+    """Immutable command prefix shared by flash and session debug plans."""
 
     argv: tuple[str, ...]
     literal_prefix: int

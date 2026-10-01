@@ -45,7 +45,7 @@ _LOGGER = logging.getLogger(__name__)
 
 def _log_forward_advisory(advisory: ForwardAdvisory) -> None:
     _LOGGER.warning(
-        "Auxiliary %s forwarding %s failure on 127.0.0.1:%s: %s",
+        "Best-effort %s forwarding %s failure on 127.0.0.1:%s: %s",
         advisory.service.name,
         advisory.phase,
         advisory.service.local_port,

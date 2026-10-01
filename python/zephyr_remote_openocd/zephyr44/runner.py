@@ -284,14 +284,16 @@ def _report_rtt_service(runner, plan, session):
 
 def _report_forward_advisory(runner, advisory: ForwardAdvisory) -> None:
     runner.logger.warning(
-        "Auxiliary %s forwarding %s failure on 127.0.0.1:%s: %s",
+        "Best-effort %s forwarding %s failure on 127.0.0.1:%s: %s",
         advisory.service.name,
         advisory.phase,
         advisory.service.local_port,
         advisory.failure,
     )
     for note in getattr(advisory.failure, "__notes__", ()):
-        runner.logger.warning("Auxiliary %s forwarding diagnostic: %s", advisory.service.name, note)
+        runner.logger.warning(
+            "Best-effort %s forwarding diagnostic: %s", advisory.service.name, note
+        )
 
 
 def _record_runner(runner, command, selected):

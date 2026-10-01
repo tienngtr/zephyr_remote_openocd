@@ -7,7 +7,8 @@ Activate the module by appending its path to the semicolon-separated
 export EXTRA_ZEPHYR_MODULES="${EXTRA_ZEPHYR_MODULES:+$EXTRA_ZEPHYR_MODULES;}/path/to/zephyr_remote_openocd"
 ```
 
-For persistent activation, put the same export in `~/.zephyrrc`. Then build a
+For shell activation in every Zephyr session, put the same export in
+`~/.zephyrrc`. Then build a
 Zephyr application normally. The built-in `openocd` runner remains the default
 unless `default_runner: remote_openocd` is selected.
 
@@ -43,12 +44,13 @@ west debugserver -r remote_openocd --rtt-server
 
 `remote_openocd` reuses applicable behavior from Zephyr's built-in `openocd`
 runner for the supported west workflows, but runs OpenOCD on the configured
-remote host and owns the network topology needed for remote execution. A flash
-operation is one-shot and creates no SSH forwards. Persistent operations
-forward GDB plus Tcl and telnet unless the corresponding runner port option is
-`disabled`. Standalone `rtt` configures RTT through batch GDB and then adds its
+remote host and sets the service and forwarding configuration for that
+operation. A flash operation is standalone and creates no SSH forwards.
+Session-based operations forward GDB plus Tcl and telnet unless the
+corresponding runner port option is `disabled`. Standalone `rtt` configures RTT
+through batch GDB, changes GDB to best-effort, and then adds the required RTT
 forward before launching the local channel-0 client. The two `--rtt-server`
-forms expose the RTT endpoint with the initial persistent forwards but do not
+forms expose the RTT endpoint with the initial session forwards but do not
 launch a local RTT client.
 
 Service availability has command-specific requirements:
@@ -60,20 +62,21 @@ Service availability has command-specific requirements:
 | `rtt` | GDB during setup, then RTT | Enabled Tcl/telnet; GDB after setup |
 | `flash` | None | None |
 
-Auxiliary services are attempted independently. Their occupied local ports,
+Best-effort services are attempted independently. Their occupied local ports,
 startup failures, or later forwarding exits produce warnings while the required
-interface remains usable. Runtime warnings appear at the next session health
-check; during interactive GDB this can be after GDB exits. Required forwarding
-failure fails the operation. Failure to clean up an acquired SSH process also
-fails the operation, including an auxiliary attempt whose rollback fails.
+interface remains usable. Runtime warnings appear at the next forwarding
+status check; during interactive GDB this can be after GDB exits. Required
+forwarding failure fails the operation. Failure to clean up an acquired SSH
+process also fails the operation, including a best-effort attempt whose
+rollback fails.
 
-Forward selection follows the operation and runner port options; the runner
-does not inspect arbitrary board or user Tcl to discover effective services.
+Forwarding follows the operation and runner port options; the runner does not
+inspect arbitrary board or user Tcl to discover effective services.
 The remote bind address and service-port settings are runner-owned transport
 properties. Tcl that overrides `bindto`, `gdb_port`, `tcl_port`, `telnet_port`,
-or another runner-owned service port is unsupported. A local forward confirms
-only the SSH endpoint; it does not guarantee that OpenOCD has a listener behind
-it.
+or another runner-owned service port is unsupported. An established local
+forward confirms only that SSH accepted the forward; it does not guarantee
+that OpenOCD has a listener behind it.
 
 Direct semihosting uses ordinary user-supplied OpenOCD commands, typically
 through `--cmd-pre-init`, and the existing OpenOCD stdout/stderr relay. It is

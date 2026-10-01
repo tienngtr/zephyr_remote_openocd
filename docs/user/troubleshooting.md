@@ -18,13 +18,14 @@ of the SSH control connection. A failure message containing a session workspace
 or forwarding endpoint is useful diagnostic evidence; do not remove another
 user's workspace.
 
-An auxiliary forwarding warning identifies an unavailable Tcl, telnet, or
+A best-effort forwarding warning identifies an unavailable Tcl, telnet, or
 optional RTT endpoint. Check the named local port and SSH diagnostic; GDB can
 continue when its required forward is healthy. Standalone RTT requires GDB
 only for setup, then requires the RTT forward. Runtime warnings appear when
-the session next checks health, potentially after interactive GDB returns.
-An error reporting failed forwarding rollback or resource disposal remains
-fatal even for an auxiliary service, because cleanup could not complete.
+the session next checks forwarding status, potentially after interactive GDB
+returns. An error reporting failed forwarding rollback or resource cleanup
+remains fatal even for a best-effort service, because cleanup could not
+complete.
 
 Local SSH-loss detection is controlled by the configured SSH client and local
 operating system. Remote helper detection is separate: the helper begins

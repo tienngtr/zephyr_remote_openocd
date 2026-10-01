@@ -90,6 +90,10 @@ interpreter has every dependency in `requirements_dev.txt`.
 Copy [`tests/fixtures/hardware.example.yaml`](../../tests/fixtures/hardware.example.yaml)
 to `.scratch/config/hardware.yaml`, then replace its host, target, and tool
 placeholders. The repository excludes `.scratch/` from version control.
+The hardware inventory is contributor-provided YAML; it is not a pytest
+fixture. Pytest fixtures inject selected inventory data into tests, while the
+harness turns that data into prepared operations and a configured test
+environment before an external test runs.
 The inventory must contain at least one host and one syntactically complete
 target record, even for SSH-only tests; target build fields are not executed by
 the SSH cases. Keep credentials, device paths, and lab identities outside Git.
@@ -207,7 +211,7 @@ Real `west flash` acceptance uses two distinct images. It first flashes a quiet
 precondition image (normally `samples/basic/minimal`), then arms serial
 observation before flashing the selected image (normally
 `samples/hello_world`) and requires its marker. Precondition quietness is a
-fixture invariant; the test does not spend a timed observation re-proving it.
+test invariant; the test does not spend a timed observation re-proving it.
 Attach acceptance reads the PC and current instruction without loading.
 RTT-server acceptance combines an active GDB session with a bidirectional RTT
 exchange.

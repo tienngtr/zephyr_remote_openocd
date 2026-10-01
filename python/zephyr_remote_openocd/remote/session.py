@@ -50,7 +50,7 @@ _StopResult = _StopWritten | _SessionEnding
 
 class _HelperErrorDelivery(Enum):
     UNREPORTED = auto()
-    FOREGROUND = auto()
+    REPORTED = auto()
     CLOSE = auto()
 
 
@@ -88,7 +88,7 @@ class _SessionObservations:
         with self._changed:
             self._ending = _HelperError(error)
             self._helper_error_delivery = (
-                _HelperErrorDelivery.FOREGROUND if reported else _HelperErrorDelivery.UNREPORTED
+                _HelperErrorDelivery.REPORTED if reported else _HelperErrorDelivery.UNREPORTED
             )
             self._changed.notify_all()
 
@@ -103,7 +103,7 @@ class _SessionObservations:
             self._helper_error_delivery = _HelperErrorDelivery.CLOSE
             return self._ending.error
 
-    def helper_error_for_foreground(self) -> SessionError | None:
+    def helper_error_for_operation(self) -> SessionError | None:
         """Return the helper error and suppress its later replay during close."""
         with self._changed:
             if (
@@ -111,7 +111,7 @@ class _SessionObservations:
                 or self._helper_error_delivery is _HelperErrorDelivery.CLOSE
             ):
                 return None
-            self._helper_error_delivery = _HelperErrorDelivery.FOREGROUND
+            self._helper_error_delivery = _HelperErrorDelivery.REPORTED
             return self._ending.error
 
     def record_reader_failure(self, error: BaseException) -> None:
