@@ -161,7 +161,7 @@ def _execute_operation(runner, command, request, plan):
 
     try:
         runner.logger.info(
-            "Remote OpenOCD session %s workspace=%s bindto=%s",
+            "Remote session %s OpenOCD workspace=%s bindto=%s",
             descriptor.session_id,
             descriptor.remote_workspace,
             descriptor.remote_address,

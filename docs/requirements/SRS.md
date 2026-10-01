@@ -828,7 +828,8 @@ The service and forwarding configuration SHALL be:
 - GDB for `debug`, `attach`, and `debugserver`;
 - Tcl and telnet for `debug`, `attach`, and `debugserver` unless the
   corresponding runner port option is `disabled`;
-- GDB for batch setup followed by RTT for the `rtt` command;
+- GDB plus enabled Tcl/telnet for initial `rtt` setup; after batch GDB setup,
+  RTT is required and GDB becomes best-effort;
 - RTT when the selected operation requests an RTT endpoint.
 
 The selected service set and forwarding requirement SHALL be distinct:

@@ -201,7 +201,7 @@ class _ForwardManager:
         self._services = committed_services
 
     def check_health(self) -> tuple[ForwardFailure, ...]:
-        """Report newly observed exits without deciding service criticality."""
+        """Report newly observed exits without classifying forwarding requirements."""
         failures = []
         for service, process in zip(self._services, self._processes, strict=True):
             if service in self._reported:

@@ -770,7 +770,9 @@ allocated address; the helper neither creates nor probes those listeners.
 
 Flash requests no services and therefore creates no local forwards. `debug`,
 `attach`, and `debugserver` request GDB and each non-disabled Tcl/telnet
-service. The `rtt` command requests GDB for batch setup and RTT afterward.
+service. The `rtt` command requests GDB plus each enabled Tcl/telnet service
+for batch setup; after batch GDB setup, RTT is required and GDB becomes
+best-effort.
 RTT remains operation-dependent for the debug-server commands. This service and
 forwarding configuration is derived from the operation and runner options, not
 from runtime discovery of the effective OpenOCD configuration.
@@ -1086,7 +1088,7 @@ shutdown open indefinitely.
 
 This separation is intentional: `_HelperClient` and `_ForwardManager`
 perform process cleanup within their own subsystem sequences,
-`RemoteSession.close()` orders those transactions, `ManagedSshProcess`
+`RemoteSession.close()` orders those cleanup sequences, `ManagedSshProcess`
 exposes per-process control and diagnostic access, and `_StderrDrain` alone
 owns stderr consumption and stream closing. Removing the wrapper, drain thread,
 bounded tail, or bounded reader shutdown would either introduce dual ownership,

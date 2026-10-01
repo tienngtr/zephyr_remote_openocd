@@ -61,8 +61,8 @@ the configured OpenOCD executable are available to that SSH environment.
 **The remote reports that `python3` is missing or too old.** The helper is a
 Python program deployed and started through the configured SSH command. Install
 a remote `python3` version 3.12 or newer that is available to non-interactive
-SSH commands, then repeat the preflight command from the README with the same
-SSH options.
+SSH commands, then repeat the two remote prerequisite checks from the README
+with the same SSH options.
 
 **The runner reports `remote OpenOCD version query failed`.** Run the configured
 `openocd_command` with `--version` through the configured SSH command. Correct
