@@ -1100,8 +1100,8 @@ and consume complete buffered frames without requiring further input readiness.
 EOF with an incomplete frame SHALL be a protocol error. Each control frame
 SHALL be bounded to 1 MiB (1,048,576 bytes), including its LF delimiter;
 oversized complete or incomplete frames SHALL be rejected as protocol errors.
-This bound does not change Protocol v1 message shapes or version. Callers with
-larger `START` payloads SHALL reduce their argv/environment payload to fit.
+This bound does not change Protocol v1 message shapes or version. Callers
+SHALL keep the complete encoded `START` frame within this bound.
 
 ### REQ-FUNC-HELP-007
 

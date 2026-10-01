@@ -21,8 +21,8 @@ Control frames on helper stdin are limited to 1 MiB (1,048,576 bytes), including
 the LF delimiter. The bound applies to each frame independently, including
 when multiple frames arrive together. An oversized complete or incomplete
 frame is a protocol error. This bounded-input requirement retains Protocol v1
-message shapes and version; callers constructing unusually large `START`
-commands must reduce their argv/environment payload to fit the bound.
+message shapes and version; callers must keep the complete encoded `START`
+frame within this bound.
 The client checks the encoded byte count, including LF, before writing any
 command bytes. The helper independently enforces the same bound on incoming
 complete and partial frames.
