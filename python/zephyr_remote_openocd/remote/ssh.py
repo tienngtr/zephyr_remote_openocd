@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import signal
 import subprocess
 import threading
 import time
@@ -343,13 +344,35 @@ class SshCommand:
     def popen(self, host: str, remote_command: str, *extra_args: str) -> ManagedSshProcess:
         """Start a long-lived SSH operation, retaining explicit lifecycle control."""
         argv = [*self.argv_prefix, *extra_args, host, remote_command]
-        process = subprocess.Popen(
-            argv,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        return ManagedSshProcess.from_popen(process)
+        # Keep the controlling terminal and foreground group for SSH prompts.
+        # The child inherits this thread's blocked SIGINT across exec; changing
+        # a process-wide handler or running Python in preexec_fn is unsafe here.
+        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
+        managed_process = None
+        try:
+            try:
+                process = subprocess.Popen(
+                    argv,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                # Adopt before unmasking so pending SIGINT rolls back a managed
+                # process. The drain inherits blocked SIGINT and stops through
+                # EOF and explicit cleanup.
+                managed_process = ManagedSshProcess.from_popen(process)
+            finally:
+                signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+            return managed_process
+        except BaseException as error:
+            # Unmasking can deliver a pending Ctrl-C after acquisition. The
+            # caller has not received the process yet, so rollback belongs here.
+            if managed_process is not None:
+                try:
+                    _stop_process(managed_process)
+                except BaseException as cleanup_error:
+                    _add_failure_note(error, "SSH process startup cleanup failed", cleanup_error)
+            raise
 
     def run_stream(
         self, host: str, remote_command: str, stream: BinaryIO, *, timeout: float = 60

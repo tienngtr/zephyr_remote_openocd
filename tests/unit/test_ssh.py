@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, BinaryIO, cast, override
 from unittest.mock import patch
 
@@ -107,6 +108,81 @@ def test_bare_alternate_executable_is_resolved_through_path(tmp_path, monkeypatc
 
     assert result.returncode == 0
     assert json.loads(result.stdout) == ["--fixed", "target", "remote command"]
+
+
+@pytest.mark.parametrize("start_failure", [False, True])
+def test_long_lived_launch_restores_calling_thread_signal_mask(tmp_path, start_failure):
+    def launch():
+        original = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGUSR1})
+        expected = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+        try:
+            if start_failure:
+                with pytest.raises(FileNotFoundError):
+                    SshCommand((str(tmp_path / "missing-ssh"),)).popen("host", "serve")
+            else:
+                process = SshCommand((sys.executable, "-c", "pass")).popen("host", "serve")
+                _stop_process(process)
+            assert signal.pthread_sigmask(signal.SIG_BLOCK, set()) == expected
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, original)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        executor.submit(launch).result(timeout=30)
+
+
+@pytest.mark.parametrize("interrupt_boundary", ["spawn", "unmasked"])
+def test_sigint_during_launch_reaps_acquired_transport(monkeypatch, interrupt_boundary):
+    popen = subprocess.Popen
+    pthread_sigmask = signal.pthread_sigmask
+    previous_trace = sys.gettrace()
+    acquired = []
+    unmasked = False
+
+    def launch(*args, **kwargs):
+        process = popen(*args, **kwargs)
+        acquired.append(process)
+        if interrupt_boundary == "spawn":
+            signal.raise_signal(signal.SIGINT)
+        return process
+
+    def restore_mask(how, mask):
+        nonlocal unmasked
+        previous = pthread_sigmask(how, mask)
+        if how == signal.SIG_SETMASK:
+            unmasked = True
+        return previous
+
+    def interrupt_after_unmask(frame, event, arg):
+        nonlocal unmasked
+        # Deliver at the first caller instruction after restoration returns,
+        # rather than from inside pthread_sigmask's protected call.
+        if event == "line" and frame.f_code is SshCommand.popen.__code__ and unmasked:
+            unmasked = False
+            signal.raise_signal(signal.SIGINT)
+        return interrupt_after_unmask
+
+    monkeypatch.setattr(subprocess, "Popen", launch)
+    if interrupt_boundary == "unmasked":
+        monkeypatch.setattr(signal, "pthread_sigmask", restore_mask)
+        sys.settrace(interrupt_after_unmask)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            SshCommand((sys.executable, "-c", "import sys; sys.stdin.read()")).popen(
+                "host", "serve"
+            )
+        assert acquired[0].poll() is not None
+        assert acquired[0].stdin is not None and acquired[0].stdout is not None
+        assert acquired[0].stdin.closed
+        assert acquired[0].stdout.closed
+    finally:
+        sys.settrace(previous_trace)
+        for process in acquired:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=30)
+            for stream in (process.stdin, process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
 
 
 def test_long_lived_process_drains_noisy_stderr_and_keeps_bounded_tail():
