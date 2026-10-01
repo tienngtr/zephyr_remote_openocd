@@ -829,12 +829,12 @@ The service and forwarding configuration SHALL be:
 - Tcl and telnet for `debug`, `attach`, and `debugserver` unless the
   corresponding runner port option is `disabled`;
 - GDB plus enabled Tcl/telnet for initial `rtt` setup; after batch GDB setup,
-  RTT is required and GDB becomes best-effort;
+  RTT forwarding is required and GDB forwarding becomes best-effort;
 - RTT when the selected operation requests an RTT endpoint.
 
 The selected service set and forwarding requirement SHALL be distinct:
 
-| Operation | Required initially | Required during the client operation | Best-effort services |
+| Operation | Required initially | Required during the client operation | Best-effort forwarding |
 | --- | --- | --- | --- |
 | `debug` | GDB | GDB | Tcl, telnet, separately requested RTT |
 | `attach` | GDB | GDB | Tcl, telnet |
@@ -1140,8 +1140,8 @@ failures, session/infrastructure failures, or OpenOCD-result observations
 SHALL NOT replace that failure. Later failures and relevant OpenOCD results
 SHOULD remain available as diagnostic information. When no earlier failure
 exists, helper, protocol, SSH/control, required-service forwarding, or
-required-shutdown failure SHALL fail the operation. Best-effort service
-startup or runtime forwarding failure SHOULD produce a warning, provided
+required-shutdown failure SHALL fail the operation. Best-effort forwarding
+startup or runtime failure SHOULD produce a warning, provided
 failed startup rollback succeeds. Cleanup failures affecting acquired resources
 SHALL remain operation-fatal regardless of whether the service was required
 or best-effort; this includes failed rollback of a best-effort startup attempt

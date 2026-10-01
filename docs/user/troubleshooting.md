@@ -24,7 +24,7 @@ continue when its required forward is healthy. The `rtt` command requires GDB
 only for setup, then requires the RTT forward. Runtime warnings appear when
 the session next checks forwarding status, potentially after interactive GDB
 returns. An error reporting failed forwarding rollback or resource cleanup
-remains fatal even for a best-effort service, because cleanup could not
+remains fatal even for a best-effort forward, because cleanup could not
 complete.
 
 Local SSH-loss detection is controlled by the configured SSH client and local

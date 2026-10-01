@@ -810,14 +810,15 @@ endpoint.
 
 `RemoteSessionRequest.services` describes the initial service set supplied to
 the helper. Its `auxiliary_services` subset identifies initial best-effort
-services; all other initial services are required. The `auxiliary_services`
-name is an internal implementation detail for this client-side classification;
+forwards; all other initial service forwards are required. The
+`auxiliary_services` name is an internal implementation detail for this
+client-side classification;
 it is not serialized into Protocol v1. Omitting the subset preserves the
 generic all-required default. RTT for the `rtt` command remains separate in
 the debug plan and is forwarded only after batch GDB setup succeeds.
 
 The session starts required forwards in one batch, then attempts each
-best-effort service in its own one-service batch. Each manager call rolls back
+best-effort forward in its own one-service batch. Each manager call rolls back
 that call's pending processes and preserves previously active forwards.
 `ForwardStartError` exposes the failed service, startup cause, and explicit
 rollback cleanup errors. The session warns only when a best-effort attempt
@@ -1022,30 +1023,10 @@ Persistent fallback data older than 24 hours may be cleaned opportunistically.
 
 ## 38. Process Supervision
 
-A normal remote-session operation follows this order:
-
-```text
-prepare operation
-       |
-RemoteSession.open()
-       |
-       +-- deploy helper and open its control channel
-       +-- stage files and start the OpenOCD process
-       +-- wait for OpenOCD startup readiness
-       +-- establish required and best-effort local forwards
-       |
-usable remote session
-       |
-run the local client or relay operation output
-       |
-RemoteSession.close()
-       |
-stop owned processes and clean up session resources
-```
-
-The runner owns the local `RemoteSession` lifetime and closes it when the
-operation finishes. The helper may also end the remote session after OpenOCD
-exit, protocol failure, or control-channel loss. The ownership boundaries are:
+The detailed normal local-session sequence is defined in §39. The runner owns
+the local `RemoteSession` lifetime and closes it when the operation finishes.
+The helper may also end the remote session after OpenOCD exit, protocol failure,
+or control-channel loss. The ownership boundaries are:
 
 | Owner | Resources and decisions |
 | --- | --- |
@@ -1233,8 +1214,9 @@ stop owned processes and clean up resources
 `RemoteSession.open()` returns only after the helper, OpenOCD process, and
 required startup conditions are ready. It may also have active best-effort
 forwards. The local runner then starts the requested client or relays the
-operation output. `RemoteSession.close()` stops owned processes and cleans up
-local and remote session resources once.
+operation output. `RemoteSession.close()` performs one bounded local cleanup
+attempt and, while the helper control channel is usable, requests remote
+cleanup. After transport loss, helper-side cleanup proceeds independently.
 
 The helper reader distinguishes three local outcomes:
 
@@ -1371,8 +1353,9 @@ client to return earlier.
 The first operation failure already established during the active operation
 remains the primary failure. If no earlier failure exists, a helper, protocol,
 SSH/control, required-service forwarding, or required cleanup failure becomes
-the operation failure. Best-effort service startup failure produces a warning
-only after successful rollback, and best-effort runtime exits produce warnings.
+the operation failure. Best-effort forwarding startup failure produces a warning
+only after successful rollback, and best-effort forwarding exits produce
+warnings.
 Cleanup failures affecting acquired resources remain fatal regardless of whether the
 service was required or best-effort. A later OpenOCD result or session failure
 is retained as diagnostic information when it cannot replace the primary

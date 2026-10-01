@@ -62,7 +62,7 @@ Service availability has command-specific requirements:
 | `rtt` | GDB during setup, then RTT | Enabled Tcl/telnet; GDB after setup |
 | `flash` | None | None |
 
-Best-effort services are attempted independently. Their occupied local ports,
+Best-effort forwards are attempted independently. Their occupied local ports,
 startup failures, or later forwarding exits produce warnings while the required
 interface remains usable. Runtime warnings appear at the next forwarding
 status check; during interactive GDB this can be after GDB exits. Required
