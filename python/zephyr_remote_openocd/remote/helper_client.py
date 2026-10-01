@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Client for a session-based remote-helper control channel."""
+"""Client for a remote-helper session control channel."""
 
 from __future__ import annotations
 
@@ -140,7 +140,7 @@ class _HelperClient:
         helper = self._process_or_error()
         shutdown = self._request_shutdown(helper)
         cleanup_errors = list(shutdown.cleanup_errors)
-        cleanup_errors.extend(self._dispose_control_process(helper))
+        cleanup_errors.extend(self._cleanup_control_process(helper))
         self._emit_diagnostic()
         try:
             logical_error = self._resolve_shutdown_result(helper, shutdown.error)
@@ -208,7 +208,7 @@ class _HelperClient:
             logical_error = error
         return _ShutdownAttempt(logical_error, tuple(cleanup_errors))
 
-    def _dispose_control_process(self, helper: ManagedSshProcess) -> tuple[BaseException, ...]:
+    def _cleanup_control_process(self, helper: ManagedSshProcess) -> tuple[BaseException, ...]:
         """Stop the reader and helper process without abandoning cleanup."""
         cleanup_errors: list[BaseException] = []
         try:

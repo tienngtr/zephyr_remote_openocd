@@ -7,7 +7,7 @@ layer-specific commands and external-test setup details.
 Choose the smallest layer that covers the change:
 
 - Every change: `.venv/bin/python -m pytest` and `.venv/bin/python scripts/contributor/static_check.py`.
-- Zephyr adapter or build integration: `tests/zephyr_integration/` with a
+- Zephyr runner integration or build integration: `tests/zephyr_integration/` with a
   Zephyr 4.4 source tree and its configured Python environment.
 - SSH transport behavior: `tests/ssh_integration/` with a local hardware inventory.
 - Real board behavior: `tests/hardware/` with a board, probe, serial endpoint,
@@ -157,7 +157,7 @@ requested and is not a substitute for testing the configured remote executable.
 
 ## Linux
 
-The focused adapter contract tests need only the Zephyr source and its Python
+The focused runner-integration contract tests need only the Zephyr source and its Python
 runner dependencies, not a board, SDK, or firmware build. GitHub Actions also
 runs these alongside the full Zephyr integration suite. The integration suite
 uses real Zephyr 4.4 `west build --cmake-only` configuration for module
@@ -179,7 +179,7 @@ ZEPHYR_BASE=/path/to/zephyr \
 ```
 
 These compare applicable parser behavior with upstream and execute recording
-through the real adapter while rejecting external process, socket, and SSH
+through the real runner integration while rejecting external process, socket, and SSH
 operations. The Zephyr compatibility import boundary is enforced by
 `scripts/contributor/static_check.py`.
 

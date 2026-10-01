@@ -48,11 +48,11 @@ def test_auxiliary_start_failure_preserves_other_services(harness, failed_servic
     assert harness.ssh.process(failed_service).mock.close_stderr.call_count == 1
 
 
-def test_auxiliary_rollback_failure_remains_fatal(harness):
+def test_best_effort_rollback_failure_remains_fatal(harness):
     failed = harness.ssh.process(TELNET)
     failed.ready = False
-    cleanup_error = RuntimeError("rollback disposal failed")
-    failed.disposal_error = cleanup_error
+    cleanup_error = RuntimeError("rollback cleanup failed")
+    failed.cleanup_error = cleanup_error
     with pytest.raises(ForwardStartError) as raised:
         harness.open()
     assert raised.value.service == TELNET
@@ -205,10 +205,10 @@ def test_late_observed_gdb_exit_uses_current_rtt_criticality(harness):
         session.close()
 
 
-def test_owned_auxiliary_disposal_failure_is_fatal(harness):
+def test_owned_best_effort_cleanup_failure_is_fatal(harness):
     session = harness.open()
-    cleanup_error = RuntimeError("owned auxiliary disposal failed")
-    harness.ssh.process(TCL).disposal_error = cleanup_error
+    cleanup_error = RuntimeError("owned best-effort cleanup failed")
+    harness.ssh.process(TCL).cleanup_error = cleanup_error
     with pytest.raises(RuntimeError) as raised:
         session.close()
     assert raised.value is cleanup_error

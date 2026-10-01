@@ -259,7 +259,7 @@ def test_startup_error_ends_session_without_stop_or_missing_close_failure():
 
 
 @pytest.mark.timeout(10)
-def test_unexpected_requested_close_is_reported_by_foreground_result():
+def test_unexpected_requested_close_is_reported_by_active_operation_result():
     helper_client, _process = _open_helper_client_with_events(
         encode_message("PROCESS_READY", remote_address="127.64.0.1", child_pid=1),
         encode_message("SESSION_CLOSED", reason="requested", returncode=None),
@@ -311,7 +311,7 @@ def test_observed_background_error_is_not_reported_again_on_close():
     assert commands == ["START"]
 
 
-def test_close_keeps_helper_error_primary_when_forced_disposal_also_fails(monkeypatch):
+def test_close_keeps_helper_error_primary_when_forced_cleanup_also_fails(monkeypatch):
     helper_client, _process = _open_helper_client_with_events(
         encode_message("PROCESS_READY", remote_address="127.64.0.1", child_pid=1),
         encode_message("ERROR", code="FAILED", message="background failed"),
@@ -319,7 +319,7 @@ def test_close_keeps_helper_error_primary_when_forced_disposal_also_fails(monkey
     helper_client.start_process(RemoteProcess(("child",)), ())
     helper_client.wait_for_change(5)
 
-    cleanup_error = RuntimeError("forced disposal failed")
+    cleanup_error = RuntimeError("forced cleanup failed")
 
     def fail_stop(_process, *, close_streams=True):
         del close_streams
@@ -348,7 +348,7 @@ def test_reader_failure_takes_precedence_over_known_openocd_result():
     assert raised.value.__cause__ is reader_error
 
 
-def test_close_keeps_stop_failure_primary_when_forced_disposal_also_fails():
+def test_close_keeps_stop_failure_primary_when_forced_cleanup_also_fails():
     graceful_stop_error = RuntimeError("graceful stop failed")
     forced_stop_error = RuntimeError("forced stop failed")
 
@@ -404,7 +404,7 @@ def test_close_keeps_stop_failure_primary_when_forced_disposal_also_fails():
     assert any("helper cleanup also failed" in note for note in graceful_stop_error.__notes__)
 
 
-def test_close_disposes_helper_when_initial_status_observation_fails():
+def test_close_cleans_up_helper_when_initial_status_observation_fails():
     observation_error = RuntimeError("helper status failed")
 
     class Process:
@@ -449,7 +449,7 @@ def test_close_disposes_helper_when_initial_status_observation_fails():
     assert process.stderr.closed
 
 
-def test_close_disposes_helper_when_reader_join_fails():
+def test_close_cleans_up_helper_when_reader_join_fails():
     join_error = RuntimeError("helper reader join failed")
 
     class Process:
@@ -507,15 +507,15 @@ def test_close_preserves_cleanup_error_when_final_status_observation_fails():
             self.stdin = io.BytesIO()
             self.stdout = io.BytesIO()
             self.returncode = 0
-            self.disposal_attempted = False
+            self.cleanup_attempted = False
 
         def poll(self):
-            if self.disposal_attempted:
+            if self.cleanup_attempted:
                 raise status_error
             return self.returncode
 
         def close_stderr(self):
-            self.disposal_attempted = True
+            self.cleanup_attempted = True
             raise cleanup_error
 
     process = Process()
@@ -576,7 +576,7 @@ def test_close_closes_streams_when_reader_thread_does_not_start(monkeypatch):
     assert process.stderr.closed
 
 
-def test_close_forces_disposal_after_helper_stop_timeout():
+def test_close_forces_cleanup_after_helper_stop_timeout():
     close_event = encode_message("SESSION_CLOSED", reason="requested", returncode=None)
 
     class StopInput(io.BytesIO):

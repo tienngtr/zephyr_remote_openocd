@@ -40,7 +40,7 @@ class ControlledForward:
         self.ready = True
         self.readiness_error: BaseException | None = None
         self.creation_error: OSError | None = None
-        self.disposal_error: BaseException | None = None
+        self.cleanup_error: BaseException | None = None
         self.diagnostic = b"forward diagnostic"
         self.mock: Mock = create_autospec(ManagedSshProcess, instance=True, spec_set=True)
         self.mock.stdin = io.BytesIO()
@@ -51,16 +51,16 @@ class ControlledForward:
         self.mock.terminate.side_effect = self.terminate
         self.mock.kill.side_effect = self.terminate
         self.mock.stderr_tail.side_effect = lambda: self.diagnostic
-        self.mock.close_stderr.side_effect = self.dispose
+        self.mock.close_stderr.side_effect = self.close_stderr
         # The sole cast is confined to the externally managed subprocess mock.
         self.managed = cast(ManagedSshProcess, self.mock)
 
     def terminate(self) -> None:
         self.returncode = 0
 
-    def dispose(self) -> None:
-        if self.disposal_error is not None:
-            raise self.disposal_error
+    def close_stderr(self) -> None:
+        if self.cleanup_error is not None:
+            raise self.cleanup_error
 
 
 class ControlledHelper:

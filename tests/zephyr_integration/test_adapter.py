@@ -234,7 +234,7 @@ def test_operation_build_queries_version_without_session(runner_api, monkeypatch
 
 @pytest.mark.parametrize(
     (
-        "foreground_returncode",
+        "observed_returncode",
         "operation_fails",
         "cleanup_failure",
         "cleanup_returncode",
@@ -321,10 +321,10 @@ def test_operation_build_queries_version_without_session(runner_api, monkeypatch
         ),
     ),
 )
-def test_operation_failure_precedence(
+def test_operation_primary_failure_rules(
     runner_api,
     monkeypatch,
-    foreground_returncode,
+    observed_returncode,
     operation_fails,
     cleanup_failure,
     cleanup_returncode,
@@ -345,8 +345,8 @@ def test_operation_failure_precedence(
     def execute_started_operation(*_args):
         if operation_fails:
             raise operation_error
-        session.openocd_returncode = foreground_returncode
-        return foreground_returncode
+        session.openocd_returncode = observed_returncode
+        return observed_returncode
 
     def close():
         session.openocd_returncode = cleanup_returncode
@@ -385,9 +385,9 @@ def test_operation_failure_precedence(
 @pytest.mark.parametrize(
     "reader_records_before_operation_failure",
     (True, False),
-    ids=("reader-first", "foreground-first"),
+    ids=("reader-first", "active-operation-first"),
 )
-def test_background_openocd_result_does_not_replace_foreground_failure(
+def test_background_openocd_result_does_not_replace_active_operation_failure(
     runner_api,
     monkeypatch,
     reader_records_before_operation_failure,
@@ -397,7 +397,7 @@ def test_background_openocd_result_does_not_replace_foreground_failure(
     reader_ready = threading.Event()
     reader_can_record = threading.Event()
     reader_recorded = threading.Event()
-    operation_error = RuntimeError("foreground operation failed")
+    operation_error = RuntimeError("active operation failed")
 
     class Session:
         descriptor = SessionDescriptor(SessionAllocation("session", "/workspace"), "127.64.0.1")
@@ -559,13 +559,13 @@ def test_optional_rtt_failure_preserves_gdb_operation(
     def exit_after_health_observation():
         harness.helper.openocd_returncode = 0
 
-    def fail_auxiliary_during_foreground():
+    def fail_best_effort_during_active_operation():
         assert harness.ssh.process(GDB).returncode is None
         harness.ssh.process(RTT).returncode = 13
         harness.helper.on_wait = exit_after_health_observation
 
-    harness.helper.on_wait = fail_auxiliary_during_foreground
-    runner.run_client.side_effect = lambda _argv: fail_auxiliary_during_foreground()
+    harness.helper.on_wait = fail_best_effort_during_active_operation
+    runner.run_client.side_effect = lambda _argv: fail_best_effort_during_active_operation()
     with caplog.at_level(logging.INFO, logger=runner.logger.name):
         runner_module._execute_operation(runner, command, request, plan)
     warnings = [record for record in caplog.records if record.levelno == logging.WARNING]

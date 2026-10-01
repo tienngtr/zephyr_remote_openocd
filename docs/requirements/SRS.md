@@ -825,9 +825,10 @@ configuration.
 The service and forwarding configuration SHALL be:
 
 - no local forwards for `flash`;
-- GDB for session-based operations;
-- Tcl and telnet for session-based operations unless the corresponding runner
-  port option is `disabled`;
+- GDB for `debug`, `attach`, and `debugserver`;
+- Tcl and telnet for `debug`, `attach`, and `debugserver` unless the
+  corresponding runner port option is `disabled`;
+- GDB for batch setup followed by RTT for the `rtt` command;
 - RTT when the selected operation requests an RTT endpoint.
 
 The selected service set and forwarding requirement SHALL be distinct:
@@ -848,7 +849,7 @@ succeeds. Best-effort runtime failure SHOULD warn at the next forwarding
 status check and SHALL NOT terminate an otherwise usable required operation.
 Concurrent supervision or interruption of interactive GDB is not required.
 
-RTT forwarding for standalone `rtt` SHALL remain deferred until successful
+RTT forwarding for the `rtt` command SHALL remain deferred until successful
 batch GDB setup. After that setup succeeds, GDB forwarding SHALL become
 best-effort before RTT forwarding is established as required. Forwarding
 failures SHALL be classified as required or best-effort when the runner checks
@@ -1140,7 +1141,7 @@ SHOULD remain available as diagnostic information. When no earlier failure
 exists, helper, protocol, SSH/control, required-service forwarding, or
 required-shutdown failure SHALL fail the operation. Best-effort service
 startup or runtime forwarding failure SHOULD produce a warning, provided
-failed startup rollback succeeds. Cleanup and resource-ownership failures
+failed startup rollback succeeds. Cleanup failures affecting acquired resources
 SHALL remain operation-fatal regardless of whether the service was required
 or best-effort; this includes failed rollback of a best-effort startup attempt
 and failed later cleanup of an owned best-effort process. Such failures SHALL
@@ -1468,12 +1469,13 @@ Different GDB server/client ports work correctly when supported by the runner in
 
 ### AC-SVC-001
 
-`flash` creates no local forwards. Session-based operations require initial GDB
-forwarding and independently attempt each enabled best-effort Tcl/telnet
-service using runner-selected ports. Best-effort startup and runtime failure
-warns without failing usable required forwarding. Optional RTT forwarding
-remains best-effort for debugging commands; standalone RTT requires it after
-successful batch GDB setup and reclassifies GDB as best-effort. Failed
+`flash` creates no local forwards. `debug`, `attach`, and `debugserver` require
+initial GDB forwarding and independently attempt each enabled best-effort
+Tcl/telnet service using runner-selected ports. Best-effort startup and runtime
+failure warns without failing usable required forwarding. Optional RTT
+forwarding remains best-effort for debugging commands; the `rtt` command
+requires it after successful batch GDB setup and reclassifies GDB as
+best-effort. Failed
 best-effort startup rollback or later resource cleanup remains operation-fatal,
 subject to the existing primary-failure rule.
 

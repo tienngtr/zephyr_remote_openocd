@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Pure construction of session-based remote OpenOCD debug plans."""
+"""Pure construction of remote-session OpenOCD debug plans."""
 
 from __future__ import annotations
 

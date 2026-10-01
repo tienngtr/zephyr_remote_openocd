@@ -69,7 +69,7 @@ may instead end the session with `ERROR`.
 source of an OpenOCD result. With `reason: "requested"` and
 `returncode: null`, it confirms requested shutdown but produces no OpenOCD
 result. Natural child termination completes session cleanup, including
-workspace removal and output-relay disposal, before emitting
+workspace removal and output-relay cleanup, before emitting
 `SESSION_CLOSED` with `reason: "process_exit"`. A cleanup failure may instead
 result in `ERROR`. `ERROR` is a failure event that also ends the session.
 Neither session-ending event may be followed by another event. The helper's

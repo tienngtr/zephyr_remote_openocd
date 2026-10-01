@@ -643,7 +643,7 @@ cleanup
 
 The runner controls client startup, eliminating the executable-facade startup race.
 
-Session-based debug construction similarly separates immutable service/RTT
+`debug`, `attach`, `debugserver`, and `rtt` plan construction similarly separates immutable service/RTT
 validation, OpenOCD server commands, and local GDB arguments before assembling
 the public debug-plan result.
 
@@ -686,7 +686,7 @@ start remote OpenOCD
        |
 establish required GDB; independently attempt best-effort Tcl/telnet
        |
-run local batch GDB (standalone west rtt)
+run local batch GDB for west rtt
        |
        +-- RTT setup
        +-- RTT start
@@ -707,11 +707,11 @@ every exit path. Non-TTY input is supported without terminal operations.
 For `debug --rtt-server` and `debugserver --rtt-server`, RTT setup is included
 in OpenOCD's startup command sequence before its startup-complete marker.
 OpenOCD owns the RTT listener; the helper does not probe it. These operations
-expose the endpoint but do not launch a local RTT client. Standalone `rtt` reuses the
+expose the endpoint but do not launch a local RTT client. The `rtt` command reuses the
 same remote OpenOCD version and Zephyr thread-info decision as debug/attach.
 No GDB RSP observer is needed.
 
-GDB forwarding is required during standalone batch setup. After setup succeeds,
+GDB forwarding is required during the `rtt` command's batch setup. After setup succeeds,
 the Zephyr runner integration explicitly marks the owned GDB forward best-effort
 and starts the deferred RTT forward as required. A GDB exit first observed
 after this transition produces a warning; an RTT-forward exit remains fatal.
@@ -768,11 +768,12 @@ check for port collisions, then releases those sockets before starting OpenOCD.
 OpenOCD owns the actual enabled GDB, Tcl, telnet, and RTT listeners on the
 allocated address; the helper neither creates nor probes those listeners.
 
-Flash requests no services and therefore creates no local forwards. Session-based
-operations request GDB and each non-disabled Tcl/telnet service. RTT remains
-operation-dependent. This service and forwarding configuration is derived from
-the operation and runner options, not from runtime discovery of the effective
-OpenOCD configuration.
+Flash requests no services and therefore creates no local forwards. `debug`,
+`attach`, and `debugserver` request GDB and each non-disabled Tcl/telnet
+service. The `rtt` command requests GDB for batch setup and RTT afterward.
+RTT remains operation-dependent for the debug-server commands. This service and
+forwarding configuration is derived from the operation and runner options, not
+from runtime discovery of the effective OpenOCD configuration.
 
 No board-specific addressing is involved.
 
@@ -807,9 +808,10 @@ endpoint.
 
 `RemoteSessionRequest.services` describes the initial service set supplied to
 the helper. Its `auxiliary_services` subset identifies initial best-effort
-services; all other initial services are required. The implementation name is
-retained for the Protocol v1/configuration boundary. Omitting the subset
-preserves the generic all-required default. Standalone RTT remains separate in
+services; all other initial services are required. The `auxiliary_services`
+name is an internal implementation detail for this client-side classification;
+it is not serialized into Protocol v1. Omitting the subset preserves the
+generic all-required default. RTT for the `rtt` command remains separate in
 the debug plan and is forwarded only after batch GDB setup succeeds.
 
 The session starts required forwards in one batch, then attempts each
@@ -1039,8 +1041,9 @@ RemoteSession.close()
 stop owned processes and clean up session resources
 ```
 
-The operation or runner decides when the remote session ends. The ownership
-boundaries are:
+The runner owns the local `RemoteSession` lifetime and closes it when the
+operation finishes. The helper may also end the remote session after OpenOCD
+exit, protocol failure, or control-channel loss. The ownership boundaries are:
 
 | Owner | Resources and decisions |
 | --- | --- |
@@ -1076,7 +1079,7 @@ budget before closing the stderr stream. Closing a buffered pipe while another
 thread is blocked in `read()` can itself block on the stream's internal lock.
 If the SSH process or a descendant still holds the write side and EOF does not
 arrive, cleanup therefore reports failure and retains the stream rather than
-turning stream disposal into an unbounded wait. Close serialization and an
+turning stream cleanup into an unbounded wait. Close serialization and an
 explicit closed flag keep repeated cleanup attempts harmless. The drain thread
 is a daemon so an uncooperative inherited writer cannot hold local process
 shutdown open indefinitely.
@@ -1179,10 +1182,10 @@ For a client-requested stop, protocol completion accepts a valid session-close
 `returncode: null`, or `reason: "process_exit"` and an integer return code.
 The latter also records that value as `openocd_returncode`. Successful local
 cleanup additionally requires the helper to exit with status zero. Protocol,
-helper, or transport failures remain visible to the caller; later mechanical
-cleanup failures are retained as diagnostics. A received `ERROR` remains the
+helper, or transport failures remain visible to the caller; later cleanup
+failures are retained as diagnostics. A received `ERROR` remains the
 helper failure across cleanup, rather than becoming a second reader or cleanup
-failure. Local shutdown attempts all remaining mechanical cleanup once and
+failure. Local shutdown attempts all remaining cleanup actions once and
 then marks the session closed. A later `close()` is harmless, but does not
 resume a partially failed cleanup sequence or retain resources solely for
 that purpose.
@@ -1261,8 +1264,9 @@ The runner starts a dependent local client only after OpenOCD startup
 readiness is satisfied. Startup readiness is one fact; it does not prove that
 every forwarded service can accept a connection.
 
-The runner adds two OpenOCD startup output markers for session-based OpenOCD
-operations. It places an init-complete echo in OpenOCD's post-init command list
+The runner adds two OpenOCD startup output markers for `debug`, `attach`,
+`debugserver`, and `rtt` operations. It places an init-complete echo in
+OpenOCD's post-init command list
 before board configuration files and appends a startup-complete echo after the
 full server startup sequence. The runner also sets the remote bind address and
 service-port settings before those files. These are runner-owned session and
@@ -1367,7 +1371,7 @@ remains the primary failure. If no earlier failure exists, a helper, protocol,
 SSH/control, required-service forwarding, or required cleanup failure becomes
 the operation failure. Best-effort service startup failure produces a warning
 only after successful rollback, and best-effort runtime exits produce warnings.
-Cleanup and resource-ownership failures remain fatal regardless of whether the
+Cleanup failures affecting acquired resources remain fatal regardless of whether the
 service was required or best-effort. A later OpenOCD result or session failure
 is retained as diagnostic information when it cannot replace the primary
 failure. The following table defines the required outcomes:

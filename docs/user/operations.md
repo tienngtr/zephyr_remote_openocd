@@ -45,13 +45,13 @@ west debugserver -r remote_openocd --rtt-server
 `remote_openocd` reuses applicable behavior from Zephyr's built-in `openocd`
 runner for the supported west workflows, but runs OpenOCD on the configured
 remote host and sets the service and forwarding configuration for that
-operation. A flash operation is standalone and creates no SSH forwards.
-Session-based operations forward GDB plus Tcl and telnet unless the
-corresponding runner port option is `disabled`. Standalone `rtt` configures RTT
-through batch GDB, changes GDB to best-effort, and then adds the required RTT
-forward before launching the local channel-0 client. The two `--rtt-server`
-forms expose the RTT endpoint with the initial session forwards but do not
-launch a local RTT client.
+operation. `flash` creates no SSH forwards. `debug`, `attach`, and
+`debugserver` forward GDB plus Tcl and telnet unless the corresponding runner
+port option is `disabled`. The `rtt` command configures RTT through batch GDB,
+changes GDB to best-effort, and then adds the required RTT forward before
+launching the local channel-0 client. The two `--rtt-server` forms expose the
+RTT endpoint with their configured initial forwards but do not launch a local
+RTT client.
 
 Service availability has command-specific requirements:
 
