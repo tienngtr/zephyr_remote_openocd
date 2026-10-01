@@ -7,7 +7,7 @@ layer-specific commands and external-test setup details.
 Choose the smallest layer that covers the change:
 
 - Every change: `.venv/bin/python -m pytest` and `.venv/bin/python scripts/contributor/static_check.py`.
-- Zephyr adapter or build integration: `tests/zephyr_integration/` with a
+- Zephyr runner integration or build integration: `tests/zephyr_integration/` with a
   Zephyr 4.4 source tree and its configured Python environment.
 - SSH transport behavior: `tests/ssh_integration/` with a local hardware inventory.
 - Real board behavior: `tests/hardware/` with a board, probe, serial endpoint,
@@ -90,6 +90,10 @@ interpreter has every dependency in `requirements_dev.txt`.
 Copy [`tests/fixtures/hardware.example.yaml`](../../tests/fixtures/hardware.example.yaml)
 to `.scratch/config/hardware.yaml`, then replace its host, target, and tool
 placeholders. The repository excludes `.scratch/` from version control.
+The hardware inventory is contributor-provided YAML; it is not a pytest
+fixture. Pytest fixtures inject selected inventory data into tests, while the
+harness turns that data into prepared operations and a configured test
+environment before an external test runs.
 The inventory must contain at least one host and one syntactically complete
 target record, even for SSH-only tests; target build fields are not executed by
 the SSH cases. Keep credentials, device paths, and lab identities outside Git.
@@ -153,7 +157,7 @@ requested and is not a substitute for testing the configured remote executable.
 
 ## Linux
 
-The focused adapter contract tests need only the Zephyr source and its Python
+The focused runner-integration contract tests need only the Zephyr source and its Python
 runner dependencies, not a board, SDK, or firmware build. GitHub Actions also
 runs these alongside the full Zephyr integration suite. The integration suite
 uses real Zephyr 4.4 `west build --cmake-only` configuration for module
@@ -175,7 +179,7 @@ ZEPHYR_BASE=/path/to/zephyr \
 ```
 
 These compare applicable parser behavior with upstream and execute recording
-through the real adapter while rejecting external process, socket, and SSH
+through the real runner integration while rejecting external process, socket, and SSH
 operations. The Zephyr compatibility import boundary is enforced by
 `scripts/contributor/static_check.py`.
 
@@ -207,7 +211,7 @@ Real `west flash` acceptance uses two distinct images. It first flashes a quiet
 precondition image (normally `samples/basic/minimal`), then arms serial
 observation before flashing the selected image (normally
 `samples/hello_world`) and requires its marker. Precondition quietness is a
-fixture invariant; the test does not spend a timed observation re-proving it.
+test invariant; the test does not spend a timed observation re-proving it.
 Attach acceptance reads the PC and current instruction without loading.
 RTT-server acceptance combines an active GDB session with a bidirectional RTT
 exchange.

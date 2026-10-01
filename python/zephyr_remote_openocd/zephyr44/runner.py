@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Zephyr 4.4 adapter for recording and remote OpenOCD operations."""
+"""Zephyr 4.4 runner integration for recording and remote OpenOCD operations."""
 
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ from zephyr_remote_openocd.remote.ssh import SshCommand
 
 
 class RemoteOpenOcdBinaryRunner(OpenOcdBinaryRunner):
-    """OpenOCD-compatible runner with a version-isolated flash adapter."""
+    """OpenOCD-compatible runner with a version-isolated flash integration."""
 
     def __init__(self, cfg, parsed_args):
         # Reuse OpenOCD's public initializer and state construction, but never
@@ -153,15 +153,15 @@ def _execute_operation(runner, command, request, plan):
     assert session.descriptor is not None
     descriptor = session.descriptor
     operation_error = None
-    foreground_returncode = None
+    observed_returncode = None
 
     def observe_openocd_exit(returncode):
-        nonlocal foreground_returncode
-        foreground_returncode = returncode
+        nonlocal observed_returncode
+        observed_returncode = returncode
 
     try:
         runner.logger.info(
-            "Remote OpenOCD session %s workspace=%s bindto=%s",
+            "Remote session %s OpenOCD workspace=%s bindto=%s",
             descriptor.session_id,
             descriptor.remote_workspace,
             descriptor.remote_address,
@@ -177,13 +177,13 @@ def _execute_operation(runner, command, request, plan):
             observe_openocd_exit(returncode)
     except BaseException as error:
         operation_error = error
-    _finalize_operation(session, operation_error, foreground_returncode)
+    _finalize_operation(session, operation_error, observed_returncode)
 
 
-def _finalize_operation(session, operation_error, foreground_returncode):
-    """Close one session and apply the lifecycle failure-precedence matrix."""
-    if foreground_returncode not in (None, 0):
-        openocd_error = _openocd_failure(foreground_returncode)
+def _finalize_operation(session, operation_error, observed_returncode):
+    """Close one session and apply the lifecycle primary-failure rules."""
+    if observed_returncode not in (None, 0):
+        openocd_error = _openocd_failure(observed_returncode)
         if operation_error is not None:
             _add_failure_diagnostic(
                 openocd_error,
@@ -206,7 +206,7 @@ def _finalize_operation(session, operation_error, foreground_returncode):
                 "session cleanup also failed",
                 cleanup_error,
             )
-        if openocd_returncode not in (None, 0) and openocd_returncode != foreground_returncode:
+        if openocd_returncode not in (None, 0) and openocd_returncode != observed_returncode:
             operation_error.add_note(f"remote OpenOCD also exited with status {openocd_returncode}")
         raise operation_error
 
@@ -284,14 +284,16 @@ def _report_rtt_service(runner, plan, session):
 
 def _report_forward_advisory(runner, advisory: ForwardAdvisory) -> None:
     runner.logger.warning(
-        "Auxiliary %s forwarding %s failure on 127.0.0.1:%s: %s",
+        "Best-effort %s forwarding %s failure on 127.0.0.1:%s: %s",
         advisory.service.name,
         advisory.phase,
         advisory.service.local_port,
         advisory.failure,
     )
     for note in getattr(advisory.failure, "__notes__", ()):
-        runner.logger.warning("Auxiliary %s forwarding diagnostic: %s", advisory.service.name, note)
+        runner.logger.warning(
+            "Best-effort %s forwarding diagnostic: %s", advisory.service.name, note
+        )
 
 
 def _record_runner(runner, command, selected):

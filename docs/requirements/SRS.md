@@ -99,27 +99,34 @@ another OpenSSH-compatible executable and fixed arguments.
 
 An unprivileged per-user program executed on the remote host to:
 
-- create and clean session state;
+- create and clean remote-session state;
 - stage files;
 - allocate a session address;
 - launch and supervise OpenOCD;
 - relay OpenOCD output.
 
-### 2.10 OpenOCD session
+### 2.10 Remote session
 
-One remote OpenOCD process together with its:
+The runner-managed lifetime containing:
 
-- staged files;
-- helper process;
-- SSH transport;
-- remote loopback address;
-- local forwarded services.
+- the remote helper and its control channel;
+- the staged files and remote workspace;
+- the OpenOCD process;
+- the SSH transport;
+- the allocated remote loopback address;
+- the local forwarded services.
 
-### 2.11 Probe
+### 2.11 Helper control channel
 
-A physical hardware debug adapter used by OpenOCD.
+The protocol connection between the local runner and the remote helper. It
+carries session commands, OpenOCD output events, startup status, and the final
+session result.
 
-### 2.12 Probe channel
+### 2.12 Probe
+
+A physical debug adapter used by OpenOCD.
+
+### 2.13 Probe channel
 
 An independently usable debug interface exposed by a probe.
 
@@ -614,13 +621,13 @@ The runner SHALL NOT be required to translate arbitrary local paths embedded in 
 
 ### REQ-NFUNC-COMPAT-001
 
-The Zephyr 4.4 adapter MAY subclass `OpenOcdBinaryRunner` and reuse its
-non-private interface to reduce duplication.
+The Zephyr 4.4 runner integration MAY subclass `OpenOcdBinaryRunner` and reuse
+its non-private interface to reduce duplication.
 
 ### REQ-NFUNC-COMPAT-002
 
 Zephyr does not include `OpenOcdBinaryRunner` in its supported external-runner
-API. Code that uses this class SHALL remain in the version-specific Zephyr
+API. Code that uses this class SHALL remain in the Zephyr-version-specific
 compatibility layer.
 
 ### REQ-NFUNC-COMPAT-003
@@ -629,7 +636,8 @@ The custom runner SHALL NOT depend on private attributes or private methods of `
 
 ### REQ-NFUNC-COMPAT-004
 
-Supporting a new Zephyr version SHALL require either validation of the existing adapter or a version-specific adapter update.
+Supporting a new Zephyr version SHALL require either validation of the existing
+runner integration or a version-specific compatibility-layer update.
 
 ---
 
@@ -649,7 +657,8 @@ Forwarded variables SHALL be available to remote OpenOCD before it processes con
 
 Rationale:
 
-Runtime values may influence probe, adapter, or target configuration while OpenOCD configuration files are being evaluated.
+Runtime values may influence probe, debug adapter, or target configuration while
+OpenOCD configuration files are being evaluated.
 
 ### REQ-FUNC-ENV-004
 
@@ -813,17 +822,19 @@ The custom runner SHALL select local forwarding from the requested operation
 and runner options rather than by discovering the effective remote OpenOCD
 configuration.
 
-The forwarding topology SHALL be:
+The service and forwarding configuration SHALL be:
 
 - no local forwards for `flash`;
-- GDB for persistent operations;
-- Tcl and telnet for persistent operations unless the corresponding runner
-  port option is `disabled`;
+- GDB for `debug`, `attach`, and `debugserver`;
+- Tcl and telnet for `debug`, `attach`, and `debugserver` unless the
+  corresponding runner port option is `disabled`;
+- GDB plus enabled Tcl/telnet for initial `rtt` setup; after batch GDB setup,
+  RTT forwarding is required and GDB forwarding becomes best-effort;
 - RTT when the selected operation requests an RTT endpoint.
 
-Selected topology and service criticality SHALL be distinct:
+The selected service set and forwarding requirement SHALL be distinct:
 
-| Operation | Required initially | Required in foreground | Auxiliary services |
+| Operation | Required initially | Required during the client operation | Best-effort forwarding |
 | --- | --- | --- | --- |
 | `debug` | GDB | GDB | Tcl, telnet, separately requested RTT |
 | `attach` | GDB | GDB | Tcl, telnet |
@@ -832,17 +843,18 @@ Selected topology and service criticality SHALL be distinct:
 | `flash` | None | None | None |
 
 Required forwarding startup or runtime failure SHALL fail the operation.
-Auxiliary forwards SHALL be attempted independently, so failure of one cannot
-roll back another committed forward. Auxiliary startup failure SHOULD warn
-and allow the required operation to continue only when startup rollback
-succeeds. Auxiliary runtime failure SHOULD warn at the next session health
-observation and SHALL NOT terminate an otherwise usable required operation.
+Best-effort forwards SHALL be attempted independently, so failure of one
+cannot roll back another active forward. Best-effort startup failure SHOULD
+warn and allow the required operation to continue only when startup rollback
+succeeds. Best-effort runtime failure SHOULD warn at the next forwarding
+status check and SHALL NOT terminate an otherwise usable required operation.
 Concurrent supervision or interruption of interactive GDB is not required.
 
-Standalone RTT forwarding SHALL remain deferred until successful batch GDB
-setup. After that setup succeeds, GDB forwarding SHALL become auxiliary before
-RTT forwarding is established as required. Forwarding failures SHALL be
-classified using service criticality at observation time.
+RTT forwarding for the `rtt` command SHALL remain deferred until successful
+batch GDB setup. After that setup succeeds, GDB forwarding SHALL become
+best-effort before RTT forwarding is established as required. Forwarding
+failures SHALL be classified as required or best-effort when the runner checks
+them.
 
 A local forward does not guarantee that a corresponding remote listener is
 available.
@@ -859,7 +871,7 @@ Local forwarded services SHALL bind only to local loopback interfaces.
 
 Remote OpenOCD services created for a remote-runner session SHALL bind only
 to the runner-allocated remote loopback address. The remote bind address and
-service-port topology are runner-owned transport properties. Board or user Tcl
+service-port settings are runner-owned transport properties. Board or user Tcl
 that overrides `bindto`, `gdb_port`, `tcl_port`, `telnet_port`, or another
 runner-owned service port is outside the supported compatibility boundary.
 The runner SHALL NOT be required to statically inspect arbitrary Tcl for such
@@ -868,13 +880,13 @@ overrides.
 ### REQ-FUNC-SVC-005
 
 If a required local service port is occupied, the operation SHALL fail rather
-than silently choose another port. An occupied auxiliary local port SHOULD
-produce an advisory and allow the required operation to continue, provided
+than silently choose another port. An occupied best-effort local port SHOULD
+produce a warning and allow the required operation to continue, provided
 rollback of the failed forwarding attempt succeeds.
 
 ### REQ-FUNC-SVC-006
 
-A local-port conflict error or advisory SHALL identify the affected service
+A local-port conflict error or warning SHALL identify the affected service
 and port.
 
 ---
@@ -1020,7 +1032,7 @@ The runner SHALL NOT attempt transparent reconstruction of an interrupted debugg
 
 ### REQ-FUNC-CONC-001
 
-Multiple developers SHALL be able to operate independent remote OpenOCD sessions concurrently.
+Multiple developers SHALL be able to operate independent remote sessions concurrently.
 
 ### REQ-FUNC-CONC-002
 
@@ -1068,7 +1080,7 @@ pending, without waiting for readiness success, failure, or timeout.
 
 ### REQ-FUNC-HELP-006
 
-The client and helper SHALL validate the persistent control contract before
+The client and helper SHALL validate the session control contract before
 acting on commands or events. The helper SHALL report readiness only after the
 configured process-readiness conditions are met. A process with no configured
 readiness conditions SHALL be ready immediately. The helper SHALL preserve
@@ -1093,14 +1105,15 @@ available at their respective boundaries. The exact Protocol v1 request
 fields and validation rules are defined in
 [`protocol.md`](../architecture/protocol.md).
 
-This validation applies to the runner-selected transport topology; it does not
+This validation applies to the runner-selected service and forwarding
+configuration; it does not
 discover or validate the effective service state produced by arbitrary OpenOCD
 Tcl.
 
 ### REQ-FUNC-HELP-009
 
-When the helper reports natural OpenOCD termination through the valid
-persistent-helper protocol, the client SHALL preserve the reported integer
+When the helper reports natural OpenOCD termination through the valid session
+helper protocol, the client SHALL preserve the reported integer
 exit status as the OpenOCD result. Helper-process status, SSH/control-
 transport status, forwarding-process status, protocol failures, and cleanup
 failures SHALL NOT be represented as OpenOCD exit statuses. Client-requested
@@ -1109,45 +1122,46 @@ NOT synthesize an OpenOCD exit status.
 
 ### REQ-FUNC-HELP-010
 
-Session shutdown SHALL make one bounded attempt to release all locally and
+Closing a remote session SHALL make one bounded attempt to clean up all locally and
 remotely owned session resources. For ordinary coordinated shutdown, all
 applicable cleanup actions SHALL be attempted even when an earlier cleanup
 action fails. When SSH loss prevents coordinated shutdown, local and remote
-cleanup are independent: each side SHALL make one bounded attempt to release
+cleanup are independent: each side SHALL make one bounded attempt to clean up
 the resources it owns after that side observes the loss. These SSH-loss
 cleanup bounds do not include loss-detection latency or the interval before
 the other side observes the loss. Repeated shutdown requests SHALL be
 harmless. Successful continuation or retry of a partially failed cleanup
-transaction SHALL NOT be required.
+sequence SHALL NOT be required.
 
 ### REQ-FUNC-HELP-011
 
-When an operation failure has already been established, later cleanup failures,
-session/infrastructure failures, or OpenOCD-result observations SHALL NOT
-replace that failure. Later failures and relevant OpenOCD results SHOULD remain
-available as diagnostic information. When no earlier failure exists, helper,
-protocol, SSH/control, required-service forwarding, or required-shutdown
-failure SHALL fail the operation. Auxiliary-service startup or runtime
-forwarding failure SHOULD be advisory, provided failed startup rollback
-succeeds. Cleanup and resource-ownership failures SHALL remain operation-fatal
-regardless of service criticality; this includes failed rollback of an
-auxiliary startup attempt and failed later disposal of an owned auxiliary
-process. Such failures SHALL remain distinct from OpenOCD exit status.
-Session-fatal helper, protocol, or control observations recorded while a
-foreground local client is running SHALL be acted upon at the next session
-health observation after foreground control returns from the local client. The
-runner is not required to asynchronously interrupt the local client solely
-because such an observation was recorded. A failure that itself removes
-required transport MAY naturally cause the local client to return earlier.
+When an operation failure has already been established, later cleanup
+failures, session/infrastructure failures, or OpenOCD-result observations
+SHALL NOT replace that failure. Later failures and relevant OpenOCD results
+SHOULD remain available as diagnostic information. When no earlier failure
+exists, helper, protocol, SSH/control, required-service forwarding, or
+required-shutdown failure SHALL fail the operation. Best-effort forwarding
+startup or runtime failure SHOULD produce a warning, provided
+failed startup rollback succeeds. Cleanup failures affecting acquired resources
+SHALL remain operation-fatal regardless of whether the service was required
+or best-effort; this includes failed rollback of a best-effort startup attempt
+and failed later cleanup of an owned best-effort process. Such failures SHALL
+remain distinct from OpenOCD exit status.
+Session-fatal helper, protocol, or control observations recorded while an
+active local client is running SHALL be acted upon at the next session status
+check after that client returns. The runner is not required to asynchronously
+interrupt the local client solely because such an observation was recorded. A
+failure that itself removes required transport MAY naturally cause the local
+client to return earlier.
 
 ### REQ-FUNC-HELP-012
 
-REQ-FUNC-HELP-012 applies to OpenOCD launched as the persistent process of a
-remote-runner session. Finite one-shot helper operations, including OpenOCD
-version probing, are not persistent session processes and are outside the
-scope of the persistent helper's process-group supervision contract.
+REQ-FUNC-HELP-012 applies to OpenOCD launched as the session process of a
+remote-runner session. Standalone helper operations, including OpenOCD version
+probing, are not session processes and are outside the scope of the session
+helper's process-group supervision contract.
 
-The persistent remote OpenOCD process SHALL execute within a helper-owned
+The remote session's OpenOCD process SHALL execute within a helper-owned
 process-group boundary. Once the helper observes loss or termination of the
 controlling session, it SHALL begin bounded cleanup of that owned process
 group and associated session resources. This cleanup bound does not include
@@ -1323,8 +1337,8 @@ Severity: Medium.
 Mitigation:
 
 Keep all use of `OpenOcdBinaryRunner` in the Zephyr 4.4 compatibility layer.
-Do not use private attributes or methods. Validate or update the adapter for
-each newly supported Zephyr version.
+Do not use private attributes or methods. Validate or update the runner
+integration for each newly supported Zephyr version.
 
 ### RISK-007 - SSH client differences
 
@@ -1456,14 +1470,15 @@ Different GDB server/client ports work correctly when supported by the runner in
 
 ### AC-SVC-001
 
-`flash` creates no local forwards. Persistent operations require initial GDB
-forwarding and independently attempt each enabled auxiliary Tcl/telnet service
-using runner-selected ports. Auxiliary startup and runtime failure warns
-without failing usable required forwarding. Optional RTT forwarding remains
-auxiliary for debugging commands; standalone RTT requires it after successful
-batch GDB setup and reclassifies GDB as auxiliary. Failed auxiliary startup
-rollback or later resource disposal remains operation-fatal, subject to
-existing failure precedence.
+`flash` creates no local forwards. `debug`, `attach`, and `debugserver` require
+initial GDB forwarding and independently attempt each enabled best-effort
+Tcl/telnet service using runner-selected ports. Best-effort startup and runtime
+failure warns without failing usable required forwarding. Optional RTT
+forwarding remains best-effort for debugging commands; the `rtt` command
+requires it after successful batch GDB setup and reclassifies GDB as
+best-effort. Failed
+best-effort startup rollback or later resource cleanup remains operation-fatal,
+subject to the existing primary-failure rule.
 
 
 ### AC-RTT-001

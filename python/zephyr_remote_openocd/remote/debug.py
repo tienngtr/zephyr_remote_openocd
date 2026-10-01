@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Pure construction of persistent remote OpenOCD debug plans."""
+"""Pure construction of remote-session OpenOCD debug plans."""
 
 from __future__ import annotations
 
@@ -129,7 +129,7 @@ def _commands(commands: tuple[str, ...]) -> list[str]:
 
 def _validate_debug_inputs(inputs: DebugInputs) -> None:
     if inputs.command not in {"debug", "attach", "debugserver", "rtt"}:
-        raise DebugPlanError(f"unsupported persistent debug command: {inputs.command}")
+        raise DebugPlanError(f"unsupported session debug command: {inputs.command}")
 
 
 def _plan_debug_services(inputs: DebugInputs) -> DebugServicePlan:

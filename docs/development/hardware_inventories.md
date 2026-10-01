@@ -136,7 +136,7 @@ session.
 | `attach` | Distinct precondition build | Flashes it, attaches without loading, and checks memory |
 | `debugserver` | Target toolchain | Starts the GDB service and connects local GDB |
 | `thread_info` | Expected thread-list pattern | Checks Zephyr-aware GDB thread output |
-| `rtt` | Target toolchain, port, response, breakpoint | Exercises standalone and debug-integrated RTT |
+| `rtt` | Target toolchain, port, response, breakpoint | Exercises `west rtt` and debug-integrated RTT |
 | `semihosting` | OpenOCD commands, expected output, timeout | Runs direct semihosting to natural completion |
 
 Flash uses an application-specific serial pattern to distinguish the selected
@@ -144,13 +144,13 @@ image from stale firmware. Its precondition build must be different from the
 profile build. `output_patterns` match combined west/OpenOCD output;
 `assert_bindto` additionally requires evidence that remote OpenOCD used its
 allocated loopback address. The precondition must be quiet with respect to the
-selected image pattern; the harness treats that as a fixture invariant rather
+selected image pattern; the harness treats that as a test invariant rather
 than opening a second serial session to observe a timed quiet period.
 
 Attach has the same distinct-precondition requirement. It derives identifying
 bytes from that ELF and verifies that attaching does not replace them.
 
-RTT requires `program_survives_reset: true` because standalone `west rtt`
+RTT requires `program_survives_reset: true` because the `west rtt` command
 resets the target. Its input is sent through RTT and its response is matched in
 the target output. RTT and debugserver require a target `toolchain` because the
 tests launch GDB directly.

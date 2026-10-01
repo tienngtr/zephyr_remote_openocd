@@ -724,7 +724,7 @@ class TestRemoteModels:
         ids=("string", "bytes"),
     )
     def test_remote_process_rejects_scalar_output_sentinel_container(self, sentinels):
-        with pytest.raises(ValueError, match="required output sentinels"):
+        with pytest.raises(ValueError, match="required output markers"):
             RemoteProcess(("openocd",), required_output_sentinels=sentinels)
 
     @pytest.mark.parametrize(
@@ -737,9 +737,9 @@ class TestRemoteModels:
             ({"environment": (("BAD=NAME", "value"),)}, "environment names"),
             ({"environment": (("NAME", "bad\0value"),)}, "environment values"),
             ({"required_paths": (object(),)}, "path checks"),
-            ({"required_output_sentinels": ("",)}, "sentinels"),
-            ({"required_output_sentinels": (" READY ",)}, "sentinels"),
-            ({"required_output_sentinels": ("READY", "READY")}, "sentinels"),
+            ({"required_output_sentinels": ("",)}, "markers"),
+            ({"required_output_sentinels": (" READY ",)}, "markers"),
+            ({"required_output_sentinels": ("READY", "READY")}, "markers"),
             ({"readiness_timeout": True}, "readiness timeout"),
             ({"readiness_timeout": float("inf")}, "readiness timeout"),
             ({"readiness_timeout": 0}, "readiness timeout"),

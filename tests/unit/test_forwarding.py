@@ -66,7 +66,7 @@ def test_forward_health_reports_service_identity_once(monkeypatch):
 @pytest.mark.parametrize("rollback_fails", (False, True))
 def test_failed_start_exposes_rollback_outcome(monkeypatch, rollback_fails):
     service = Service("tcl", 32101, 6333)
-    cleanup_error = RuntimeError("rollback disposal failed")
+    cleanup_error = RuntimeError("rollback cleanup failed")
     process = _ForwardProcess(None, close_stderr_error=cleanup_error if rollback_fails else None)
     manager = _ForwardManager(_ForwardCommand(process), "host")
     monkeypatch.setattr(_ForwardManager, "_preflight", staticmethod(lambda _service: None))

@@ -8,20 +8,20 @@ earlier schema. The client and helper are deployed as one revision.
 The client validates locally constructed domain models before serializing
 commands. Serialization does not re-parse its own output. The helper strictly
 validates every command received from the wire, while the client strictly
-validates helper events and one-shot responses.
+validates helper events and standalone responses.
 
 The contract uses UTF-8 JSON lines: each frame contains one JSON object and
 ends with one `LF`. JSON whitespace other than `LF` may precede or follow the
 object within the frame. Every frame has integer, non-Boolean `version: 1` and
-a non-empty string `type`. Persistent commands, persistent events, and
-successful one-shot responses contain exactly their documented fields and
-reject unknown fields. Helper stdout contains protocol frames only.
+a non-empty string `type`. Session commands, session events, and successful
+standalone responses contain exactly their documented fields and reject unknown
+fields. Helper stdout contains protocol frames only.
 
 The helper emits one `SESSION_CREATED` event before reading commands. The
 client writes commands to helper stdin and reads events from stdout. There is
 no feature negotiation beyond the required version.
 
-## Persistent commands
+## Session commands
 
 `START` is the only process-start command. All of the following fields are
 required; no other fields are allowed:
@@ -32,7 +32,7 @@ required; no other fields are allowed:
 | `environment` | Object whose names are non-empty strings without `=` or NUL and whose values are strings without NUL. |
 | `required_paths` | List of exact `{kind, path}` objects. `kind` is `file` or `directory`; `path` is a non-empty string without NUL. |
 | `services` | List of exact `{name, remote_port}` objects. `name` is a non-empty string; `remote_port` is a non-Boolean integer in `1..65535`. Names and ports are unique within the request. |
-| `required_output_sentinels` | List of unique non-empty, trimmed output lines without `CR`, `LF`, or NUL; may be empty. |
+| `required_output_sentinels` | List of unique non-empty, trimmed startup output markers without `CR`, `LF`, or NUL; may be empty. |
 | `readiness_timeout` | Positive finite, non-Boolean number. |
 | `literal_prefix` | Non-Boolean, non-negative integer no greater than the length of `argv`. Placeholder expansion skips this many leading arguments. |
 
@@ -42,22 +42,22 @@ starts the child in `<remote_workspace>/staged` with the helper environment
 overlaid by `environment`. Service `remote_port` values are unique by
 contract, and duplicate values are rejected during validation before startup.
 
-The helper allocates an address in `127.64.0.0/10` and preflights requested
-service ports for bind collisions at that address. It does not create or probe
-service listeners; OpenOCD owns its GDB, Tcl, telnet, and RTT listeners. With an
-empty sentinel list, the process is immediately considered ready. Otherwise
-the helper waits until every required sentinel has appeared as a complete
-trimmed line on either child stream, then emits one `PROCESS_READY` event.
-Sentinels may arrive in any order and on either stream. Output reads are
-bounded and use an incremental UTF-8 decoder. A sentinel is recognized only
-when the complete trimmed line is observed; a fragment that merely matches a
-sentinel prefix does not make the process ready.
+The helper allocates an address in `127.64.0.0/10` and checks requested service
+ports for bind collisions at that address. It does not create or probe service
+listeners; OpenOCD owns its GDB, Tcl, telnet, and RTT listeners. With an empty
+marker list, the process is immediately startup-ready. Otherwise the helper
+waits until every required marker has appeared as a complete trimmed line on
+either child stream, then emits one `PROCESS_READY` event. Markers may arrive
+in any order and on either stream. Output reads are bounded and use an
+incremental UTF-8 decoder. A marker is recognized only when the complete
+trimmed line is observed; a fragment that merely matches a marker prefix does
+not make the process startup-ready.
 
-While readiness is pending, the helper continues consuming control frames.
-`STOP` and stdin EOF end the session without waiting for readiness or emitting
-`PROCESS_READY`; malformed or unexpected commands cause protocol failure and
-cleanup. Incomplete frames remain buffered until their LF arrives, and EOF
-with an incomplete frame is a protocol error.
+While startup readiness is pending, the helper continues consuming control
+frames. `STOP` and stdin EOF end the session without waiting for startup
+readiness or emitting `PROCESS_READY`; malformed or unexpected commands cause
+protocol failure and cleanup. Incomplete frames remain buffered until their LF
+arrives, and EOF with an incomplete frame is a protocol error.
 
 `STOP` has no fields other than `version` and `type`. On successful cleanup, it
 terminates the child process group, removes the workspace, emits `SESSION_CLOSED`
@@ -69,18 +69,18 @@ may instead end the session with `ERROR`.
 source of an OpenOCD result. With `reason: "requested"` and
 `returncode: null`, it confirms requested shutdown but produces no OpenOCD
 result. Natural child termination completes session cleanup, including
-workspace removal and output-relay disposal, before emitting
+workspace removal and output-relay cleanup, before emitting
 `SESSION_CLOSED` with `reason: "process_exit"`. A cleanup failure may instead
 result in `ERROR`. `ERROR` is a failure event that also ends the session.
 Neither session-ending event may be followed by another event. The helper's
 Unix process status, SSH/control transport status, and forwarding-process
-status are independent health observations and are never OpenOCD results.
+status are independent status checks and are never OpenOCD results.
 
 After local `STOP` initiation, either `SESSION_CLOSED` form may legitimately occur:
 OpenOCD may terminate naturally before requested termination takes effect, or
 the requested shutdown may complete first. Protocol version 1 is unchanged.
 
-## Persistent events
+## Session events
 
 | Event | Required fields | Meaning |
 | --- | --- | --- |
@@ -112,10 +112,10 @@ EOF on helper stdin and `SIGINT`/`SIGTERM` also terminate the child process
 group and remove the workspace. A final event is not guaranteed when the
 connection cannot deliver it.
 
-## One-shot operations
+## Standalone helper operations
 
 Staging, deployment, and version probing are separate helper invocations, not
-commands in the persistent control protocol. Each successful invocation emits
+commands in the session control protocol. Each successful invocation emits
 exactly one response frame on stdout, with no additional output. Each response
 contains only the envelope and fields listed below:
 
@@ -150,7 +150,7 @@ After a valid `stage` or `openocd-version` helper invocation has been selected,
 an operation failure emits one `ERROR` frame and exits nonzero. Invocation
 parsing, SSH, or transport failure may instead terminate without a usable
 response. Deployment bootstrap failure is reported by a nonzero subprocess
-status and diagnostics rather than a persistent-protocol `ERROR` event.
+status and diagnostics rather than a session-protocol `ERROR` event.
 
 Bulk binary content remains stream-oriented instead of JSON/base64. The
 configured SSH command prefix is passed as argv, separate from runner-generated

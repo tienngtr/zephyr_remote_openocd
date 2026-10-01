@@ -222,7 +222,7 @@ def _cleanup_test_child(child, descendant_pidfd):
         with suppress(BaseException):
             child.process.wait(timeout=5)
         with suppress(BaseException):
-            child.dispose()
+            child.cleanup()
     if descendant_pidfd is not None:
         with suppress(ProcessLookupError):
             signal.pidfd_send_signal(descendant_pidfd, signal.SIGKILL)
@@ -1116,7 +1116,7 @@ def test_supervised_child_skips_kill_after_group_disappears(monkeypatch):
     assert all(timeout is not None for timeout in process.wait_calls)
 
 
-def test_supervised_child_reaps_and_disposes_after_signal_errors(monkeypatch):
+def test_supervised_child_reaps_and_cleans_up_after_signal_errors(monkeypatch):
     class Process:
         pid = 123
         returncode = None
@@ -1137,7 +1137,7 @@ def test_supervised_child_reaps_and_disposes_after_signal_errors(monkeypatch):
     process = Process()
     child = remote_helper.SupervisedChild(process)
     child._observed_returncode = 0
-    disposed = []
+    cleaned_up = []
     term_error = RuntimeError("term failed")
 
     def fail_term(_pid, signum):
@@ -1145,12 +1145,12 @@ def test_supervised_child_reaps_and_disposes_after_signal_errors(monkeypatch):
             raise term_error
         raise ProcessLookupError
 
-    def fail_dispose():
-        disposed.append(True)
-        raise RuntimeError("dispose failed")
+    def fail_cleanup():
+        cleaned_up.append(True)
+        raise RuntimeError("cleanup failed")
 
     monkeypatch.setattr(remote_helper.os, "killpg", fail_term)
-    monkeypatch.setattr(child, "dispose", fail_dispose)
+    monkeypatch.setattr(child, "cleanup", fail_cleanup)
 
     with pytest.raises(RuntimeError) as raised:
         child.terminate()
@@ -1158,8 +1158,8 @@ def test_supervised_child_reaps_and_disposes_after_signal_errors(monkeypatch):
     assert raised.value is term_error
     assert process.wait_calls
     assert all(timeout is not None for timeout in process.wait_calls)
-    assert disposed
-    assert any("dispose failed" in note for note in raised.value.__notes__)
+    assert cleaned_up
+    assert any("cleanup failed" in note for note in raised.value.__notes__)
 
 
 def test_supervised_child_group_cleanup_ignores_diagnostic_failure(monkeypatch):
@@ -1365,7 +1365,7 @@ def test_control_session_does_not_launch_when_required_file_is_missing(
     (
         ("argv", [], "argv"),
         ("environment", {"BAD=NAME": "value"}, "environment"),
-        ("required_output_sentinels", [" READY "], "sentinels"),
+        ("required_output_sentinels", [" READY "], "markers"),
         ("required_output_sentinels", ["READY", "READY"], "unique"),
         ("readiness_timeout", 0, "readiness options"),
         ("literal_prefix", 3, "readiness options"),

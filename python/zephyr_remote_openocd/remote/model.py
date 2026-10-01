@@ -83,7 +83,7 @@ class RemoteSessionRequest:
         object.__setattr__(self, "services", validated_services(self.services))
         auxiliary = validated_services(self.auxiliary_services)
         if not set(auxiliary).issubset(self.services):
-            raise ValueError("auxiliary services must belong to the initial service topology")
+            raise ValueError("best-effort services must belong to the initial service set")
         object.__setattr__(self, "auxiliary_services", auxiliary)
 
 
@@ -155,7 +155,7 @@ def _normalized_process_fields(
 
     raw_sentinels: Any = process.required_output_sentinels
     if isinstance(raw_sentinels, (str, bytes)):
-        raise ValueError("required output sentinels must be a collection of strings")
+        raise ValueError("required output markers must be a collection of strings")
 
     return (
         tuple(process.argv),
@@ -208,7 +208,7 @@ def _validate_process_readiness(required_output_sentinels: tuple[str, ...], time
         and "\r" not in sentinel
         for sentinel in required_output_sentinels
     ) or len(required_output_sentinels) != len(set(required_output_sentinels)):
-        raise ValueError("required output sentinels must be unique non-empty trimmed output lines")
+        raise ValueError("required output markers must be unique non-empty trimmed output lines")
     if (
         isinstance(timeout, bool)
         or not isinstance(timeout, (int, float))

@@ -706,7 +706,7 @@
     },
     "rtt": {
       "title": "RTT operation",
-      "description": "Exercises standalone RTT and RTT alongside debug services. The target must reference a toolchain.",
+      "description": "Exercises west rtt and RTT alongside debug services. The target must reference a toolchain.",
       "type": "object",
       "additionalProperties": false,
       "required": [

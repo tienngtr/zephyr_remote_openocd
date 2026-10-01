@@ -18,13 +18,14 @@ of the SSH control connection. A failure message containing a session workspace
 or forwarding endpoint is useful diagnostic evidence; do not remove another
 user's workspace.
 
-An auxiliary forwarding warning identifies an unavailable Tcl, telnet, or
+A best-effort forwarding warning identifies an unavailable Tcl, telnet, or
 optional RTT endpoint. Check the named local port and SSH diagnostic; GDB can
-continue when its required forward is healthy. Standalone RTT requires GDB
+continue when its required forward is healthy. The `rtt` command requires GDB
 only for setup, then requires the RTT forward. Runtime warnings appear when
-the session next checks health, potentially after interactive GDB returns.
-An error reporting failed forwarding rollback or resource disposal remains
-fatal even for an auxiliary service, because cleanup could not complete.
+the session next checks forwarding status, potentially after interactive GDB
+returns. An error reporting failed forwarding rollback or resource cleanup
+remains fatal even for a best-effort forward, because cleanup could not
+complete.
 
 Local SSH-loss detection is controlled by the configured SSH client and local
 operating system. Remote helper detection is separate: the helper begins
@@ -60,8 +61,8 @@ the configured OpenOCD executable are available to that SSH environment.
 **The remote reports that `python3` is missing or too old.** The helper is a
 Python program deployed and started through the configured SSH command. Install
 a remote `python3` version 3.12 or newer that is available to non-interactive
-SSH commands, then repeat the preflight command from the README with the same
-SSH options.
+SSH commands, then repeat the two remote prerequisite checks from the README
+with the same SSH options.
 
 **The runner reports `remote OpenOCD version query failed`.** Run the configured
 `openocd_command` with `--version` through the configured SSH command. Correct

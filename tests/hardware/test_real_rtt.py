@@ -21,7 +21,7 @@ pytestmark = [pytest.mark.hardware, pytest.mark.destructive]
 
 
 class TestRealRtt:
-    """Validate channel-0 RTT and the two persistent server variants."""
+    """Validate channel-0 RTT and the two RTT server variants."""
 
     def _environment(self, fixture: RttFixture) -> dict[str, str]:
         environment = os.environ.copy()
@@ -171,7 +171,7 @@ class TestRealRtt:
         finally:
             self._finish(fixture, process, output, interrupt=True)
 
-    def test_debug_rtt_server_keeps_gdb_foreground(self, rtt_fixture: RttFixture, tmp_path) -> None:
+    def test_debug_rtt_server_keeps_gdb_active(self, rtt_fixture: RttFixture, tmp_path) -> None:
         fixture = rtt_fixture
         port = fixture.operation.port
         release = tmp_path / "release-gdb"

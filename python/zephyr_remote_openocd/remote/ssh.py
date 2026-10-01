@@ -64,7 +64,7 @@ class _StderrDrain:
                     return
                 self._append(bytes(chunk))
         except BaseException:
-            # Closing a pipe during process disposal is an expected way to
+            # Closing a pipe during process cleanup is an expected way to
             # release a blocked reader.  Diagnostics are best effort.
             return
         finally:
@@ -133,7 +133,7 @@ class ManagedSshProcess:
             cleanup_errors = list(termination.secondary_errors)
             if termination.primary_error is not None:
                 cleanup_errors.insert(0, termination.primary_error)
-            cleanup_errors.extend(_dispose_process_streams(rollback_process, close_streams=True))
+            cleanup_errors.extend(_close_process_streams(rollback_process, close_streams=True))
             for cleanup_failure in cleanup_errors:
                 error.add_note(f"SSH process startup cleanup failed: {cleanup_failure}")
             if isinstance(error, (OSError, subprocess.SubprocessError)):
@@ -270,10 +270,10 @@ def _terminate_process(process: _ProcessControl) -> _TerminationResult:
     return _TerminationResult(primary_error, tuple(secondary_errors))
 
 
-def _dispose_process_streams(
+def _close_process_streams(
     process: _ProcessControl, *, close_streams: bool
 ) -> tuple[BaseException, ...]:
-    """Dispose the stderr drain and optionally the process data streams."""
+    """Close the stderr drain and optionally the process data streams."""
     cleanup_errors: list[BaseException] = []
 
     try:
@@ -292,11 +292,11 @@ def _dispose_process_streams(
 
 
 def _stop_process(process: _ProcessControl, *, close_streams: bool = True) -> None:
-    """Stop and dispose one managed SSH process without hiding cleanup errors."""
+    """Stop and clean up one managed SSH process without hiding errors."""
     termination = _terminate_process(process)
     cleanup_errors = [
         *termination.secondary_errors,
-        *_dispose_process_streams(process, close_streams=close_streams),
+        *_close_process_streams(process, close_streams=close_streams),
     ]
     if termination.primary_error is not None:
         for cleanup_failure in cleanup_errors:
