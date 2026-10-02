@@ -778,6 +778,9 @@ Firmware directly required by remote OpenOCD SHALL be staged when not available 
 ### REQ-FUNC-FLASH-003
 
 Commands executed by remote OpenOCD SHALL reference remote paths for remotely accessed firmware.
+Runner-generated Tcl SHALL quote the resolved firmware path after session
+workspace allocation, preserving literal path characters. This quoting SHALL
+NOT rewrite user-provided Tcl or Tcl-escape literal argv path arguments.
 
 ### REQ-FUNC-FLASH-004
 

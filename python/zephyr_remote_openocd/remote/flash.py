@@ -11,6 +11,7 @@ from pathlib import Path
 from .model import RemoteProcess
 from .openocd_plan import OpenOcdBasePlan, plan_openocd_base
 from .paths import REMOTE_ADDRESS_PLACEHOLDER, PathPlanner
+from .tcl import TclPathArgument
 
 
 class FlashPlanError(RuntimeError):
@@ -60,18 +61,11 @@ class PlannedFlashImage:
     kind: str
     source: Path
     remote: str
-    quoted: str
     entry: str | None = None
 
 
 def _commands(commands: tuple[str, ...]) -> list[str]:
     return [item for command in commands for item in ("-c", command)]
-
-
-def _tcl_quote(value: str) -> str:
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-    escaped = escaped.replace("$", "\\$").replace("[", "\\[").replace("]", "\\]")
-    return f'"{escaped}"'
 
 
 def _elf_entry(path: Path) -> str:
@@ -121,7 +115,7 @@ def _plan_image(inputs: FlashInputs, planner: PathPlanner) -> PlannedFlashImage:
     source_path = Path(image_source).resolve()
     remote_image = planner.plan_file(source_path, "firmware").remote
     entry = _elf_entry(source_path) if kind == "elf" else None
-    return PlannedFlashImage(kind, source_path, remote_image, _tcl_quote(remote_image), entry)
+    return PlannedFlashImage(kind, source_path, remote_image, entry)
 
 
 def _common_flash_commands(inputs: FlashInputs) -> list[str]:
@@ -133,39 +127,63 @@ def _common_flash_commands(inputs: FlashInputs) -> list[str]:
     return commands
 
 
-def _elf_flash_commands(inputs: FlashInputs, image: PlannedFlashImage) -> tuple[str, ...]:
-    commands: list[str] = []
+def _elf_flash_commands(
+    inputs: FlashInputs, image: PlannedFlashImage
+) -> tuple[str | TclPathArgument, ...]:
+    commands: list[str | TclPathArgument] = []
     if not inputs.verify_only:
         commands.extend(_commands(inputs.pre_load))
-        commands.extend(("-c", inputs.reset_halt, "-c", f"load_image {image.quoted}"))
+        commands.extend(
+            ("-c", inputs.reset_halt, "-c", TclPathArgument("load_image ", image.remote))
+        )
     if inputs.verify or inputs.verify_only:
-        commands.extend(("-c", f"verify_image {image.quoted}"))
+        commands.extend(("-c", TclPathArgument("verify_image ", image.remote)))
         commands.extend(_commands(inputs.post_verify))
     commands.extend(("-c", f"resume {image.entry}", "-c", "shutdown"))
     return tuple(commands)
 
 
-def _finish_standard_commands(commands: list[str], inputs: FlashInputs) -> tuple[str, ...]:
+def _finish_standard_commands(
+    commands: list[str | TclPathArgument], inputs: FlashInputs
+) -> tuple[str | TclPathArgument, ...]:
     commands.extend(_commands(inputs.post_verify))
     commands.extend(("-c", "reset run", "-c", "shutdown"))
     return tuple(commands)
 
 
-def _bin_flash_commands(inputs: FlashInputs, image: PlannedFlashImage) -> tuple[str, ...]:
-    commands = _commands(inputs.pre_load)
+def _bin_flash_commands(
+    inputs: FlashInputs, image: PlannedFlashImage
+) -> tuple[str | TclPathArgument, ...]:
+    commands: list[str | TclPathArgument] = list(_commands(inputs.pre_load))
     if not inputs.verify_only:
         commands.extend(("-c", inputs.reset_halt))
         if inputs.erase:
             commands.extend(_commands(inputs.erase_commands))
-        commands.extend(("-c", f"{inputs.load_command} {image.quoted} {inputs.flash_address}"))
+        commands.extend(
+            (
+                "-c",
+                TclPathArgument(
+                    f"{inputs.load_command} ", image.remote, f" {inputs.flash_address}"
+                ),
+            )
+        )
     if (inputs.verify or inputs.verify_only) and inputs.verify_command:
         commands.extend(("-c", inputs.reset_halt))
-        commands.extend(("-c", f"{inputs.verify_command} {image.quoted} {inputs.flash_address}"))
+        commands.extend(
+            (
+                "-c",
+                TclPathArgument(
+                    f"{inputs.verify_command} ", image.remote, f" {inputs.flash_address}"
+                ),
+            )
+        )
     return _finish_standard_commands(commands, inputs)
 
 
-def _hex_flash_commands(inputs: FlashInputs, image: PlannedFlashImage) -> tuple[str, ...]:
-    commands = _commands(inputs.pre_load)
+def _hex_flash_commands(
+    inputs: FlashInputs, image: PlannedFlashImage
+) -> tuple[str | TclPathArgument, ...]:
+    commands: list[str | TclPathArgument] = list(_commands(inputs.pre_load))
     load_command = inputs.load_command or ""
     if not inputs.verify_only:
         commands.extend(("-c", inputs.reset_halt))
@@ -173,13 +191,22 @@ def _hex_flash_commands(inputs: FlashInputs, image: PlannedFlashImage) -> tuple[
             commands.extend(_commands(inputs.erase_commands))
             if load_command.endswith(" erase"):
                 load_command = load_command[:-6]
-        commands.extend(("-c", f"{load_command} {image.quoted}"))
+        commands.extend(("-c", TclPathArgument(f"{load_command} ", image.remote)))
     if inputs.verify or inputs.verify_only:
-        commands.extend(("-c", inputs.reset_halt, "-c", f"{inputs.verify_command} {image.quoted}"))
+        commands.extend(
+            (
+                "-c",
+                inputs.reset_halt,
+                "-c",
+                TclPathArgument(f"{inputs.verify_command} ", image.remote),
+            )
+        )
     return _finish_standard_commands(commands, inputs)
 
 
-def _operation_commands(inputs: FlashInputs, image: PlannedFlashImage) -> tuple[str, ...]:
+def _operation_commands(
+    inputs: FlashInputs, image: PlannedFlashImage
+) -> tuple[str | TclPathArgument, ...]:
     if image.kind == "elf":
         return _elf_flash_commands(inputs, image)
     if image.kind == "bin":
@@ -189,7 +216,7 @@ def _operation_commands(inputs: FlashInputs, image: PlannedFlashImage) -> tuple[
 
 def _flash_argv(
     inputs: FlashInputs, base: OpenOcdBasePlan, image: PlannedFlashImage
-) -> tuple[str, ...]:
+) -> tuple[str | TclPathArgument, ...]:
     return base.argv + tuple(_common_flash_commands(inputs)) + _operation_commands(inputs, image)
 
 
@@ -215,10 +242,14 @@ def build_flash_plan(
             "skipping verification to preserve Zephyr 4.4 OpenOCD runner behavior"
         )
 
+    arguments = _flash_argv(inputs, base, image)
     process = RemoteProcess(
-        _flash_argv(inputs, base, image),
+        tuple(arg.render() if isinstance(arg, TclPathArgument) else arg for arg in arguments),
         environment,
         tuple(planner.remote_checks),
         literal_prefix=base.literal_prefix,
+        tcl_path_arguments=tuple(
+            (index, arg) for index, arg in enumerate(arguments) if isinstance(arg, TclPathArgument)
+        ),
     )
     return FlashPlan(process, tuple(planner.staged_files), image.remote)

@@ -616,6 +616,16 @@ Flash command construction is phase-oriented: a shared immutable OpenOCD
 prefix is combined with a resolved image plan and one concrete ELF, BIN, or
 HEX operation plan. The public flash-plan result remains the runner boundary.
 
+Generated firmware Tcl arguments retain their path separately from surrounding
+command text in immutable local process metadata. After the helper reports the
+session workspace, the client resolves those paths and Tcl-quotes them before
+serializing ordinary string argv in `START`. Quoted braces prevent the helper's
+subsequent placeholder expansion from interpreting placeholder-like text in a
+resolved workspace. Address placeholders already present in the planned path
+remain available for helper allocation. Literal argv paths still use ordinary
+helper expansion, and user-provided Tcl remains opaque. Protocol v1 and
+configuration are unchanged.
+
 ---
 
 ## 22. Debug Flow

@@ -4,20 +4,27 @@ from __future__ import annotations
 
 import io
 import os
+import shutil
 import signal
 import subprocess
+import sys
 import threading
 from collections.abc import Callable
+from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO, cast, override
 
 import pytest
+from zephyr_remote_openocd.config import PathMapping
 from zephyr_remote_openocd.remote import helper_client as helper_client_module
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
+from zephyr_remote_openocd.remote.flash import FlashInputs, build_flash_plan
 from zephyr_remote_openocd.remote.helper_client import _HelperClient
 from zephyr_remote_openocd.remote.model import RemoteProcess, RemoteSessionRequest
+from zephyr_remote_openocd.remote.paths import PathPlanner
 from zephyr_remote_openocd.remote.protocol import ProtocolError, decode_message, encode_message
 from zephyr_remote_openocd.remote.session import SessionError
 from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand, SshLocalForward
+from zephyr_remote_openocd.remote_helper import _decode_start, materialize_argv
 
 OPENOCD_FAILURE_RC = 7
 
@@ -165,6 +172,104 @@ def test_helper_client_reports_every_attempt_before_startup_error():
         assert observed == [first, retry]
     finally:
         client.close()
+
+
+@pytest.mark.parametrize("image_type", ("hex", "bin", "elf"))
+@pytest.mark.skipif(shutil.which("tclsh") is None, reason="Tcl interpreter unavailable")
+@pytest.mark.parametrize(
+    "workspace, mapped_root",
+    (
+        ('/runtime/[review] $value "quoted" \\backslash/session', None),
+        ("/runtime/{workspace}/braces/session", None),
+        ("/workspace", "/shared/{address}"),
+    ),
+)
+def test_flash_paths_are_quoted_after_session_allocation(
+    tmp_path: Path, image_type: str, workspace: str, mapped_root: str | None
+):
+    image = tmp_path / f"firmware.{image_type}"
+    if image_type == "elf":
+        shutil.copyfile(sys.executable, image)
+    else:
+        image.write_bytes(b":00000001FF\n")
+    config = tmp_path / "board.cfg"
+    config.write_text("# fixture\n")
+    user_tcl = 'puts "user [expr {1 + 2}] $value"'
+    plan = build_flash_plan(
+        FlashInputs(
+            executable="openocd",
+            image_type=image_type,
+            file=str(image),
+            elf_file=None,
+            hex_file=None,
+            bin_file=None,
+            search_paths=(),
+            config_files=(str(config),),
+            pre_init=(user_tcl,),
+            load_command="load_image",
+            verify_command="verify_image",
+            flash_address="0x1000",
+            verify=True,
+        ),
+        PathPlanner(
+            () if mapped_root is None else (PathMapping(tmp_path, PurePosixPath(mapped_root)),)
+        ),
+    )
+    process = _EventProcess(
+        (
+            encode_message(
+                "SESSION_CREATED", helper="fake", session_id="session", remote_workspace=workspace
+            ),
+            encode_message("ERROR", code="FAILED", message="controlled startup failure"),
+        )
+    )
+    client = _open_helper_client(process)
+    try:
+        with pytest.raises(SessionError):
+            client.start_process(plan.process, ())
+        request = _decode_start(decode_message(bytes(process.stdin.written).splitlines()[0]))
+        argv = materialize_argv(
+            request.argv,
+            workspace=workspace,
+            address="127.64.0.1",
+            literal_prefix=request.literal_prefix,
+        )
+    finally:
+        client.close()
+
+    remote_root = mapped_root.replace("{address}", "127.64.0.1") if mapped_root else None
+    expected_config = (
+        remote_root + "/board.cfg" if remote_root else workspace + "/staged/files/config-0.cfg"
+    )
+    expected_image = (
+        remote_root + f"/firmware.{image_type}"
+        if remote_root
+        else workspace + f"/staged/files/firmware.{image_type}"
+    )
+    assert argv[argv.index("-f") + 1] == expected_config
+    if remote_root:
+        checked_paths = materialize_argv(
+            (check.path for check in request.required_paths),
+            workspace=workspace,
+            address="127.64.0.1",
+        )
+        assert expected_image in checked_paths
+    assert user_tcl in argv
+    commands = [arg for arg in argv if arg.startswith(("load_image ", "verify_image "))]
+    assert len(commands) == 2
+    for command in commands:
+        result = subprocess.run(
+            ["tclsh"],
+            input=(
+                "proc load_image {path args} {puts $path}\n"
+                "proc verify_image {path args} {puts $path}\n" + command + "\n"
+            ),
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        assert result.stderr == ""
+        assert result.stdout == expected_image + "\n"
 
 
 def test_open_rejects_initial_frame_without_lf():

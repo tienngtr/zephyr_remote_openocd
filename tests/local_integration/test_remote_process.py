@@ -2290,6 +2290,8 @@ events = (
 )
 for event in events:
     print(json.dumps(event, separators=(",", ":")), flush=True)
+    if event["type"] == "SESSION_CREATED":
+        assert json.loads(sys.stdin.readline())["type"] == "START"
 sys.exit({HELPER_FAILURE_RC})
 """
 

@@ -6,11 +6,12 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 from .ssh import SshCommand
+from .tcl import TclPathArgument
 
 
 class DuplicateServiceError(ValueError):
@@ -127,6 +128,16 @@ class RemoteProcess:
     required_output_sentinels: tuple[str, ...] = field(default_factory=tuple)
     readiness_timeout: float = 30.0
     literal_prefix: int = 0
+    tcl_path_arguments: tuple[tuple[int, TclPathArgument], ...] = ()
+
+    def resolve_tcl_paths(self, workspace: str) -> RemoteProcess:
+        """Materialize only generated Tcl paths before sending ordinary wire argv."""
+        if not self.tcl_path_arguments:
+            return self
+        argv = list(self.argv)
+        for index, argument in self.tcl_path_arguments:
+            argv[index] = argument.render(workspace)
+        return replace(self, argv=tuple(argv), tcl_path_arguments=())
 
     def __post_init__(self) -> None:
         argv, environment, required_paths, required_output_sentinels = _normalized_process_fields(
@@ -141,6 +152,7 @@ class RemoteProcess:
         object.__setattr__(self, "environment", environment)
         object.__setattr__(self, "required_paths", required_paths)
         object.__setattr__(self, "required_output_sentinels", required_output_sentinels)
+        object.__setattr__(self, "tcl_path_arguments", tuple(self.tcl_path_arguments))
 
 
 def _normalized_process_fields(
