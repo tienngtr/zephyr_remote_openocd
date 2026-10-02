@@ -192,7 +192,7 @@
       "properties": {
         "openocd_command": {
           "$ref": "#/$defs/command",
-          "description": "Remote OpenOCD executable and fixed arguments."
+          "description": "Remote OpenOCD executable and fixed arguments. Fixed arguments are an advanced escape hatch, preserved exactly and in order before runner-generated arguments without OpenOCD/Tcl semantic validation. Users own conflicts between fixed arguments and with generated arguments, and early initialization or listener creation before runner bind/service configuration unless intentionally accepted. Runner startup-ordering guarantees cover generated arguments only."
         },
         "ssh_command": {
           "$ref": "#/$defs/command",
@@ -236,7 +236,7 @@
         },
         "openocd_command": {
           "$ref": "#/$defs/command",
-          "description": "Remote OpenOCD executable and fixed arguments. A production remote must provide this directly or through its preset.",
+          "description": "Remote OpenOCD executable and fixed arguments. Fixed arguments are an advanced escape hatch, preserved exactly and in order before runner-generated arguments without OpenOCD/Tcl semantic validation. Users own conflicts between fixed arguments and with generated arguments, and early initialization or listener creation before runner bind/service configuration unless intentionally accepted. Runner startup-ordering guarantees cover generated arguments only. A production remote must provide this directly or through its preset.",
           "examples": [
             [
               "~/openocd/bin/openocd"

@@ -9,16 +9,22 @@ import io
 import json
 import logging
 import os
+import shlex
 import socket
 import subprocess
+import sys
 import threading
 from pathlib import PurePosixPath
+from typing import override
 from unittest.mock import Mock, create_autospec
 
 import pytest
+import yaml
 from zephyr_remote_openocd.config import ConfigError, PathMapping, ResolvedRemote
 from zephyr_remote_openocd.remote import RemoteSession
+from zephyr_remote_openocd.remote import backend as backend_module
 from zephyr_remote_openocd.remote.debug import DebugInputs, DebugPlan, build_debug_plan
+from zephyr_remote_openocd.remote.deploy import DeploymentResult
 from zephyr_remote_openocd.remote.forwarding import ForwardStartError
 from zephyr_remote_openocd.remote.model import (
     RemoteProcess,
@@ -28,10 +34,11 @@ from zephyr_remote_openocd.remote.model import (
     SessionDescriptor,
 )
 from zephyr_remote_openocd.remote.paths import PathPlanner
-from zephyr_remote_openocd.remote.ssh import SshCommand
+from zephyr_remote_openocd.remote.session import SessionError
+from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand
 
 from tests.forwarding_support import GDB, RTT, TCL, TELNET, ForwardingHarness
-from tests.support import env_path
+from tests.support import ROOT, env_path
 
 pytestmark = pytest.mark.zephyr
 
@@ -88,6 +95,164 @@ def test_runner_output_reconstructs_fragment_boundaries(runner_api, monkeypatch)
 
     assert stdout.getvalue() == "long line\n"
     assert stderr.getvalue() == "unterminated"
+
+
+@pytest.mark.parametrize("level", (logging.INFO, logging.DEBUG), ids=("normal", "verbose"))
+@pytest.mark.parametrize("forward_ready", (True, False), ids=("success", "forward-failure"))
+def test_runner_logs_effective_remote_argv(
+    runner_api, monkeypatch, tmp_path, caplog, level, forward_ready
+):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
+    core, _, remote = runner_api
+    harness = ForwardingHarness(monkeypatch)
+    harness.helper.allocation = SessionAllocation("session", "/workspace with spaces")
+    harness.helper.openocd_returncode = 0
+    for service in (GDB, TCL, TELNET):
+        harness.ssh.process(service)
+    harness.ssh.process(GDB).ready = forward_ready
+    monkeypatch.setattr(runner_module, "SshCommand", lambda _prefix: harness.ssh)
+    build = tmp_path / "build"
+    (build / "zephyr").mkdir(parents=True)
+    (build / "zephyr" / ".config").write_text("# CONFIG_DEBUG_THREAD_INFO is not set\n")
+    fixed = ["/tools/open ocd", "-c", "init", "-f", "fixed {workspace} {address}.cfg", ""]
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "default_remote": "chosen",
+                "remotes": {"chosen": {"openocd_command": fixed}},
+            }
+        )
+    )
+    monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", str(config))
+    cfg = core.RunnerConfig(
+        build_dir=str(build),
+        board_dir=str(tmp_path),
+        elf_file=None,
+        exe_file=None,
+        hex_file=None,
+        bin_file=None,
+        uf2_file=None,
+        mot_file=None,
+        file=None,
+        openocd_search=[],
+    )
+    runner = remote.create(
+        cfg, parser_for(remote).parse_args(["--cmd-pre-init=echo {workspace}/generated.cfg"])
+    )
+    processes: list[RemoteProcess] = []
+    start_process = harness.helper.start_process
+
+    def capture_start(process, services):
+        processes.append(process)
+        return start_process(process, services)
+
+    monkeypatch.setattr(harness.helper, "start_process", capture_start)
+    with caplog.at_level(level, logger=runner.logger.name):
+        if forward_ready:
+            runner.run("debugserver")
+        else:
+            with pytest.raises(ForwardStartError):
+                runner.run("debugserver")
+
+    assert processes[0].argv[: len(fixed)] == tuple(fixed)
+    assert processes[0].literal_prefix == len(fixed)
+    commands = [
+        record.getMessage().partition(": ")[2]
+        for record in caplog.records
+        if record.getMessage().startswith("Remote OpenOCD: ")
+    ]
+    if level == logging.DEBUG:
+        assert len(commands) == 1
+        argv = shlex.split(commands[0])
+        assert argv[: len(fixed)] == fixed
+        assert "bindto 127.64.0.1" in argv
+        assert "echo /workspace with spaces/generated.cfg" in argv
+        assert argv == fixed + [
+            arg.replace("{workspace}", "/workspace with spaces").replace("{address}", "127.64.0.1")
+            for arg in processes[0].argv[len(fixed) :]
+        ]
+    else:
+        assert commands == []
+    assert harness.helper.close_calls == 1
+
+
+@pytest.mark.parametrize("failure", ("spawn", "readiness"))
+def test_runner_logs_effective_argv_when_remote_startup_fails(
+    runner_api, monkeypatch, tmp_path, caplog, failure
+):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
+    helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+    environment = {**os.environ, "XDG_RUNTIME_DIR": str(tmp_path)}
+
+    class LocalHelperCommand(SshCommand):
+        @override
+        def popen(self, host, remote_command, *, local_forward=None):
+            del host, remote_command
+            assert local_forward is None
+            return ManagedSshProcess.from_popen(
+                subprocess.Popen(
+                    [sys.executable, str(helper), "control"],
+                    env=environment,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+            )
+
+        @override
+        def run_stream(self, host, remote_command, input_stream, *, timeout=60):
+            del host
+            return subprocess.run(
+                [sys.executable, str(helper), "stage", shlex.split(remote_command)[-1]],
+                env=environment,
+                input=input_stream.read(),
+                capture_output=True,
+                timeout=timeout,
+                check=False,
+            )
+
+        @override
+        def run(self, host, remote_command, *, input_data=None, timeout=15):
+            raise AssertionError("run() is not expected")
+
+    monkeypatch.setattr(
+        backend_module,
+        "deploy_helper",
+        lambda *_args: DeploymentResult(str(helper), "test", False),
+    )
+    fixed = (
+        (str(tmp_path / "missing-openocd"), "-c", "init")
+        if failure == "spawn"
+        else (sys.executable, "-c", "raise SystemExit(7)")
+    )
+    request = RemoteSessionRequest(
+        "local",
+        LocalHelperCommand(),
+        RemoteProcess(
+            (*fixed, "{workspace}/generated file", "{address}"),
+            required_output_sentinels=("missing-startup-marker",),
+            literal_prefix=len(fixed),
+        ),
+    )
+    runner = create_autospec(runner_api[2], instance=True)
+    runner.logger = logging.getLogger("test.remote_openocd.startup")
+    with caplog.at_level(logging.DEBUG, logger=runner.logger.name), pytest.raises(SessionError):
+        runner_module._execute_operation(runner, "debugserver", request, None)
+
+    commands = [
+        shlex.split(record.getMessage().partition(": ")[2])
+        for record in caplog.records
+        if record.getMessage().startswith("Remote OpenOCD: ")
+    ]
+    assert len(commands) == 1
+    assert commands[0][: len(fixed)] == list(fixed)
+    assert commands[0][-2].startswith(str(tmp_path / "zephyr_remote_openocd"))
+    assert commands[0][-2].endswith("/generated file")
+    assert commands[0][-1].startswith("127.")
+    assert not list((tmp_path / "zephyr_remote_openocd").glob("*/staged"))
 
 
 def test_remote_home_json_preserves_spaces(runner_api, monkeypatch, tmp_path):

@@ -91,7 +91,9 @@ def test_open_rolls_back_failed_acquisition_once(monkeypatch):
     def deploy(_ssh_command, _host):
         return deployment
 
-    def open_helper(_ssh_command, _host, _deployment, *, output_handler=None):
+    def open_helper(
+        _ssh_command, _host, _deployment, *, output_handler=None, process_start_handler=None
+    ):
         return _BlockedHelper()
 
     monkeypatch.setattr(backend_module, "deploy_helper", deploy)
@@ -124,7 +126,9 @@ def test_open_retains_nested_rollback_cleanup_diagnostics(monkeypatch):
     def deploy(_ssh_command, _host):
         return deployment
 
-    def open_helper(_ssh_command, _host, _deployment, *, output_handler=None):
+    def open_helper(
+        _ssh_command, _host, _deployment, *, output_handler=None, process_start_handler=None
+    ):
         return _BlockedHelper()
 
     monkeypatch.setattr(backend_module, "deploy_helper", deploy)
@@ -272,7 +276,9 @@ def test_staging_rejects_response_without_lf(monkeypatch):
         def close(self) -> _HelperCloseResult:
             return _HelperCloseResult(None, ())
 
-    def open_helper(_ssh_command, _host, _deployment, *, output_handler=None):
+    def open_helper(
+        _ssh_command, _host, _deployment, *, output_handler=None, process_start_handler=None
+    ):
         del output_handler
         return Helper()
 

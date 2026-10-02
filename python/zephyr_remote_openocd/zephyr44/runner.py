@@ -149,6 +149,9 @@ def _execute_operation(runner, command, request, plan):
         request,
         output_handler=_write_output,
         advisory_handler=lambda advisory: _report_forward_advisory(runner, advisory),
+        process_start_handler=lambda argv: runner.logger.debug(
+            "Remote OpenOCD: %s", shlex.join(argv)
+        ),
     )
     assert session.descriptor is not None
     descriptor = session.descriptor

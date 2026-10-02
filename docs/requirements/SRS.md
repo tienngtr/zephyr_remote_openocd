@@ -422,6 +422,25 @@ in full rather than merging lists or mappings. Built-in defaults SHALL be
 `ssh_host` defaults to the remote name. A production operation SHALL require
 `openocd_command`.
 
+Fixed `openocd_command` arguments are an advanced escape hatch. The runner
+SHALL preserve them exactly and in order as an opaque prefix before its
+generated OpenOCD arguments, without parsing, classifying, reordering, or
+validating their OpenOCD/Tcl semantics. Users are responsible for conflicts
+between fixed arguments and with runner-generated arguments, and for avoiding
+initialization or listener creation before runner-generated bind/service
+configuration takes effect unless they intentionally accept that behavior.
+Runner-owned startup-ordering guarantees SHALL cover only generated arguments,
+not arbitrary behavior introduced by fixed arguments.
+
+With `west -v`, the runner SHALL log the full effective remote OpenOCD argv,
+shell-escaped or otherwise unambiguously separated, including fixed arguments
+and generated arguments with session-specific workspace/address values
+resolved. The helper SHALL report that exact argv before each spawn attempt,
+and the client SHALL deliver it for logging while awaiting readiness. Spawn,
+readiness, or required-forwarding failure SHALL NOT suppress this diagnostic.
+Bind-collision retries SHALL each report their own effective argv. Fixed prefix
+elements SHALL retain literal placeholder text.
+
 Structural validation SHALL apply to every definition at load time. Missing
 selected remotes/presets and operational requirements SHALL be reported only
 when that remote is used. Local mapping paths SHALL be normalized before
@@ -869,8 +888,10 @@ Local forwarded services SHALL bind only to local loopback interfaces.
 
 ### REQ-FUNC-SVC-004
 
-Remote OpenOCD services created for a remote-runner session SHALL bind only
-to the runner-allocated remote loopback address. The remote bind address and
+Runner-generated configuration SHALL bind remote OpenOCD services only
+to the runner-allocated remote loopback address. These startup-ordering
+guarantees do not cover arbitrary behavior from advanced fixed
+`openocd_command` arguments (REQ-FUNC-CONFIG-010). The remote bind address and
 service-port settings are runner-owned transport properties. Board or user Tcl
 that overrides `bindto`, `gdb_port`, `tcl_port`, `telnet_port`, or another
 runner-owned service port is outside the supported compatibility boundary.
@@ -1098,6 +1119,14 @@ failure SHALL remain distinguishable, and either SHALL end the session. Loss
 of the control transport MAY prevent delivery of a final outcome. The exact
 Protocol v1 messages, framing, ordering, and validation rules are defined in
 [`protocol.md`](../architecture/protocol.md).
+
+Protocol v1 SHALL require `PROCESS_STARTING` with the exact materialized argv
+after required-path validation and immediately before each spawn attempt. The
+client SHALL reject child output or readiness without this preceding event,
+permit repeated attempts only before readiness, and validate the complete
+current contract rather than numeric version equality
+alone. Automatic content-addressed deployment SHALL supply the matching helper;
+the numeric version remains 1 and no user configuration migration is required.
 
 The helper SHALL incrementally frame control input, retain incomplete frames,
 and consume complete buffered frames without requiring further input readiness.

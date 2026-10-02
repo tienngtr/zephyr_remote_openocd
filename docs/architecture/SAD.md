@@ -1294,6 +1294,7 @@ RemoteSession.open()
        +-- open the helper control channel
        +-- stage files
        +-- start OpenOCD
+       +-- observe each helper-reported pre-spawn argv while awaiting readiness
        +-- wait for OpenOCD startup readiness
        +-- establish required and best-effort forwarding
        |
@@ -1347,13 +1348,41 @@ The runner adds two OpenOCD startup output markers for `debug`, `attach`,
 `debugserver`, and `rtt` operations. It places an init-complete echo in
 OpenOCD's post-init command list
 before board configuration files and appends a startup-complete echo after the
-full server startup sequence. The runner also sets the remote bind address and
-service-port settings before those files. These are runner-owned session and
-transport properties, so a configuration-triggered `init` cannot create
-listeners with pre-runner defaults. Board configuration files own probe and
+full server startup sequence. Within its generated arguments, the runner also
+sets the remote bind address and service-port settings before those files.
+These are runner-owned session and transport properties, so an `init` triggered
+by those board configuration files sees the runner's transport settings.
+Board configuration files own probe and
 target setup. A board or user configuration that overrides the runner's bind
 address or service ports is outside the supported compatibility boundary. The
 runner does not statically inspect arbitrary Tcl for conflicting commands.
+
+The configured `openocd_command` executable and fixed arguments precede all
+runner-generated arguments as an opaque prefix. Fixed arguments are an
+advanced escape hatch: their exact values and order are preserved, and their
+OpenOCD/Tcl semantics are not parsed, classified, reordered, or validated.
+Users own conflicts between fixed arguments and with runner-generated
+arguments, and initialization or listener creation before runner-generated
+bind/service configuration takes effect unless they intentionally accept it.
+For example, fixed `-c init`, `-f early.cfg`, or nested Tcl may execute before
+the runner's transport settings. Startup-ordering guarantees apply only to
+runner-generated arguments and do not cover arbitrary prefix behavior.
+
+The Zephyr adapter logs the full effective remote OpenOCD argv at the runner's
+debug level, visible with `west -v`. The helper materializes the command once
+per attempt, validates required paths, and reports that exact argv through
+`PROCESS_STARTING` immediately before spawning. The client invokes the session's
+process-start observer while awaiting readiness; the adapter shell-escapes the
+reported elements without reconstructing expansion. This preserves the
+diagnostic on spawn, readiness, and required-forwarding failures, and reports
+each bind-collision retry with its actual workspace and allocated address. Only
+elements after the literal configured prefix receive workspace/address expansion.
+
+Protocol v1 requires `PROCESS_STARTING` before child output or readiness and
+permits repeated attempts only before readiness. Version equality alone is
+insufficient for compatibility; an earlier helper omitting this event is
+rejected. Content-addressed deployment installs the matching helper revision
+automatically, without changing the numeric protocol version or user YAML.
 
 Each complete trimmed startup output marker proves one lifecycle fact. The
 helper emits `PROCESS_READY` only after both markers have appeared, in either

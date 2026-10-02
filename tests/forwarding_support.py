@@ -25,6 +25,7 @@ from zephyr_remote_openocd.remote.model import (
 )
 from zephyr_remote_openocd.remote.protocol import encode_message
 from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand, SshLocalForward
+from zephyr_remote_openocd.remote_helper import materialize_argv
 
 GDB = Service("gdb", 3333, 3333)
 TCL = Service("tcl", 6333, 6333)
@@ -73,9 +74,18 @@ class ControlledHelper:
         self.services: tuple[Service, ...] = ()
         self.close_calls = 0
         self.on_wait: Callable[[], None] | None = None
+        self.process_start_handler: Callable[[tuple[str, ...]], None] | None = None
 
     def start_process(self, process: RemoteProcess, services: Iterable[Service]) -> str:
-        del process
+        if self.process_start_handler is not None:
+            self.process_start_handler(
+                materialize_argv(
+                    process.argv,
+                    workspace=self.allocation.remote_workspace,
+                    address="127.64.0.1",
+                    literal_prefix=process.literal_prefix,
+                )
+            )
         self.services = tuple(services)
         return "127.64.0.1"
 
@@ -153,9 +163,13 @@ class ForwardingHarness:
         self.advisories: list[ForwardAdvisory] = []
         deployment = DeploymentResult("/helper.py", "digest", False)
         monkeypatch.setattr(backend_module, "deploy_helper", lambda *_args: deployment)
-        monkeypatch.setattr(_HelperClient, "open", lambda *_args, **_kwargs: self.helper)
+        monkeypatch.setattr(_HelperClient, "open", self.open_helper)
         monkeypatch.setattr(_ForwardManager, "_await_ready", staticmethod(self.await_ready))
         monkeypatch.setattr(_ForwardManager, "_preflight", staticmethod(lambda _service: None))
+
+    def open_helper(self, *_args, process_start_handler=None, **_kwargs):
+        self.helper.process_start_handler = process_start_handler
+        return self.helper
 
     def await_ready(self, managed: ManagedSshProcess, sentinel: str, deadline: float) -> bool:
         del sentinel, deadline

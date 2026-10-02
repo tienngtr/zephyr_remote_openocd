@@ -113,6 +113,7 @@ def test_helper_close_allows_recorded_natural_exit_before_termination(
                 session_id="session",
                 remote_workspace="/workspace",
             ),
+            encode_message("PROCESS_STARTING", argv=["test-process"]),
             encode_message("PROCESS_READY", remote_address="127.64.0.1", child_pid=1),
             encode_message("SESSION_CLOSED", reason="process_exit", returncode=openocd_returncode),
         )
@@ -792,6 +793,61 @@ class TestRttClient:
 
 
 class TestRealProcessHelper:
+    def test_helper_materializes_only_arguments_after_literal_prefix(self, tmp_path):
+        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        environment = os.environ.copy()
+        environment["XDG_RUNTIME_DIR"] = str(tmp_path)
+        with subprocess.Popen(
+            [sys.executable, str(helper), "control"],
+            env=environment,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        ) as process:
+            try:
+                assert process.stdin is not None and process.stdout is not None
+                created = json.loads(read_line(process.stdout))
+                workspace = Path(created["remote_workspace"])
+                process.stdin.write(
+                    start_frame(
+                        [
+                            sys.executable,
+                            "-c",
+                            "import json,sys; print(json.dumps(sys.argv[1:]))",
+                            "fixed {workspace} {address}",
+                            "",
+                            "{workspace}/staged/file with spaces",
+                            "{address}",
+                        ],
+                        literal_prefix=5,
+                    )
+                )
+                process.stdin.flush()
+                events = [json.loads(line) for line in read_lines(process.stdout)]
+                ready = next(event for event in events if event["type"] == "PROCESS_READY")
+                assert events[0]["type"] == "PROCESS_STARTING"
+                output = "".join(
+                    event["payload"] for event in events if event["type"] == "CHILD_OUTPUT"
+                )
+                assert json.loads(output) == [
+                    "fixed {workspace} {address}",
+                    "",
+                    str(workspace / "staged/file with spaces"),
+                    ready["remote_address"],
+                ]
+                assert events[0]["argv"] == [
+                    sys.executable,
+                    "-c",
+                    "import json,sys; print(json.dumps(sys.argv[1:]))",
+                    *json.loads(output),
+                ]
+                assert process.wait(timeout=10) == 0
+                assert not workspace.exists()
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=10)
+
     @pytest.mark.parametrize("pause", ("upload", "admission", "extraction"))
     def test_staging_and_cleanup_share_workspace_lifetime(self, tmp_path, pause):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
@@ -1544,7 +1600,13 @@ helper['stage'](sys.argv[2])
                     and "address already in use" in event["payload"].casefold()
                     for event in events
                 )
-                assert any(event["type"] == "PROCESS_READY" for event in events)
+                ready = next(event for event in events if event["type"] == "PROCESS_READY")
+                attempts = [
+                    event["argv"] for event in events if event["type"] == "PROCESS_STARTING"
+                ]
+                assert len(attempts) >= 2
+                assert attempts[0][2] != attempts[-1][2]
+                assert attempts[-1][2] == ready["remote_address"]
                 process.stdin.write(encode_message("STOP"))
                 process.stdin.flush()
                 assert process.wait(timeout=8) == 0
@@ -1582,7 +1644,8 @@ helper['stage'](sys.argv[2])
                 process.stdin.flush()
                 events = [json.loads(line) for line in read_lines(process.stdout)]
                 assert process.wait(timeout=5) == 0
-                assert events[0]["type"] == "PROCESS_READY"
+                assert events[0]["type"] == "PROCESS_STARTING"
+                assert events[1]["type"] == "PROCESS_READY"
                 outputs = {
                     (event["stream"], event["payload"])
                     for event in events
@@ -1635,6 +1698,7 @@ helper['stage'](sys.argv[2])
                 )
             )
             process.stdin.flush()
+            assert json.loads(read_line(process.stdout))["type"] == "PROCESS_STARTING"
             capacity = fcntl.fcntl(process.stdout.fileno(), fcntl.F_GETPIPE_SZ)
             deadline = time.monotonic() + 30
             # Poll an explicit OS condition; expiry is only a deadlock backstop.
@@ -1698,6 +1762,7 @@ helper['stage'](sys.argv[2])
                 command = [sys.executable, "-c", "import time; time.sleep(30)"]
                 process.stdin.write(start_frame(command))
                 process.stdin.flush()
+                assert json.loads(read_line(process.stdout))["type"] == "PROCESS_STARTING"
                 started = json.loads(read_line(process.stdout))
                 assert started["type"] == "PROCESS_READY"
                 child_pid = started["child_pid"]
@@ -1748,6 +1813,7 @@ helper['stage'](sys.argv[2])
             )
             process.stdin.flush()
             # Child output is a handshake that startup is pending, not a readiness sentinel.
+            assert json.loads(read_line(process.stdout))["type"] == "PROCESS_STARTING"
             output = json.loads(read_line(process.stdout))
             assert output["type"] == "CHILD_OUTPUT"
             child_pid = int(output["payload"])
@@ -1802,6 +1868,7 @@ helper['stage'](sys.argv[2])
                     start_frame([sys.executable, "-c", "import time; time.sleep(30)"])
                 )
                 process.stdin.flush()
+                assert json.loads(read_line(process.stdout))["type"] == "PROCESS_STARTING"
                 started = json.loads(read_line(process.stdout))
                 assert started["type"] == "PROCESS_READY"
                 child_pid = started["child_pid"]
@@ -2217,6 +2284,7 @@ events = (
         "session_id": "id",
         "remote_workspace": "/workspace",
     }},
+    {{"version": 1, "type": "PROCESS_STARTING", "argv": ["test-process"]}},
     {{"version": 1, "type": "PROCESS_READY", "remote_address": "127.64.0.1", "child_pid": 1}},
     {{"version": 1, "type": "SESSION_CLOSED", "reason": "process_exit", "returncode": 0}},
 )

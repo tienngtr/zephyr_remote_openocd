@@ -102,6 +102,32 @@ also resolves preset references and settings required by the selected remote.
 `openocd_command` is an argv sequence sent through SSH and executed on the
 remote machine. West and GDB remain local.
 
+Fixed arguments after the executable in `openocd_command` are an advanced
+escape hatch. They form an opaque argv prefix before runner-generated OpenOCD
+arguments and retain their exact values and order, including literal
+`{workspace}` and `{address}` text. The runner does not parse, classify,
+reorder, or validate their OpenOCD/Tcl semantics.
+
+You are responsible for avoiding conflicts between fixed arguments and with
+runner-generated arguments. For example, `-c init`, `-f early.cfg`, or
+`-c 'source early.cfg'` can initialize OpenOCD or create listeners before the
+runner's bind/service settings take effect. Avoid that behavior unless you
+intentionally accept it. Startup-ordering guarantees cover runner-generated
+arguments only; arbitrary behavior introduced by fixed arguments is outside
+those guarantees.
+
+Use `west -v` with a remote runner operation to see the full shell-escaped
+effective remote OpenOCD argv, including fixed arguments and runner-generated
+arguments with the session workspace and address resolved. For example:
+
+```sh
+west -v debugserver -r remote_openocd --remote lab
+```
+
+The helper reports each effective command before attempting to spawn OpenOCD,
+so the trace remains available if spawning, startup readiness, or required
+forwarding fails. Bind-collision retries show each attempt's actual argv.
+
 ## What is copied to the remote
 
 Required local files and directories are staged automatically unless a path

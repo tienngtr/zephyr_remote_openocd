@@ -68,11 +68,14 @@ class _HelperClient:
         host: str,
         deployment: DeploymentResult,
         output_handler: Callable[[str, str, bool], None] | None = None,
+        *,
+        process_start_handler: Callable[[tuple[str, ...]], None] | None = None,
     ) -> None:
         self._ssh_command = ssh_command
         self._host = host
         self._deployment = deployment
         self._output_handler = output_handler
+        self._process_start_handler = process_start_handler
         self._observations = _SessionObservations()
         self._reader_thread: threading.Thread | None = None
         self._process: ManagedSshProcess | None = None
@@ -87,8 +90,15 @@ class _HelperClient:
         deployment: DeploymentResult,
         *,
         output_handler: Callable[[str, str, bool], None] | None = None,
+        process_start_handler: Callable[[tuple[str, ...]], None] | None = None,
     ) -> _HelperClient:
-        client = cls(ssh_command, host, deployment, output_handler)
+        client = cls(
+            ssh_command,
+            host,
+            deployment,
+            output_handler,
+            process_start_handler=process_start_handler,
+        )
         client._open()
         return client
 
@@ -370,7 +380,9 @@ class _HelperClient:
         self._reader_thread = reader_thread
 
     def _dispatch(self, event: dict) -> None:
-        if event["type"] == "CHILD_OUTPUT" and self._output_handler is not None:
+        if event["type"] == "PROCESS_STARTING" and self._process_start_handler is not None:
+            self._process_start_handler(tuple(event["argv"]))
+        elif event["type"] == "CHILD_OUTPUT" and self._output_handler is not None:
             self._output_handler(event["stream"], event["payload"], event["line_end"])
         elif event["type"] == "SESSION_CLOSED":
             self._observations.record_close(event["reason"], event["returncode"])

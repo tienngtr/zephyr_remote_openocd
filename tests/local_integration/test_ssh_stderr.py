@@ -42,6 +42,11 @@ if remote_command.endswith(" control"):
         if message["type"] == "START":
             print(json.dumps({
                 "version": 1,
+                "type": "PROCESS_STARTING",
+                "argv": ["test-process"],
+            }), flush=True)
+            print(json.dumps({
+                "version": 1,
                 "type": "PROCESS_READY",
                 "remote_address": "127.64.0.1",
                 "child_pid": 1,

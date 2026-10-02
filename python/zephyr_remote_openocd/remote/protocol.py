@@ -147,6 +147,16 @@ def _valid_process_ready(message: dict[str, Any]) -> bool:
     )
 
 
+def _valid_process_starting(message: dict[str, Any]) -> bool:
+    argv = message.get("argv")
+    return (
+        isinstance(argv, list)
+        and bool(argv)
+        and _non_empty_string(argv[0])
+        and all(isinstance(arg, str) for arg in argv[1:])
+    )
+
+
 def _valid_child_output(message: dict[str, Any]) -> bool:
     payload = message.get("payload")
     line_end = message.get("line_end")
@@ -177,6 +187,7 @@ def _valid_error(message: dict[str, Any]) -> bool:
 
 _EVENT_FIELDS = {
     "SESSION_CREATED": frozenset(("helper", "session_id", "remote_workspace")),
+    "PROCESS_STARTING": frozenset(("argv",)),
     "PROCESS_READY": frozenset(("remote_address", "child_pid")),
     "CHILD_OUTPUT": frozenset(("stream", "payload", "line_end")),
     "SESSION_CLOSED": frozenset(("reason", "returncode")),
@@ -184,6 +195,7 @@ _EVENT_FIELDS = {
 }
 _EVENT_VALIDATORS = {
     "SESSION_CREATED": _valid_session_created,
+    "PROCESS_STARTING": _valid_process_starting,
     "PROCESS_READY": _valid_process_ready,
     "CHILD_OUTPUT": _valid_child_output,
     "SESSION_CLOSED": _valid_session_closed,
@@ -294,13 +306,17 @@ class EventOrder:
 
 _EVENT_TRANSITIONS = {
     "new": frozenset(("SESSION_CREATED", "ERROR")),
-    "created": frozenset(("PROCESS_READY", "CHILD_OUTPUT", "SESSION_CLOSED", "ERROR")),
+    "created": frozenset(("PROCESS_STARTING", "SESSION_CLOSED", "ERROR")),
+    "starting": frozenset(
+        ("PROCESS_STARTING", "PROCESS_READY", "CHILD_OUTPUT", "SESSION_CLOSED", "ERROR")
+    ),
     "active": frozenset(("CHILD_OUTPUT", "SESSION_CLOSED", "ERROR")),
     "closed": frozenset(),
 }
 
 _EVENT_NEXT_STATE = {
     "SESSION_CREATED": "created",
+    "PROCESS_STARTING": "starting",
     "PROCESS_READY": "active",
     "SESSION_CLOSED": "closed",
     "ERROR": "closed",

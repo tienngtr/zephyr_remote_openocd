@@ -7,6 +7,7 @@ import os
 import signal
 import subprocess
 import threading
+from collections.abc import Callable
 from typing import Any, BinaryIO, cast, override
 
 import pytest
@@ -108,7 +109,11 @@ class _EventProcess:
         self.stderr.close()
 
 
-def _open_helper_client(process: _EventProcess) -> _HelperClient:
+def _open_helper_client(
+    process: _EventProcess,
+    *,
+    process_start_handler: Callable[[tuple[str, ...]], None] | None = None,
+) -> _HelperClient:
     class Command(_PopenOnlySshCommand):
         @override
         def popen(
@@ -117,11 +122,17 @@ def _open_helper_client(process: _EventProcess) -> _HelperClient:
             del host, remote_command, local_forward
             return process
 
-    return _HelperClient.open(Command(), "host", DeploymentResult("/helper.py", "digest", False))
+    return _HelperClient.open(
+        Command(),
+        "host",
+        DeploymentResult("/helper.py", "digest", False),
+        process_start_handler=process_start_handler,
+    )
 
 
 def _open_helper_client_with_events(
     *events: bytes,
+    process_start_handler: Callable[[tuple[str, ...]], None] | None = None,
 ) -> tuple[_HelperClient, _EventProcess]:
     process = _EventProcess(
         (
@@ -134,7 +145,26 @@ def _open_helper_client_with_events(
             *events,
         )
     )
-    return _open_helper_client(process), process
+    return _open_helper_client(process, process_start_handler=process_start_handler), process
+
+
+def test_helper_client_reports_every_attempt_before_startup_error():
+    observed: list[tuple[str, ...]] = []
+    first = ("openocd", "-c", "bindto 127.64.0.1", "")
+    retry = ("openocd", "-c", "bindto 127.64.0.2", "")
+    client, _process = _open_helper_client_with_events(
+        encode_message("PROCESS_STARTING", argv=list(first)),
+        encode_message("CHILD_OUTPUT", stream="stderr", payload="bind collision", line_end=True),
+        encode_message("PROCESS_STARTING", argv=list(retry)),
+        encode_message("ERROR", code="FAILED", message="startup failed"),
+        process_start_handler=observed.append,
+    )
+    try:
+        with pytest.raises(SessionError):
+            client.start_process(RemoteProcess(("openocd",)), ())
+        assert observed == [first, retry]
+    finally:
+        client.close()
 
 
 def test_open_rejects_initial_frame_without_lf():
@@ -278,6 +308,7 @@ def test_startup_error_ends_session_without_stop_or_missing_close_failure():
 @pytest.mark.timeout(10)
 def test_unexpected_requested_close_is_reported_by_active_operation_result():
     helper_client, _process = _open_helper_client_with_events(
+        encode_message("PROCESS_STARTING", argv=["child"]),
         encode_message("PROCESS_READY", remote_address="127.64.0.1", child_pid=1),
         encode_message("SESSION_CLOSED", reason="requested", returncode=None),
     )
@@ -296,6 +327,7 @@ def test_unexpected_requested_close_is_reported_by_active_operation_result():
 @pytest.mark.timeout(10)
 def test_background_error_ends_session_without_sending_stop():
     helper_client, process = _open_helper_client_with_events(
+        encode_message("PROCESS_STARTING", argv=["child"]),
         encode_message("PROCESS_READY", remote_address="127.64.0.1", child_pid=1),
         encode_message("ERROR", code="FAILED", message="background failed"),
     )
@@ -313,6 +345,7 @@ def test_background_error_ends_session_without_sending_stop():
 @pytest.mark.timeout(10)
 def test_observed_background_error_is_not_reported_again_on_close():
     helper_client, process = _open_helper_client_with_events(
+        encode_message("PROCESS_STARTING", argv=["child"]),
         encode_message("PROCESS_READY", remote_address="127.64.0.1", child_pid=1),
         encode_message("ERROR", code="FAILED", message="background failed"),
     )
@@ -330,6 +363,7 @@ def test_observed_background_error_is_not_reported_again_on_close():
 
 def test_close_keeps_helper_error_primary_when_forced_cleanup_also_fails(monkeypatch):
     helper_client, _process = _open_helper_client_with_events(
+        encode_message("PROCESS_STARTING", argv=["child"]),
         encode_message("PROCESS_READY", remote_address="127.64.0.1", child_pid=1),
         encode_message("ERROR", code="FAILED", message="background failed"),
     )
@@ -869,6 +903,7 @@ def test_helper_client_output_delivery_does_not_retain_event_history():
             session_id="session",
             remote_workspace="/workspace",
         ),
+        encode_message("PROCESS_STARTING", argv=["child"]),
         encode_message("PROCESS_READY", remote_address="127.64.0.1", child_pid=1),
         *(
             encode_message(

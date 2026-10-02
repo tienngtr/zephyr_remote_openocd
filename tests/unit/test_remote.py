@@ -155,13 +155,11 @@ class TestProtocol:
                 )
             )
         )
+        order.accept(decode_message(encode_message("PROCESS_STARTING", argv=["openocd"])))
         order.accept(
             decode_message(
                 encode_message(
-                    "CHILD_OUTPUT",
-                    stream="stdout",
-                    payload="before-ready",
-                    line_end=False,
+                    "CHILD_OUTPUT", stream="stdout", payload="before-ready", line_end=False
                 )
             )
         )
@@ -184,6 +182,63 @@ class TestProtocol:
                     )
                 )
             )
+
+    @pytest.mark.parametrize("activity", ("ready", "output"))
+    def test_version_one_helper_requires_pre_spawn_event(self, activity):
+        order = EventOrder()
+        order.accept(
+            decode_message(
+                encode_message(
+                    "SESSION_CREATED",
+                    helper="helper",
+                    session_id="session",
+                    remote_workspace="/workspace",
+                )
+            )
+        )
+        event = (
+            encode_message("PROCESS_READY", remote_address="127.64.0.1", child_pid=1)
+            if activity == "ready"
+            else encode_message("CHILD_OUTPUT", stream="stdout", payload="output", line_end=True)
+        )
+        with pytest.raises(ProtocolError):
+            order.accept(decode_message(event))
+
+    @pytest.mark.parametrize("argv", (None, [], [""], "openocd", ["openocd", None], [1]))
+    def test_process_starting_rejects_invalid_argv(self, argv):
+        with pytest.raises(ProtocolError):
+            validate_helper_event(decode_message(encode_message("PROCESS_STARTING", argv=argv)))
+
+    def test_process_starting_supports_retries_before_readiness_only(self):
+        order = EventOrder()
+        order.accept(
+            decode_message(
+                encode_message(
+                    "SESSION_CREATED",
+                    helper="helper",
+                    session_id="session",
+                    remote_workspace="/workspace",
+                )
+            )
+        )
+        for address in ("127.64.0.1", "127.64.0.2"):
+            order.accept(
+                decode_message(encode_message("PROCESS_STARTING", argv=["openocd", "", address]))
+            )
+            order.accept(
+                decode_message(
+                    encode_message(
+                        "CHILD_OUTPUT", stream="stderr", payload="attempt", line_end=True
+                    )
+                )
+            )
+        order.accept(
+            decode_message(
+                encode_message("PROCESS_READY", remote_address="127.64.0.2", child_pid=1)
+            )
+        )
+        with pytest.raises(ProtocolError):
+            order.accept(decode_message(encode_message("PROCESS_STARTING", argv=["openocd"])))
 
     def test_start_serializers_use_validated_domain_models(self):
         stream = io.BytesIO()
@@ -345,6 +400,7 @@ class TestProtocol:
                 )
             )
         )
+        order.accept(decode_message(encode_message("PROCESS_STARTING", argv=["openocd"])))
         order.accept(
             decode_message(
                 encode_message("PROCESS_READY", remote_address="127.64.1.1", child_pid=1)

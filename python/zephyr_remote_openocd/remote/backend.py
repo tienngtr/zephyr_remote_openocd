@@ -160,6 +160,7 @@ class RemoteSession:
         *,
         output_handler: Callable[[str, str, bool], None] | None = None,
         advisory_handler: Callable[[ForwardAdvisory], None] | None = None,
+        process_start_handler: Callable[[tuple[str, ...]], None] | None = None,
     ) -> RemoteSession:
         deployment = deploy_helper(request.ssh_command, request.host)
         session = cls(request, deployment, output_handler, advisory_handler=advisory_handler)
@@ -168,6 +169,7 @@ class RemoteSession:
             request.host,
             deployment,
             output_handler=output_handler,
+            process_start_handler=process_start_handler,
         )
         try:
             session._stage(request.staged_files)

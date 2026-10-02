@@ -25,6 +25,9 @@ remotes:
     ssh_host: replace-with-ssh-host-or-alias
 
     # An argv sequence executed on the remote host. Replace this path.
+    # Fixed arguments are an advanced escape hatch, preserved before generated
+    # arguments. You own conflicts and early init/listener behavior; see
+    # docs/user/configuration.md. Use west -v to inspect the effective argv.
     openocd_command:
       - /opt/zephyr-sdk-1.0.1/hosttools/sysroots/x86_64-pokysdk-linux/usr/bin/openocd
 

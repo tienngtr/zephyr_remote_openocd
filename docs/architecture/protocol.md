@@ -29,7 +29,11 @@ complete and partial frames.
 
 The helper emits one `SESSION_CREATED` event before reading commands. The
 client writes commands to helper stdin and reads events from stdout. There is
-no feature negotiation beyond the required version.
+no feature negotiation. Compatibility requires the complete current contract,
+including the pre-spawn `PROCESS_STARTING` event, not version equality alone.
+An earlier version-1 helper that omits that event is incompatible. Normal
+deployment installs the matching content-addressed helper automatically;
+no user configuration migration is required and the numeric version remains 1.
 
 ## Session commands
 
@@ -54,10 +58,18 @@ contract, and duplicate values are rejected during validation before startup.
 
 The helper allocates an address in `127.64.0.0/10` and checks requested service
 ports for bind collisions at that address. It does not create or probe service
-listeners; OpenOCD owns its GDB, Tcl, telnet, and RTT listeners. With an empty
-marker list, the process is immediately startup-ready. Otherwise the helper
-waits until every required marker has appeared as a complete trimmed line on
-either child stream, then emits one `PROCESS_READY` event. Markers may arrive
+listeners; OpenOCD owns its GDB, Tcl, telnet, and RTT listeners. After allocating
+the address, materializing the argv, and validating required paths, the helper
+emits `PROCESS_STARTING` with the exact argv immediately before attempting to
+spawn the child. A required-path failure emits no `PROCESS_STARTING` event.
+Each bind-collision retry emits its own event with that attempt's
+resolved values. This event does not indicate successful spawning or readiness
+and remains observable when spawning or readiness subsequently fails.
+
+With an empty marker list, the process is immediately startup-ready after
+spawning. Otherwise the helper waits until every required marker has appeared
+as a complete trimmed line on either child stream, then emits one
+`PROCESS_READY` event. Markers may arrive
 in any order and on either stream. Output reads are bounded and use an
 incremental UTF-8 decoder. A marker is recognized only when the complete
 trimmed line is observed; a fragment that merely matches a marker prefix does
@@ -88,13 +100,14 @@ status are independent status checks and are never OpenOCD results.
 
 After local `STOP` initiation, either `SESSION_CLOSED` form may legitimately occur:
 OpenOCD may terminate naturally before requested termination takes effect, or
-the requested shutdown may complete first. Protocol version 1 is unchanged.
+the requested shutdown may complete first. The numeric protocol version remains 1.
 
 ## Session events
 
 | Event | Required fields | Meaning |
 | --- | --- | --- |
 | `SESSION_CREATED` | Non-empty strings `helper`, `session_id`, `remote_workspace` | Session workspace and helper identity are available. |
+| `PROCESS_STARTING` | `argv`: non-empty string list; first string non-empty, later strings may be empty | Required paths validated; exact materialized argv for one child attempt, emitted immediately before spawn. Repeated for retries before readiness. |
 | `PROCESS_READY` | Non-empty `remote_address`, positive integer `child_pid` | The requested process passed readiness policy. |
 | `CHILD_OUTPUT` | `stream` exactly `stdout`/`stderr`, string `payload` without `LF`, Boolean `line_end` | One decoded fragment from the identified child stream. `line_end` is true only when the fragment is followed by an actual child `LF` (the delimiter is omitted). A fragment with `line_end` false has a non-empty payload. UTF-8 decoding is incremental with replacement; one logical line may span several events. |
 | `SESSION_CLOSED` | `reason` and `returncode` | Orderly session close: `reason` is `requested` with null return code, or `process_exit` with an integer return code. |
@@ -103,14 +116,20 @@ the requested shutdown may complete first. Protocol version 1 is unchanged.
 The event state graph is:
 
 ```text
-new --SESSION_CREATED--> created --PROCESS_READY--> active
-  \                       |  \                    /
-   \                      |   \--SESSION_CLOSED-/
-    \                     \------ERROR----------/
-     \--ERROR-----------------------------------/
+new --SESSION_CREATED--> created --PROCESS_STARTING--> starting --PROCESS_READY--> active
+                                                        |
+                                                        +--PROCESS_STARTING--> starting
+
+created, starting, active --SESSION_CLOSED--> closed
+new, created, starting, active --ERROR--> closed
 ```
 
-`CHILD_OUTPUT` may occur in `created` before `PROCESS_READY` and in `active`.
+`CHILD_OUTPUT` may occur in `starting` before `PROCESS_READY` and in `active`.
+The client rejects child output or readiness before `PROCESS_STARTING`, and
+rejects `PROCESS_STARTING` after readiness or any session-ending event. It
+delivers each reported argv to the process-start observer while awaiting
+readiness, before required forwarding or dependent client startup. The observer
+does not reconstruct placeholder expansion locally.
 Fragment order is preserved within each child stream. Events from stdout and
 stderr are serialized in helper-observed order; no ordering relationship
 between writes to different child streams is guaranteed.

@@ -19,7 +19,7 @@ class OpenOcdBasePlan:
 
 
 def executable_argv(executable: str | tuple[str, ...]) -> list[str]:
-    """Return a mutable argv prefix while preserving multi-word executables."""
+    """Preserve the executable and opaque advanced fixed arguments in order."""
 
     return list((executable,) if isinstance(executable, str) else executable)
 
@@ -48,7 +48,7 @@ def base_argv(
     remote_configs: list[str],
     pre_config_commands: tuple[str, ...],
 ) -> list[str]:
-    """Build the shared command prefix with runner setup before board configs."""
+    """Put runner setup before board configs, after the opaque configured prefix."""
 
     argv = executable_argv(executable)
     for path in remote_search:

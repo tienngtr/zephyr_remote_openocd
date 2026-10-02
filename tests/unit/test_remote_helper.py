@@ -75,9 +75,10 @@ def test_control_session_services_input_during_readiness(
     )
     original_spawn = remote_helper._spawn_child
     children = []
-    events = []
+    events: list[tuple[str, dict[str, Any]]] = []
 
     def spawn(*args, **kwargs):
+        assert events[-1] == ("PROCESS_STARTING", {"argv": list(args[0])})
         child = original_spawn(*args, **kwargs)
         children.append(child)
         if not batch:
@@ -117,7 +118,7 @@ def test_control_session_services_input_during_readiness(
     else:
         assert session.protocol_error is None
         if interruption is None:
-            assert [kind for kind, _values in events] == ["SESSION_CREATED"]
+            assert [kind for kind, _values in events] == ["SESSION_CREATED", "PROCESS_STARTING"]
         else:
             assert events[-1] == ("SESSION_CLOSED", {"reason": "requested", "returncode": None})
 
@@ -1422,7 +1423,7 @@ def test_decode_command_rejects_malformed_required_path_before_launch(start_comm
 
 
 def test_control_session_does_not_launch_when_required_file_is_missing(
-    tmp_path, monkeypatch, start_command, control_pipe
+    tmp_path, monkeypatch, start_command, control_pipe, capsys
 ):
     workspace = tmp_path / "workspace"
     staged = workspace / "staged"
@@ -1449,6 +1450,8 @@ def test_control_session_does_not_launch_when_required_file_is_missing(
     assert "missing" in message
     assert str(missing_file) in message
     assert spawn_calls == []
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert not any(event["type"] == "PROCESS_STARTING" for event in events)
 
 
 @pytest.mark.parametrize(

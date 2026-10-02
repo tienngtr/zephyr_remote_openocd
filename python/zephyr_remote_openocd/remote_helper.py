@@ -1026,12 +1026,19 @@ def _spawn_child(argv, *, cwd=None, environment=None, required_output_sentinels=
         raise
 
 
-def _expanded_argv(request, work, address):
-    replacements = {"{workspace}": str(work), "{address}": address}
-    return [
-        arg if index < request.literal_prefix else _expand(arg, replacements)
-        for index, arg in enumerate(request.argv)
-    ], replacements
+def materialize_argv(
+    argv: Iterable[str], *, workspace: str, address: str, literal_prefix: int = 0
+) -> tuple[str, ...]:
+    """Resolve session placeholders while preserving the configured literal prefix.
+
+    The helper reports this exact argv before spawning each child attempt so
+    diagnostics never reconstruct session expansion independently.
+    """
+    replacements = {"{workspace}": workspace, "{address}": address}
+    return tuple(
+        arg if index < literal_prefix else _expand(arg, replacements)
+        for index, arg in enumerate(argv)
+    )
 
 
 def _child_environment(request):
@@ -1263,8 +1270,15 @@ class ControlSession:
         request = self.request
         ports = [service.remote_port for service in request.services]
         self.address = allocate_service_address(ports) if ports else random_address()
-        argv, replacements = _expanded_argv(request, self.work, self.address)
+        argv = materialize_argv(
+            request.argv,
+            workspace=str(self.work),
+            address=self.address,
+            literal_prefix=request.literal_prefix,
+        )
+        replacements = {"{workspace}": str(self.work), "{address}": self.address}
         _check_required_paths(request.required_paths, replacements)
+        emit("PROCESS_STARTING", argv=list(argv))
         self.child = _spawn_child(
             argv,
             cwd=self.work / "staged",
