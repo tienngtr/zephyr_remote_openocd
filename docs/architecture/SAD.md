@@ -1246,6 +1246,33 @@ hours when their lock is no longer held or lock creation never completed. This
 reclaims state left by uncatchable termination without disturbing concurrent
 active sessions.
 
+Standalone staging first spools its upload without workspace ownership. Before
+archive validation or extraction, it acquires a shared workspace lease using a
+nonblocking lock, then checks that admission remains open and the workspace
+exists. Each lease file is a sibling `.<session-id>.lease`, outside the deletable
+workspace. Cleanup atomically creates a separate sibling
+`.<session-id>.closed` marker before attempting exclusive lease ownership. This
+closure needs no mutex and remains observable even when another process is
+suspended holding the lease. No root-wide admission lock is used.
+
+If staging checks admission before closure, its shared lease protects the
+workspace until extraction and the `STAGED` response finish. If closure is
+already visible, staging rejects even when it opened the lease file earlier.
+Cleanup waits up to five seconds for exclusive ownership before removing the
+workspace; a timeout reports failure and leaves admission closed. A contended
+lease affects only its own session. The existing `.session.lock` continues to
+track control-helper liveness for stale reclamation.
+
+Lease and closure metadata survive successful workspace removal as well as
+failed cleanup. Opportunistic reclamation removes metadata older than 24 hours
+only when its workspace is absent. A delayed stage still checks workspace
+existence after acquiring ownership, so retired metadata cannot let it recreate
+the deleted workspace. Stale workspace removal uses the same closure and lease
+procedure. Kernel locks release on stage-process exit, including uncatchable
+termination. All lease acquisitions are nonblocking; cleanup retries have a
+bounded deadline. Filesystem operations retain their ordinary OS behavior.
+Standalone staging and Protocol v1 frames remain unchanged.
+
 ---
 
 ## 39. Local Session Lifecycle

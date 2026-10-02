@@ -26,8 +26,8 @@ import tarfile
 import tempfile
 import time
 from collections import deque
-from collections.abc import Coroutine, Iterable
-from contextlib import suppress
+from collections.abc import Coroutine, Iterable, Iterator
+from contextlib import contextmanager, suppress
 from enum import Enum, auto
 from pathlib import Path, PurePosixPath
 from types import FrameType
@@ -37,6 +37,8 @@ VERSION = 1
 RANGE = ipaddress.IPv4Network("127.64.0.0/10")
 SESSION_LOCK = ".session.lock"
 STALE_SESSION_AGE = 24 * 60 * 60
+WORKSPACE_LEASE_TIMEOUT = 5
+WORKSPACE_LEASE_POLL_INTERVAL = 0.05
 CHILD_TERM_TIMEOUT = 5
 CHILD_POLL_INTERVAL = 0.05
 CHILD_REAP_TIMEOUT = 1
@@ -88,6 +90,52 @@ def workspace_root():
     return Path.home() / ".cache" / "zephyr_remote_openocd" / "sessions"
 
 
+def _lease_path(work: Path) -> Path:
+    return work.parent / f".{work.name}.lease"
+
+
+def _closure_path(work: Path) -> Path:
+    return work.parent / f".{work.name}.closed"
+
+
+@contextmanager
+def _stage_lease(work: Path) -> Iterator[None]:
+    # Acquire ownership before checking closure. If cleanup wins before this
+    # check, reject; if it wins afterwards, our shared lease prevents removal.
+    with _lease_path(work).open("a+b") as lease:
+        try:
+            fcntl.flock(lease, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError("workspace cleanup has begun") from None
+        if _closure_path(work).exists() or not work.is_dir():
+            raise ValueError("workspace is not an active helper session")
+        yield
+
+
+def remove_workspace(work: Path) -> None:
+    """Close admission before waiting for all admitted stages to release ownership."""
+    # O_CREAT publishes closure atomically without depending on any lock owner.
+    # Retain both sibling files after removal so pending stage descriptors and
+    # late callers observe the same lease identity and closed admission.
+    with _closure_path(work).open("ab"):
+        pass
+    with _lease_path(work).open("a+b") as lease:
+        deadline = time.monotonic() + WORKSPACE_LEASE_TIMEOUT
+        while True:
+            try:
+                fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("staging did not release its workspace lease") from None
+                time.sleep(WORKSPACE_LEASE_POLL_INTERVAL)
+        try:
+            shutil.rmtree(work)
+        except FileNotFoundError:
+            if work.exists():
+                raise
+
+
 def reclaim_stale_workspaces(root, now=None):
     """Remove old workspaces whose owning helper no longer holds its lock."""
     cutoff = (time.time() if now is None else now) - STALE_SESSION_AGE
@@ -98,10 +146,23 @@ def reclaim_stale_workspaces(root, now=None):
     for path in candidates:
         lock_path = path / SESSION_LOCK
         try:
-            if not path.is_dir() or path.stat().st_mtime > cutoff:
+            if path.stat().st_mtime > cutoff:
+                continue
+            if path.is_file() and path.name.startswith("."):
+                for suffix in (".lease", ".closed"):
+                    if path.name.endswith(suffix):
+                        # Metadata is retired only after its workspace is gone.
+                        # A pending stage still checks closure and workspace
+                        # existence after locking, including on a retired inode.
+                        if not (root / path.name[1 : -len(suffix)]).exists():
+                            path.unlink()
+                        break
+                continue
+            if not path.is_dir():
                 continue
             if not lock_path.is_file():
-                shutil.rmtree(path, ignore_errors=True)
+                with suppress(OSError):
+                    remove_workspace(path)
                 continue
             lock = lock_path.open("r+b")
         except OSError:
@@ -111,7 +172,8 @@ def reclaim_stale_workspaces(root, now=None):
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 continue
-            shutil.rmtree(path, ignore_errors=True)
+            with suppress(OSError):
+                remove_workspace(path)
         finally:
             lock.close()
 
@@ -175,56 +237,59 @@ def stage(workspace):
     spool = tempfile.SpooledTemporaryFile(max_size=1024 * 1024, mode="w+b")  # noqa: SIM115
     try:
         shutil.copyfileobj(sys.stdin.buffer, spool, length=1024 * 1024)
-        spool.seek(0)
-        with tarfile.open(fileobj=spool, mode="r:*") as archive:
-            members = archive.getmembers()
-            seen: set[PurePosixPath] = set()
-            validated = []
-            kinds = {}
-            for member in members:
-                relative = valid_member(member, seen)
-                kind = "directory" if member.isdir() else "file"
-                kinds[relative] = kind
-                target = target_root.joinpath(*relative.parts)
-                if target_root.resolve() not in target.resolve().parents:
-                    raise ValueError(f"archive path escapes staging directory: {relative}")
-                validated.append((member, relative, target, kind))
-            if any(
-                kind == "file" and any(path in other.parents for other in kinds)
-                for path, kind in kinds.items()
-            ):
-                raise ValueError("archive contains a file/directory ancestor conflict")
-            for member, relative, target, kind in validated:
-                if kind == "directory":
-                    target.mkdir(mode=0o700, parents=True, exist_ok=True)
-                    # Keep extracted directories owner-private and writable so
-                    # session cleanup can remove their contents regardless of
-                    # archive permission metadata.
-                    os.chmod(target, 0o700)
-                    continue
-                target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-                source = archive.extractfile(member)
-                if source is None:
-                    raise ValueError(f"missing archive content: {relative}")
-                with target.open("wb") as output:
-                    while True:
-                        chunk = source.read(1024 * 1024)
-                        if not chunk:
-                            break
-                        output.write(chunk)
-                        count += len(chunk)
-                        digest.update(chunk)
-                os.chmod(target, member.mode & 0o700 or 0o600)
-                names.append(str(relative))
+        with _stage_lease(work):
+            spool.seek(0)
+            with tarfile.open(fileobj=spool, mode="r:*") as archive:
+                members = archive.getmembers()
+                seen: set[PurePosixPath] = set()
+                validated = []
+                kinds = {}
+                for member in members:
+                    relative = valid_member(member, seen)
+                    kind = "directory" if member.isdir() else "file"
+                    kinds[relative] = kind
+                    target = target_root.joinpath(*relative.parts)
+                    if target_root.resolve() not in target.resolve().parents:
+                        raise ValueError(f"archive path escapes staging directory: {relative}")
+                    validated.append((member, relative, target, kind))
+                if any(
+                    kind == "file" and any(path in other.parents for other in kinds)
+                    for path, kind in kinds.items()
+                ):
+                    raise ValueError("archive contains a file/directory ancestor conflict")
+                for member, relative, target, kind in validated:
+                    if kind == "directory":
+                        target.mkdir(mode=0o700, parents=True, exist_ok=True)
+                        # Keep extracted directories owner-private and writable so
+                        # session cleanup can remove their contents regardless of
+                        # archive permission metadata.
+                        os.chmod(target, 0o700)
+                        continue
+                    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                    source = archive.extractfile(member)
+                    if source is None:
+                        raise ValueError(f"missing archive content: {relative}")
+                    with target.open("wb") as output:
+                        while True:
+                            chunk = source.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            output.write(chunk)
+                            count += len(chunk)
+                            digest.update(chunk)
+                    os.chmod(target, member.mode & 0o700 or 0o600)
+                    names.append(str(relative))
+            emit(
+                "STAGED",
+                byte_count=count,
+                sha256=digest.hexdigest(),
+                files=names,
+                directories=[
+                    str(relative) for _, relative, _, kind in validated if kind == "directory"
+                ],
+            )
     finally:
         spool.close()
-    emit(
-        "STAGED",
-        byte_count=count,
-        sha256=digest.hexdigest(),
-        files=names,
-        directories=[str(relative) for _, relative, _, kind in validated if kind == "directory"],
-    )
 
 
 def random_address():
@@ -1438,7 +1503,7 @@ class ControlSession:
             return
         self._resources_released = True
         try:
-            shutil.rmtree(self.work)
+            remove_workspace(self.work)
         except FileNotFoundError as exc:
             if self.work.exists():
                 self.cleanup_errors.append(exc)

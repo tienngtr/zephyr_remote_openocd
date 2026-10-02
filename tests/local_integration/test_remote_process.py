@@ -782,6 +782,135 @@ class TestRttClient:
 
 
 class TestRealProcessHelper:
+    @pytest.mark.parametrize("pause", ("upload", "admission", "extraction"))
+    def test_staging_and_cleanup_share_workspace_lifetime(self, tmp_path, pause):
+        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        environment = os.environ.copy()
+        environment["XDG_RUNTIME_DIR"] = str(tmp_path)
+        # Hooks only pause real I/O boundaries; both processes run the real helper.
+        control_script = """
+import fcntl, runpy, sys, time
+from types import SimpleNamespace
+helper = runpy.run_path(sys.argv[1])
+# Hold helper deadlines steady during the success handshake; OS/asyncio clocks
+# remain real, and process/pipe deadlines are generous deadlock backstops.
+helper['control'].__globals__['time'] = SimpleNamespace(
+    time=time.time, sleep=time.sleep, monotonic=lambda: 0.0,
+)
+original = fcntl.flock
+announced = False
+def flock(stream, operation):
+    global announced
+    if (not announced and str(stream.name).endswith('.lease')
+            and operation == fcntl.LOCK_EX | fcntl.LOCK_NB):
+        announced = True
+        print('CLEANUP', file=sys.stderr, flush=True)
+    return original(stream, operation)
+fcntl.flock = flock
+helper['control']()
+"""
+        stage_script = """
+import fcntl, os, runpy, sys, shutil, tarfile
+helper = runpy.run_path(sys.argv[1])
+original = shutil.copyfileobj if sys.argv[3] == 'upload' else tarfile.open
+def pause(*args, **kwargs):
+    if sys.argv[3] == 'upload':
+        result = original(*args, **kwargs)
+    print('PAUSED', file=sys.stderr, flush=True)
+    os.read(int(sys.argv[4]), 1)
+    if sys.argv[3] == 'extraction':
+        result = original(*args, **kwargs)
+    return result
+if sys.argv[3] == 'upload':
+    shutil.copyfileobj = pause
+elif sys.argv[3] == 'extraction':
+    tarfile.open = pause
+else:
+    original_flock = fcntl.flock
+    def flock(stream, operation):
+        if str(stream.name).endswith('.lease') and operation & fcntl.LOCK_SH:
+            print('PAUSED', file=sys.stderr, flush=True)
+            os.read(int(sys.argv[4]), 1)
+        return original_flock(stream, operation)
+    fcntl.flock = flock
+helper['stage'](sys.argv[2])
+"""
+        archive = io.BytesIO()
+        with tarfile.open(fileobj=archive, mode="w") as contents:
+            member = tarfile.TarInfo("nested/payload")
+            member.size = 1
+            contents.addfile(member, io.BytesIO(b"x"))
+        release_read, release_write = os.pipe()
+        processes = []
+        try:
+            control = subprocess.Popen(
+                [sys.executable, "-c", control_script, str(helper)],
+                env=environment,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            processes.append(control)
+            assert control.stdout is not None and control.stdin is not None
+            assert control.stderr is not None
+            workspace = Path(json.loads(read_line(control.stdout))["remote_workspace"])
+            staging = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    stage_script,
+                    str(helper),
+                    str(workspace),
+                    pause,
+                    str(release_read),
+                ],
+                env=environment,
+                pass_fds=(release_read,),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            processes.append(staging)
+            assert staging.stdin is not None and staging.stderr is not None
+            staging.stdin.write(archive.getvalue())
+            staging.stdin.close()
+            assert read_line(staging.stderr).strip() == b"PAUSED"
+            control.stdin.close()
+            if pause != "extraction":
+                assert control.wait(timeout=30) == 0
+                assert not workspace.exists()
+            else:
+                assert read_line(control.stderr).strip() == b"CLEANUP"
+                assert workspace.is_dir()
+                # Admission is closed even though the existing stage still owns a lease.
+                late = subprocess.run(
+                    [sys.executable, str(helper), "stage", str(workspace)],
+                    env=environment,
+                    input=archive.getvalue(),
+                    capture_output=True,
+                    check=False,
+                    timeout=30,
+                )
+                assert late.returncode != 0
+                assert b'STAGED' not in late.stdout
+            os.write(release_write, b"x")
+            assert staging.wait(timeout=30) == (0 if pause == "extraction" else 1)
+            assert control.wait(timeout=30) == 0
+            assert staging.stdout is not None
+            output = staging.stdout.read()
+            assert (b'STAGED' in output) == (pause == "extraction")
+            assert not workspace.exists()
+        finally:
+            os.close(release_read)
+            os.close(release_write)
+            for process in processes:
+                if process.poll() is None:
+                    process.kill()
+                process.wait(timeout=30)
+                for stream in (process.stdin, process.stdout, process.stderr):
+                    if stream is not None and not stream.closed:
+                        stream.close()
+
     def test_helper_normalizes_restricted_directory_for_cleanup(self, tmp_path):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
         archive_stream = io.BytesIO()

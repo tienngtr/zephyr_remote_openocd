@@ -1499,3 +1499,98 @@ def test_decode_command_rejects_unknown_start_and_stop_fields(start_command):
         remote_helper.decode_command(start_command)
     with pytest.raises(ValueError, match="STOP fields"):
         remote_helper.decode_command({"version": 1, "type": "STOP", "future": True})
+
+
+def test_workspace_cleanup_timeout_closes_admission_without_removing_live_stage(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
+    session_id, workspace, owner_lock = remote_helper.new_workspace()
+    session = remote_helper.ControlSession(session_id, workspace, owner_lock)
+    clock = 0.0
+    original_flock = remote_helper.fcntl.flock
+
+    def observe_lease_contention(stream, operation):
+        nonlocal clock
+        try:
+            return original_flock(stream, operation)
+        except BlockingIOError:
+            # Advance at the observed contention, not by scheduling or sleeping.
+            clock = remote_helper.WORKSPACE_LEASE_TIMEOUT + 1.0
+            raise
+
+    monkeypatch.setattr(remote_helper.time, "monotonic", lambda: clock)
+    monkeypatch.setattr(remote_helper.fcntl, "flock", observe_lease_contention)
+    with remote_helper._stage_lease(workspace):
+        session._release_workspace()
+        assert workspace.is_dir()
+        assert len(session.cleanup_errors) == 1
+        assert isinstance(session.cleanup_errors[0], TimeoutError)
+        with pytest.raises(ValueError), remote_helper._stage_lease(workspace):
+            pytest.fail("cleanup admitted a new stage")
+    # Closure survives the existing lease's release and a failed removal.
+    with pytest.raises(ValueError), remote_helper._stage_lease(workspace):
+        pytest.fail("failed cleanup reopened staging")
+    remote_helper.remove_workspace(workspace)
+    assert not workspace.exists()
+
+
+@pytest.mark.parametrize("suffix", ("lease", "closed"))
+def test_reclaimer_removes_orphaned_lease_but_preserves_live_workspace(
+    tmp_path, monkeypatch, suffix
+):
+    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
+    _session_id, workspace, owner_lock = remote_helper.new_workspace()
+    try:
+        with remote_helper._stage_lease(workspace):
+            orphan = tmp_path / f".removed.{suffix}"
+            orphan.write_bytes(b"closed")
+            live_lease = remote_helper._lease_path(workspace)
+            for path in (orphan, live_lease):
+                os.utime(path, (1.0, 1.0))
+            remote_helper.reclaim_stale_workspaces(
+                tmp_path, now=remote_helper.STALE_SESSION_AGE + 2
+            )
+            assert not orphan.exists()
+            assert live_lease.exists()
+            assert workspace.is_dir()
+    finally:
+        owner_lock.close()
+
+
+def test_cleanup_closes_admission_without_waiting_for_global_gate(tmp_path, monkeypatch):
+    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
+    first_id, first, first_owner = remote_helper.new_workspace()
+    second_id, second, second_owner = remote_helper.new_workspace()
+    first_session = remote_helper.ControlSession(first_id, first, first_owner)
+    second_session = remote_helper.ControlSession(second_id, second, second_owner)
+    clock = 0.0
+    original_flock = remote_helper.fcntl.flock
+
+    def bounded_flock(stream, operation):
+        nonlocal clock
+        # Fail a blocking acquisition at the OS boundary instead of deadlocking
+        # the regression when the old global gate is held by a stopped owner.
+        if operation == fcntl.LOCK_EX:
+            raise AssertionError("cleanup attempted an unbounded lock acquisition")
+        try:
+            return original_flock(stream, operation)
+        except BlockingIOError:
+            clock += remote_helper.WORKSPACE_LEASE_TIMEOUT + 1.0
+            raise
+
+    with remote_helper._stage_lease(first):
+        with (tmp_path / ".workspace.lock").open("a+b") as old_gate:
+            original_flock(old_gate, fcntl.LOCK_EX)
+            monkeypatch.setattr(remote_helper.fcntl, "flock", bounded_flock)
+            monkeypatch.setattr(remote_helper.time, "monotonic", lambda: clock)
+            first_session._release_workspace()
+            assert len(first_session.cleanup_errors) == 1
+            assert isinstance(first_session.cleanup_errors[0], TimeoutError)
+            with pytest.raises(ValueError), remote_helper._stage_lease(first):
+                pytest.fail("timed-out cleanup left admission open")
+            second_session._release_workspace()
+            assert not second_session.cleanup_errors
+            assert not second.exists()
+        assert first.is_dir()
+    remote_helper.remove_workspace(first)

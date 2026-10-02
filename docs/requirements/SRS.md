@@ -1204,6 +1204,14 @@ Remote session files SHALL be protected from other ordinary remote users by file
 
 Normal session termination SHALL remove temporary session artifacts.
 
+Cleanup SHALL NOT remove a workspace while staging operations already using it
+are validating or extracting their archives or reporting success. Once cleanup
+begins, new staging operations SHALL NOT use or recreate that workspace, even
+if cleanup fails or the workspace has been deleted. A stalled staging operation
+SHALL NOT prevent a bounded cleanup attempt or prevent cleanup of other
+sessions. Cleanup failures SHALL remain visible and SHALL NOT permit new
+staging operations to resume use of the workspace.
+
 ### REQ-FUNC-DATA-004
 
 Persistent fallback session state older than 24 hours MAY be deleted opportunistically.
