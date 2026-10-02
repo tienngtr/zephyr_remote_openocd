@@ -163,6 +163,11 @@ class _HelperClient:
             unexpected_close = self._unexpected_requested_close(close_before_stop)
             if unexpected_close is not None:
                 logical_error = unexpected_close
+            elif helper_status is None and isinstance(close_before_stop.ending, _SessionClosed):
+                # Protocol completion and EOF can precede the transport's OS
+                # exit. Give an already-recorded natural exit the same grace
+                # period as one observed while requesting STOP.
+                helper.wait(timeout=HELPER_STOP_TIMEOUT)
             elif helper_status is None and close_before_stop.ending is None:
                 if self._reader_thread is None:
                     self._start_event_drain()

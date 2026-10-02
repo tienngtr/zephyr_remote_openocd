@@ -94,6 +94,102 @@ class _BlockedSshCommand(SshCommand):
         raise AssertionError("run_stream() is not expected in this test")
 
 
+@pytest.mark.parametrize(
+    ("openocd_returncode", "transport_timeout"),
+    ((0, False), (OPENOCD_FAILURE_RC, False), (0, True)),
+    ids=("natural-success", "natural-failure", "transport-timeout"),
+)
+def test_helper_close_allows_recorded_natural_exit_before_termination(
+    monkeypatch, openocd_returncode, transport_timeout
+):
+    exit_read, exit_write = os.pipe()
+    events = b"".join(
+        (
+            encode_message(
+                "SESSION_CREATED",
+                helper="test",
+                session_id="session",
+                remote_workspace="/workspace",
+            ),
+            encode_message("PROCESS_READY", remote_address="127.64.0.1", child_pid=1),
+            encode_message("SESSION_CLOSED", reason="process_exit", returncode=openocd_returncode),
+        )
+    )
+    code = (
+        f"import os\nos.write(1, {events!r})\nos.close(1)\nos.close(2)\nos.read({exit_read}, 1)\n"
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-c", code],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        pass_fds=(exit_read,),
+    )
+    os.close(exit_read)
+    managed = ManagedSshProcess.from_popen(process)
+
+    class LocalCommand(_BlockedSshCommand):
+        @override
+        def popen(self, host: str, remote_command: str, *extra_args: str) -> ManagedSshProcess:
+            return managed
+
+    terminated = False
+    graceful_wait_started = False
+    wait = process.wait
+    terminate = process.terminate
+
+    def observe_terminate() -> None:
+        nonlocal terminated
+        terminated = True
+        terminate()
+
+    def gated_wait(timeout: float | None = None) -> int:
+        nonlocal graceful_wait_started
+        if not terminated:
+            assert timeout is not None and 0 < timeout <= helper_client_module.HELPER_STOP_TIMEOUT
+            graceful_wait_started = True
+            if transport_timeout:
+                raise subprocess.TimeoutExpired(process.args, timeout)
+            os.write(exit_write, b"x")
+        return wait(timeout=timeout)
+
+    try:
+        helper = _HelperClient.open(
+            LocalCommand(), "local", DeploymentResult("/helper.py", "digest", False)
+        )
+        helper.start_process(TEST_PROCESS, ())
+        # EOF and protocol completion are observed while OS exit remains gated.
+        assert helper._join_reader(timeout=5)
+        assert helper.recorded_openocd_exit() == openocd_returncode
+        assert managed.poll() is None
+        monkeypatch.setattr(process, "wait", gated_wait)
+        monkeypatch.setattr(process, "terminate", observe_terminate)
+
+        result = helper.close()
+
+        assert graceful_wait_started
+        assert terminated is transport_timeout
+        assert managed.returncode is not None
+        if transport_timeout:
+            assert isinstance(result.error, subprocess.TimeoutExpired)
+        else:
+            assert managed.returncode == 0
+            assert result.error is None
+        assert result.cleanup_errors == ()
+        assert helper.openocd_returncode == openocd_returncode
+        assert managed.stdin is not None and managed.stdin.closed
+        assert managed.stdout is not None and managed.stdout.closed
+    finally:
+        os.close(exit_write)
+        if process.poll() is None:
+            process.kill()
+        wait(timeout=5)
+        managed.close_stderr()
+        for stream in (managed.stdin, managed.stdout):
+            if stream is not None:
+                stream.close()
+
+
 class _StagingHelper:
     """Strict helper fake exposing only the staging allocation."""
 
