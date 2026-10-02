@@ -24,6 +24,20 @@ def executable_argv(executable: str | tuple[str, ...]) -> list[str]:
     return list((executable,) if isinstance(executable, str) else executable)
 
 
+def _resolve_config_file(path: str, search_paths: tuple[str, ...]) -> Path:
+    """Prefer direct files, then look up relative configs in supplied search order."""
+
+    source = Path(path).expanduser()
+    if source.is_absolute() or source.is_file():
+        return source
+    for directory in search_paths:
+        candidate = Path(directory).expanduser() / source
+        if candidate.is_file():
+            return candidate
+    # Keep missing-file reporting at the ordinary file-planning boundary.
+    return source
+
+
 def plan_support_paths(
     search_paths: tuple[str, ...], config_files: tuple[str, ...], planner: PathPlanner
 ) -> tuple[list[str], list[str]]:
@@ -35,7 +49,7 @@ def plan_support_paths(
         planned_search[index] = planner.plan_directory(Path(path), f"search_{index}").remote
     remote_search = [planned_search[index] for index, _ in indexed_search]
     remote_configs = [
-        planner.plan_file(Path(path), f"config-{index}").remote
+        planner.plan_file(_resolve_config_file(path, search_paths), f"config-{index}").remote
         for index, path in enumerate(config_files)
     ]
     return remote_search, remote_configs

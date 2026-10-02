@@ -572,6 +572,13 @@ Large OpenOCD search trees which exist equivalently on both systems may be expli
 
 Search paths supplied by Zephyr are preserved.
 
+Relative `-f` configuration references are resolved locally before file planning:
+first against the current working directory, then against the supplied `-s`
+directories in their original order. The selected file goes through the same
+mapping or staging logic as an absolute configuration path. Search trees may be
+staged in parent-first order to reuse overlapping roots, but that staging order
+does not change configuration lookup or the remote `-s` argument order.
+
 No assumption is made that a particular board uses or does not use files from a given search path.
 
 Board-support directories from the active Zephyr checkout will typically be staged because they may contain local developer changes.

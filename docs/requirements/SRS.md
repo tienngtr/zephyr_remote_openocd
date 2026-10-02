@@ -753,6 +753,11 @@ including an empty search root and empty nested directories.
 The runner SHALL preserve every OpenOCD search path supplied by the Zephyr
 build, even when the current board configuration appears not to use it.
 
+Relative OpenOCD configuration file references SHALL resolve against the local
+current working directory first, then the supplied search directories in their
+original order. The selected file SHALL use the existing path mapping or staging
+behavior, including reuse of a staged search tree.
+
 ### REQ-FUNC-FILE-008
 
 The runner SHALL NOT maintain a persistent cross-session firmware or configuration cache.

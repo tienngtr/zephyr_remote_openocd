@@ -968,6 +968,9 @@ def test_recording_runs_real_runner_integration_without_external_io(
     )
     image = build / "zephyr" / "zephyr.elf"
     image.write_bytes(b"test image; RTT address is explicitly supplied")
+    (tmp_path / "interface").mkdir()
+    (tmp_path / "interface" / "example.cfg").write_text("# search-relative config\n")
+    monkeypatch.chdir(build)
     config = tmp_path / "config.yaml"
     config.write_text(
         "default_remote: unused\nremotes:\n"
@@ -1002,6 +1005,7 @@ def test_recording_runs_real_runner_integration_without_external_io(
     args = parser_for(remote).parse_args(
         [
             "--remote=chosen",
+            "--config=interface/example.cfg",
             "--serial=probe",
             "--cmd-pre-init=echo test",
             "--gdb-init=monitor halt",
@@ -1029,6 +1033,8 @@ def test_recording_runs_real_runner_integration_without_external_io(
     request = result["remote_session_request"]
     assert request["host"] == "selected_host"
     assert request["process"]["argv"][:2] == ["~/tools/openocd", "--debug"]
+    argv = request["process"]["argv"]
+    assert argv[argv.index("-f") + 1] == f"~/mapped{tmp_path}/interface/example.cfg"
     assert "echo test" in request["process"]["argv"]
     assert any("probe" in argument for argument in request["process"]["argv"])
     assert any("~/mapped/" in argument for argument in request["process"]["argv"])
