@@ -18,7 +18,7 @@ from typing import Literal
 from .cleanup import _add_failure_note, _raise_cleanup_errors
 from .model import DuplicateServiceError, Service, validated_services
 from .session import SessionError
-from .ssh import ManagedSshProcess, SshCommand, SshProcessStartError, _stop_process
+from .ssh import ManagedSshProcess, SshCommand, SshLocalForward, SshProcessStartError, _stop_process
 
 FORWARD_START_TIMEOUT = 10.0
 FORWARD_HEALTH_INTERVAL = 0.25
@@ -144,15 +144,13 @@ class _ForwardManager:
         try:
             for service in service_list:
                 active_service = service
-                spec = f"127.0.0.1:{service.local_port}:{remote_address}:{service.remote_port}"
                 sentinel = "ZRO_FORWARD_" + secrets.token_hex(16)
                 process = self._ssh_command.popen(
                     self._host,
                     self._ready_command(sentinel),
-                    "-o",
-                    "ExitOnForwardFailure=yes",
-                    "-L",
-                    spec,
+                    local_forward=SshLocalForward(
+                        service.local_port, remote_address, service.remote_port
+                    ),
                 )
                 pending_processes.append(process)
                 connected = self._await_ready(

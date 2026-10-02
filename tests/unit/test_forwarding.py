@@ -16,7 +16,7 @@ from zephyr_remote_openocd.remote import forwarding as forwarding_module
 from zephyr_remote_openocd.remote.forwarding import _ForwardManager
 from zephyr_remote_openocd.remote.model import Service
 from zephyr_remote_openocd.remote.session import SessionError
-from zephyr_remote_openocd.remote.ssh import SSH_STDERR_TAIL_BYTES, SshCommand
+from zephyr_remote_openocd.remote.ssh import SSH_STDERR_TAIL_BYTES, SshCommand, SshLocalForward
 
 FORWARD_FAILURE_RC = 13
 SAMPLE_FORWARD_EXIT_CODE = 9
@@ -31,7 +31,7 @@ SAMPLE_FORWARD_EXIT_CODE = 9
 
 class _ForwardCommand(SshCommand):
     processes: Iterator[Any]
-    calls: list[tuple[str, str, tuple[str, ...]]]
+    calls: list[tuple[str, str, SshLocalForward | None]]
 
     def __init__(self, *processes):
         super().__init__()
@@ -39,8 +39,10 @@ class _ForwardCommand(SshCommand):
         object.__setattr__(self, "calls", [])
 
     @override
-    def popen(self, host: str, remote_command: str, *extra_args: str) -> Any:
-        self.calls.append((host, remote_command, extra_args))
+    def popen(
+        self, host: str, remote_command: str, *, local_forward: SshLocalForward | None = None
+    ) -> Any:
+        self.calls.append((host, remote_command, local_forward))
         return next(self.processes)
 
 
@@ -89,7 +91,9 @@ def test_process_creation_failure_has_service_identity_without_ownership(monkeyp
 
     class Command(_ForwardCommand):
         @override
-        def popen(self, host: str, remote_command: str, *extra_args: str) -> Any:
+        def popen(
+            self, host: str, remote_command: str, *, local_forward: SshLocalForward | None = None
+        ) -> Any:
             raise cause
 
     service = Service("tcl", 32101, 6333)
@@ -189,12 +193,7 @@ def test_initial_start_forward_failure_associates_all_preflight_advisories_with_
         message = str(raised.value)
         assert f"127.0.0.1:{first_port} for tcl" in message
         assert f"127.0.0.1:{second_port} for telnet" in message
-        assert command.calls[0][2] == (
-            "-o",
-            "ExitOnForwardFailure=yes",
-            "-L",
-            f"127.0.0.1:{first_port}:127.64.0.1:6333",
-        )
+        assert command.calls[0][2] == SshLocalForward(first_port, "127.64.0.1", 6333)
     finally:
         with suppress(BaseException):
             manager.close()

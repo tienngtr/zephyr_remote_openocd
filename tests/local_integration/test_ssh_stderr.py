@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 import sys
 from pathlib import Path
 
@@ -63,8 +64,12 @@ elif remote_command.startswith("python3 -c "):
 
 def fake_ssh_command(tmp_path: Path) -> SshCommand:
     executable = tmp_path / "fake_ssh.py"
-    executable.write_text(FAKE_SSH, encoding="utf-8")
-    return SshCommand((sys.executable, str(executable)))
+    executable.write_text(
+        f"#!/bin/sh\nexec {shlex.quote(sys.executable)} -c {shlex.quote(FAKE_SSH)} \"$@\"\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    return SshCommand((str(executable),))
 
 
 def request(command: SshCommand, *, services=()):

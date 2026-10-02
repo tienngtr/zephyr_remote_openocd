@@ -311,6 +311,25 @@ def _stop_process(process: _ProcessControl, *, close_streams: bool = True) -> No
 
 
 @dataclass(frozen=True)
+class SshLocalForward:
+    """Runner-owned local forwarding, including mandatory SSH semantics."""
+
+    local_port: int
+    remote_address: str
+    remote_port: int
+
+    def argv(self) -> tuple[str, ...]:
+        return (
+            "-o",
+            "ExitOnForwardFailure=yes",
+            "-o",
+            "ClearAllForwardings=no",
+            "-L",
+            f"127.0.0.1:{self.local_port}:{self.remote_address}:{self.remote_port}",
+        )
+
+
+@dataclass(frozen=True)
 class SshCommand:
     """Build and execute SSH argv without shell interpretation."""
 
@@ -341,9 +360,14 @@ class SshCommand:
             timeout=timeout,
         )
 
-    def popen(self, host: str, remote_command: str, *extra_args: str) -> ManagedSshProcess:
+    def popen(
+        self, host: str, remote_command: str, *, local_forward: SshLocalForward | None = None
+    ) -> ManagedSshProcess:
         """Start a long-lived SSH operation, retaining explicit lifecycle control."""
-        argv = [*self.argv_prefix, *extra_args, host, remote_command]
+        # OpenSSH uses the first value of these options. Runner-owned forwarding
+        # requirements must precede fixed user arguments and SSH configuration.
+        forward_args = local_forward.argv() if local_forward is not None else ()
+        argv = [self.argv_prefix[0], *forward_args, *self.argv_prefix[1:], host, remote_command]
         # Keep the controlling terminal and foreground group for SSH prompts.
         # The child inherits this thread's blocked SIGINT across exec; changing
         # a process-wide handler or running Python in preexec_fn is unsafe here.

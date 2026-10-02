@@ -53,7 +53,7 @@ from zephyr_remote_openocd.remote.services import (
     LOOPBACK_RANGE,
 )
 from zephyr_remote_openocd.remote.session import SessionError
-from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand
+from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand, SshLocalForward
 from zephyr_remote_openocd.remote.staging import build_archive
 
 from tests.process_support import read_line, read_lines
@@ -79,7 +79,9 @@ class _BlockedSshCommand(SshCommand):
         raise AssertionError("run() is not expected in this test")
 
     @override
-    def popen(self, host: str, remote_command: str, *extra_args: str) -> ManagedSshProcess:
+    def popen(
+        self, host: str, remote_command: str, *, local_forward: SshLocalForward | None = None
+    ) -> ManagedSshProcess:
         raise AssertionError("popen() is not expected in this test")
 
     @override
@@ -130,7 +132,9 @@ def test_helper_close_allows_recorded_natural_exit_before_termination(
 
     class LocalCommand(_BlockedSshCommand):
         @override
-        def popen(self, host: str, remote_command: str, *extra_args: str) -> ManagedSshProcess:
+        def popen(
+            self, host: str, remote_command: str, *, local_forward: SshLocalForward | None = None
+        ) -> ManagedSshProcess:
             return managed
 
     terminated = False
@@ -301,15 +305,15 @@ class TestForwardingLifecycle:
 
     class Command(_BlockedSshCommand):
         process: Any
-        calls: list[tuple[str, str, tuple[str, ...]]]
+        calls: list[tuple[str, str, SshLocalForward | None]]
 
         def __init__(self, process):
             super().__init__()
             object.__setattr__(self, "process", process)
             object.__setattr__(self, "calls", [])
 
-        def popen(self, host, remote_command, *extra_args):
-            self.calls.append((host, remote_command, extra_args))
+        def popen(self, host, remote_command, *, local_forward=None):
+            self.calls.append((host, remote_command, local_forward))
             return self.process
 
     @staticmethod
@@ -340,7 +344,7 @@ class TestForwardingLifecycle:
         connect.assert_not_called()
         remote_command = command.calls[0][1]
         assert remote_command.startswith("python3 -c ")
-        assert "-N" not in command.calls[0][2]
+        assert command.calls[0][2] == SshLocalForward(service.local_port, "127.64.1.1", 3333)
         session._forwards.close()
         assert process.terminate_calls == 1
 
@@ -363,9 +367,9 @@ class TestForwardingLifecycle:
             )
 
         assert len(command.calls) == 1
-        host, _remote_command, extra_args = command.calls[0]
+        host, _remote_command, local_forward = command.calls[0]
         assert host == "target"
-        assert extra_args == ()
+        assert local_forward is None
 
     def test_helper_startup_error_survives_process_cleanup_failure(self):
         process = self.Process()
@@ -452,8 +456,14 @@ class TestForwardingLifecycle:
                 object.__setattr__(self, "processes", processes)
 
             @override
-            def popen(self, host: str, remote_command: str, *extra_args: str) -> ManagedSshProcess:
-                del host, remote_command, extra_args
+            def popen(
+                self,
+                host: str,
+                remote_command: str,
+                *,
+                local_forward: SshLocalForward | None = None,
+            ) -> ManagedSshProcess:
+                del host, remote_command, local_forward
                 return self.processes.pop(0)
 
         failed = managed_popen(
@@ -1864,7 +1874,7 @@ helper['stage'](sys.argv[2])
             class LocalCommand(_BlockedSshCommand):
                 argv_prefix = ("local_test",)
 
-                def popen(inner, host, remote_command, *extra_args):  # pylint: disable=no-self-argument
+                def popen(inner, host, remote_command, *, local_forward=None):  # pylint: disable=no-self-argument
                     return managed_popen(
                         [sys.executable, str(helper), "control"],
                         env=environment,
@@ -1929,7 +1939,7 @@ helper['stage'](sys.argv[2])
             class LocalCommand(_BlockedSshCommand):
                 argv_prefix = ("local_test",)
 
-                def popen(inner, host, remote_command, *extra_args):  # pylint: disable=no-self-argument
+                def popen(inner, host, remote_command, *, local_forward=None):  # pylint: disable=no-self-argument
                     return managed_popen(
                         [sys.executable, str(helper), "control"],
                         env=environment,
@@ -2111,7 +2121,7 @@ sys.exit({exit_code})
 """
 
         class LocalCommand(_BlockedSshCommand):
-            def popen(inner, host, remote_command, *extra_args):  # pylint: disable=no-self-argument
+            def popen(inner, host, remote_command, *, local_forward=None):  # pylint: disable=no-self-argument
                 return managed_popen(
                     [sys.executable, "-c", helper_code],
                     stdin=subprocess.PIPE,
@@ -2163,7 +2173,7 @@ sys.stdin.buffer.read()
 """
 
         class LocalCommand(_BlockedSshCommand):
-            def popen(inner, host, remote_command, *extra_args):  # pylint: disable=no-self-argument
+            def popen(inner, host, remote_command, *, local_forward=None):  # pylint: disable=no-self-argument
                 return managed_popen(
                     [sys.executable, "-c", helper_code],
                     stdin=subprocess.PIPE,
@@ -2218,7 +2228,7 @@ sys.exit({HELPER_FAILURE_RC})
         class LocalCommand(_BlockedSshCommand):
             process: Any = None
 
-            def popen(inner, host, remote_command, *extra_args):  # pylint: disable=no-self-argument
+            def popen(inner, host, remote_command, *, local_forward=None):  # pylint: disable=no-self-argument
                 process = managed_popen(
                     [sys.executable, "-c", helper_code],
                     stdin=subprocess.PIPE,
@@ -2265,7 +2275,7 @@ sys.exit({HELPER_FAILURE_RC})
                 argv_prefix = ("local_test",)
                 process: Any = None
 
-                def popen(inner, host, remote_command, *extra_args):  # pylint: disable=no-self-argument
+                def popen(inner, host, remote_command, *, local_forward=None):  # pylint: disable=no-self-argument
                     process = managed_popen(
                         [sys.executable, str(helper), "control"],
                         env=environment,
@@ -2321,7 +2331,7 @@ sys.exit({HELPER_FAILURE_RC})
             environment["XDG_RUNTIME_DIR"] = directory
 
             class LocalCommand(_BlockedSshCommand):
-                def popen(inner, host, remote_command, *extra_args):  # pylint: disable=no-self-argument
+                def popen(inner, host, remote_command, *, local_forward=None):  # pylint: disable=no-self-argument
                     return managed_popen(
                         [sys.executable, str(helper), "control"],
                         env=environment,

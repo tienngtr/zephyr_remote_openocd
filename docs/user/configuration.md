@@ -167,6 +167,14 @@ remotes:
 Do not use shell pipelines, redirections, or a command string. SSH
 authentication remains the configured client's responsibility.
 
+For local service forwards, the runner places `ExitOnForwardFailure=yes` and
+`ClearAllForwardings=no` before your fixed arguments. These mandatory settings
+override conflicting command options and SSH configuration, ensuring that the
+requested forward exists and an occupied local port fails startup. Other fixed
+arguments retain their order and meaning; helper and staging commands use your
+configured arguments unchanged. No YAML keys change and no configuration
+migration is needed.
+
 The executable need not be named `ssh`. A bare name is found through `PATH`,
 and an explicit path is preserved. For example, a Linux environment that can
 execute an OpenSSH-compatible client at a mounted path may use:

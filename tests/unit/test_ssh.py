@@ -32,6 +32,7 @@ from zephyr_remote_openocd.remote.session import SessionError
 from zephyr_remote_openocd.remote.ssh import (
     SSH_STDERR_TAIL_BYTES,
     SshCommand,
+    SshLocalForward,
     _stop_process,
 )
 
@@ -85,11 +86,11 @@ def test_fixed_arguments_are_preserved_without_a_shell():
 
 
 @patch("subprocess.Popen", autospec=True)
-def test_long_lived_process_preserves_explicit_path_and_generated_arguments(popen):
+def test_long_lived_process_preserves_explicit_path_and_fixed_arguments(popen):
     popen.return_value.stderr = io.BytesIO()
-    SshCommand(("/opt/client/custom-ssh", "-F", "/a file")).popen("host", "serve", "-N")
+    SshCommand(("/opt/client/custom-ssh", "-F", "/a file")).popen("host", "serve")
     popen.assert_called_once_with(
-        ["/opt/client/custom-ssh", "-F", "/a file", "-N", "host", "serve"],
+        ["/opt/client/custom-ssh", "-F", "/a file", "host", "serve"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -441,7 +442,7 @@ class _HelperProcess:
 
 class _ForwardCommand(_PopenOnlySshCommand):
     processes: Iterator[Any]
-    calls: list[tuple[str, str, tuple[str, ...]]]
+    calls: list[tuple[str, str, SshLocalForward | None]]
 
     def __init__(self, *processes):
         super().__init__()
@@ -449,8 +450,10 @@ class _ForwardCommand(_PopenOnlySshCommand):
         object.__setattr__(self, "calls", [])
 
     @override
-    def popen(self, host: str, remote_command: str, *extra_args: str) -> Any:
-        self.calls.append((host, remote_command, extra_args))
+    def popen(
+        self, host: str, remote_command: str, *, local_forward: SshLocalForward | None = None
+    ) -> Any:
+        self.calls.append((host, remote_command, local_forward))
         return next(self.processes)
 
 

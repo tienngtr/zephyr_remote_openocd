@@ -64,7 +64,7 @@ from zephyr_remote_openocd.remote.services import (
     allocate_loopback,
     random_loopback_address,
 )
-from zephyr_remote_openocd.remote.ssh import SshCommand
+from zephyr_remote_openocd.remote.ssh import SshCommand, SshLocalForward
 from zephyr_remote_openocd.remote.staging import StagingError, build_archive
 
 from tests.elf_fixtures import ELF_ENTRY_POINT, elf_memory_witness_bytes
@@ -418,7 +418,9 @@ class DeploymentReply(SshCommand):
         return subprocess.CompletedProcess(remote_command, *self.reply)
 
     @override
-    def popen(self, host: str, remote_command: str, *extra_args: str) -> Any:
+    def popen(
+        self, host: str, remote_command: str, *, local_forward: SshLocalForward | None = None
+    ) -> Any:
         raise AssertionError("popen() is not expected in this test")
 
     @override

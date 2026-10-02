@@ -16,7 +16,7 @@ from zephyr_remote_openocd.remote.helper_client import _HelperClient
 from zephyr_remote_openocd.remote.model import RemoteProcess, RemoteSessionRequest
 from zephyr_remote_openocd.remote.protocol import ProtocolError, decode_message, encode_message
 from zephyr_remote_openocd.remote.session import SessionError
-from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand
+from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand, SshLocalForward
 
 OPENOCD_FAILURE_RC = 7
 
@@ -111,8 +111,10 @@ class _EventProcess:
 def _open_helper_client(process: _EventProcess) -> _HelperClient:
     class Command(_PopenOnlySshCommand):
         @override
-        def popen(self, host: str, remote_command: str, *extra_args: str) -> Any:
-            del host, remote_command, extra_args
+        def popen(
+            self, host: str, remote_command: str, *, local_forward: SshLocalForward | None = None
+        ) -> Any:
+            del host, remote_command, local_forward
             return process
 
     return _HelperClient.open(Command(), "host", DeploymentResult("/helper.py", "digest", False))
@@ -806,7 +808,9 @@ def test_helper_startup_timeout_does_not_block_on_partial_output(monkeypatch):
 
     class Command(_PopenOnlySshCommand):
         @override
-        def popen(self, host: str, remote_command: str, *extra_args: str) -> Any:
+        def popen(
+            self, host: str, remote_command: str, *, local_forward: SshLocalForward | None = None
+        ) -> Any:
             return process
 
     class Clock:
@@ -928,7 +932,9 @@ def test_helper_client_output_delivery_does_not_retain_event_history():
             object.__setattr__(self, "process", Process())
 
         @override
-        def popen(self, host: str, remote_command: str, *extra_args: str) -> Any:
+        def popen(
+            self, host: str, remote_command: str, *, local_forward: SshLocalForward | None = None
+        ) -> Any:
             return self.process
 
     handled = []

@@ -864,7 +864,15 @@ or:
 ["ssh", "-F", "/home/user/.ssh/lab_config"]
 ```
 
-Every SSH operation appends operation-specific arguments to this configured prefix.
+The configured prefix separates the SSH executable from fixed user arguments.
+Helper and staging operations append the host and remote command unchanged.
+Forwarding operations pass an immutable `SshLocalForward` to `SshCommand.popen()`;
+the invocation boundary renders its loopback `-L` together with
+`ExitOnForwardFailure=yes` and `ClearAllForwardings=no` immediately after the
+executable, before fixed user arguments. OpenSSH's first-value precedence makes
+these runner-owned requirements override conflicting arguments and normal SSH
+configuration. The forward manager cannot request a local forward without
+these mandatory settings.
 
 The runner never assumes that the executable basename is literally `ssh`.
 

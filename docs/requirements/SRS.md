@@ -986,6 +986,10 @@ assume that its basename is `ssh`.
 ### REQ-FUNC-SSH-005
 
 Fixed user-supplied SSH argv elements SHALL be preserved exactly and in order.
+For runner-owned local forwards, `ExitOnForwardFailure=yes` and
+`ClearAllForwardings=no` SHALL take precedence over conflicting fixed arguments
+and normal SSH configuration, so generated local forwarding cannot be silently
+discarded and local bind failure remains fatal.
 
 ### REQ-FUNC-SSH-006
 

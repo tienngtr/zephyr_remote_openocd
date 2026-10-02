@@ -23,7 +23,7 @@ from zephyr_remote_openocd.remote import (
 )
 from zephyr_remote_openocd.remote.deploy import deploy_helper
 from zephyr_remote_openocd.remote.forwarding import _ForwardManager
-from zephyr_remote_openocd.remote.ssh import SshCommand
+from zephyr_remote_openocd.remote.ssh import SshCommand, SshLocalForward
 
 from tests.process_support import read_line
 
@@ -146,6 +146,37 @@ class TestSshTransportIntegration:
         self.ssh_settings = ssh_settings
         self.ssh = SshCommand(ssh_settings.ssh_command)
 
+    @pytest.mark.parametrize("occupied", (False, True), ids=("available", "occupied"))
+    def test_forwarding_conflicts_cannot_report_an_unbound_forward_ready(self, occupied):
+        conflicts = ("-o", "ExitOnForwardFailure=no", "-o", "ClearAllForwardings=yes")
+        ssh = SshCommand((*self.ssh.argv_prefix, *conflicts))
+        manager = _ForwardManager(ssh, self.host)
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            port = listener.getsockname()[1]
+            if occupied:
+                listener.listen()
+            else:
+                listener.close()
+            service = Service("gdb", port, 3333)
+            try:
+                if occupied:
+                    with pytest.raises(SessionError):
+                        manager.start((service,), "127.0.0.1")
+                    assert not manager.has_forwards
+                else:
+                    manager.start((service,), "127.0.0.1")
+                    assert manager.services == (service,)
+                    # Verify a listener exists immediately after actual readiness.
+                    with socket.create_connection(("127.0.0.1", port), timeout=20):
+                        pass
+            finally:
+                manager.close()
+            assert not manager.has_forwards
+            if not occupied:
+                with socket.socket() as after_cleanup:
+                    after_cleanup.bind(("127.0.0.1", port))
+
     def test_forwarding_and_session_lifecycle_use_configured_client(self):
         encoded = base64.b64encode(REMOTE_ECHO).decode("ascii")
         command = f"python3 -c \"import base64;exec(base64.b64decode('{encoded}'))\""
@@ -162,10 +193,7 @@ class TestSshTransportIntegration:
             tunnel = self.ssh.popen(
                 self.host,
                 _ForwardManager._ready_command(sentinel),
-                "-o",
-                "ExitOnForwardFailure=yes",
-                "-L",
-                f"127.0.0.1:{local_port}:127.0.0.1:{remote_port}",
+                local_forward=SshLocalForward(local_port, "127.0.0.1", remote_port),
             )
             assert _ForwardManager._await_ready(tunnel, sentinel, time.monotonic() + 20)
             wait_for_echo(local_port, b"zro_forwarding", 20)
@@ -303,8 +331,8 @@ class TestSshTransportIntegration:
                 super().__post_init__()
                 object.__setattr__(self, "helper_processes", [])
 
-            def popen(self, host, remote_command, *extra_args):
-                process = super().popen(host, remote_command, *extra_args)
+            def popen(self, host, remote_command, *, local_forward=None):
+                process = super().popen(host, remote_command, local_forward=local_forward)
                 if remote_command.endswith(" control"):
                     self.helper_processes.append(process)
                 return process
@@ -348,9 +376,9 @@ class TestSshTransportIntegration:
                 super().__post_init__()
                 object.__setattr__(self, "forwards", [])
 
-            def popen(self, host, remote_command, *extra_args):
-                process = super().popen(host, remote_command, *extra_args)
-                if "-L" in extra_args:
+            def popen(self, host, remote_command, *, local_forward=None):
+                process = super().popen(host, remote_command, local_forward=local_forward)
+                if local_forward is not None:
                     self.forwards.append(process)
                 return process
 

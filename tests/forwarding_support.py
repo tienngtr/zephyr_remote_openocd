@@ -24,7 +24,7 @@ from zephyr_remote_openocd.remote.model import (
     SessionAllocation,
 )
 from zephyr_remote_openocd.remote.protocol import encode_message
-from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand
+from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand, SshLocalForward
 
 GDB = Service("gdb", 3333, 3333)
 TCL = Service("tcl", 6333, 6333)
@@ -108,13 +108,13 @@ class ControlledSshCommand(SshCommand):
         return self.processes[service.local_port]
 
     @override
-    def popen(self, host: str, remote_command: str, *extra_args: str) -> ManagedSshProcess:
+    def popen(
+        self, host: str, remote_command: str, *, local_forward: SshLocalForward | None = None
+    ) -> ManagedSshProcess:
         del host, remote_command
-        spec = extra_args[extra_args.index("-L") + 1]
-        local_address, local_port, remote_address, _remote_port = spec.split(":")
-        assert local_address == "127.0.0.1"
-        assert remote_address == "127.64.0.1"
-        process = self.processes[int(local_port)]
+        assert local_forward is not None
+        assert local_forward.remote_address == "127.64.0.1"
+        process = self.processes[local_forward.local_port]
         if process.creation_error is not None:
             raise process.creation_error
         return process.managed
