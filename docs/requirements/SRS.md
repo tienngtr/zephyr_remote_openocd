@@ -768,8 +768,8 @@ The runner SHALL NOT maintain a persistent cross-session firmware or configurati
 
 ### REQ-FUNC-FLASH-001
 
-`west flash -r remote_openocd` SHALL program the intended remote target and
-start the selected image.
+Unless verification-only behavior is requested, `west flash -r remote_openocd`
+SHALL program the intended remote target and start the selected image.
 
 ### REQ-FUNC-FLASH-002
 
