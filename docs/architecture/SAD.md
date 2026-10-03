@@ -732,9 +732,15 @@ GDB forwarding is required during the `rtt` command's batch setup. After setup s
 the Zephyr runner integration explicitly marks the owned GDB forward best-effort
 and starts the deferred RTT forward as required. A GDB exit first observed
 after this transition produces a warning; an RTT-forward exit remains fatal.
-Optional RTT forwarding for `debug --rtt-server` and `debugserver --rtt-server`
-is best-effort throughout. RTT endpoint availability is reported only after
-its local forward starts successfully.
+Explicitly requested RTT forwarding for `debug --rtt-server` and
+`debugserver --rtt-server` is required alongside GDB at startup and throughout
+the operation. The planner classifies only enabled Tcl/telnet forwards as
+best-effort. GDB and requested RTT start in the same required forwarding batch;
+RTT forwarding startup failure aborts session opening, and runtime failure is
+fatal at the next forwarding status check. During interactive GDB that check
+may occur after GDB returns; concurrent interruption is not required. This
+policy concerns SSH forwarding only and adds no RTT service probe. RTT endpoint
+availability is reported only after its local forward starts successfully.
 
 ---
 
@@ -790,8 +796,9 @@ Flash requests no services and therefore creates no local forwards. `debug`,
 service. The `rtt` command requests GDB plus each enabled Tcl/telnet service
 for batch setup; after batch GDB setup, RTT is required and GDB becomes
 best-effort.
-RTT remains operation-dependent for the debug-server commands. This service and
-forwarding configuration is derived from the operation and runner options, not
+RTT is selected and required for `debug --rtt-server` and
+`debugserver --rtt-server`. This service and forwarding configuration is
+derived from the operation and runner options, not
 from runtime discovery of the effective OpenOCD configuration.
 
 No board-specific addressing is involved.
@@ -831,8 +838,10 @@ forwards; all other initial service forwards are required. The
 `auxiliary_services` name is an internal implementation detail for this
 client-side classification;
 it is not serialized into Protocol v1. Omitting the subset preserves the
-generic all-required default. RTT for the `rtt` command remains separate in
-the debug plan and is forwarded only after batch GDB setup succeeds.
+generic all-required default. Debug plans classify enabled Tcl/telnet as
+auxiliary and GDB plus explicitly requested RTT as required. RTT for the `rtt`
+command remains separate in the debug plan and is forwarded only after batch
+GDB setup succeeds.
 
 The session starts required forwards in one batch, then attempts each
 best-effort forward in its own one-service batch. Each manager call rolls back

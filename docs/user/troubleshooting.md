@@ -18,9 +18,12 @@ of the SSH control connection. A failure message containing a session workspace
 or forwarding endpoint is useful diagnostic evidence; do not remove another
 user's workspace.
 
-A best-effort forwarding warning identifies an unavailable Tcl, telnet, or
-optional RTT endpoint. Check the named local port and SSH diagnostic; GDB can
-continue when its required forward is healthy. The `rtt` command requires GDB
+A best-effort forwarding warning identifies an unavailable Tcl or telnet
+forward. Check the named local port and SSH diagnostic; the operation can
+continue when its required forwards are healthy. With `debug --rtt-server` or
+`debugserver --rtt-server`, both GDB and RTT SSH forwarding are required. RTT
+forwarding startup or observed runtime failure fails the command; the runner
+does not probe the remote RTT service. The `rtt` command requires GDB
 only for setup, then requires the RTT forward. Runtime warnings appear when
 the session next checks forwarding status, potentially after interactive GDB
 returns. An error reporting failed forwarding rollback or resource cleanup

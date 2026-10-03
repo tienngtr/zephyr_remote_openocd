@@ -139,9 +139,9 @@ generated state.
    and board-support files and start OpenOCD; the helper supervises the remote
    process and emits structured lifecycle and output events.
 4. SSH forwarding exposes required OpenOCD services on local loopback ports
-   and independently attempts best-effort forwarding for Tcl, telnet, and
-   optional RTT. Best-effort availability failures produce warnings; cleanup
-   failures remain fatal.
+   and independently attempts best-effort forwarding for Tcl and telnet.
+   Explicitly requested RTT forwarding is required. Best-effort availability
+   failures produce warnings; cleanup failures remain fatal.
 5. The runner relays output and cleans up the remote session when it exits, is
    interrupted, or detects that SSH connectivity was lost. The remote helper
    starts its own cleanup after it detects control-channel loss.

@@ -58,7 +58,7 @@ Service availability has command-specific requirements:
 | Command | Required forwarding | Best-effort forwarding |
 | --- | --- | --- |
 | `debug`, `attach`, `debugserver` | GDB | Enabled Tcl and telnet |
-| `debug --rtt-server`, `debugserver --rtt-server` | GDB | Enabled Tcl/telnet and RTT |
+| `debug --rtt-server`, `debugserver --rtt-server` | GDB and RTT | Enabled Tcl and telnet |
 | `rtt` | GDB during setup, then RTT | Enabled Tcl/telnet; GDB after setup |
 | `flash` | None | None |
 
@@ -66,7 +66,10 @@ Best-effort forwards are attempted independently. Their occupied local ports,
 startup failures, or later forwarding exits produce warnings while the required
 interface remains usable. Runtime warnings appear at the next forwarding
 status check; during interactive GDB this can be after GDB exits. Required
-forwarding failure fails the operation. Failure to clean up an acquired SSH
+forwarding failure fails the operation. Explicitly requesting `--rtt-server`
+requires RTT SSH forwarding at startup and throughout the operation. RTT
+forwarding failure fails the command at the next status check; the runner does
+not probe the remote RTT service. Failure to clean up an acquired SSH
 process also fails the operation, including a best-effort attempt whose
 rollback fails.
 
@@ -132,8 +135,9 @@ configures channel 0 before launching the local RTT client. The command ends
 when the client exits. With `--rtt-server`, for example
 `west debugserver -r remote_openocd --remote lab --rtt-server`, the runner
 prints successfully forwarded endpoints but leaves GDB and the RTT client to
-the user. If optional RTT forwarding fails, its warning does not prevent GDB
-use and the runner does not report that RTT endpoint as available.
+the user. Both GDB and RTT SSH forwarding are required. RTT forwarding startup
+failure aborts the command; runtime failure fails it at the next forwarding
+status check. The runner does not probe the remote RTT service.
 The RTT endpoint is a raw TCP channel at `127.0.0.1:5555` by default. Connect a
 client such as `telnet 127.0.0.1 5555`, using the port printed by the runner.
 Select another local and remote RTT port with `--rtt-port`, for example

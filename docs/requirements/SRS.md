@@ -863,9 +863,9 @@ The selected service set and forwarding requirement SHALL be distinct:
 
 | Operation | Required initially | Required during the client operation | Best-effort forwarding |
 | --- | --- | --- | --- |
-| `debug` | GDB | GDB | Tcl, telnet, separately requested RTT |
+| `debug` | GDB; RTT when `--rtt-server` is requested | GDB; requested RTT | Tcl, telnet |
 | `attach` | GDB | GDB | Tcl, telnet |
-| `debugserver` | GDB | GDB | Tcl, telnet, separately requested RTT |
+| `debugserver` | GDB; RTT when `--rtt-server` is requested | GDB; requested RTT | Tcl, telnet |
 | `rtt` | GDB for batch setup | RTT after batch setup | Tcl, telnet; GDB after setup |
 | `flash` | None | None | None |
 
@@ -883,8 +883,11 @@ best-effort before RTT forwarding is established as required. Forwarding
 failures SHALL be classified as required or best-effort when the runner checks
 them.
 
-A local forward does not guarantee that a corresponding remote listener is
-available.
+Explicitly requested RTT forwarding for `debug --rtt-server` and
+`debugserver --rtt-server` SHALL be required at startup and throughout the
+operation. This requirement concerns SSH forwarding only; the runner SHALL
+NOT probe the remote RTT service. A local forward does not guarantee that a
+corresponding remote listener is available.
 
 ### REQ-FUNC-SVC-002
 
@@ -941,13 +944,17 @@ Custom `--rtt-port` values SHALL be supported.
 ### REQ-FUNC-RTT-005
 
 `west debug -r remote_openocd --rtt-server` SHALL provide GDB and a bidirectional
-RTT service during the same runner invocation.
+RTT service during the same runner invocation. Both SSH forwards SHALL be
+required; RTT forwarding startup or observed runtime failure SHALL fail the
+operation without probing the RTT service.
 
 ### REQ-FUNC-RTT-006
 
 Where the runner supports RTT, `west debugserver` with `-r remote_openocd` and
 `--rtt-server` SHALL expose endpoints for an independent GDB client and a
-bidirectional RTT connection.
+bidirectional RTT connection. Both SSH forwards SHALL be required; RTT
+forwarding startup or observed runtime failure SHALL fail the operation
+without probing the RTT service.
 
 ### REQ-FUNC-RTT-007
 
@@ -1535,10 +1542,11 @@ Different GDB server/client ports work correctly when supported by the runner in
 `flash` creates no local forwards. `debug`, `attach`, and `debugserver` require
 initial GDB forwarding and independently attempt each enabled best-effort
 Tcl/telnet service using runner-selected ports. Best-effort startup and runtime
-failure warns without failing usable required forwarding. Optional RTT
-forwarding remains best-effort for debugging commands; the `rtt` command
-requires it after successful batch GDB setup and reclassifies GDB as
-best-effort. Failed
+failure warns without failing usable required forwarding. Explicitly requested
+RTT forwarding for `debug --rtt-server` and `debugserver --rtt-server` is
+required at startup and throughout the operation; its startup or observed
+runtime failure fails the operation. The `rtt` command requires RTT after
+successful batch GDB setup and reclassifies GDB as best-effort. Failed
 best-effort startup rollback or later resource cleanup remains operation-fatal,
 subject to the existing primary-failure rule.
 
@@ -1553,7 +1561,10 @@ A custom RTT port works without inspecting GDB RSP traffic.
 
 `west debug --rtt-server` and `west debugserver --rtt-server` provide
 source-level breakpoints, target-state inspection, and bidirectional RTT in one
-invocation. Acceptance tests do not reset a newly loaded RAM image.
+invocation. Both commands require the requested RTT SSH forward: startup
+failure prevents the operation from starting, and runtime failure fails it at
+the next forwarding status check. No RTT service probe is performed. Acceptance
+tests do not reset a newly loaded RAM image.
 
 ### AC-SEMI-001
 

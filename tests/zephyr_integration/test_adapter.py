@@ -704,7 +704,7 @@ def test_required_gdb_startup_failure_aborts_operation(runner_api, monkeypatch, 
 
 @pytest.mark.parametrize("command", ("debug", "debugserver"))
 @pytest.mark.parametrize("phase", ("startup", "runtime"))
-def test_optional_rtt_failure_preserves_gdb_operation(
+def test_requested_rtt_failure_aborts_operation(
     runner_api, monkeypatch, tmp_path, caplog, command, phase
 ):
     from zephyr_remote_openocd.zephyr44 import runner as runner_module
@@ -724,25 +724,28 @@ def test_optional_rtt_failure_preserves_gdb_operation(
     def exit_after_health_observation():
         harness.helper.openocd_returncode = 0
 
-    def fail_best_effort_during_active_operation():
+    def fail_rtt_during_active_operation():
         assert harness.ssh.process(GDB).returncode is None
         harness.ssh.process(RTT).returncode = 13
         harness.helper.on_wait = exit_after_health_observation
 
-    harness.helper.on_wait = fail_best_effort_during_active_operation
-    runner.run_client.side_effect = lambda _argv: fail_best_effort_during_active_operation()
-    with caplog.at_level(logging.INFO, logger=runner.logger.name):
+    harness.helper.on_wait = fail_rtt_during_active_operation
+    runner.run_client.side_effect = lambda _argv: fail_rtt_during_active_operation()
+    expected_error = ForwardStartError if phase == "startup" else SessionError
+    with (
+        caplog.at_level(logging.INFO, logger=runner.logger.name),
+        pytest.raises(expected_error),
+    ):
         runner_module._execute_operation(runner, command, request, plan)
-    warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
-    assert len(warnings) == 1
-    assert "rtt" in warnings[0].getMessage().lower()
-    assert str(RTT.local_port) in warnings[0].getMessage()
+    assert not any(record.levelno == logging.WARNING for record in caplog.records)
     if phase == "startup":
+        runner.run_client.assert_not_called()
         assert not any("RTT server available" in record.getMessage() for record in caplog.records)
-    if command == "debug":
+    elif command == "debug":
         runner.run_client.assert_called_once()
     assert harness.helper.close_calls == 1
-    assert harness.ssh.process(GDB).mock.close_stderr.call_count == 1
+    for service in (GDB, RTT):
+        assert harness.ssh.process(service).mock.close_stderr.call_count == 1
 
 
 @pytest.mark.parametrize("failure", ("batch-gdb", "rtt-forward"))
@@ -1071,7 +1074,7 @@ def test_recording_runs_real_runner_integration_without_external_io(
                         "name": "rtt",
                         "local_port": 19021,
                         "remote_port": 19021,
-                        "criticality": "auxiliary",
+                        "criticality": "required",
                     }
                 }
                 if rtt_server

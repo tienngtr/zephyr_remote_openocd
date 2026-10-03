@@ -297,5 +297,5 @@ def build_debug_plan(
         services.rtt_service,
         _rtt_setup(inputs),
         inputs.command == "rtt",
-        tuple(service for service in services.services if service.name != "gdb"),
+        tuple(service for service in services.services if service.name in {"tcl", "telnet"}),
     )

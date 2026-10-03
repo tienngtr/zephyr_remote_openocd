@@ -1478,7 +1478,6 @@ class TestDebugPlanning:
                 assert plan.auxiliary_services == (
                     Service("tcl", 6333, 6333),
                     Service("telnet", 4444, 4444),
-                    Service("rtt", 5577, 5577),
                 )
                 assert "rtt server start 5577 0" in plan.process.argv
                 assert plan.rtt_setup == "openocd_startup"
