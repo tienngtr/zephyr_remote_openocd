@@ -24,6 +24,7 @@ from zephyr_remote_openocd.remote.paths import PathPlanner
 from zephyr_remote_openocd.remote.protocol import ProtocolError, decode_message, encode_message
 from zephyr_remote_openocd.remote.session import SessionError
 from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand, SshLocalForward
+from zephyr_remote_openocd.remote.tcl import TclPathArgument
 from zephyr_remote_openocd.remote_helper import _decode_start, materialize_argv
 
 OPENOCD_FAILURE_RC = 7
@@ -174,18 +175,36 @@ def test_helper_client_reports_every_attempt_before_startup_error():
         client.close()
 
 
+def test_tcl_path_render_escapes_workspace_and_retains_planned_address():
+    argument = TclPathArgument("load_image ", "{workspace}/{address}/firmware.bin", " 0x1000")
+
+    assert argument.render(
+        r'/runtime/[review] $value "quoted" \backslash {workspace} {address}/session'
+    ) == (
+        r'load_image "/runtime/\[review\] \$value \"quoted\" \\backslash '
+        r'\{workspace\} \{address\}/session/{address}/firmware.bin" 0x1000'
+    )
+
+
 @pytest.mark.parametrize("image_type", ("hex", "bin", "elf"))
-@pytest.mark.skipif(shutil.which("tclsh") is None, reason="Tcl interpreter unavailable")
 @pytest.mark.parametrize(
-    "workspace, mapped_root",
+    "workspace, mapped_root, expected_image_root",
     (
-        ('/runtime/[review] $value "quoted" \\backslash/session', None),
-        ("/runtime/{workspace}/braces/session", None),
-        ("/workspace", "/shared/{address}"),
+        (
+            r'/runtime/[review] $value "quoted" \backslash {workspace} {address}/session',
+            None,
+            r'/runtime/\[review\] \$value \"quoted\" \\backslash '
+            r'\{workspace\} \{address\}/session/staged/files',
+        ),
+        ("/workspace", "/shared/{address}", "/shared/127.64.0.1"),
     ),
 )
 def test_flash_paths_are_quoted_after_session_allocation(
-    tmp_path: Path, image_type: str, workspace: str, mapped_root: str | None
+    tmp_path: Path,
+    image_type: str,
+    workspace: str,
+    mapped_root: str | None,
+    expected_image_root: str,
 ):
     image = tmp_path / f"firmware.{image_type}"
     if image_type == "elf":
@@ -194,10 +213,15 @@ def test_flash_paths_are_quoted_after_session_allocation(
         image.write_bytes(b":00000001FF\n")
     config = tmp_path / "board.cfg"
     config.write_text("# fixture\n")
+    config_remote = r'/configs/[review] $value "quoted" \backslash/board.cfg'
+    executable = r'/tools/[review] $value "quoted" \backslash {workspace} {address}/openocd'
     user_tcl = 'puts "user [expr {1 + 2}] $value"'
+    mappings: tuple[PathMapping, ...] = (PathMapping(config, PurePosixPath(config_remote)),)
+    if mapped_root is not None:
+        mappings += (PathMapping(tmp_path, PurePosixPath(mapped_root)),)
     plan = build_flash_plan(
         FlashInputs(
-            executable="openocd",
+            executable=executable,
             image_type=image_type,
             file=str(image),
             elf_file=None,
@@ -211,9 +235,7 @@ def test_flash_paths_are_quoted_after_session_allocation(
             flash_address="0x1000",
             verify=True,
         ),
-        PathPlanner(
-            () if mapped_root is None else (PathMapping(tmp_path, PurePosixPath(mapped_root)),)
-        ),
+        PathPlanner(mappings),
     )
     process = _EventProcess(
         (
@@ -237,39 +259,27 @@ def test_flash_paths_are_quoted_after_session_allocation(
     finally:
         client.close()
 
-    remote_root = mapped_root.replace("{address}", "127.64.0.1") if mapped_root else None
-    expected_config = (
-        remote_root + "/board.cfg" if remote_root else workspace + "/staged/files/config-0.cfg"
-    )
-    expected_image = (
-        remote_root + f"/firmware.{image_type}"
-        if remote_root
-        else workspace + f"/staged/files/firmware.{image_type}"
-    )
-    assert argv[argv.index("-f") + 1] == expected_config
-    if remote_root:
+    assert argv[0] == executable
+    assert argv[argv.index("-f") + 1] == config_remote
+    assert "bindto 127.64.0.1" in argv
+    if mapped_root is not None:
         checked_paths = materialize_argv(
             (check.path for check in request.required_paths),
             workspace=workspace,
             address="127.64.0.1",
         )
-        assert expected_image in checked_paths
+        assert f"/shared/127.64.0.1/firmware.{image_type}" in checked_paths
     assert user_tcl in argv
-    commands = [arg for arg in argv if arg.startswith(("load_image ", "verify_image "))]
-    assert len(commands) == 2
-    for command in commands:
-        result = subprocess.run(
-            ["tclsh"],
-            input=(
-                "proc load_image {path args} {puts $path}\n"
-                "proc verify_image {path args} {puts $path}\n" + command + "\n"
-            ),
-            text=True,
-            capture_output=True,
-            check=True,
-        )
-        assert result.stderr == ""
-        assert result.stdout == expected_image + "\n"
+    commands = [
+        argv[index + 1]
+        for index, argument in enumerate(argv[:-1])
+        if argument == "-c" and argv[index + 1].startswith(("load_image ", "verify_image "))
+    ]
+    suffix = " 0x1000" if image_type == "bin" else ""
+    assert commands == [
+        f'load_image "{expected_image_root}/firmware.{image_type}"{suffix}',
+        f'verify_image "{expected_image_root}/firmware.{image_type}"{suffix}',
+    ]
 
 
 def test_open_rejects_initial_frame_without_lf():

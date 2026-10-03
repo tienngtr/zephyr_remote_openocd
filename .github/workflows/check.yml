@@ -23,8 +23,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/install-python-tools
-      - name: Install Tcl interpreter for generated-command regressions
-        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y tcl
       - name: Run self-contained tests
         env:
           COVERAGE_FILE: .coverage.self-contained-tests

@@ -18,10 +18,9 @@ Hardware and SSH tests can change external state; keep destructive profiles
 serial and inspect cleanup output before reusing a target.
 
 The maintained suite uses pytest. The ordinary `.venv/bin/python -m pytest`
-command runs only hardware-free unit and local-process tests. Contributors
-with `tclsh` installed also evaluate generated firmware Tcl with a real
-interpreter; those regression nodes skip when Tcl is unavailable.
-The self-contained CI job installs the test-only Tcl interpreter explicitly.
+command runs only hardware-free unit and local-process tests. Generated firmware
+Tcl regressions assert the exact escaping syntax through planning, client
+serialization, and helper expansion; no Tcl interpreter is required.
 GitHub Actions runs four independent validation jobs: the self-contained suite,
 static checks, the SSH suite against an isolated SSH server container, and the full
 Zephyr 4.4 integration suite with a real workspace and SDK. That suite runs
