@@ -345,6 +345,26 @@ The persistent module installation directory SHALL NOT be fixed by the requireme
 
 Documentation SHOULD present a convenient user-local location.
 
+### REQ-FUNC-INSTALL-009
+
+The setup program SHALL report whether configuration was created or reused, its
+absolute path, the module root, and concise `EXTRA_ZEPHYR_MODULES` activation
+guidance.
+
+### REQ-FUNC-INSTALL-010
+
+The setup program SHALL create the configuration directory with mode `0700` and
+the configuration file with mode `0600`, without changing permissions on any
+pre-existing parent, directory, or file.
+
+### REQ-FUNC-INSTALL-011
+
+The setup program SHALL report whether `pyelftools`, PyYAML, and jsonschema are
+discoverable in the active Python environment. A missing dependency SHALL
+produce a warning directing the user to the Zephyr 4.4-configured Python
+environment, but SHALL NOT prevent configuration initialization or recommend a
+separate product installation.
+
 ---
 
 ## 8. User Configuration
