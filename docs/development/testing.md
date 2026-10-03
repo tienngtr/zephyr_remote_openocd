@@ -195,8 +195,11 @@ board, probe, serial endpoint, and remote OpenOCD setup.
 
 GitHub Actions supplies the SSH layer with an ephemeral key and an isolated
 container running `sshd`, Python, and OpenOCD. The Zephyr job fetches
-Zephyr 4.4.0, updates the modules needed for its test board, and installs the
-matching SDK toolchain.
+Zephyr 4.4.0 and Zephyr 4.4 branch, updates the modules needed for their test
+board, and installs the matching SDK toolchain. Zephyr 4.4.0 is used for the
+Zephyr integration suite. Zephyr 4.4.1 and 4.4.2 don't change the runner
+framework so testing with Zephyr 4.4.0 is enough. Testing with Zephyr 4.4 branch
+is used to detect possibly breaking changes from upstream project and is non-gating.
 These jobs use `--require-external-tests` so a missing prerequisite or skipped
 test fails the job. Physical hardware remains an explicit lab-only validation
 layer and never runs on GitHub-hosted runners. Spike and virtual OpenOCD target

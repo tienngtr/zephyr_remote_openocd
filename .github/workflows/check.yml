@@ -82,59 +82,27 @@ jobs:
         if: always()
         run: docker rm --force zro-ci-ssh || true
 
-  zephyr-integration:
+  zephyr-4-4-0-integration:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/install-python-tools
-      - name: Install reduced Zephyr build host dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y ninja-build openocd
-      # The clean-install test requires module paths outside the project root.
-      - name: Initialize Zephyr 4.4.0 workspace
-        run: >-
-          west init -m https://github.com/zephyrproject-rtos/zephyr
-          --mr v4.4.0 -o=--depth=1
-          "$RUNNER_TEMP/zephyr-workspace"
-      - name: Update selected Zephyr modules and install dependencies
-        run: |
-          workspace="$RUNNER_TEMP/zephyr-workspace"
-          export ZEPHYR_BASE="$workspace/zephyr"
-          cd "$workspace"
-          west config manifest.project-filter -- '-.*,+cmsis,+hal_rpi_pico'
-          west update --narrow -o=--depth=1
-          python -m pip install -r "$ZEPHYR_BASE/scripts/requirements-base.txt"
-          printf 'WEST=%s\n' "$(command -v west)" >> "$GITHUB_ENV"
-      - name: Determine version of Zephyr SDK to use
-        id: sdk
-        run: |
-          sdk_version="$(cat "$RUNNER_TEMP/zephyr-workspace/zephyr/SDK_VERSION")"
-          printf 'version=%s\n' "$sdk_version" >> "$GITHUB_OUTPUT"
-      - uses: ./.github/actions/setup-zephyr-sdk
+      - uses: ./.github/actions/run-zephyr-integration
         with:
-          sdk_version: ${{ steps.sdk.outputs.version }}
-          toolchain: arm-zephyr-eabi
-      - name: Run full Zephyr integration suite
-        env:
-          COVERAGE_FILE: .coverage.zephyr-integration
-          OPENOCD_DEFAULT_PATH: /usr/share/openocd/scripts
-          ZEPHYR_BASE: ${{ runner.temp }}/zephyr-workspace/zephyr
-        run: |
-          mkdir -p .scratch
-          pytest tests/zephyr_integration -m zephyr \
-            --require-external-tests \
-            --cov --cov-config=.coveragerc --cov-report=
-      - uses: actions/upload-artifact@v7
+          zephyr_ref: v4.4.0
+          coverage_file: .coverage.zephyr-4-4-0-integration
+          coverage_artifact: coverage-zephyr-4-4-0-integration
+
+  zephyr-4-4-branch-integration:
+    continue-on-error: true
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/run-zephyr-integration
         with:
-          name: coverage-zephyr-integration
-          path: .coverage.zephyr-integration
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 1
+          zephyr_ref: v4.4-branch
 
   coverage:
-    needs: [self-contained-tests, ssh-integration, zephyr-integration]
+    needs: [self-contained-tests, ssh-integration, zephyr-4-4-0-integration]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7

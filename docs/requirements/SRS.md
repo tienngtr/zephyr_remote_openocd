@@ -804,7 +804,7 @@ NOT rewrite user-provided Tcl or Tcl-escape literal argv path arguments.
 
 ### REQ-FUNC-FLASH-004
 
-Applicable flash behavior of the Zephyr 4.4.0 OpenOCD runner SHALL be preserved,
+Applicable flash behavior of the Zephyr 4.4 OpenOCD runner SHALL be preserved,
 including:
 
 - erase;

@@ -1,0 +1,79 @@
+# SPDX-License-Identifier: Apache-2.0
+
+name: Run Zephyr integration suite
+description: Set up a Zephyr workspace and run the integration suite
+inputs:
+  zephyr_ref:
+    description: Zephyr Git ref to initialize
+    required: true
+  coverage_file:
+    description: Coverage data file to create; empty disables coverage collection
+    required: false
+    default: ''
+  coverage_artifact:
+    description: Artifact name for coverage data; empty disables artifact upload
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/install-python-tools
+    - name: Install reduced Zephyr build host dependencies
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install --no-install-recommends -y ninja-build openocd
+    # The clean-install test requires module paths outside the project root.
+    - name: Initialize Zephyr workspace
+      env:
+        ZEPHYR_REF: ${{ inputs.zephyr_ref }}
+      shell: bash
+      run: >-
+        west init -m https://github.com/zephyrproject-rtos/zephyr
+        --mr "$ZEPHYR_REF" -o=--depth=1
+        "$RUNNER_TEMP/zephyr-workspace"
+    - name: Update selected Zephyr modules and install dependencies
+      shell: bash
+      run: |
+        workspace="$RUNNER_TEMP/zephyr-workspace"
+        export ZEPHYR_BASE="$workspace/zephyr"
+        cd "$workspace"
+        west config manifest.project-filter -- '-.*,+cmsis,+hal_rpi_pico'
+        west update --narrow -o=--depth=1
+        python -m pip install -r "$ZEPHYR_BASE/scripts/requirements-base.txt"
+        printf 'WEST=%s\n' "$(command -v west)" >> "$GITHUB_ENV"
+    - name: Determine version of Zephyr SDK to use
+      id: sdk
+      shell: bash
+      run: |
+        sdk_version="$(cat "$RUNNER_TEMP/zephyr-workspace/zephyr/SDK_VERSION")"
+        printf 'version=%s\n' "$sdk_version" >> "$GITHUB_OUTPUT"
+    - uses: ./.github/actions/setup-zephyr-sdk
+      with:
+        sdk_version: ${{ steps.sdk.outputs.version }}
+        toolchain: arm-zephyr-eabi
+    - name: Run Zephyr integration suite
+      env:
+        COVERAGE_FILE: ${{ inputs.coverage_file }}
+        OPENOCD_DEFAULT_PATH: /usr/share/openocd/scripts
+        ZEPHYR_BASE: ${{ runner.temp }}/zephyr-workspace/zephyr
+      shell: bash
+      run: |
+        mkdir -p .scratch
+        pytest_args=(
+          tests/zephyr_integration
+          -m zephyr
+          --require-external-tests
+        )
+        if [[ -n "$COVERAGE_FILE" ]]; then
+          pytest_args+=(--cov --cov-config=.coveragerc --cov-report=)
+        fi
+        pytest "${pytest_args[@]}"
+    - uses: actions/upload-artifact@v7
+      if: inputs.coverage_artifact != ''
+      with:
+        name: ${{ inputs.coverage_artifact }}
+        path: ${{ inputs.coverage_file }}
+        include-hidden-files: true
+        if-no-files-found: error
+        retention-days: 1
