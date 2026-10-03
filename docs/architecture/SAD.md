@@ -250,16 +250,30 @@ Remote fields replace complete preset settings; lists and mappings are not
 merged. Remote `~` paths are expanded using the SSH user's actual home only
 during a real operation; recording keeps them unresolved.
 
+### Configuration Resolution
+
+Runtime loading treats an absent configuration path as an empty configuration.
+Malformed YAML or schema-invalid content, and an existing path that cannot be
+read as a file, produce an actionable configuration error rather than falling
+back to defaults. For a production operation, remote selection is ordered as
+explicit `--remote`, then a non-empty
+`ZEPHYR_REMOTE_OPENOCD_REMOTE`, then `default_remote`. The selected remote must
+exist; production resolution also requires `openocd_command`. Resolution uses
+the built-in defaults of `ssh_command: [ssh]`, empty `forward_env`, empty
+`path_mappings`, and `ssh_host` equal to the remote name when those settings
+are not supplied.
+
+Offline validation intentionally uses a different selection and file-presence
+policy. It resolves explicit `--remote`, otherwise the file's
+`default_remote`, and ignores `ZEPHYR_REMOTE_OPENOCD_REMOTE`; its target file
+must exist so that validation cannot silently summarize an absent file.
+
 `scripts/user/validate_configuration.py` is a no-I/O front end to this loader and
 resolver. A non-empty `ZEPHYR_REMOTE_OPENOCD_CONFIG` overrides the product
 default configuration path, and a leading current-user `~` is expanded before
-the file is read. The validator resolves an explicit `--remote`, otherwise the
-file's `default_remote`; it does not consult
-`ZEPHYR_REMOTE_OPENOCD_REMOTE`, so shell state cannot silently change the
-summary. With no selected remote it reports structural validity and available
-definitions. It requires the target file to exist, prints commands as argv and
-forwarded environment names without values, and does not test local or remote
-resource existence.
+the file is read. With no selected remote it reports structural validity and
+available definitions. It prints commands as argv and forwarded environment
+names without values, and does not test local or remote resource existence.
 
 The SSH command is represented as an argv list rather than a shell command string.
 An argv representation:
@@ -535,6 +549,21 @@ RemoteSessionRequest(
 ```
 
 This subsystem has no dependency on a specific board or SoC.
+
+### 18.1 Runtime Environment Forwarding
+
+While constructing the immutable `RemoteProcess` for an operation, the
+Zephyr adapter reads local values only for names in the selected remote's
+`forward_env` allow-list. The complete local environment is never copied. A
+name with no local value causes a non-fatal warning and is omitted from the
+request's `START.environment` object; this does not remove a same-named value
+from the helper's inherited remote environment.
+
+The selected values travel with the process plan into `START`. Before spawning
+OpenOCD, the helper copies its inherited environment and overlays those
+requested values to form the child environment. This happens in the helper's
+process-start path, before OpenOCD is launched, so allow-listed values are
+available when OpenOCD begins processing configuration files.
 
 ---
 
