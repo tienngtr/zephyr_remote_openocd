@@ -34,7 +34,7 @@ The remote host provides:
 The runner integrates without modifying the Zephyr source tree or the
 application source tree.
 
-The implementation and user-facing documentation SHALL be board- and board-vendor-agnostic.
+The implementation and user-facing documentation is board- and board-vendor-agnostic.
 
 ---
 
@@ -131,7 +131,7 @@ A physical debug adapter used by OpenOCD.
 
 An independently usable debug interface exposed by a probe.
 
-A physical probe MAY provide multiple independently usable channels.
+A physical probe can provide multiple independently usable channels.
 
 ---
 
