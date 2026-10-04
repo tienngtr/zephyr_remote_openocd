@@ -720,13 +720,12 @@ OpenOCD configuration files are being evaluated.
 If an allow-listed variable is absent locally, the runner SHALL:
 
 1. emit a non-fatal warning;
-2. omit the variable and its local value from the `START` request's
-   `environment` object;
+2. not forward a local value for that variable to remote OpenOCD;
 3. continue execution.
 
-This requirement means that the local value is not forwarded. It does not
-request removal of a same-named variable from the helper's inherited
-environment; the remote value, if present, may remain available to OpenOCD.
+This requirement does not request removal of a same-named variable from the
+helper's inherited environment; the remote value, if present, may remain
+available to OpenOCD.
 
 ---
 
@@ -1171,25 +1170,12 @@ configured process-readiness conditions are met. A process with no configured
 readiness conditions SHALL be ready immediately. The helper SHALL preserve
 child-output ordering within each stream. Orderly session closure and helper
 failure SHALL remain distinguishable, and either SHALL end the session. Loss
-of the control transport MAY prevent delivery of a final outcome. The exact
-Protocol v1 messages, framing, ordering, and validation rules are defined in
-[`protocol.md`](../architecture/protocol.md).
+of the control transport MAY prevent delivery of a final outcome.
 
-Protocol v1 SHALL require `PROCESS_STARTING` with the exact materialized argv
-after required-path validation and immediately before each spawn attempt. The
-client SHALL reject child output or readiness without this preceding event,
-permit repeated attempts only before readiness, and validate the complete
-current contract rather than numeric version equality
-alone. Automatic content-addressed deployment SHALL supply the matching helper;
-the numeric version remains 1 and no user configuration migration is required.
-
-The helper SHALL incrementally frame control input, retain incomplete frames,
-and consume complete buffered frames without requiring further input readiness.
-EOF with an incomplete frame SHALL be a protocol error. Each control frame
-SHALL be bounded to 1 MiB (1,048,576 bytes), including its LF delimiter;
-oversized complete or incomplete frames SHALL be rejected as protocol errors.
-This bound does not change Protocol v1 message shapes or version. Callers
-SHALL keep the complete encoded `START` frame within this bound.
+The exact Protocol v1 messages, fields, framing, state transitions, ordering,
+validation rules, and frame-size limits SHALL be defined solely in
+[`protocol.md`](../architecture/protocol.md). Automatic helper deployment
+SHALL provide the helper revision matching the local client.
 
 ### REQ-FUNC-HELP-007
 
