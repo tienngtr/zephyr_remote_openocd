@@ -1619,8 +1619,8 @@ hardware validation. External layers consume explicitly configured environments
 and local hardware inventory data. Recording mode remains free of SSH, helper,
 OpenOCD, GDB, and hardware I/O. Hardware capabilities are selected
 independently so an unsupported optional capability does not suppress other
-operations. Acceptance traceability maps criteria to maintained tests; this
-document describes only the architecture of that test boundary.
+operations. Verification traceability maps requirements directly to maintained
+tests; this document describes only the architecture of that test boundary.
 
 ---
 
