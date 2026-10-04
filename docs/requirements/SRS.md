@@ -1266,10 +1266,6 @@ SAD.
 
 ## 24. Session Data
 
-### REQ-FUNC-DATA-001
-
-Each developer SHALL use a separate remote Unix account.
-
 ### REQ-FUNC-DATA-002
 
 Remote session files SHALL be protected from other ordinary remote users by filesystem permissions.
