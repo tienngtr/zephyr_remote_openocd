@@ -1070,10 +1070,8 @@ No assumption is made that the local SSH executable comes from the local Linux d
 The current internal helper wire format and behavior are specified solely in
 [protocol.md](protocol.md). The SAD records the architectural consequences of
 that contract; it does not duplicate message fields, framing, state
-transitions, ordering, validation, or frame-size limits. Helper stdout contains
-only JSON protocol frames. The deployed client and helper implement one strict
-contract; the numeric wire value remains `1` as its identifier and is not an
-external compatibility guarantee.
+transitions, ordering, validation, or frame-size limits. The deployed client
+and helper implement one strict matching contract.
 
 ## 37. Remote Session Storage
 
@@ -1447,9 +1445,8 @@ workspace/address expansion.
 
 The pre-spawn event's ordering, retry eligibility, and compatibility
 requirements are defined solely in [protocol.md](protocol.md). Version
-equality alone is insufficient for compatibility; deployment installs the
-matching helper revision automatically, without changing the numeric protocol
-version or user YAML.
+compatibility is supplied by content-addressed deployment, which installs the
+matching helper revision automatically.
 
 The runner's init-complete and startup-complete markers establish distinct
 lifecycle facts. The helper applies the readiness rules defined in
