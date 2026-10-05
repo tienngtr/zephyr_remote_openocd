@@ -1034,9 +1034,10 @@ The runner SHALL NOT require GDB Remote Serial Protocol inspection solely to det
 ## 20. Semihosting Console
 
 Semihosting console output is the semihosting behavior explicitly guaranteed
-by this runner. Other semihosting behavior may be available through OpenOCD or
-GDB without runner involvement, but is outside the runner's compatibility
-guarantees.
+by this runner. Other semihosting behavior can be available through OpenOCD or
+GDB without runner involvement. Semihosting operations handled directly by
+OpenOCD execute according to OpenOCD behavior on the remote host. Such behavior
+is outside the runner's compatibility guarantees.
 
 ### REQ-FUNC-SEMI-001
 
@@ -1057,12 +1058,6 @@ The runner SHALL NOT implement, configure, proxy, virtualize, or path-translate
 GDB File-I/O for semihosting. GDB File-I/O provided transparently by remote
 OpenOCD and a locally connected GDB MAY work without runner involvement and MAY
 access the filesystem of the host running GDB. Such transparent behavior is
-outside the runner's compatibility guarantees.
-
-### REQ-FUNC-SEMI-005
-
-Semihosting operations handled directly by OpenOCD MAY execute according to
-OpenOCD behavior on the remote host, but behavior other than console output is
 outside the runner's compatibility guarantees.
 
 ---
