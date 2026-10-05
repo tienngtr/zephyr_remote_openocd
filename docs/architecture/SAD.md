@@ -1698,6 +1698,10 @@ OpenOCD, GDB, and hardware I/O. Hardware capabilities are selected
 independently so an unsupported optional capability does not suppress other
 operations. Verification traceability maps requirements directly to maintained
 tests; this document describes only the architecture of that test boundary.
+Generic `RemoteProcess`, helper/session boundaries, and socket-forwarding
+interfaces provide deterministic seams for fake OpenOCD process and socket
+endpoints, so remote-session and forwarding behavior can be exercised without
+physical hardware.
 
 ---
 
