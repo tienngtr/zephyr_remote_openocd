@@ -86,11 +86,14 @@ No component above the normal OpenOCD configuration layer is board-specific.
 
 ---
 
-## 4. Supported Local Platform
+## 4. Supported Platforms
 
-The local platform is Linux with Python 3.12 or newer. The generic Python
+The local platform is Linux with Python 3.12 or newer. The remote helper
+platform is also Linux with Python 3.12 or newer. The generic local Python
 implementation uses one Linux architecture and does not select platform
-backends.
+backends. Linux-specific remote process supervision and filesystem mechanisms,
+including process groups, signals, pidfds, `/proc`, and `fcntl` locking, belong
+to the helper and supervision layer.
 
 ---
 
