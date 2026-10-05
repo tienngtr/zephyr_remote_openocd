@@ -904,7 +904,9 @@ address.
 
 ### REQ-FUNC-DEBUG-006
 
-`west debugserver -r remote_openocd` SHALL expose a locally reachable GDB-server endpoint backed by remote OpenOCD.
+`west debugserver -r remote_openocd` SHALL expose a locally reachable GDB-server
+endpoint backed by remote OpenOCD without launching local GDB. The endpoint SHALL
+allow an independent GDB client to control the target.
 
 ### REQ-FUNC-DEBUG-007
 
