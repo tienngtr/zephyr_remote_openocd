@@ -995,8 +995,14 @@ Conceptually:
 required:
     execute remote command
     stdin/stdout streaming
-    TCP forwarding
+    TCP forwarding with generated local-forward support
+    runner-owned forwarding-option precedence
 ```
+
+The configured client must preserve the runner's generated `-L` forwarding
+arguments and honor first-value precedence for `ExitOnForwardFailure=yes` and
+`ClearAllForwardings=no`. The detailed forwarding construction and precedence
+requirements are defined in §29.
 
 ---
 
