@@ -1151,7 +1151,8 @@ Multiple developers SHALL be able to operate independent remote sessions concurr
 
 ### REQ-FUNC-CONC-002
 
-Independently usable channels on the same physical probe MAY be used concurrently.
+The runner SHALL NOT prevent concurrent sessions solely because their
+independently usable channels belong to the same physical probe.
 
 ### REQ-FUNC-CONC-003
 
