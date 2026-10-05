@@ -1068,6 +1068,9 @@ The helper and flash implementation handle the staging manifest, safe archive
 encoding and extraction, private remote filesystem layout, path rewriting,
 helper deployment, and OpenOCD artifact staging. The staging wire contract is
 defined solely in [protocol.md](protocol.md).
+The archive represents directory entries explicitly, including empty search
+roots and empty nested directories, so staged OpenOCD search trees preserve
+their required lookup structure.
 
 ---
 
