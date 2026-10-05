@@ -1502,12 +1502,10 @@ Remote OpenOCD output is relayed with bounded low buffering. The helper reads
 each child stream in bounded chunks, incrementally decodes UTF-8 with
 replacement, and emits output fragments through the protocol contract. Long
 newline-free output becomes visible before the child exits. Fragment order is
-preserved within each child stream. Events from stdout and stderr are
-serialized in helper-observed order; no ordering relationship between writes to
-different child streams is guaranteed. Startup matching recognizes required
-output markers only after the stream observer has seen a complete line. The
-exact output fields, delimiter and `line_end` semantics, and terminal-event
-ordering are defined solely in [protocol.md](protocol.md).
+preserved within each child stream. Startup matching recognizes required
+output markers only after the stream observer has seen a complete line. Exact
+output representation, cross-stream serialization, delimiter handling, and
+terminal-event ordering are defined solely in [protocol.md](protocol.md).
 
 This includes:
 
