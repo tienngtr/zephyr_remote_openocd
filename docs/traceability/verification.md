@@ -9,15 +9,17 @@ recently.
 Every SRS requirement is listed. **Documented** records user-facing
 documentation evidence, **Failing** records a maintained test that currently
 fails in this environment, and **Unverified** records that no maintained test
-evidence is currently available.
+evidence is currently available. **Reviewed** records design-review evidence
+with any partial automated support identified explicitly; it does not mean the
+full requirement has automated verification.
 
 Status is classified by maintained coverage: **Automated** means unit,
-Zephyr, or SSH integration coverage; **Hardware** means a maintained
+local-process, Zephyr, or SSH integration coverage; **Hardware** means a maintained
 real-hardware test requiring a configured hardware test environment; **Both**
 has both forms. Availability of a configured hardware environment does not
 imply that the hardware test has been executed.
 
-| Requirements | Status | Maintained tests |
+| Requirements | Status | Evidence |
 | --- | --- | --- |
 | `REQ-FUNC-INTEG-001`, `REQ-FUNC-INTEG-003`, `REQ-FUNC-INTEG-006`, `REQ-FUNC-INTEG-007`, `REQ-FUNC-SCOPE-001` | Automated | [`TestZephyrIntegration.test_module_discovery_and_in_tree_application_configuration`](../../tests/zephyr_integration/test_zephyr_integration.py); clean-install verification |
 | `REQ-FUNC-INTEG-002`, `REQ-FUNC-INTEG-004`, `REQ-FUNC-INTEG-005` | Automated | [`TestZephyrIntegration.test_out_of_tree_application_configuration`](../../tests/zephyr_integration/test_zephyr_integration.py) |
@@ -62,6 +64,7 @@ imply that the hardware test has been executed.
 | `REQ-FUNC-OPT-006`, `REQ-FUNC-SEMI-001`, `REQ-FUNC-SEMI-002`, `REQ-FUNC-SEMI-003`, `REQ-FUNC-SEMI-004` | Both | Upstream option and runner-integration recording coverage; [`TestRealSemihosting.test_direct_semihosting_console_normal_completion`](../../tests/hardware/test_real_semihosting.py) |
 | `REQ-FUNC-SSH-001`, `REQ-FUNC-SSH-002`, `REQ-FUNC-SSH-003`, `REQ-FUNC-SSH-004`, `REQ-FUNC-SSH-005`, `REQ-FUNC-SSH-006`, `REQ-FUNC-SSH-007`, `REQ-FUNC-SSH-009` | Automated | [SSH command tests](../../tests/unit/test_ssh.py); [`TestConfiguredSshIntegration`](../../tests/ssh_integration/test_ssh_integration.py); [`TestSshTransportIntegration.test_forwarding_and_session_lifecycle_use_configured_client`](../../tests/ssh_integration/test_ssh_integration.py) |
 | `REQ-FUNC-CONC-001` | Automated | [`TestSshTransportIntegration.test_concurrent_sessions_isolate_identical_remote_ports`](../../tests/ssh_integration/test_ssh_integration.py) |
+| `REQ-FUNC-CONC-002` | Reviewed | Partial automated support: [`test_same_probe_session_finishes_while_another_session_is_active`](../../tests/local_integration/test_session_concurrency.py) requires the first generic session to finish `RemoteSession.open()` and remain active while a second same-serial session completes, using distinct synthetic channel commands and controlled local children. Adapter design review: [`do_run()` and `_execute_operation()`](../../python/zephyr_remote_openocd/zephyr44/runner.py) delegate to per-session resources without probe-identity admission or active-operation locks; this adapter property is not protected by the local test. [Concurrency boundary](../architecture/SAD.md#probe-contention) distinguishes deployment maintenance from session lifetime. Physical probe/channel acquisition is outside this runner-policy evidence. |
 | `REQ-FUNC-HELP-004`, `REQ-FUNC-HELP-006`, `REQ-FUNC-HELP-008`, `REQ-FUNC-HELP-012`, `REQ-NFUNC-TEST-002` | Automated | [Protocol and helper unit tests](../../tests/unit/test_remote.py); [remote-helper unit tests](../../tests/unit/test_remote_helper.py); [helper-client unit tests](../../tests/unit/test_helper_client.py); [`TestSshTransportIntegration.test_protocol_v1_helper_vertical_slice`](../../tests/ssh_integration/test_ssh_integration.py) |
 | `REQ-FUNC-HELP-001`, `REQ-FUNC-HELP-002`, `REQ-FUNC-HELP-003`, `REQ-FUNC-HELP-007`, `REQ-NFUNC-ADMIN-001` | Automated | [Helper deployment tests](../../tests/unit/test_remote.py); remote-process and SSH integration coverage |
 | `REQ-FUNC-HELP-005` | Automated | [`TestRealProcessHelper.test_helper_eof_cleans_child_and_workspace`](../../tests/local_integration/test_remote_process.py); [`TestSshTransportIntegration.test_helper_ssh_loss_cleans_session`](../../tests/ssh_integration/test_ssh_integration.py); [`TestRealProcessHelper.test_helper_signal_cleans_child_and_workspace`](../../tests/local_integration/test_remote_process.py) |
@@ -69,6 +72,6 @@ imply that the hardware test has been executed.
 | `REQ-FUNC-HELP-009`, `REQ-FUNC-HELP-010`, `REQ-FUNC-HELP-011` | Automated | [`test_operation_primary_failure_rules`](../../tests/zephyr_integration/test_adapter.py); [`test_rtt_cleanup_failure_does_not_replace_observed_openocd_failure`](../../tests/zephyr_integration/test_adapter.py); [`test_background_openocd_result_does_not_replace_active_operation_failure`](../../tests/zephyr_integration/test_adapter.py); [`test_close_attempts_all_cleanup_once_and_preserves_first_failure`](../../tests/unit/test_backend.py) |
 | `REQ-FUNC-DATA-002`, `REQ-FUNC-DATA-003`, `REQ-FUNC-DATA-005` | Automated | [`TestRealProcessHelper.test_helper_eof_cleans_child_and_workspace`](../../tests/local_integration/test_remote_process.py); staging and cleanup tests in [`tests/unit/test_remote_helper.py`](../../tests/unit/test_remote_helper.py) and [`tests/local_integration/test_remote_process.py`](../../tests/local_integration/test_remote_process.py) |
 | `REQ-NFUNC-PLAT-001`, `REQ-NFUNC-PLAT-002`, `REQ-NFUNC-TEST-001`, `REQ-NFUNC-TEST-003` | Both | Linux [Zephyr](../../tests/zephyr_integration/), [SSH](../../tests/ssh_integration/), and [real-hardware coverage](../../tests/hardware/); command-construction unit tests |
-| `REQ-FUNC-CONC-002`, `REQ-FUNC-CONC-003`, `REQ-FUNC-CONC-004`, `REQ-FUNC-FILE-008`, `REQ-FUNC-OPT-007`, `REQ-FUNC-SCOPE-007`, `REQ-NFUNC-COMPAT-002`, `REQ-NFUNC-COMPAT-003`, `REQ-NFUNC-COMPAT-004`, `REQ-NFUNC-MAINT-001`, `REQ-NFUNC-MAINT-002`, `REQ-NFUNC-MAINT-003`, `REQ-NFUNC-PORT-001` | Unverified | No maintained test evidence is currently recorded for these design constraints, explicit non-goals, or concurrency/data behaviors. |
+| `REQ-FUNC-CONC-003`, `REQ-FUNC-CONC-004`, `REQ-FUNC-FILE-008`, `REQ-FUNC-OPT-007`, `REQ-FUNC-SCOPE-007`, `REQ-NFUNC-COMPAT-002`, `REQ-NFUNC-COMPAT-003`, `REQ-NFUNC-COMPAT-004`, `REQ-NFUNC-MAINT-001`, `REQ-NFUNC-MAINT-002`, `REQ-NFUNC-MAINT-003`, `REQ-NFUNC-PORT-001` | Unverified | No maintained test evidence is currently recorded for these design constraints, explicit non-goals, or concurrency/data behaviors. |
 
 This table records the current verification status.

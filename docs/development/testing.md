@@ -182,7 +182,13 @@ ZEPHYR_BASE=/path/to/zephyr \
 
 These compare applicable parser behavior with upstream and execute recording
 through the real runner integration while rejecting external process, socket, and SSH
-operations. The Zephyr compatibility import boundary is enforced by
+operations. The local-process concurrency test exercises real deployment,
+staging, and session cleanup through a configured local SSH replacement. Its
+first session has completed `RemoteSession.open()` and stays active while the
+second same-serial session finishes. FIFO gates and an explicit post-open event
+provide synchronization without timing assertions. The adapter's remaining
+concurrency policy is reviewed design evidence. These checks use no SSH server,
+OpenOCD, or hardware. The Zephyr compatibility import boundary is enforced by
 `scripts/contributor/static_check.py`.
 
 Native SSH tests require an `ssh` executable on `PATH` and a reachable host

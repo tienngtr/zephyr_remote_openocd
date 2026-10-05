@@ -1581,7 +1581,28 @@ Identify the service and port before launching its local client.
 
 ### Probe contention
 
-Expose OpenOCD's normal acquisition failure.
+The Zephyr adapter passes probe selection and channel commands to the OpenOCD planners; probe
+identity is not a session admission or reservation key. Neither the adapter nor
+the generic session layer serializes session admission or lifetime because two
+operations select the same physical probe. A session waiting for OpenOCD
+readiness, running an operation, or cleaning up does not reserve that probe on
+behalf of other runner sessions. Session observation locks and workspace leases
+protect only their own session resources.
+
+Helper deployment has a separate synchronization boundary. The deployment
+bootstrap holds the remote account's `.deploy.lock` while installing or
+refreshing the content-addressed helper and pruning stale revisions. Concurrent
+deployment maintenance is therefore serialized, including for unrelated probes.
+That lock is released before the control helper starts and is not held during
+OpenOCD acquisition or the session lifetime. The design does not promise that
+every startup step is free of shared synchronization.
+
+Whether channels on a physical probe are independently usable is determined by
+the probe, its driver, and OpenOCD configuration. OpenOCD owns acquisition and
+reports contention through its normal diagnostics and exit status. The runner
+exposes that failure without adding a probe reservation service or a queue.
+Hardware validation of simultaneous channel acquisition would test this
+equipment/OpenOCD assumption; it is not needed to verify the runner policy.
 
 ### SSH loss
 
