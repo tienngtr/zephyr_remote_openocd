@@ -909,6 +909,12 @@ auxiliary and GDB plus explicitly requested RTT as required. RTT for the `rtt`
 command remains reserved but deferred in the debug plan and is forwarded only
 after batch GDB setup succeeds.
 
+Immutable local `Service` and `RemoteSessionRequest` construction validates
+the locally knowable service contract before the helper request is emitted,
+including service names, ports, duplicates, conflicts, and auxiliary or
+reserved-set relationships. The helper independently validates its wire-side
+service contract as defined in [protocol.md](protocol.md).
+
 The session starts required forwards in one batch, then attempts each
 best-effort forward in its own one-service batch. Each manager call rolls back
 that call's pending processes and preserves previously active forwards.
