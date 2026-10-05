@@ -664,6 +664,10 @@ target
 
 There is no command-line re-parsing stage.
 
+Only files directly required by remote OpenOCD are mapped or staged. Source
+files, debug symbols and other local development output, GDB, and the
+compiler/toolchain remain on the development host.
+
 Flash command construction is phase-oriented: a shared immutable OpenOCD
 prefix is combined with a resolved image plan and one concrete ELF, BIN, or
 HEX operation plan. The public flash-plan result remains the runner boundary.
