@@ -424,56 +424,6 @@ SHALL be treated as empty configuration.
 
 Module upgrades SHALL NOT automatically rewrite an existing user configuration merely to add optional settings or comments.
 
-### REQ-FUNC-CONFIG-010
-
-The top level SHALL contain only `default_runner`, `default_remote`, `presets`,
-and `remotes`. Presets and remotes SHALL use the fields and strict types in the
-canonical JSON Schema. Commands SHALL be argv arrays; environment forwarding
-and path mappings SHALL use the YAML forms specified by the schema.
-
-Remote selection SHALL use `--remote`, then a non-empty
-`ZEPHYR_REMOTE_OPENOCD_REMOTE`, then `default_remote`. A selected remote may
-reference one preset; explicit remote settings replace preset settings
-in full rather than merging lists or mappings. Built-in defaults SHALL be
-`ssh_command: [ssh]`, empty `forward_env`, and empty `path_mappings`;
-`ssh_host` defaults to the remote name. A production operation SHALL require
-`openocd_command`.
-
-Fixed `openocd_command` arguments are an advanced escape hatch. The runner
-SHALL preserve them exactly and in order as an opaque prefix before its
-generated OpenOCD arguments, without parsing, classifying, reordering, or
-validating their OpenOCD/Tcl semantics. Users are responsible for conflicts
-between fixed arguments and with runner-generated arguments, and for avoiding
-initialization or listener creation before runner-generated bind/service
-configuration takes effect unless they intentionally accept that behavior.
-Runner-owned startup-ordering guarantees SHALL cover only generated arguments,
-not arbitrary behavior introduced by fixed arguments.
-
-With `west -v`, the runner SHALL log the full effective remote OpenOCD argv,
-shell-escaped or otherwise unambiguously separated, including fixed arguments
-and generated arguments with session-specific workspace/address values
-resolved. The helper SHALL report that exact argv before each spawn attempt,
-and the client SHALL deliver it for logging while awaiting readiness. Spawn,
-readiness, or required-forwarding failure SHALL NOT suppress this diagnostic.
-Bind-collision retries SHALL each report their own effective argv. Fixed prefix
-elements SHALL retain literal placeholder text.
-
-Structural validation SHALL apply to every definition at load time. Missing
-selected remotes/presets and operational requirements SHALL be reported only
-when that remote is used. Local mapping paths SHALL be normalized before
-duplicate detection. Remote `~` paths SHALL be resolved through SSH only for a
-real operation; recording SHALL retain them literally.
-
-The schema SHALL enforce command and path lexical validity. Every command
-element SHALL exclude NUL. A command executable SHALL be a bare name, an
-absolute path, or a current-user `~` path. Mapping keys SHALL be absolute or
-current-user `~` local paths and SHALL exclude NUL. Mapping destinations SHALL
-be absolute or current-user `~` POSIX paths, SHALL exclude NUL, and SHALL be
-lexically normalized: they SHALL NOT contain empty, `.` or `..` components or a
-trailing separator, except that `/` and `~` are valid roots. Local mapping paths
-MAY contain `.` and `..` because they are resolved using the local filesystem
-before collision detection.
-
 ### REQ-FUNC-CONFIG-011
 
 Unknown keys, explicit nulls, duplicate YAML keys, invalid types, disallowed
@@ -508,6 +458,98 @@ configuration.
 A non-empty `ZEPHYR_REMOTE_OPENOCD_CONFIG` environment variable SHALL override
 the default configuration path. A leading current-user `~` in the override
 SHALL be expanded before the configuration is read.
+
+### REQ-FUNC-CONFIG-015
+
+The top level SHALL contain only `default_runner`, `default_remote`, `presets`,
+and `remotes`. Presets and remotes SHALL use the fields and strict types in the
+canonical JSON Schema. Commands SHALL be argv arrays; environment forwarding
+and path mappings SHALL use the YAML forms specified by the schema.
+
+### REQ-FUNC-CONFIG-016
+
+Production remote selection SHALL use `--remote`, then a non-empty
+`ZEPHYR_REMOTE_OPENOCD_REMOTE`, then `default_remote`.
+
+### REQ-FUNC-CONFIG-017
+
+A selected remote MAY reference one preset. Explicit remote settings SHALL
+replace preset settings in full; lists and mappings SHALL NOT be merged.
+
+### REQ-FUNC-CONFIG-018
+
+Built-in defaults SHALL be `ssh_command: [ssh]`, empty `forward_env`, and empty
+`path_mappings`. When `ssh_host` is omitted, it SHALL default to the selected
+remote name.
+
+### REQ-FUNC-CONFIG-019
+
+A production operation SHALL require the selected remote to provide
+`openocd_command`, either directly or through its selected preset.
+
+### REQ-FUNC-CONFIG-020
+
+After required remote-home resolution of its executable, the configured
+`openocd_command` executable and fixed arguments SHALL retain their order as an
+opaque argv prefix before runner-generated OpenOCD arguments. Fixed arguments
+SHALL otherwise be preserved literally. The runner SHALL NOT parse, classify,
+reorder, or validate the fixed arguments' OpenOCD or Tcl semantics.
+
+### REQ-FUNC-CONFIG-021
+
+Runner-owned startup-ordering guarantees SHALL cover only generated arguments,
+not arbitrary behavior introduced by fixed arguments.
+
+Note:
+
+Users are responsible for conflicts between fixed `openocd_command` arguments
+and with runner-generated arguments, and for avoiding initialization or
+listener creation before runner-generated bind or service configuration takes
+effect unless they intentionally accept that behavior.
+
+### REQ-FUNC-CONFIG-022
+
+With `west -v`, the runner SHALL log the full effective remote OpenOCD argv,
+shell-escaped or otherwise unambiguously separated, including fixed arguments
+and generated arguments. Session-specific workspace and address values SHALL
+be resolved in generated arguments. Fixed prefix elements SHALL retain literal
+placeholder text.
+
+### REQ-FUNC-CONFIG-023
+
+The helper SHALL report the exact effective argv before each spawn attempt, and
+the client SHALL deliver it for logging while awaiting readiness. Spawn,
+readiness, or required-forwarding failure SHALL NOT suppress this diagnostic.
+Bind-collision retries SHALL each report their own effective argv.
+
+### REQ-FUNC-CONFIG-024
+
+Structural validation SHALL apply to every definition at load time. Missing
+selected remotes, selected presets, and operational requirements SHALL be
+reported only when that remote is used.
+
+### REQ-FUNC-CONFIG-025
+
+Local mapping paths SHALL be normalized before duplicate detection. During a
+real operation, a home-relative `openocd_command` executable and home-relative
+remote path-mapping destinations SHALL be resolved using the remote SSH user's
+home.
+
+### REQ-FUNC-CONFIG-026
+
+The schema SHALL enforce command lexical validity. Every command element SHALL
+exclude NUL. A command executable SHALL be a bare name, an absolute path, or a
+current-user `~` path.
+
+### REQ-FUNC-CONFIG-027
+
+The schema SHALL enforce mapping path lexical validity. Mapping keys SHALL be
+absolute or current-user `~` local paths and SHALL exclude NUL. Mapping
+destinations SHALL be absolute or current-user `~` POSIX paths, SHALL exclude
+NUL, and SHALL be lexically normalized: they SHALL NOT contain empty, `.` or
+`..` components or a trailing separator, except that `/` and `~` are valid
+roots. Local mapping paths MAY contain `.` and `..` because they are resolved
+using the local filesystem before collision detection.
 
 ---
 
@@ -931,8 +973,9 @@ Local forwarded services SHALL bind only to local loopback interfaces.
 Runner-generated configuration SHALL bind remote OpenOCD services only
 to the runner-allocated remote loopback address. These startup-ordering
 guarantees do not cover arbitrary behavior from advanced fixed
-`openocd_command` arguments (REQ-FUNC-CONFIG-010). The remote bind address and
-service-port settings are runner-owned transport properties. Board or user Tcl
+`openocd_command` arguments (REQ-FUNC-CONFIG-020 and REQ-FUNC-CONFIG-021). The
+remote bind address and service-port settings are runner-owned transport
+properties. Board or user Tcl
 that overrides `bindto`, `gdb_port`, `tcl_port`, `telnet_port`, or another
 runner-owned service port is outside the supported compatibility boundary.
 The runner SHALL NOT be required to statically inspect arbitrary Tcl for such
