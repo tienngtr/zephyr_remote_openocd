@@ -434,7 +434,7 @@ remote_openocd -> remote_openocd
 
 is written into generated flash/debug runner defaults.
 
-Only two actual runner identities exist:
+The product's `default_runner` setting has two supported values:
 
 ```text
 openocd
@@ -1663,7 +1663,7 @@ Selected for the current architecture:
 - runner name `remote_openocd`;
 - built-in `openocd` retained;
 - per-user default runner selection;
-- two runner identities only;
+- `default_runner` limited to `openocd` and `remote_openocd`;
 - `EXTRA_ZEPHYR_MODULES`;
 - self-contained Zephyr module;
 - no pip/PyPI requirement;
