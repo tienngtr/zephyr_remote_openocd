@@ -1724,7 +1724,7 @@ Selected for the current architecture:
 - primary-failure selection by the active local operation;
 - condition-driven session-close synchronization;
 - bounded local forwarding-process health polling;
-- no persistent artifact cache;
+- no persistent cross-session firmware or configuration cache;
 - local and remote cleanup are bounded after their respective loss
   observations; detection timing and the interval between observations are
   delegated to the SSH and operating-system layers.
