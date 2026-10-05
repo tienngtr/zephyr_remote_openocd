@@ -564,14 +564,14 @@ While constructing the immutable `RemoteProcess` for an operation, the
 Zephyr adapter reads local values only for names in the selected remote's
 `forward_env` allow-list. The complete local environment is never copied. A
 name with no local value causes a non-fatal warning and is omitted from the
-request's `START.environment` object; this does not remove a same-named value
-from the helper's inherited remote environment.
+process-start request; this does not remove a same-named value from the
+helper's inherited remote environment.
 
-The selected values travel with the process plan into `START`. Before spawning
-OpenOCD, the helper copies its inherited environment and overlays those
-requested values to form the child environment. This happens in the helper's
-process-start path, before OpenOCD is launched, so allow-listed values are
-available when OpenOCD begins processing configuration files.
+The selected values travel with the process plan into the protocol command.
+The helper copies its inherited environment and overlays those requested values
+before spawning OpenOCD, so allow-listed values are available while OpenOCD
+processes configuration files. The command's exact field and validation rules
+are defined solely in [protocol.md](protocol.md).
 
 ---
 
@@ -656,12 +656,12 @@ HEX operation plan. The public flash-plan result remains the runner boundary.
 Generated firmware Tcl arguments retain their path separately from surrounding
 command text in immutable local process metadata. After the helper reports the
 session workspace, the client resolves those paths and Tcl-quotes them before
-serializing ordinary string argv in `START`. Quoted braces prevent the helper's
+serializing the process-start command. Quoted braces prevent the helper's
 subsequent placeholder expansion from interpreting placeholder-like text in a
 resolved workspace. Address placeholders already present in the planned path
 remain available for helper allocation. Literal argv paths still use ordinary
-helper expansion, and user-provided Tcl remains opaque. Protocol v1 and
-configuration are unchanged.
+helper expansion, and user-provided Tcl remains opaque. The process-start wire
+details remain defined solely in [protocol.md](protocol.md).
 
 ---
 
@@ -873,10 +873,10 @@ endpoint.
 the helper. Its `auxiliary_services` subset identifies initial best-effort
 forwards; all other initial service forwards are required. The
 `auxiliary_services` name is an internal implementation detail for this
-client-side classification;
-it is not serialized into Protocol v1. Omitting the subset preserves the
-generic all-required default. Debug plans classify enabled Tcl/telnet as
-auxiliary and GDB plus explicitly requested RTT as required. RTT for the `rtt`
+client-side classification; it is not part of the wire contract described in
+[protocol.md](protocol.md). Omitting the subset preserves the generic
+all-required default. Debug plans classify enabled Tcl/telnet as auxiliary and
+GDB plus explicitly requested RTT as required. RTT for the `rtt`
 command remains separate in the debug plan and is forwarded only after batch
 GDB setup succeeds.
 
@@ -1042,11 +1042,10 @@ Advantages include:
 - no separate `scp` configuration;
 - use of the same configurable abstraction for any selected client.
 
-The Protocol v1 helper and flash implementation handle the staging manifest,
-safe archive encoding and extraction, private remote filesystem layout, path
-rewriting, helper deployment, and OpenOCD artifact staging. Staging manifests
-carry explicit directory entries, including empty roots and nested
-directories; file byte counts and digests cover regular-file content only.
+The helper and flash implementation handle the staging manifest, safe archive
+encoding and extraction, private remote filesystem layout, path rewriting,
+helper deployment, and OpenOCD artifact staging. The staging wire contract is
+defined solely in [protocol.md](protocol.md).
 
 ---
 
@@ -1066,11 +1065,13 @@ No assumption is made that the local SSH executable comes from the local Linux d
 
 ## 36. Remote Helper Protocol
 
-The current internal helper wire format and behavior are specified in
-[protocol.md](protocol.md). Helper stdout contains only JSON protocol frames.
-The deployed client and helper implement one strict contract; the numeric wire
-value remains `1` as its identifier and is not an external compatibility
-guarantee.
+The current internal helper wire format and behavior are specified solely in
+[protocol.md](protocol.md). The SAD records the architectural consequences of
+that contract; it does not duplicate message fields, framing, state
+transitions, ordering, validation, or frame-size limits. Helper stdout contains
+only JSON protocol frames. The deployed client and helper implement one strict
+contract; the numeric wire value remains `1` as its identifier and is not an
+external compatibility guarantee.
 
 ## 37. Remote Session Storage
 
@@ -1238,16 +1239,16 @@ ports for bind collisions before startup; OpenOCD owns and configures the
 actual GDB, Tcl, telnet, and RTT listeners. The helper does not probe listener
 connectability.
 
-The control observer owns one raw async fd reader and incremental LF framer.
+The control observer owns one raw async fd reader and incremental framer.
 Partial frames remain buffered while other observations proceed; complete
 buffered frames are dispatched in order without requiring another OS
-readability event. EOF with an incomplete frame is a protocol error. Frames
-are bounded as specified in Protocol v1. Each child stream likewise has one
-raw fd observer; the coordinator incrementally decodes its bytes for both
-output relay and readiness matching. There are no output threads, competing
-readiness readers, or application selector/buffered-reader split. `STOP`, EOF,
-and invalid commands end startup and perform session cleanup without first
-emitting `PROCESS_READY`.
+readability event. The framing syntax, EOF rules, validation, and frame limits
+are defined solely in [protocol.md](protocol.md). Each child stream likewise
+has one raw fd observer; the coordinator incrementally decodes its bytes for
+both output relay and readiness matching. There are no output threads,
+competing readiness readers, or application selector/buffered-reader split.
+Control termination or validation failure ends startup and performs session
+cleanup; event emission follows [protocol.md](protocol.md).
 
 Protocol output uses one ordered queue with a 16 MiB byte bound. A congested
 stdout pipe cannot block control, signal, or child cleanup observations;
@@ -1291,18 +1292,16 @@ helper terminates OpenOCD
 cleanup
 ```
 
-For a client-requested stop, protocol completion accepts a valid session-close
-`SESSION_CLOSED` event with either `reason: "requested"` and
-`returncode: null`, or `reason: "process_exit"` and an integer return code.
-The latter also records that value as `openocd_returncode`. Successful local
-cleanup additionally requires the helper to exit with status zero. Protocol,
-helper, or transport failures remain visible to the caller; later cleanup
-failures are retained as diagnostics. A received `ERROR` remains the
-helper failure across cleanup, rather than becoming a second reader or cleanup
-failure. Local shutdown attempts all remaining cleanup actions once and
-then marks the session closed. A later `close()` is harmless, but does not
-resume a partially failed cleanup sequence or retain resources solely for
-that purpose.
+For a client-requested stop, protocol completion applies the session-close
+outcomes defined in [protocol.md](protocol.md) and records an OpenOCD result
+only when that contract identifies one. Successful local cleanup additionally
+requires the helper to exit with status zero. Protocol, helper, or transport
+failures remain visible to the caller; later cleanup failures are retained as
+diagnostics. A received helper failure event remains the helper failure across
+cleanup, rather than becoming a second reader or cleanup failure. Local
+shutdown attempts all remaining cleanup actions once and then marks the
+session closed. A later `close()` is harmless, but does not resume a partially
+failed cleanup sequence or retain resources solely for that purpose.
 
 Unexpected controlling-session loss is handled independently on each side. The
 local runner reports transport failure and attempts bounded local cleanup after
@@ -1342,7 +1341,8 @@ the deleted workspace. Stale workspace removal uses the same closure and lease
 procedure. Kernel locks release on stage-process exit, including uncatchable
 termination. All lease acquisitions are nonblocking; cleanup retries have a
 bounded deadline. Filesystem operations retain their ordinary OS behavior.
-Standalone staging and Protocol v1 frames remain unchanged.
+Standalone staging behavior and protocol framing remain coordinated through
+[protocol.md](protocol.md).
 
 ---
 
@@ -1379,21 +1379,22 @@ cleanup. After transport loss, helper-side cleanup proceeds independently.
 
 The helper reader distinguishes three local outcomes:
 
-- A received `SESSION_CLOSED` is an orderly session close. Its reason is
-  recorded; only `reason: "process_exit"` supplies an OpenOCD result.
-- A received `ERROR` is a valid protocol failure event that ends the session.
-  The caller sees the helper error itself, not an event-stream failure. No
-  later `SESSION_CLOSED` is required.
+- A received orderly session-close event is recorded according to
+  [protocol.md](protocol.md); only the contract-defined result-bearing form
+  supplies an OpenOCD result.
+- A received helper failure event ends the session. The caller sees the helper
+  error itself, not an event-stream failure, and no additional close event is
+  required by the architecture.
 - An event-stream, read, or validation failure is distinct from both events.
   It includes malformed or out-of-order messages and transport loss without a
   session-ending event, and is reported as a reader or transport failure.
 
-After an accepted `ERROR`, the background reader stops without recording a
-reader failure. Cleanup still closes owned resources, but
-does not send `STOP`, await `SESSION_CLOSED`, or report the same `ERROR` again as
-a cleanup failure. If the active local client has not yet received the `ERROR`,
-`close()` reports that helper failure once; otherwise it reports only
-independent cleanup failures under the primary-failure rule.
+After an accepted helper failure event, the background reader stops without
+recording a reader failure. Cleanup still closes owned resources, but does not
+start another stop exchange, await another close event, or report the same
+helper failure again as a cleanup failure. If the active local client has not
+yet received the helper failure, `close()` reports it once; otherwise it
+reports only independent cleanup failures under the primary-failure rule.
 
 The public lifecycle does not require state enumeration. Flash and other
 operations may omit local-client work while retaining the same session
@@ -1433,33 +1434,34 @@ runner-generated arguments and do not cover arbitrary prefix behavior.
 
 The Zephyr adapter logs the full effective remote OpenOCD argv at the runner's
 debug level, visible with `west -v`. The helper materializes the command once
-per attempt, validates required paths, and reports that exact argv through
-`PROCESS_STARTING` immediately before spawning. The client invokes the session's
-process-start observer while awaiting readiness; the adapter shell-escapes the
-reported elements without reconstructing expansion. This preserves the
-diagnostic on spawn, readiness, and required-forwarding failures, and reports
-each bind-collision retry with its actual workspace and allocated address. Only
-elements after the literal configured prefix receive workspace/address expansion.
+per attempt, validates required paths, and reports that exact argv through the
+protocol's pre-spawn process event immediately before spawning. The client
+invokes the session's process-start observer while awaiting readiness; the
+adapter shell-escapes the reported elements without reconstructing expansion.
+This preserves the diagnostic on spawn, readiness, and required-forwarding
+failures, and reports each bind-collision retry with its actual workspace and
+allocated address. Only elements after the literal configured prefix receive
+workspace/address expansion.
 
-Protocol v1 requires `PROCESS_STARTING` before child output or readiness and
-permits repeated attempts only before readiness. Version equality alone is
-insufficient for compatibility; an earlier helper omitting this event is
-rejected. Content-addressed deployment installs the matching helper revision
-automatically, without changing the numeric protocol version or user YAML.
+The pre-spawn event's ordering, retry eligibility, and compatibility
+requirements are defined solely in [protocol.md](protocol.md). Version
+equality alone is insufficient for compatibility; deployment installs the
+matching helper revision automatically, without changing the numeric protocol
+version or user YAML.
 
-Each complete trimmed startup output marker proves one lifecycle fact. The
-helper emits `PROCESS_READY` only after both markers have appeared, in either
-order and on either child stream. The init marker covers explicit `init`,
-config-triggered initialization, and OpenOCD's normal automatic initialization
-when `--no-init` is used. If RTT server startup is part of the sequence,
-successful `rtt server start` precedes the startup-complete marker, so startup
-readiness follows that command causally.
+The runner's init-complete and startup-complete markers establish distinct
+lifecycle facts. The helper applies the readiness rules defined in
+[protocol.md](protocol.md) to those observations. The init marker covers
+explicit `init`, config-triggered initialization, and OpenOCD's normal
+automatic initialization when `--no-init` is used. If RTT server startup is
+part of the sequence, successful `rtt server start` precedes the
+startup-complete marker, so startup readiness follows that command causally.
 
 The three relevant facts are distinct:
 
 | Fact | What it proves |
 | --- | --- |
-| OpenOCD startup readiness | The configured startup output markers were observed and the helper can emit `PROCESS_READY`. |
+| OpenOCD startup readiness | The configured startup output markers were observed and the helper can report readiness under the protocol contract. |
 | SSH forward established | SSH accepted and started a local forward. |
 | Service reachable | A client connected successfully through the forward to the remote listener. |
 
@@ -1484,9 +1486,10 @@ scan. It then checks leader exit/readiness before choosing a timeout. There is
 no competing reader or scheduling assumption about which coroutine runs first.
 Ready output or child exit visible at that final bounded observation may be
 processed slightly after the nominal deadline, within the former
-`CHILD_POLL_INTERVAL` observation tolerance. `STOP`, EOF, and protocol failures
-remain responsive throughout startup. This preserves observation granularity
-rather than imposing a strict timestamp cutoff or requiring readiness polling.
+`CHILD_POLL_INTERVAL` observation tolerance. Control termination, EOF, and
+protocol failures remain responsive throughout startup. This preserves
+observation granularity rather than imposing a strict timestamp cutoff or
+requiring readiness polling.
 
 ---
 
@@ -1494,18 +1497,14 @@ rather than imposing a strict timestamp cutoff or requiring readiness polling.
 
 Remote OpenOCD output is relayed with bounded low buffering. The helper reads
 each child stream in bounded chunks, incrementally decodes UTF-8 with
-replacement, omits `LF` delimiters, and emits ordered `CHILD_OUTPUT` fragments
-with `line_end` metadata. `line_end` belongs only to `CHILD_OUTPUT` and is true
-only when the omitted delimiter was an actual child `LF`. A bounded chunk and
-an actual `LF` therefore remain distinct. Long newline-free output becomes
-visible before the child exits. Fragment order is preserved within each child
-stream. Events from stdout and stderr are serialized in helper-observed order;
-no ordering relationship between writes to different child streams is
-guaranteed. `SESSION_CLOSED` follows relay completion and is an orderly
-session-close event; `ERROR` is a failure event. Both are session-ending events
-and are followed by no further event. Startup matching recognizes each
-required output marker only as a complete trimmed line, so a fragment boundary
-cannot make an output marker appear.
+replacement, and emits output fragments through the protocol contract. Long
+newline-free output becomes visible before the child exits. Fragment order is
+preserved within each child stream. Events from stdout and stderr are
+serialized in helper-observed order; no ordering relationship between writes to
+different child streams is guaranteed. Startup matching recognizes required
+output markers only after the stream observer has seen a complete line. The
+exact output fields, delimiter and `line_end` semantics, and terminal-event
+ordering are defined solely in [protocol.md](protocol.md).
 
 This includes:
 
