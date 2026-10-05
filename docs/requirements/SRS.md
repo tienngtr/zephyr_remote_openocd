@@ -230,7 +230,8 @@ west rtt
 
 ### REQ-FUNC-SCOPE-003
 
-The requirements SHALL NOT depend on project-specific OpenOCD extensions.
+Supported runner operations SHALL NOT require project-specific OpenOCD
+extensions.
 
 ### REQ-FUNC-SCOPE-004
 
@@ -336,9 +337,7 @@ The setup operation SHALL be idempotent.
 
 ### REQ-FUNC-INSTALL-008
 
-The persistent module installation directory SHALL NOT be fixed by the requirements.
-
-Documentation SHOULD present a convenient user-local location.
+The module SHALL NOT require installation at a fixed filesystem path.
 
 ### REQ-FUNC-INSTALL-009
 
