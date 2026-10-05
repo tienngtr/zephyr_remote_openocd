@@ -903,10 +903,6 @@ address.
 endpoint backed by remote OpenOCD without launching local GDB. The endpoint SHALL
 allow an independent GDB client to control the target.
 
-### REQ-FUNC-DEBUG-007
-
-Probe-selection information available through the structured runner interface SHOULD behave consistently across supported debug operations.
-
 ---
 
 ## 18. OpenOCD Network Services
@@ -1308,10 +1304,6 @@ if cleanup fails or the workspace has been deleted. A stalled staging operation
 SHALL NOT prevent a bounded cleanup attempt or prevent cleanup of other
 sessions. Cleanup failures SHALL remain visible and SHALL NOT permit new
 staging operations to resume use of the workspace.
-
-### REQ-FUNC-DATA-004
-
-Persistent fallback session state older than 24 hours MAY be deleted opportunistically.
 
 ### REQ-FUNC-DATA-005
 
