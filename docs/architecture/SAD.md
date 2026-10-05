@@ -268,7 +268,7 @@ policy. It resolves explicit `--remote`, otherwise the file's
 `default_remote`, and ignores `ZEPHYR_REMOTE_OPENOCD_REMOTE`; its target file
 must exist so that validation cannot silently summarize an absent file.
 
-`scripts/user/validate_configuration.py` is a no-I/O front end to this loader and
+`scripts/user/validate_configuration.py` is an offline front end to this loader and
 resolver. A non-empty `ZEPHYR_REMOTE_OPENOCD_CONFIG` overrides the product
 default configuration path, and a leading current-user `~` is expanded before
 the file is read. With no selected remote it reports structural validity and
