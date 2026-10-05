@@ -1301,12 +1301,9 @@ class ControlSession:
                 self.cleanup_errors.append(exc)
             self._address_lease = None
         ports = [service.remote_port for service in request.services]
-        if ports:
-            allocated = allocate_service_address(ports)
-            self.address = str(allocated)
-            self._address_lease = getattr(allocated, "lease", None)
-        else:
-            self.address = random_address()
+        allocated = allocate_service_address(ports)
+        self.address = str(allocated)
+        self._address_lease = getattr(allocated, "lease", None)
         argv = materialize_argv(
             request.argv,
             workspace=str(self.work),

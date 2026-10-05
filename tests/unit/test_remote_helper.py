@@ -1500,8 +1500,9 @@ def test_decode_command_rejects_malformed_required_path_before_launch(start_comm
         remote_helper.decode_command(start_command)
 
 
+@pytest.mark.parametrize("service_less", (False, True))
 def test_control_session_does_not_launch_when_required_file_is_missing(
-    tmp_path, monkeypatch, start_command, control_pipe, capsys
+    tmp_path, monkeypatch, start_command, control_pipe, capsys, service_less
 ):
     workspace = tmp_path / "workspace"
     staged = workspace / "staged"
@@ -1514,7 +1515,15 @@ def test_control_session_does_not_launch_when_required_file_is_missing(
         "_spawn_child",
         lambda *args, **kwargs: spawn_calls.append((args, kwargs)),
     )
-    monkeypatch.setattr(remote_helper, "allocate_service_address", lambda _ports: "127.0.0.1")
+    if service_less:
+        start_command["services"] = []
+    allocated_ports = []
+
+    def allocate(ports):
+        allocated_ports.append(tuple(ports))
+        return "127.0.0.1"
+
+    monkeypatch.setattr(remote_helper, "allocate_service_address", allocate)
     _reader, writer = control_pipe
     lock = (workspace / remote_helper.SESSION_LOCK).open("w+b")
     session = remote_helper.ControlSession("session", workspace, lock)
@@ -1528,6 +1537,9 @@ def test_control_session_does_not_launch_when_required_file_is_missing(
     assert "missing" in message
     assert str(missing_file) in message
     assert spawn_calls == []
+    assert len(allocated_ports) == 1
+    if service_less:
+        assert allocated_ports == [()]
     events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert not any(event["type"] == "PROCESS_STARTING" for event in events)
 
