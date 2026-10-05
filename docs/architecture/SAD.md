@@ -343,7 +343,8 @@ the module adds:
 remote_openocd
 ```
 
-and mirrors applicable built-in OpenOCD runner arguments.
+and mirrors the board-specific runner arguments generated for the built-in
+`openocd` runner.
 
 For a build without `openocd`, the module does not add `remote_openocd`.
 
@@ -357,7 +358,7 @@ Eligibility is based exclusively on existing OpenOCD runner support.
 
 Common `RunnerConfig` data is reused directly.
 
-Typical fields include:
+The reused common fields are the following when provided by Zephyr:
 
 ```text
 board_dir
@@ -374,7 +375,8 @@ The remote runner does not duplicate these fields under board-specific configura
 
 ## 13. Runner-Specific Argument Mirroring
 
-The CMake compatibility layer mirrors applicable arguments associated with:
+For builds that register `openocd`, the CMake compatibility layer mirrors the
+board-specific runner arguments generated for:
 
 ```text
 openocd
