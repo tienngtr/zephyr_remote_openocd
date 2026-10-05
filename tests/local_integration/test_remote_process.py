@@ -1767,6 +1767,10 @@ helper['stage'](sys.argv[2])
                 assert started["type"] == "PROCESS_READY"
                 child_pid = started["child_pid"]
                 child_pidfd = os.pidfd_open(child_pid)
+                # Restricted sandboxes may block asyncio's socketpair wakeup
+                # write, leaving the queued signal callback pending. Keep the
+                # real-process deadline and run this test where that wakeup is
+                # permitted instead of masking the environment failure.
                 process.terminate()
                 assert process.wait(timeout=8) == 0
                 assert not workspace.exists()
