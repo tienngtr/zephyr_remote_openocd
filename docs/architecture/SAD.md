@@ -958,6 +958,7 @@ or:
 
 The configured prefix separates the SSH executable from fixed user arguments.
 Helper and staging operations append the host and remote command unchanged.
+The resulting SSH argv is executed directly without inserting a local shell.
 Forwarding operations pass an immutable `SshLocalForward` to `SshCommand.popen()`;
 the invocation boundary renders its loopback `-L` together with
 `ExitOnForwardFailure=yes` and `ClearAllForwardings=no` immediately after the
