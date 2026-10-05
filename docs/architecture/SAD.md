@@ -247,8 +247,9 @@ those operations depend on the local filesystem. Remote references and required
 incomplete unused definitions.
 
 Remote fields replace complete preset settings; lists and mappings are not
-merged. Remote `~` paths are expanded using the SSH user's actual home only
-during a real operation; recording keeps them unresolved.
+merged. During a real operation, a home-relative `openocd_command` executable
+and home-relative remote path-mapping destinations are resolved using the SSH
+user's actual home; recording keeps them unresolved.
 
 ### Configuration Resolution
 
