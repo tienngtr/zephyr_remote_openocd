@@ -494,11 +494,13 @@ The compatibility policy is:
 > runner integration may use the class's non-private interface, but that code
 > remains version-specific and confined to the Zephyr compatibility layer.
 
-Applicable Zephyr OpenOCD command and workflow behavior is reused where it does
-not conflict with remote execution, transport ownership, or lifecycle
-supervision. In particular, the remote runner owns the remote bind address and
-service and forwarding configuration because it must allocate remote ports and
-construct SSH forwards before local clients can use them.
+The built-in Zephyr 4.4 `openocd` runner's user-facing option names and value
+forms define the compatibility boundary for the supported west commands. The
+adapter preserves the functional effect of inherited options while translating
+them into remote plans, except where a specific SRS requirement defines
+different remote behavior. In particular, the remote runner owns the remote
+bind address and service and forwarding configuration because it must allocate
+remote ports and construct SSH forwards before local clients can use them.
 
 The Zephyr 4.4 runner integration reuses `capabilities()` and the constructor.
 It overrides
