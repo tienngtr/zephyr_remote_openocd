@@ -595,6 +595,84 @@ def test_bind_collision_detection_does_not_cross_lines_or_streams():
     )
 
 
+def test_allocate_service_address_holds_session_lease(tmp_path, monkeypatch):
+    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path / "first-user")
+    candidates = iter(("127.64.0.1", "127.64.0.1", "127.64.0.2"))
+    monkeypatch.setattr(remote_helper, "random_address", lambda: next(candidates))
+
+    first = remote_helper.allocate_service_address(())
+    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path / "second-user")
+    second = remote_helper.allocate_service_address(())
+    try:
+        assert first == "127.64.0.1"
+        assert second == "127.64.0.2"
+    finally:
+        first.lease.close()
+        second.lease.close()
+
+
+@pytest.mark.parametrize("termination", ("exit", "kill"))
+def test_address_lease_coordinates_helpers_and_releases_on_exit(tmp_path, monkeypatch, termination):
+    address = "127.64.0.3"
+    other_address = "127.64.0.4"
+    script = """
+import importlib.util
+import sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("remote_helper", sys.argv[1])
+remote_helper = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(remote_helper)
+remote_helper.workspace_root = lambda: Path(sys.argv[2])
+remote_helper.random_address = lambda: sys.argv[3]
+allocated = remote_helper.allocate_service_address(())
+print(allocated, flush=True)
+sys.stdin.buffer.read()
+"""
+    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path / "local-user")
+    candidates = iter((address, other_address, address))
+    monkeypatch.setattr(remote_helper, "random_address", lambda: next(candidates))
+    with remote_helper.subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(ROOT / "python/zephyr_remote_openocd/remote_helper.py"),
+            str(tmp_path / "other-user"),
+            address,
+        ],
+        stdin=remote_helper.subprocess.PIPE,
+        stdout=remote_helper.subprocess.PIPE,
+        stderr=remote_helper.subprocess.PIPE,
+    ) as process:
+        assert process.stdin is not None
+        assert process.stdout is not None
+        assert process.stderr is not None
+        try:
+            assert select.select([process.stdout], [], [], 30)[0]
+            assert process.stdout.readline() == f"{address}\n".encode()
+            allocated = remote_helper.allocate_service_address(())
+            try:
+                assert allocated == other_address
+            finally:
+                allocated.lease.close()
+            if termination == "kill":
+                process.kill()
+            else:
+                process.stdin.close()
+            expected_status = -signal.SIGKILL if termination == "kill" else 0
+            assert process.wait(timeout=30) == expected_status
+            reused = remote_helper.allocate_service_address(())
+            try:
+                assert reused == address
+            finally:
+                reused.lease.close()
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=30)
+
+
 def test_new_workspace_reclaims_only_unlocked_stale_sessions(tmp_path, monkeypatch):
     monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
     _stale_id, stale, stale_lock = remote_helper.new_workspace()

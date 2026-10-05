@@ -154,6 +154,57 @@ def test_open_retains_nested_rollback_cleanup_diagnostics(monkeypatch):
     assert all("startup failure cleanup also failed" in note for note in notes)
 
 
+def test_start_process_validates_reserved_services_without_forwarding_them():
+    gdb = Service("gdb", 3333, 3333)
+    rtt = Service("rtt", 5566, 5566)
+
+    class Helper(_BlockedHelper):
+        def __init__(self) -> None:
+            self.started_services: tuple[Service, ...] | None = None
+
+        @property
+        @override
+        def allocation(self) -> SessionAllocation:
+            return SessionAllocation("session", "/workspace")
+
+        @override
+        def start_process(self, process, services):
+            del process
+            self.started_services = tuple(services)
+            return "127.64.1.1"
+
+        @override
+        def close(self) -> _HelperCloseResult:
+            return _HelperCloseResult(None, ())
+
+    class Forwards(_BlockedForwards):
+        def __init__(self) -> None:
+            self.started: list[tuple[Service, ...]] = []
+
+        @override
+        def start(self, services, remote_address):
+            del remote_address
+            self.started.append(tuple(services))
+
+    request = RemoteSessionRequest(
+        "host",
+        SshCommand(),
+        RemoteProcess(("openocd",)),
+        services=(gdb,),
+        reserved_services=(rtt,),
+    )
+    session = RemoteSession(request, DeploymentResult("/helper.py", "digest", False))
+    helper = Helper()
+    forwards = Forwards()
+    session._helper = helper
+    session._forwards = forwards
+
+    session._start_process(request.services)
+
+    assert helper.started_services == (gdb, rtt)
+    assert forwards.started == [(gdb,)]
+
+
 def test_version_query_reports_ssh_failure_status_and_diagnostic(monkeypatch):
     ssh_exit_status = 23
 

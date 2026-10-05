@@ -831,16 +831,28 @@ The helper allocates each remote session a random loopback address from:
 
 Different sessions therefore may use identical service-port numbers without collisions.
 
-The helper temporarily binds the requested ports at candidate addresses to
-check for port collisions, then releases those sockets before starting OpenOCD.
+The helper reserves each candidate address by binding a Linux abstract Unix
+socket whose name is keyed solely by that address. The kernel socket namespace
+coordinates helpers across remote users, runtime directories, and helper
+revisions within the same network namespace. Separate network namespaces have
+independent loopback networks and independent leases. The helper temporarily
+binds all initial and deferred service ports to check for collisions, then
+releases the probe sockets before starting OpenOCD. The address lease remains
+held until child cleanup completes, including when RTT forwarding is deferred;
+it is released before a retry selects a new address and during session cleanup.
+The kernel also releases it if the helper exits or is killed.
+
 OpenOCD owns the actual enabled GDB, Tcl, telnet, and RTT listeners on the
 allocated address; the helper neither creates nor probes those listeners.
+The lease excludes other cooperating helpers, while unrelated processes remain
+able to bind TCP ports. An OpenOCD bind failure remains an operation failure
+and may cause a fresh leased address to be selected for a startup retry.
 
 Flash requests no services and therefore creates no local forwards. `debug`,
 `attach`, and `debugserver` request GDB and each non-disabled Tcl/telnet
 service. The `rtt` command requests GDB plus each enabled Tcl/telnet service
-for batch setup; after batch GDB setup, RTT is required and GDB becomes
-best-effort.
+for batch setup and reserves its deferred RTT service for helper-side address
+validation; after batch GDB setup, RTT is required and GDB becomes best-effort.
 RTT is selected and required for `debug --rtt-server` and
 `debugserver --rtt-server`. This service and forwarding configuration is
 derived from the operation and runner options, not
@@ -878,15 +890,17 @@ forward; it does not prove that OpenOCD has a listener behind the remote
 endpoint.
 
 `RemoteSessionRequest.services` describes the initial service set supplied to
-the helper. Its `auxiliary_services` subset identifies initial best-effort
-forwards; all other initial service forwards are required. The
-`auxiliary_services` name is an internal implementation detail for this
-client-side classification; it is not part of the wire contract described in
-[protocol.md](protocol.md). Omitting the subset preserves the generic
-all-required default. Debug plans classify enabled Tcl/telnet as auxiliary and
-GDB plus explicitly requested RTT as required. RTT for the `rtt`
-command remains separate in the debug plan and is forwarded only after batch
-GDB setup succeeds.
+the helper and forwarded while the session opens. `reserved_services` adds
+service ports that the helper validates and includes in address allocation but
+that are forwarded later by the operation. Its `auxiliary_services` subset
+identifies initial best-effort forwards; all other initial service forwards are
+required. The `auxiliary_services` name is an internal implementation detail
+for this client-side classification; it is not part of the wire contract
+described in [protocol.md](protocol.md). Omitting the subset preserves the
+generic all-required default. Debug plans classify enabled Tcl/telnet as
+auxiliary and GDB plus explicitly requested RTT as required. RTT for the `rtt`
+command remains reserved but deferred in the debug plan and is forwarded only
+after batch GDB setup succeeds.
 
 The session starts required forwards in one batch, then attempts each
 best-effort forward in its own one-service batch. Each manager call rolls back
@@ -1240,10 +1254,10 @@ owned-group cleanup decision. The leader is observed non-destructively with
 `waitid(..., WNOWAIT)`, using pidfd readiness where supported and an async
 bounded-interval observation fallback on older Linux kernels. An unreaped
 leader protects the process-group identity until group signalling completes.
-The helper allocates the remote loopback address and checks requested service
-ports for bind collisions before startup; OpenOCD owns and configures the
-actual GDB, Tcl, telnet, and RTT listeners. The helper does not probe listener
-connectability.
+The helper allocates and leases the remote loopback address and checks initial
+and reserved service ports for bind collisions before startup; OpenOCD owns and
+configures the actual GDB, Tcl, telnet, and RTT listeners. The helper does not
+probe listener connectability.
 
 The control observer owns one raw async fd reader and incremental framer.
 Partial frames remain buffered while other observations proceed; complete

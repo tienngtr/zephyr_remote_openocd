@@ -1446,6 +1446,7 @@ class TestDebugPlanning:
                 "telnet": Service("telnet", 4444, 4444),
             }
             assert plan.rtt_service == Service("rtt", 5566, 5566)
+            assert plan.reserved_services == (Service("rtt", 5566, 5566),)
             assert plan.auxiliary_services == (
                 Service("tcl", 6333, 6333),
                 Service("telnet", 4444, 4444),

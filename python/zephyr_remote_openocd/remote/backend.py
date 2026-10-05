@@ -218,7 +218,9 @@ class RemoteSession:
     def _start_process(self, services: Iterable[Service]) -> SessionDescriptor:
         service_list = tuple(services)
         helper = self._helper_or_error()
-        address = helper.start_process(self.request.process, service_list)
+        address = helper.start_process(
+            self.request.process, (*service_list, *self.request.reserved_services)
+        )
         self.descriptor = SessionDescriptor(helper.allocation, address)
         auxiliary = set(self.request.auxiliary_services)
         self.forward(tuple(service for service in service_list if service not in auxiliary))

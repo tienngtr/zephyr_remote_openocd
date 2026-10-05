@@ -95,6 +95,7 @@ class DebugPlan:
     rtt_setup: str | None
     launches_rtt_client: bool
     auxiliary_services: tuple[Service, ...] = ()
+    reserved_services: tuple[Service, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -298,4 +299,5 @@ def build_debug_plan(
         _rtt_setup(inputs),
         inputs.command == "rtt",
         tuple(service for service in services.services if service.name in {"tcl", "telnet"}),
+        (services.rtt_service,) if inputs.command == "rtt" and services.rtt_service else (),
     )

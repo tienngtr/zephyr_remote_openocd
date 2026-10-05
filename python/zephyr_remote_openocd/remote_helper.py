@@ -9,6 +9,7 @@ import argparse
 import asyncio
 import codecs
 import contextvars
+import errno
 import fcntl
 import hashlib
 import io
@@ -301,6 +302,17 @@ def random_address():
     )
 
 
+class _AllocatedAddress(str):
+    """An allocated address with a lease held for the session lifetime."""
+
+    lease: socket.socket
+
+    def __new__(cls, address, lease):
+        value = super().__new__(cls, address)
+        value.lease = lease
+        return value
+
+
 class _RequiredOutputSentinels:
     """Session-owned state of required complete output lines."""
 
@@ -411,15 +423,28 @@ def is_bind_collision(output: list[_CapturedFragment]):
 def allocate_service_address(ports):
     for _ in range(MAX_ADDRESS_ALLOCATION_ATTEMPTS):
         address = random_address()
+        # Abstract sockets share the TCP network namespace across remote users
+        # and runtime roots. Keep the name independent of helper revisions.
+        lease = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        try:
+            lease.bind(f"\0zephyr_remote_openocd.address.{address}")
+        except OSError as exc:
+            lease.close()
+            if exc.errno == errno.EADDRINUSE:
+                continue
+            raise
         sockets = []
         try:
             for port in ports:
                 candidate = socket.socket()
-                candidate.bind((address, port))
                 sockets.append(candidate)
-            return address
+                candidate.bind((address, port))
+            return _AllocatedAddress(address, lease)
         except OSError:
-            pass
+            lease.close()
+        except BaseException:
+            lease.close()
+            raise
         finally:
             for candidate in sockets:
                 candidate.close()
@@ -1150,6 +1175,7 @@ class ControlSession:
         self.request: StartRequest | None = None
         self.attempt = 0
         self.address = ""
+        self._address_lease: socket.socket | None = None
         self._group_cleaned = False
         self._startup_exit: int | None = None
         self._deadline_task: asyncio.Task[_ObservationFailed | None] | None = None
@@ -1268,8 +1294,19 @@ class ControlSession:
     def _start_attempt(self) -> None:
         assert self.request is not None
         request = self.request
+        if self._address_lease is not None:
+            try:
+                self._address_lease.close()
+            except Exception as exc:
+                self.cleanup_errors.append(exc)
+            self._address_lease = None
         ports = [service.remote_port for service in request.services]
-        self.address = allocate_service_address(ports) if ports else random_address()
+        if ports:
+            allocated = allocate_service_address(ports)
+            self.address = str(allocated)
+            self._address_lease = getattr(allocated, "lease", None)
+        else:
+            self.address = random_address()
         argv = materialize_argv(
             request.argv,
             workspace=str(self.work),
@@ -1516,6 +1553,12 @@ class ControlSession:
         if self._resources_released:
             return
         self._resources_released = True
+        if self._address_lease is not None:
+            try:
+                self._address_lease.close()
+            except Exception as exc:
+                self.cleanup_errors.append(exc)
+            self._address_lease = None
         try:
             remove_workspace(self.work)
         except FileNotFoundError as exc:

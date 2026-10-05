@@ -537,6 +537,7 @@ def _debug_request(runner, selected, plan):
         plan.staged_files,
         plan.services,
         plan.auxiliary_services,
+        plan.reserved_services,
     )
 
 
@@ -562,6 +563,14 @@ def _request_record(request):
                 "criticality": "auxiliary" if item in request.auxiliary_services else "required",
             }
             for item in request.services
+        ],
+        "reserved_services": [
+            {
+                "name": item.name,
+                "local_port": item.local_port,
+                "remote_port": item.remote_port,
+            }
+            for item in request.reserved_services
         ],
     }
     if request.process is not None:

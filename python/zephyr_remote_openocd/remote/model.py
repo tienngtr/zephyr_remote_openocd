@@ -76,16 +76,27 @@ class RemoteSessionRequest:
     staged_files: tuple[StagedEntry, ...] = field(default_factory=tuple)
     services: tuple[Service, ...] = field(default_factory=tuple)
     auxiliary_services: tuple[Service, ...] = field(default_factory=tuple)
+    reserved_services: tuple[Service, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         if not self.host:
             raise ValueError("remote host must not be empty")
         object.__setattr__(self, "staged_files", tuple(self.staged_files))
-        object.__setattr__(self, "services", validated_services(self.services))
+        services = validated_services(self.services)
+        reserved = validated_services(self.reserved_services)
+        validated_services((*services, *reserved))
+        object.__setattr__(self, "services", services)
         auxiliary = validated_services(self.auxiliary_services)
-        if not set(auxiliary).issubset(self.services):
+        if not set(auxiliary).issubset(services):
             raise ValueError("best-effort services must belong to the initial service set")
         object.__setattr__(self, "auxiliary_services", auxiliary)
+        object.__setattr__(self, "reserved_services", reserved)
+
+    @property
+    def address_services(self) -> tuple[Service, ...]:
+        """Services the helper validates while allocating the session address."""
+
+        return (*self.services, *self.reserved_services)
 
 
 @dataclass(frozen=True)
