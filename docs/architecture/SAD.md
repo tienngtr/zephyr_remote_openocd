@@ -183,9 +183,11 @@ The substantive implementation remains split into normal Python modules.
 The local runner may use `pyelftools` for ELF inspection and PyYAML plus
 jsonschema for configuration loading. Zephyr 4.4's configured Python environment
 already provides these accepted runtime dependencies; they are not functionality
-to reimplement. Setup diagnoses missing imports and directs users back to that
-environment. The module does not require pip packaging or a separate dependency
-installation path.
+to reimplement. Setup reports discoverability of `pyelftools`, PyYAML, and
+jsonschema in the active Python environment. Missing dependencies warn and
+direct users back to that environment without preventing configuration
+initialization. The module does not require pip packaging or a separate
+dependency installation path.
 
 ---
 
