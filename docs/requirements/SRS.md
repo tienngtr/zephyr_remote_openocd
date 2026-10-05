@@ -284,7 +284,8 @@ The module SHALL support activation through `EXTRA_ZEPHYR_MODULES`.
 
 Users MAY choose how they provide `EXTRA_ZEPHYR_MODULES`.
 
-The user documentation SHALL describe at least one convenient mechanism which does not modify a development repository.
+The user documentation SHALL describe at least one mechanism for providing
+`EXTRA_ZEPHYR_MODULES` which does not modify a development repository.
 
 ---
 

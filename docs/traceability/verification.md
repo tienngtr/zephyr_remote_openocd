@@ -1,10 +1,10 @@
 # Verification Traceability
 
-This matrix maps SRS requirements directly to maintained automated test coverage
-and, where applicable, hardware-test coverage. A row may list several
-requirements, and a requirement may occur in several rows; this is intentional
-many-to-many traceability. It does not claim that hardware has been executed
-recently.
+This matrix maps SRS requirements to maintained verification evidence, including
+automated tests, hardware tests, documentation, and design review. A row may
+list several requirements, and a requirement may occur in several rows; this
+is intentional many-to-many traceability. It does not claim that hardware has
+been executed recently.
 
 Every SRS requirement is listed. **Documented** records user-facing
 documentation evidence, **Failing** records a maintained test that currently
