@@ -532,6 +532,14 @@ It does not own:
 - loopback allocation;
 - helper protocol.
 
+The Zephyr adapter passes `--serial` as structured probe-selection state to
+the shared OpenOCD command planner in `remote/openocd_plan.py`, used by flash,
+debug, attach, debugserver, and RTT. When supplied, the planner emits
+`-c "set _ZEPHYR_BOARD_SERIAL <serial>"` before the board configuration `-f`
+arguments, so those configurations can consume the variable while loading.
+When `--serial` is omitted, the planner emits no serial-selection command and
+introduces no serial constraint.
+
 ---
 
 ## 18. Generic Remote Session Model
