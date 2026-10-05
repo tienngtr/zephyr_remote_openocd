@@ -441,6 +441,10 @@ remote_openocd -> remote_openocd
 
 is written into generated flash/debug runner defaults.
 
+The generated setting is only the default. Normal west `-r openocd` or
+`-r remote_openocd` selection remains available and takes precedence when
+explicitly supplied.
+
 The product's `default_runner` setting has two supported values:
 
 ```text
