@@ -1142,7 +1142,10 @@ Fallback:
 ~/.cache/zephyr_remote_openocd/sessions/<session-id>/
 ```
 
-Session data is private to the remote Unix user.
+Session workspaces and their storage root use owner-only directory
+permissions. Staging directories and associated session metadata remain
+beneath that protected hierarchy, so ordinary remote users cannot access
+session files.
 
 Persistent fallback data older than 24 hours may be cleaned opportunistically.
 
