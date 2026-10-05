@@ -1225,8 +1225,8 @@ output, exit, signals, and timeout remain observable concurrently. TERMINATING
 continues draining observed output. Address-collision retries clean up the old
 attempt before starting another; child observations identify their owning
 attempt, so obsolete events cannot affect its replacement. Control framing
-persists across attempts. STOP, EOF, or a protocol failure during retry cleanup
-prevents another launch.
+persists across attempts. A control-side termination request, EOF, or a
+protocol failure during retry cleanup prevents another launch.
 
 A `SupervisedChild` owns the configured OpenOCD process-group resources and
 per-stream decoding state, which only the coordinator consumes. Process
@@ -1328,7 +1328,8 @@ closure needs no mutex and remains observable even when another process is
 suspended holding the lease. No root-wide admission lock is used.
 
 If staging checks admission before closure, its shared lease protects the
-workspace until extraction and the `STAGED` response finish. If closure is
+workspace until extraction finishes and successful staging completion is
+reported. If closure is
 already visible, staging rejects even when it opened the lease file earlier.
 Cleanup waits up to five seconds for exclusive ownership before removing the
 workspace; a timeout reports failure and leaves admission closed. A contended
