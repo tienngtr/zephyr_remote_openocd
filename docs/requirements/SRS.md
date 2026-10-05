@@ -180,7 +180,7 @@ Requirement identifiers are stable and independent of section numbering.
 Example:
 
 ```text
-REQ-FUNC-DEBUG-004
+REQ-FUNC-<DOMAIN>-<NNN>
 ```
 
 Identifiers SHALL NOT be reused.
@@ -876,17 +876,6 @@ The OpenOCD GDB server SHALL execute remotely.
 ### REQ-FUNC-DEBUG-003
 
 The custom runner SHALL establish required local-to-remote GDB transport before launching local GDB.
-
-### REQ-FUNC-DEBUG-004
-
-`west debug -r remote_openocd` SHALL support normal source-level debugging including:
-
-- program loading;
-- halt;
-- resume;
-- memory inspection;
-- register inspection;
-- breakpoints.
 
 ### REQ-FUNC-DEBUG-005
 
