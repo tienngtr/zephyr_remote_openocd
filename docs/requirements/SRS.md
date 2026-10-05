@@ -707,11 +707,6 @@ The runner SHALL NOT be required to translate arbitrary local paths embedded in 
 
 ## 12. Zephyr OpenOCD Runner Reuse Boundary
 
-### REQ-NFUNC-COMPAT-001
-
-The Zephyr 4.4 runner integration MAY subclass `OpenOcdBinaryRunner` and reuse
-its non-private interface to reduce duplication.
-
 ### REQ-NFUNC-COMPAT-002
 
 Zephyr does not include `OpenOcdBinaryRunner` in its supported external-runner
