@@ -1093,7 +1093,7 @@ or control-channel loss. The ownership boundaries are:
 
 | Owner | Resources and decisions |
 | --- | --- |
-| `RemoteSession` | Coordinates staging, cleanup order, and the primary failure for the whole session. |
+| `RemoteSession` | Coordinates staging and cleanup order and reports session/cleanup failures to the active operation. |
 | `_HelperClient` | Owns the helper control channel, protocol reader, helper observations, output delivery, and helper shutdown. |
 | `_ForwardManager` | Owns local forwarding SSH processes, forward status checks, and forward cleanup. |
 | `ManagedSshProcess` | Owns one local SSH subprocess and its stderr drain. |
