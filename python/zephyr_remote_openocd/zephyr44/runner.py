@@ -271,7 +271,7 @@ def _execute_server(runner, command, plan, session):
         assert plan is not None
         gdb = next(item for item in plan.services if item.name == "gdb")
         runner.logger.info(
-            "Remote OpenOCD GDB server available at 127.0.0.1:%s",
+            "Remote OpenOCD GDB forwarding established at 127.0.0.1:%s",
             gdb.local_port,
         )
     return session.wait_for_openocd_exit()
@@ -280,7 +280,7 @@ def _execute_server(runner, command, plan, session):
 def _report_rtt_service(runner, plan, session):
     if plan is not None and plan.rtt_service in session.forwarded_services:
         runner.logger.info(
-            "Remote OpenOCD RTT server available at 127.0.0.1:%s",
+            "Remote OpenOCD RTT forwarding established at 127.0.0.1:%s",
             plan.rtt_service.local_port,
         )
 

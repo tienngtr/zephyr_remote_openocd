@@ -740,7 +740,9 @@ def test_requested_rtt_failure_aborts_operation(
     assert not any(record.levelno == logging.WARNING for record in caplog.records)
     if phase == "startup":
         runner.run_client.assert_not_called()
-        assert not any("RTT server available" in record.getMessage() for record in caplog.records)
+        assert not any(
+            "RTT forwarding established" in record.getMessage() for record in caplog.records
+        )
     elif command == "debug":
         runner.run_client.assert_called_once()
     assert harness.helper.close_calls == 1
