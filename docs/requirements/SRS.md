@@ -230,8 +230,6 @@ west rtt
 
 ### REQ-FUNC-SCOPE-003
 
-The runner SHALL target normal upstream-compatible OpenOCD behavior expected by Zephyr 4.4.
-
 The requirements SHALL NOT depend on project-specific OpenOCD extensions.
 
 ### REQ-FUNC-SCOPE-004
@@ -1096,16 +1094,6 @@ The runner SHALL invoke the SSH argv directly without inserting a shell.
 
 The configured SSH command SHALL be used consistently for remote-runner SSH
 operations.
-
-### REQ-FUNC-SSH-008
-
-The runner SHALL remain compatible with normal features provided by the selected OpenSSH client, including where supported:
-
-- host aliases;
-- public-key authentication;
-- SSH agents;
-- interactive authentication;
-- ProxyJump.
 
 ### REQ-FUNC-SSH-009
 
