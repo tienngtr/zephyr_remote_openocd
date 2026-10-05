@@ -784,8 +784,8 @@ best-effort. GDB and requested RTT start in the same required forwarding batch;
 RTT forwarding startup failure aborts session opening, and runtime failure is
 fatal at the next forwarding status check. During interactive GDB that check
 may occur after GDB returns; concurrent interruption is not required. This
-policy concerns SSH forwarding only and adds no RTT service probe. RTT endpoint
-availability is reported only after its local forward starts successfully.
+policy concerns SSH forwarding only and adds no RTT service probe. RTT
+forwarding is reported established only after its local forward starts successfully.
 
 ---
 
