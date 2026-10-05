@@ -1516,13 +1516,12 @@ requiring readiness polling.
 ## 41. OpenOCD stdout/stderr
 
 Remote OpenOCD output is relayed with bounded low buffering. The helper reads
-each child stream in bounded chunks, incrementally decodes UTF-8 with
-replacement, and emits output fragments through the protocol contract. Long
-newline-free output becomes visible before the child exits. Fragment order is
-preserved within each child stream. Startup matching recognizes required
-output markers only after the stream observer has seen a complete line. Exact
-output representation, cross-stream serialization, delimiter handling, and
-terminal-event ordering are defined solely in [protocol.md](protocol.md).
+each child stream in bounded chunks and emits output fragments through the
+protocol contract. Long newline-free output becomes visible before the child
+exits. Fragment order is preserved within each child stream. Exact output
+representation, decoding and marker-recognition rules, cross-stream
+serialization, delimiter handling, and terminal-event ordering are defined
+solely in [protocol.md](protocol.md).
 
 This includes:
 
