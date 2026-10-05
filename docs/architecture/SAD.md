@@ -1081,6 +1081,14 @@ The helper is automatically deployed to a per-user location such as:
 
 Deployment also uses the configured SSH command.
 
+Deployment installs each helper revision atomically at a content-addressed
+path, reuses an identical revision when it is already present, and prunes
+stale digest-named revisions without removing the selected revision. A
+per-user deployment lock serializes installation, reuse refresh, and pruning
+across concurrent sessions; it is released before the session helper starts.
+Exact deployment response fields remain part of the wire contract defined in
+[protocol.md](protocol.md).
+
 No assumption is made that the local SSH executable comes from the local Linux distribution.
 
 ---
@@ -1613,13 +1621,10 @@ readiness, running an operation, or cleaning up does not reserve that probe on
 behalf of other runner sessions. Session observation locks and workspace leases
 protect only their own session resources.
 
-Helper deployment has a separate synchronization boundary. The deployment
-bootstrap holds the remote account's `.deploy.lock` while installing or
-refreshing the content-addressed helper and pruning stale revisions. Concurrent
-deployment maintenance is therefore serialized, including for unrelated probes.
-That lock is released before the control helper starts and is not held during
-OpenOCD acquisition or the session lifetime. The design does not promise that
-every startup step is free of shared synchronization.
+Helper deployment uses the separate synchronization boundary described in §35.
+The deployment lock is released before the control helper starts and is not
+held during OpenOCD acquisition or the session lifetime. The design does not
+promise that every startup step is free of shared synchronization.
 
 Whether channels on a physical probe are independently usable is determined by
 the probe, its driver, and OpenOCD configuration. OpenOCD owns acquisition and
