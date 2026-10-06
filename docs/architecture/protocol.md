@@ -231,11 +231,12 @@ extracting any member. Archive members must satisfy all of these rules:
   root. A destination that resolves outside it or to the root itself is rejected.
 
 An invalid member rejects the archive before any member is extracted. During
-extraction, implicit parent directories are created with mode `0700`, and
-explicit directory entries are forced to mode `0700`, regardless of archive
-permissions. Regular files receive `member.mode & 0700`, or `0600` if that mask
-is zero. Group/other permissions and special mode bits are discarded; archive
-ownership, timestamps, and other filesystem metadata are not applied.
+extraction, implicit parent directories are created as needed beneath the
+staging root using normal OS permission and umask handling. Explicit directory
+entries are forced to mode `0700`, regardless of archive permissions. Regular
+files receive `member.mode & 0700`, or `0600` if that mask is zero. Group/other
+permissions and special mode bits are discarded; archive ownership, timestamps,
+and other filesystem metadata are not applied.
 
 The client accepts staging only after a successful invocation and exactly one
 valid `STAGED` response. Its ordered `files` and `directories` lists must match

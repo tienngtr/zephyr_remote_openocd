@@ -1179,12 +1179,13 @@ file/descendant conflicts, and checks that resolved targets remain strictly
 below the staging root. An invalid member rejects the archive before any
 member is extracted.
 
-Extraction creates owner-private parent directories and forces explicit
-directory entries to be owner-writable and searchable. File modes retain only
-owner permission bits, with an owner-readable/writable fallback. Archive
-ownership and timestamps are not applied. The exact path, member-type, and
-permission rules are defined in [protocol.md](protocol.md), which is the sole
-staging wire-contract definition.
+Extraction creates implicit parent directories as needed beneath the private
+staging hierarchy, using normal OS permission and umask handling. Explicit
+directory entries are forced to be owner-private, writable, and searchable.
+File modes retain only owner permission bits, with an owner-readable/writable
+fallback. Archive ownership and timestamps are not applied. The exact path,
+member-type, and permission rules are defined in [protocol.md](protocol.md),
+which is the sole staging wire-contract definition.
 
 Before accepting staging or starting OpenOCD, the local session coordinator
 requires a successful staging invocation and validates its sole `STAGED`
