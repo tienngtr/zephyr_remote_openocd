@@ -413,10 +413,13 @@ If remote operation is requested while mandatory remote settings are missing, th
 
 ### REQ-FUNC-CONFIG-008
 
-Malformed configuration, or a configured path that exists but cannot be read as
-a file, SHALL result in an actionable configuration error rather than silently
-using defaults or exposing an unhandled parser traceback. Only an absent path
-SHALL be treated as empty configuration.
+An absent configured path SHALL be treated as empty configuration. An existing
+empty or comment-only YAML document SHALL also be accepted as the empty mapping
+`{}` and validated against the canonical schema. A configured path that exists
+but cannot be read as a file, or a document that fails YAML parsing, document
+or root validation, or schema validation, SHALL result in an actionable
+configuration error rather than silently using empty configuration or defaults
+or exposing an unhandled parser traceback.
 
 ### REQ-FUNC-CONFIG-009
 
