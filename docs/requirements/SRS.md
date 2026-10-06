@@ -447,8 +447,16 @@ settings, and remote-home expansion.
 ### REQ-FUNC-CONFIG-013
 
 The module SHALL provide a user-facing command that validates an existing
-configuration and summarizes its effective non-secret settings without SSH,
+configuration and summarizes its effective settings without SSH,
 OpenOCD, GDB, subprocess, socket, or hardware operations.
+
+For this summary, the omitted data is limited to the current local values of
+environment variables named by `forward_env`; the command SHALL NOT read or
+print those values, but MAY print their names. The summary SHALL include
+configured SSH and OpenOCD argv elements, hosts, path mappings, and selected
+definition names as diagnostic content. It SHALL NOT infer or redact secrets
+from command arguments or paths; configured command arguments MAY therefore
+contain values that are sensitive to the user.
 
 The command SHALL resolve an explicitly named remote, otherwise
 `default_remote`, while deliberately ignoring
@@ -517,7 +525,9 @@ With `west -v`, the runner SHALL log the full effective remote OpenOCD argv,
 shell-escaped or otherwise unambiguously separated, including fixed arguments
 and generated arguments. Session-specific workspace and address values SHALL
 be resolved in generated arguments. Fixed prefix elements SHALL retain literal
-placeholder text.
+placeholder text. This complete argv is diagnostic content and SHALL NOT be
+treated as a secret-safe or redacted log; literal sensitive values supplied in
+configured command arguments MAY appear in it.
 
 ### REQ-FUNC-CONFIG-023
 
