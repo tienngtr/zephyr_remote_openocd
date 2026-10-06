@@ -1108,13 +1108,22 @@ The helper is automatically deployed to a per-user location such as:
 
 Deployment also uses the configured SSH command.
 
-Deployment installs each helper revision atomically at a content-addressed
-path, reuses an identical revision when it is already present, and prunes
-stale digest-named revisions without removing the selected revision. A
-per-user deployment lock serializes installation, reuse refresh, and pruning
-across concurrent sessions; it is released before the session helper starts.
-Exact deployment response fields remain part of the wire contract defined in
-[protocol.md](protocol.md).
+The deployment computes the SHA-256 digest of the helper source and identifies
+the revision with a path of the form
+`protocol_v1/helper-<sha256>.py` beneath the per-user deployment directory.
+It acquires an exclusive `fcntl` lock on
+`protocol_v1/.deploy.lock` before checking, installing, refreshing, or
+reclaiming revisions. An existing target is reused only when its content
+digest matches. Otherwise, deployment writes the helper to a mode-0600
+temporary file, flushes and synchronizes it, and atomically renames it to the
+digest-named target. The selected target's timestamp is refreshed while the
+lock is held.
+
+Revisions matching `helper-*.py` that are older than 24 hours are reclaimed,
+except for the selected target. A failure to remove a stale revision does not
+remove the selected target. The deployment lock is released before the session
+helper starts. Exact deployment response fields remain part of the wire
+contract defined in [protocol.md](protocol.md).
 
 No assumption is made that the local SSH executable comes from the local Linux distribution.
 

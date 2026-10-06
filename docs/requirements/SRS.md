@@ -1228,10 +1228,13 @@ SHALL provide the helper revision matching the local client.
 
 ### REQ-FUNC-HELP-007
 
-Helper revisions SHALL be installed atomically at a content-addressed path,
-reusing identical content and pruning stale digest-named revisions without
-removing the selected revision. Installation, reuse refresh, and pruning SHALL
-be serialized for concurrent deployments.
+Concurrent helper deployments SHALL be safe: they SHALL NOT expose a partial
+helper revision or remove the revision selected by an active deployment. Stale
+helper revisions matching the deployment naming scheme and older than 24 hours
+SHALL be eligible for opportunistic reclamation during automatic deployment,
+excluding the selected revision. Deployment SHALL attempt to reclaim each
+eligible stale revision; failure to remove one SHALL NOT fail deployment or
+affect the selected revision.
 
 ### REQ-FUNC-HELP-008
 
