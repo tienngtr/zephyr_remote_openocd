@@ -1044,7 +1044,9 @@ requirements are defined in §29.
 
 ## 32. SSH Connection Sharing
 
-Connection sharing is not part of the current design.
+The runner does not manage or require SSH connection sharing. Multiple SSH
+processes are used by the runner; the configured SSH client may multiplex them
+according to its normal configuration.
 
 ---
 
