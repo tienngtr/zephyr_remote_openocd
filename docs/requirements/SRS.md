@@ -189,6 +189,17 @@ Removed requirements have their identifiers retired.
 
 Adding or removing requirements SHALL NOT renumber unrelated requirements.
 
+### 3.5 Bounded cleanup attempt
+
+A bounded cleanup attempt SHALL NOT wait or retry indefinitely in project-
+controlled cleanup logic. Each project-controlled wait or retry SHALL have a
+finite deadline. Expiration SHALL be reported as cleanup failure and SHALL NOT
+prevent attempts at other applicable independent cleanup actions. The bound
+begins when that side starts cleanup. Observation or detection latency, and
+ordinary blocking behavior of individual operating-system or filesystem
+operations that the project does not wrap with a deadline, are outside this
+guarantee.
+
 ---
 
 ## 4. Product Goals
@@ -1117,10 +1128,10 @@ The runner SHALL NOT require users to duplicate normal SSH credentials, keys, or
 ### REQ-FUNC-SSH-010
 
 When the configured SSH client reports loss of the controlling SSH session,
-the runner SHALL fail the local operation and make its bounded local session-
-cleanup attempt. This local observation SHALL NOT be treated as evidence that
-the remote helper has observed control-channel loss or begun remote OpenOCD
-cleanup.
+the runner SHALL fail the local operation and make its bounded local
+session-cleanup attempt as defined in §3.5. This local observation SHALL NOT
+be treated as evidence that the remote helper has observed control-channel
+loss or begun remote OpenOCD cleanup.
 
 Local SSH-loss detection latency SHALL be delegated to the configured SSH
 client and the local operating system. This requirement does not impose an
@@ -1243,14 +1254,14 @@ NOT synthesize an OpenOCD exit status.
 
 ### REQ-FUNC-HELP-010
 
-Closing a remote session SHALL make one bounded attempt to clean up all locally and
-remotely owned session resources. For ordinary coordinated shutdown, all
-applicable cleanup actions SHALL be attempted even when an earlier cleanup
-action fails. When SSH loss prevents coordinated shutdown, local and remote
+Closing a remote session SHALL make one bounded attempt to clean up all locally
+and remotely owned session resources as defined in §3.5. For ordinary
+coordinated shutdown, all applicable cleanup actions SHALL be attempted even
+when an earlier cleanup action fails. When SSH loss prevents coordinated
+shutdown, local and remote
 cleanup are independent: each side SHALL make one bounded attempt to clean up
 the resources it owns after that side observes the loss. These SSH-loss
-cleanup bounds do not include loss-detection latency or the interval before
-the other side observes the loss. Repeated shutdown requests SHALL be
+cleanup attempts follow §3.5. Repeated shutdown requests SHALL be
 harmless. Successful continuation or retry of a partially failed cleanup
 sequence SHALL NOT be required. Failure to terminate an owned process or to
 release an owned resource within the cleanup attempt is a cleanup failure and
@@ -1288,15 +1299,13 @@ helper's process-group supervision contract.
 
 The remote session's OpenOCD process SHALL execute within a helper-owned
 process-group boundary. Once the helper observes loss or termination of the
-controlling session, it SHALL begin bounded cleanup of that owned process
-group and associated session resources. This cleanup bound does not include
-the time required for the remote SSH service or operating system to deliver
-that observation, nor the interval after an independent local observation and
-before the remote helper observes the loss. Cleanup SHALL attempt to terminate
-the complete owned process group and release the OpenOCD leader and owned
-relay resources. Diagnosis of surviving descendants when observable SHOULD be
-provided, but failure of best-effort descendant inspection SHALL NOT by itself
-make otherwise successful process-group cleanup fail. The exact signal, wait,
+controlling session, it SHALL begin a bounded cleanup attempt as defined in
+§3.5 for that owned process group and associated session resources. Cleanup
+SHALL attempt to terminate the complete owned process group and release the
+OpenOCD leader and owned relay resources. Diagnosis of surviving descendants
+when observable SHOULD be provided, but failure of best-effort descendant
+inspection SHALL NOT by itself make otherwise successful process-group cleanup
+fail. The exact signal, wait,
 inspection, escalation, reaping, and relay-cleanup algorithm belongs in the
 SAD. Successful termination is required when the termination and reaping
 operations complete successfully within the bounded cleanup attempt. Otherwise,
@@ -1321,8 +1330,9 @@ Cleanup SHALL NOT remove a workspace while staging operations already using it
 are validating or extracting their archives or reporting success. Once cleanup
 begins, new staging operations SHALL NOT use or recreate that workspace, even
 if cleanup fails or the workspace has been deleted. A stalled staging operation
-SHALL NOT prevent a bounded cleanup attempt or prevent cleanup of other
-sessions. Cleanup failures SHALL remain visible and SHALL NOT permit new
+SHALL NOT prevent a bounded cleanup attempt as defined in §3.5 or prevent
+cleanup of other sessions. Cleanup failures SHALL remain visible and SHALL NOT
+permit new
 staging operations to resume use of the workspace.
 
 ### REQ-FUNC-DATA-005
