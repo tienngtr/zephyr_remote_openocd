@@ -1240,11 +1240,11 @@ remain available to the session protocol or forwarding-startup owner, while
 the stderr pipe is detached from the subprocess object and transferred to the
 drain so that it has only one local owner.
 
-The per-process drain thread is required because a long-lived SSH client may
-emit more diagnostic data than an operating-system pipe can hold while its
-stdout still carries protocol or readiness data. The drain retains only a
-bounded byte tail. A lock protects that tail because failure observation may
-read it while the drain thread is still appending data.
+The current design uses a per-process drain thread because a long-lived SSH
+client may emit more diagnostic data than an operating-system pipe can hold
+while its stdout still carries protocol or readiness data. The drain retains
+only a bounded byte tail. A lock protects that tail because failure observation
+may read it while the drain thread is still appending data.
 
 Shutdown waits for drain completion and thread exit within one shared bounded
 budget before closing the stderr stream. Closing a buffered pipe while another
@@ -1260,9 +1260,11 @@ This separation is intentional: `_HelperClient` and `_ForwardManager`
 perform process cleanup within their own subsystem sequences,
 `RemoteSession.close()` orders those cleanup sequences, `ManagedSshProcess`
 exposes per-process control and diagnostic access, and `_StderrDrain` alone
-owns stderr consumption and stream closing. Removing the wrapper, drain thread,
-bounded tail, or bounded reader shutdown would either introduce dual ownership,
-permit pipe backpressure to stall the session, lose actionable SSH
+owns stderr consumption and stream closing. In this design, removing the
+wrapper, drain thread, bounded tail, or bounded reader shutdown would require
+another mechanism that preserves those ownership, backpressure, diagnostic,
+and bounded-shutdown properties; simply removing them would introduce dual
+ownership, permit pipe backpressure to stall the session, lose actionable SSH
 diagnostics, or make cleanup potentially unbounded. The per-process wrapper
 does not replace the helper and forwarding resource owners.
 
