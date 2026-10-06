@@ -913,7 +913,9 @@ The OpenOCD GDB server SHALL execute remotely.
 
 ### REQ-FUNC-DEBUG-003
 
-The custom runner SHALL establish required local-to-remote GDB transport before launching local GDB.
+The custom runner SHALL NOT launch local GDB until remote OpenOCD has reached
+the runner-generated startup-completion point and required local-to-remote GDB
+transport has been established.
 
 ### REQ-FUNC-DEBUG-005
 
@@ -926,6 +928,12 @@ address.
 `west debugserver -r remote_openocd` SHALL expose a locally reachable GDB-server
 endpoint backed by remote OpenOCD without launching local GDB. The endpoint SHALL
 allow an independent GDB client to control the target.
+
+### REQ-FUNC-DEBUG-007
+
+`west debug -r remote_openocd` SHALL preserve the supported Zephyr 4.4
+`openocd` runner's GDB invocation and initialization behavior, except for
+remote-execution behavior explicitly defined by this specification.
 
 ---
 
