@@ -82,6 +82,15 @@ or another runner-owned service port is unsupported. An established local
 forward confirms only that SSH accepted the forward; it does not guarantee
 that OpenOCD has a listener behind it.
 
+SSH connection-sharing state remains externally managed. On close, the runner
+cleans up the SSH subprocesses and I/O resources it launched, remote OpenOCD,
+its helper lease, and its workspace. An external sharing master may retain
+local forwards after those subprocesses exit. The runner offers a remembered
+remote address to improve reuse of matching retained forwards, but the helper
+can reject the preference because of an active lease or occupied remote port.
+Stale retained forwards may then require cleanup through your SSH client; see
+[connection-sharing troubleshooting](troubleshooting.md#ssh-connection-sharing).
+
 Direct semihosting uses ordinary user-supplied OpenOCD commands, typically
 through `--cmd-pre-init`, and the existing OpenOCD stdout/stderr relay. It is
 intentionally not a semihosting proxy, filesystem virtualization, TCP redirect,
@@ -181,8 +190,10 @@ rm -rf "$HOME/.config/zephyr_remote_openocd"
 ```
 
 Remove the activation export from the current shell and from `~/.zephyrrc` if
-you added it. After all sessions have stopped, these remote locations may also
-be removed:
+you added it. The local preferred address cache may also be deleted at
+`~/.cache/zephyr_remote_openocd/preferred-addresses/`; this only removes cached
+preferred addresses, not externally retained SSH forwards. After all sessions
+have stopped, these remote locations may also be removed:
 
 ```text
 ~/.local/libexec/zephyr_remote_openocd/

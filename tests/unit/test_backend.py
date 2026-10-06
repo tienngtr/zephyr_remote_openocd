@@ -37,8 +37,14 @@ class _BlockedHelper:
     def allocation(self) -> SessionAllocation:
         raise AssertionError("allocation is not expected")
 
-    def start_process(self, process: RemoteProcess, services: Iterable[Service]) -> str:
-        del process, services
+    def start_process(
+        self,
+        process: RemoteProcess,
+        services: Iterable[Service],
+        *,
+        preferred_address: str | None = None,
+    ) -> str:
+        del process, services, preferred_address
         raise AssertionError("start_process() is not expected")
 
     def recorded_openocd_exit(self) -> int | None:
@@ -168,8 +174,8 @@ def test_start_process_validates_reserved_services_without_forwarding_them():
             return SessionAllocation("session", "/workspace")
 
         @override
-        def start_process(self, process, services):
-            del process
+        def start_process(self, process, services, *, preferred_address=None):
+            del process, preferred_address
             self.started_services = tuple(services)
             return "127.64.1.1"
 

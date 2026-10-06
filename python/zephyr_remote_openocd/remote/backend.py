@@ -29,6 +29,7 @@ from .model import (
     SessionDescriptor,
     StagedEntry,
 )
+from .preferred_address_cache import load_preferred_address, remember_preferred_address
 from .protocol import (
     ProtocolError,
     decode_single_frame,
@@ -96,7 +97,13 @@ class _SessionHelper(Protocol):
     @property
     def allocation(self) -> SessionAllocation: ...
 
-    def start_process(self, process: RemoteProcess, services: Iterable[Service]) -> str: ...
+    def start_process(
+        self,
+        process: RemoteProcess,
+        services: Iterable[Service],
+        *,
+        preferred_address: str | None = None,
+    ) -> str: ...
 
     def recorded_openocd_exit(self) -> int | None: ...
 
@@ -219,7 +226,11 @@ class RemoteSession:
         service_list = tuple(services)
         helper = self._helper_or_error()
         address = helper.start_process(
-            self.request.process, (*service_list, *self.request.reserved_services)
+            self.request.process,
+            (*service_list, *self.request.reserved_services),
+            preferred_address=load_preferred_address(self.request.host, self.request.ssh_command)
+            if self.request.address_services
+            else None,
         )
         self.descriptor = SessionDescriptor(helper.allocation, address)
         auxiliary = set(self.request.auxiliary_services)
@@ -236,6 +247,9 @@ class RemoteSession:
         if required and service_list:
             self._forwards.start(service_list, self.descriptor.remote_address)
             self._required_services.update(service_list)
+            remember_preferred_address(
+                self.request.host, self.request.ssh_command, self.descriptor.remote_address
+            )
         elif not required:
             for service in service_list:
                 try:

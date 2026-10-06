@@ -202,10 +202,31 @@ authentication remains the configured client's responsibility.
 For local service forwards, the runner places `ExitOnForwardFailure=yes` and
 `ClearAllForwardings=no` before your fixed arguments. These mandatory settings
 override conflicting command options and SSH configuration, ensuring that the
-requested forward exists and an occupied local port fails startup. Other fixed
+requested forward is accepted and a conflicting local bind fails startup. A
+connection-sharing client may reuse an existing forward with matching
+endpoints. Other fixed
 arguments retain their order and meaning; helper and staging commands use your
 configured arguments unchanged. No YAML keys change and no configuration
 migration is needed.
+
+SSH connection sharing, including `ControlMaster`, remains managed by your SSH
+client. The runner does not disable it or issue client-specific cancellation
+commands. Cleanup stops the SSH subprocesses launched by the runner and their
+owned I/O resources; it does not remove forwards retained by a sharing master.
+
+The runner remembers the last successfully required-forwarded remote address
+per SSH command prefix and host in
+`~/.cache/zephyr_remote_openocd/preferred-addresses/`. No YAML setting is needed.
+The helper tries the hint first, checks its address lease and all selected
+remote ports, and otherwise chooses a random address. Cache loss, stale data,
+or inaccessible storage is harmless to the allocation contract. Reuse may help
+a sharing client accept an already retained forward, but it is not guaranteed.
+See [connection-sharing troubleshooting](troubleshooting.md#ssh-connection-sharing).
+
+The current Protocol v1 requires a nullable `preferred_address` field. Automatic
+deployment supplies the matching helper; older clients or helpers missing this
+field's contract are incompatible despite using numeric version 1. User
+configuration retains the same schema and needs no migration.
 
 The executable need not be named `ssh`. A bare name is found through `PATH`,
 and an explicit path is preserved. For example, a Linux environment with an

@@ -23,6 +23,15 @@ _HARDWARE_BUILD_TIMINGS = pytest.StashKey[list[BuildTiming]]()
 _HARDWARE_TEST_TIMINGS = pytest.StashKey[list[tuple[str, str, float]]]()
 
 
+@pytest.fixture(autouse=True)
+def isolated_preferred_address_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Session tests never read or modify a developer's preferred addresses."""
+    monkeypatch.setattr(
+        "zephyr_remote_openocd.remote.preferred_address_cache._cache_directory",
+        lambda: tmp_path / "preferred-addresses",
+    )
+
+
 def pytest_configure(config: pytest.Config) -> None:
     config.stash[_HARDWARE_TEST_TIMINGS] = []
 

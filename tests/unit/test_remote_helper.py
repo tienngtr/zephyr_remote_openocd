@@ -11,6 +11,7 @@ import math
 import os
 import select
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -73,6 +74,7 @@ def test_control_session_services_input_during_readiness(
                 "readiness_timeout": 30,
                 "literal_prefix": 1,
                 "argv_templates": [],
+                "preferred_address": None,
             }
         ).encode()
         + b"\n"
@@ -269,6 +271,7 @@ def start_command():
         "readiness_timeout": 30.0,
         "literal_prefix": 1,
         "argv_templates": [],
+        "preferred_address": None,
     }
 
 
@@ -522,6 +525,7 @@ def test_relay_real_child_flushes_newline_free_output_before_exit(
                 "readiness_timeout": 30,
                 "literal_prefix": 3,
                 "argv_templates": [],
+                "preferred_address": None,
             }
         ).encode()
         + b"\n"
@@ -615,6 +619,67 @@ def test_allocate_service_address_holds_session_lease(tmp_path, monkeypatch):
     finally:
         first.lease.close()
         second.lease.close()
+
+
+def test_preferred_address_is_leased_before_random_allocation(monkeypatch):
+    def unexpected_random():
+        raise AssertionError("a free preferred address should be reused")
+
+    monkeypatch.setattr(remote_helper, "random_address", unexpected_random)
+    allocated = remote_helper.allocate_service_address((), preferred_address="127.64.0.7")
+    try:
+        assert allocated == "127.64.0.7"
+    finally:
+        allocated.lease.close()
+
+
+def test_preferred_address_held_by_another_session_falls_back(monkeypatch):
+    first = remote_helper.allocate_service_address((), preferred_address="127.64.0.7")
+    monkeypatch.setattr(remote_helper, "random_address", lambda: "127.64.0.8")
+    try:
+        second = remote_helper.allocate_service_address((), preferred_address="127.64.0.7")
+        try:
+            assert second == "127.64.0.8"
+        finally:
+            second.lease.close()
+    finally:
+        first.lease.close()
+
+
+def test_preferred_address_with_occupied_service_port_falls_back(monkeypatch):
+    monkeypatch.setattr(remote_helper, "random_address", lambda: "127.64.0.8")
+    with socket.socket() as listener:
+        listener.bind(("127.64.0.7", 0))
+        port = listener.getsockname()[1]
+        allocated = remote_helper.allocate_service_address((port,), preferred_address="127.64.0.7")
+        try:
+            assert allocated == "127.64.0.8"
+            # Rejected candidates must release their address lease.
+            reused = remote_helper.allocate_service_address((), preferred_address="127.64.0.7")
+            reused.lease.close()
+        finally:
+            allocated.lease.close()
+
+
+@pytest.mark.parametrize("address", (None, "127.64.0.7"))
+def test_decode_start_accepts_address_preference(start_command, address):
+    start_command["preferred_address"] = address
+    assert remote_helper.decode_command(start_command).preferred_address == address
+
+
+def test_decode_start_requires_address_preference_field(start_command):
+    del start_command["preferred_address"]
+    with pytest.raises(ValueError, match="START fields are invalid"):
+        remote_helper.decode_command(start_command)
+
+
+@pytest.mark.parametrize(
+    "address", (False, 1, [], "", "127.0.0.1", "127.64.0.0", "127.127.255.255", "::1")
+)
+def test_decode_start_rejects_invalid_address_preference(start_command, address):
+    start_command["preferred_address"] = address
+    with pytest.raises(ValueError):
+        remote_helper.decode_command(start_command)
 
 
 @pytest.mark.parametrize("termination", ("exit", "kill"))
@@ -809,6 +874,7 @@ def _start_session_command(argv, sentinels=()):
                 "readiness_timeout": 30,
                 "literal_prefix": len(argv),
                 "argv_templates": [],
+                "preferred_address": None,
             }
         ).encode()
         + b"\n"
@@ -1910,7 +1976,8 @@ def test_control_session_does_not_launch_when_required_file_is_missing(
         start_command["services"] = []
     allocated_ports = []
 
-    def allocate(ports):
+    def allocate(ports, *, preferred_address=None):
+        del preferred_address
         allocated_ports.append(tuple(ports))
         return "127.0.0.1"
 

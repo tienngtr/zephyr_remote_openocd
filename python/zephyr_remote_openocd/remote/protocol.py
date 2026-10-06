@@ -10,6 +10,7 @@ from pathlib import PurePosixPath
 from typing import Any, BinaryIO
 
 from .model import RemoteProcess, Service
+from .services import validate_preferred_address
 
 PROTOCOL_VERSION = 1
 # The deployed helper is self-contained; keep its matching bound in sync.
@@ -90,12 +91,20 @@ def _write_frame(stream: BinaryIO, message_type: str, **fields: Any) -> None:
     stream.flush()
 
 
-def write_start(stream: BinaryIO, process: RemoteProcess, services: Iterable[Service]) -> None:
+def write_start(
+    stream: BinaryIO,
+    process: RemoteProcess,
+    services: Iterable[Service],
+    *,
+    preferred_address: str | None = None,
+) -> None:
     """Serialize a validated process and service model as the START command."""
 
+    validate_preferred_address(preferred_address)
     _write_frame(
         stream,
         "START",
+        preferred_address=preferred_address,
         argv=list(process.argv),
         environment=dict(process.environment),
         required_paths=[

@@ -31,7 +31,9 @@ The helper emits one `SESSION_CREATED` event before reading commands. The
 client writes commands to helper stdin and reads events from stdout. There is
 no feature negotiation. Compatibility requires the complete current contract,
 including explicit argument templates and the pre-spawn `PROCESS_STARTING`
-event, not version equality alone. Earlier version-1 clients or helpers using
+event and the required nullable `preferred_address` field, not version equality
+alone. Clients omitting that field and helpers rejecting it are incompatible
+with the current contract. Earlier version-1 clients or helpers using
 automatic textual placeholder expansion are incompatible: `START` now requires
 `argv_templates`, even when empty. Normal deployment installs the matching
 content-addressed helper automatically;
@@ -48,6 +50,7 @@ required; no other fields are allowed:
 | `environment` | Object whose names are non-empty strings without `=` or NUL and whose values are strings without NUL. |
 | `required_paths` | List of exact `{kind, path}` objects. `kind` is `file` or `directory`; `path` is a non-empty literal string without NUL or an exact `{parts}` path template as defined below. |
 | `services` | List of exact `{name, remote_port}` objects. `name` is a non-empty string; `remote_port` is a non-Boolean integer in `1..65535`. Names and ports are unique within the request. |
+| `preferred_address` | Null, or a canonical dotted-decimal IPv4 string in `127.64.0.0/10`, excluding `127.64.0.0` and `127.127.255.255`. A hint, not an allocation or lease. |
 | `required_output_sentinels` | List of unique non-empty, trimmed startup output markers without `CR`, `LF`, or NUL; may be empty. |
 | `readiness_timeout` | Positive finite, non-Boolean number. |
 | `literal_prefix` | Non-Boolean, non-negative integer no greater than the length of `argv`. Templates cannot target this many leading arguments. |
@@ -86,7 +89,14 @@ overlaid by `environment`. Service `remote_port` values are unique by
 contract, and duplicate values are rejected during validation before startup.
 
 The helper allocates an address in `127.64.0.0/10` and checks requested service
-ports for bind collisions at that address. It does not create or probe service
+ports for bind collisions at that address. On the initial child attempt it
+tries a non-null preferred address first, using the same cross-session address
+lease and complete service-port validation as randomized candidates. An
+unavailable preference falls back to up to 32 randomized candidates; null uses
+only randomized candidates. A child bind-collision retry uses randomized
+allocation, without trying the preference again. The helper-selected address
+is reported in `PROCESS_READY`; the preference never bypasses leasing or port
+validation. It does not create or probe service
 listeners; OpenOCD owns its GDB, Tcl, telnet, and RTT listeners. After allocating
 the address, materializing the argv, and validating required paths, the helper
 emits `PROCESS_STARTING` with the exact argv immediately before attempting to

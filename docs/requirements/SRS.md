@@ -127,6 +127,10 @@ The runner-managed lifetime containing:
 - the allocated remote loopback address;
 - the local forwarded services.
 
+SSH connection-sharing state is externally managed. The runner owns the SSH
+subprocesses it launches, but not a sharing master or forwarding state retained
+by an external multiplexing mechanism after those subprocesses exit.
+
 ### 2.11 Helper control channel
 
 The protocol connection between the local runner and the remote helper. It
@@ -1034,8 +1038,12 @@ overrides.
 
 ### REQ-FUNC-SVC-005
 
-If a required local service port is occupied, the operation SHALL fail rather
-than silently choose another port. An occupied best-effort local port SHOULD
+If a required local service port is occupied by a conflicting listener and the
+requested forwarding cannot be established, the operation SHALL fail rather
+than silently choose another port. The configured SSH client MAY reuse an
+already retained forward with the requested endpoints under REQ-FUNC-SSH-012;
+the runner SHALL NOT require a new listener in that case. An occupied
+best-effort local port that prevents forwarding SHOULD
 produce a warning and allow the required operation to continue, provided
 rollback of the failed forwarding attempt succeeds.
 
@@ -1176,6 +1184,34 @@ end-to-end bound from the underlying connection loss to local detection.
 
 The runner SHALL NOT attempt transparent reconstruction of an interrupted debugging session after SSH loss.
 
+### REQ-FUNC-SSH-012
+
+SSH connection sharing, including OpenSSH `ControlMaster`, SHALL remain managed
+by the configured client and the user. The runner SHALL NOT disable connection
+sharing or require OpenSSH-specific forwarding cancellation commands.
+
+The runner SHALL maintain a best-effort local preferred address cache per SSH
+remote, identified by the configured SSH command prefix and host. It SHALL
+remember the helper-selected loopback address only after a non-empty required
+forwarding batch succeeds, and SHALL offer the remembered address as a preference
+on a later session that selects services. Best-effort-only forwarding and operations
+without forwarding SHALL NOT update the remembered address.
+
+The remote helper SHALL remain authoritative: it SHALL attempt to lease and
+validate all runner-selected initial and reserved service ports on the preferred
+address before using it. If the preference cannot be acquired, it SHALL fall
+back to randomized allocation under the existing lease and port checks.
+Concurrent sessions SHALL NOT share an active address lease. A startup retry
+after child bind failure SHALL use randomized allocation rather than retrying
+the preference.
+
+Missing, invalid, stale, or inaccessible preferred address cache data SHALL NOT
+by itself fail an operation or weaken helper validation. The preferred address
+cache is an optimization and SHALL NOT guarantee reuse. User documentation SHALL
+explain that externally retained forwards may require user cleanup when the
+preferred address cannot be reused or retained endpoints differ from those
+requested by the operation.
+
 ---
 
 ## 21. Concurrent Users and Probe Contention
@@ -1303,6 +1339,14 @@ release an owned resource within the cleanup attempt is a cleanup failure and
 SHALL remain visible under REQ-FUNC-HELP-011. The remote helper SHALL report
 such an unsuccessful termination as a helper/session failure instead of a
 successful session close when its control output remains usable.
+
+Locally owned transport resources are the SSH subprocesses launched by the
+runner and their owned pipes, readers, and diagnostic drains. Forwarding state
+retained by an external connection-sharing mechanism, including its listeners
+and master process, is outside this ownership boundary. Such retained state
+SHALL NOT by itself be reported as failed runner cleanup. Failures to clean up
+runner-owned resources remain subject to REQ-FUNC-HELP-011. Remote helper leases,
+OpenOCD supervision, and workspace cleanup remain runner-owned.
 
 ### REQ-FUNC-HELP-011
 

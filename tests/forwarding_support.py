@@ -75,11 +75,19 @@ class ControlledHelper:
         self.close_calls = 0
         self.on_wait: Callable[[], None] | None = None
         self.process_start_handler: Callable[[tuple[str, ...]], None] | None = None
+        self.preferred_address: str | None = None
 
-    def start_process(self, process: RemoteProcess, services: Iterable[Service]) -> str:
+    def start_process(
+        self,
+        process: RemoteProcess,
+        services: Iterable[Service],
+        *,
+        preferred_address: str | None = None,
+    ) -> str:
+        self.preferred_address = preferred_address
         if self.process_start_handler is not None:
             stream = io.BytesIO()
-            write_start(stream, process, ())
+            write_start(stream, process, (), preferred_address=preferred_address)
             request = decode_command(decode_message(stream.getvalue()))
             self.process_start_handler(
                 materialize_argv(

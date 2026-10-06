@@ -335,6 +335,56 @@ class TestSshTransportIntegration:
             )
             assert result.returncode == 0, result.stderr.decode(errors="replace")
 
+    def test_preferred_address_reuses_forward_retained_by_external_master(self, tmp_path):
+        """The test owns the master; production sessions own only their slaves."""
+        ssh = SshCommand(
+            (
+                self.ssh.argv_prefix[0],
+                "-o",
+                "ControlMaster=auto",
+                "-o",
+                "ControlPersist=no",
+                "-o",
+                f"ControlPath={tmp_path / 'master'}",
+                *self.ssh.argv_prefix[1:],
+            )
+        )
+        local_port = free_loopback_port()
+        request = RemoteSessionRequest(
+            self.host,
+            ssh,
+            session_echo_process(),
+            services=(Service("gdb", local_port, 3333),),
+        )
+        master = ssh.popen(self.host, "printf 'ZRO_MASTER_READY\\n'; cat >/dev/null")
+        try:
+            assert master.stdout is not None
+            assert read_line(master.stdout).strip() == b"ZRO_MASTER_READY", master.stderr_tail()
+            first = RemoteSession.open(request)
+            try:
+                assert first.descriptor is not None
+                address = first.descriptor.remote_address
+                wait_for_echo(local_port, b"first_session", 20)
+            finally:
+                first.close()
+            assert master.poll() is None
+            with socket.create_connection(("127.0.0.1", local_port), timeout=20):
+                pass
+            second = RemoteSession.open(request)
+            try:
+                assert second.descriptor is not None
+                assert second.descriptor.remote_address == address
+                wait_for_echo(local_port, b"reused_session", 20)
+            finally:
+                second.close()
+            assert master.poll() is None
+        finally:
+            if master.stdin is not None:
+                master.stdin.close()
+            stop_and_close(master)
+        with socket.socket() as after_cleanup:
+            after_cleanup.bind(("127.0.0.1", local_port))
+
     def test_helper_ssh_loss_cleans_session(self):
         """Losing the helper SSH process cleans the session."""
 

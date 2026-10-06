@@ -7,6 +7,7 @@ import math
 import subprocess
 
 import pytest
+from zephyr_remote_openocd.remote import preferred_address_cache
 from zephyr_remote_openocd.remote import ssh as ssh_module
 from zephyr_remote_openocd.remote.forwarding import ForwardStartError
 from zephyr_remote_openocd.remote.session import SessionError
@@ -27,6 +28,44 @@ def test_required_start_failure_aborts_session(harness):
     assert harness.helper.close_calls == 1
     assert harness.ssh.process(GDB).mock.close_stderr.call_count == 1
     assert not harness.advisories
+
+
+def test_required_forwarding_saves_preferred_address_after_using_cache(harness):
+    preferred_address_cache.remember_preferred_address("host", harness.ssh, "127.64.0.9")
+    session = harness.open((GDB,), ())
+    try:
+        assert harness.helper.preferred_address == "127.64.0.9"
+        assert preferred_address_cache.load_preferred_address("host", harness.ssh) == "127.64.0.1"
+    finally:
+        session.close()
+
+
+def test_failed_required_forwarding_preserves_cached_preferred_address(harness):
+    preferred_address_cache.remember_preferred_address("host", harness.ssh, "127.64.0.9")
+    harness.ssh.process(GDB).ready = False
+    with pytest.raises(ForwardStartError):
+        harness.open((GDB,), ())
+    assert harness.helper.preferred_address == "127.64.0.9"
+    assert preferred_address_cache.load_preferred_address("host", harness.ssh) == "127.64.0.9"
+
+
+@pytest.mark.parametrize("services", ((), (TCL,)), ids=("no-services", "best-effort-only"))
+def test_session_without_required_forwarding_does_not_save_preferred_address(harness, services):
+    session = harness.open(services, services)
+    try:
+        assert preferred_address_cache.load_preferred_address("host", harness.ssh) is None
+    finally:
+        session.close()
+
+
+def test_deferred_required_forwarding_saves_preferred_address(harness):
+    session = harness.open((), ())
+    harness.ssh.process(RTT)
+    try:
+        session.forward((RTT,))
+        assert preferred_address_cache.load_preferred_address("host", harness.ssh) == "127.64.0.1"
+    finally:
+        session.close()
 
 
 @pytest.mark.parametrize("failed_service", (TCL, TELNET, RTT), ids=("tcl", "telnet", "rtt"))

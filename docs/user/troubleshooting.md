@@ -46,6 +46,32 @@ that interval. Configure client-side keepalive or timeout behavior through
 `ssh_command` if different local detection behavior is required; it does not
 control remote detection timing.
 
+## SSH connection sharing
+
+`ControlMaster` and other SSH connection-sharing mechanisms are managed by your
+SSH client. The runner stops the subprocesses it launches but does not own or
+cancel forwarding state retained by an external sharing master. A retained
+listener after runner shutdown is not, by itself, failed runner cleanup.
+
+The runner keeps its best-effort local preferred address cache under
+`~/.cache/zephyr_remote_openocd/preferred-addresses/`, keyed by the configured SSH
+command prefix and host. It saves an address only after required forwarding
+succeeds. On a later session, the helper first tries that address with its
+normal lease and remote-port checks, then falls back to random allocation if
+the preferred address cannot be reused. Concurrent sessions still receive
+separate leases.
+Deleting or losing the cache cannot weaken these checks and does not cancel
+retained forwards.
+
+If a stale retained forward occupies the requested local port, and the helper
+cannot reuse its remote address or the requested endpoints have changed, the
+operation may report a local-port conflict or the retained endpoint may no
+longer reach OpenOCD. Inspect and remove the stale state through the configured
+SSH client's normal controls, then retry. For OpenSSH, consult its connection-
+sharing controls for cancelling forwards or closing an unused master. Avoid
+closing a master still used by another active session. The runner does not
+perform this user cleanup automatically.
+
 Contributors can set `ZRO_RECORD=1` to inspect the runner's generated JSON plan
 without starting SSH, OpenOCD, GDB, forwarding, or hardware access. This checks
 plan construction, not deployment or real command behavior. See

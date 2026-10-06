@@ -161,11 +161,11 @@ def _open_helper_client_with_events(
     return _open_helper_client(process, process_start_handler=process_start_handler), process
 
 
-def test_helper_client_reports_every_attempt_before_startup_error():
+def test_helper_client_sends_preference_and_reports_attempts_before_startup_error():
     observed: list[tuple[str, ...]] = []
     first = ("openocd", "-c", "bindto 127.64.0.1", "")
     retry = ("openocd", "-c", "bindto 127.64.0.2", "")
-    client, _process = _open_helper_client_with_events(
+    client, helper_process = _open_helper_client_with_events(
         encode_message("PROCESS_STARTING", argv=list(first)),
         encode_message("CHILD_OUTPUT", stream="stderr", payload="bind collision", line_end=True),
         encode_message("PROCESS_STARTING", argv=list(retry)),
@@ -174,7 +174,9 @@ def test_helper_client_reports_every_attempt_before_startup_error():
     )
     try:
         with pytest.raises(SessionError):
-            client.start_process(RemoteProcess(("openocd",)), ())
+            client.start_process(RemoteProcess(("openocd",)), (), preferred_address="127.64.0.1")
+        request = _decode_start(decode_message(bytes(helper_process.stdin.written)))
+        assert request.preferred_address == "127.64.0.1"
         assert observed == [first, retry]
     finally:
         client.close()

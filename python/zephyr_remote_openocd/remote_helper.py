@@ -30,6 +30,7 @@ from collections import deque
 from collections.abc import Callable, Coroutine, Iterable, Iterator
 from contextlib import contextmanager, suppress
 from enum import Enum, auto
+from itertools import chain
 from pathlib import Path, PurePosixPath
 from types import FrameType
 from typing import IO, Any, NamedTuple
@@ -432,9 +433,12 @@ def is_bind_collision(output: list[_CapturedFragment]):
     return False
 
 
-def allocate_service_address(ports):
-    for _ in range(MAX_ADDRESS_ALLOCATION_ATTEMPTS):
-        address = random_address()
+def allocate_service_address(ports, preferred_address=None):
+    preferred = () if preferred_address is None else (preferred_address,)
+    candidates = chain(
+        preferred, (random_address() for _ in range(MAX_ADDRESS_ALLOCATION_ATTEMPTS))
+    )
+    for address in candidates:
         # Abstract sockets share the TCP network namespace across remote users
         # and runtime roots. Keep the name independent of helper revisions.
         lease = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
@@ -700,6 +704,21 @@ class StartRequest(NamedTuple):
     readiness_timeout: float
     literal_prefix: int
     argv_templates: tuple[tuple[int, ArgumentTemplate], ...]
+    preferred_address: str | None
+
+
+def _validate_preferred_address(address):
+    if address is None:
+        return
+    if not isinstance(address, str):
+        raise ValueError("preferred address must be a string or null")
+    parsed = ipaddress.IPv4Address(address)
+    if (
+        str(parsed) != address
+        or parsed not in RANGE
+        or parsed in (RANGE.network_address, RANGE.broadcast_address)
+    ):
+        raise ValueError("preferred address must be a usable address in 127.64.0.0/10")
 
 
 class StopRequest:
@@ -742,6 +761,7 @@ def _decode_start(message):
         "readiness_timeout",
         "literal_prefix",
         "argv_templates",
+        "preferred_address",
     }
     if set(message) != fields:
         raise ValueError("START fields are invalid")
@@ -756,6 +776,8 @@ def _decode_start(message):
     services = _parse_services(message["services"], "START")
     checks = _parse_required_paths(message["required_paths"])
     templates = _parse_argv_templates(message["argv_templates"], len(argv), literal_prefix)
+    preferred_address = message["preferred_address"]
+    _validate_preferred_address(preferred_address)
     return StartRequest(
         tuple(argv),
         tuple(environment.items()),
@@ -765,6 +787,7 @@ def _decode_start(message):
         float(timeout),
         literal_prefix,
         templates,
+        preferred_address,
     )
 
 
@@ -1470,7 +1493,9 @@ class ControlSession:
                 self.cleanup_errors.append(exc)
             self._address_lease = None
         ports = [service.remote_port for service in request.services]
-        allocated = allocate_service_address(ports)
+        allocated = allocate_service_address(
+            ports, preferred_address=request.preferred_address if self.attempt == 0 else None
+        )
         self.address = str(allocated)
         self._address_lease = getattr(allocated, "lease", None)
         argv = materialize_argv(

@@ -207,8 +207,14 @@ class _StagingHelper:
     def allocation(self) -> SessionAllocation:
         return SessionAllocation("session", "/workspace")
 
-    def start_process(self, process: RemoteProcess, services: Iterable[Service]) -> str:
-        del process, services
+    def start_process(
+        self,
+        process: RemoteProcess,
+        services: Iterable[Service],
+        *,
+        preferred_address: str | None = None,
+    ) -> str:
+        del process, services, preferred_address
         raise AssertionError("start_process() is not expected in this test")
 
     def recorded_openocd_exit(self) -> int | None:
@@ -247,6 +253,7 @@ def start_frame(
     readiness_timeout=30.0,
     literal_prefix=0,
     argv_templates=(),
+    preferred_address=None,
 ):
     return encode_message(
         "START",
@@ -258,6 +265,7 @@ def start_frame(
         readiness_timeout=readiness_timeout,
         literal_prefix=literal_prefix,
         argv_templates=list(argv_templates),
+        preferred_address=preferred_address,
     )
 
 
@@ -1628,6 +1636,7 @@ helper['stage'](sys.argv[2])
                         required_output_sentinels=(output_sentinel,),
                         readiness_timeout=5,
                         argv_templates=[{"index": 2, "parts": [{"session": "address"}]}],
+                        preferred_address="127.64.0.7",
                     )
                 )
                 process.stdin.flush()
@@ -1644,6 +1653,7 @@ helper['stage'](sys.argv[2])
                     event["argv"] for event in events if event["type"] == "PROCESS_STARTING"
                 ]
                 assert len(attempts) >= 2
+                assert attempts[0][2] == "127.64.0.7"
                 assert attempts[0][2] != attempts[-1][2]
                 assert attempts[-1][2] == ready["remote_address"]
                 process.stdin.write(encode_message("STOP"))

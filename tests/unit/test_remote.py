@@ -254,7 +254,25 @@ class TestProtocol:
         assert frames[0]["type"] == "START"
         assert frames[0]["argv"][-1] == ""
         assert frames[0]["required_output_sentinels"] == ["READY FOR START"]
+        assert frames[0]["preferred_address"] is None
         assert frames[1] == {"version": 1, "type": "STOP"}
+
+    def test_start_preferred_address_reaches_helper_validation(self):
+        from zephyr_remote_openocd import remote_helper
+
+        stream = io.BytesIO()
+        write_start(stream, RemoteProcess(("child",)), (), preferred_address="127.64.0.7")
+        request = remote_helper.decode_command(decode_message(stream.getvalue()))
+        assert request.preferred_address == "127.64.0.7"
+
+    @pytest.mark.parametrize(
+        "address", ("127.0.0.1", "127.64.0.0", "127.127.255.255", "::1", "bad")
+    )
+    def test_start_rejects_invalid_preference_before_writing(self, address: str):
+        stream = io.BytesIO()
+        with pytest.raises(ValueError):
+            write_start(stream, RemoteProcess(("child",)), (), preferred_address=address)
+        assert not stream.getvalue()
 
     def test_helper_event_unknown_fields_are_rejected(self):
         with pytest.raises(ProtocolError):

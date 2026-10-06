@@ -114,12 +114,20 @@ class _HelperClient:
             return ending.returncode
         return None
 
-    def start_process(self, process: RemoteProcess, services: Iterable[Service]) -> str:
+    def start_process(
+        self,
+        process: RemoteProcess,
+        services: Iterable[Service],
+        *,
+        preferred_address: str | None = None,
+    ) -> str:
         service_list = tuple(services)
         helper = self._process_or_error()
         if helper.stdin is None:
             raise SessionError("helper stdin was not captured")
-        write_start(cast(BinaryIO, helper.stdin), process, service_list)
+        write_start(
+            cast(BinaryIO, helper.stdin), process, service_list, preferred_address=preferred_address
+        )
         address = self._await_process_ready()
         self._start_event_drain()
         return address

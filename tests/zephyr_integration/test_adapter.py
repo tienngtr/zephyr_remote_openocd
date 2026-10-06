@@ -145,9 +145,9 @@ def test_runner_logs_effective_remote_argv(
     processes: list[RemoteProcess] = []
     start_process = harness.helper.start_process
 
-    def capture_start(process, services):
+    def capture_start(process, services, *, preferred_address=None):
         processes.append(process)
-        return start_process(process, services)
+        return start_process(process, services, preferred_address=preferred_address)
 
     monkeypatch.setattr(harness.helper, "start_process", capture_start)
     with caplog.at_level(level, logger=runner.logger.name):

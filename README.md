@@ -147,6 +147,13 @@ generated state.
    interrupted, or detects that SSH connectivity was lost. The remote helper
    starts its own cleanup after it detects control-channel loss.
 
+SSH connection sharing remains managed by your client. The runner cleans up
+its launched SSH subprocesses and owned I/O resources; an external sharing
+master may retain forwards. A best-effort local preferred address cache helps
+reuse matching endpoints without bypassing helper leases or remote-port checks.
+Stale retained forwards may still need
+[user cleanup](docs/user/troubleshooting.md#ssh-connection-sharing).
+
 ## Next steps
 
 - [`Configuration`](docs/user/configuration.md): defaults, presets, SSH

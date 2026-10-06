@@ -131,6 +131,7 @@ zephyr_remote_openocd/
                 services.py, session.py, forwarding.py
                 helper_client.py, cleanup.py, protocol.py
                 backend.py, deploy.py, debug.py, flash.py, rtt.py
+                preferred_address_cache.py
                 openocd_plan.py, arguments.py, tcl.py
 
             remote_helper.py
@@ -858,13 +859,21 @@ outside the runner's compatibility guarantees.
 
 ## 27. Remote OpenOCD Service Isolation
 
-The helper allocates each remote session a random loopback address from:
+The helper allocates each remote session a leased loopback address from:
 
 ```text
 127.64.0.0/10
 ```
 
 Different sessions therefore may use identical service-port numbers without collisions.
+
+For sessions selecting services, the local runner offers the last address
+remembered for the configured SSH argv prefix and host. The helper tries that
+preference first with the same address lease and initial/deferred port checks
+as random candidates. If it is unavailable, allocation falls back to up to 32
+random candidates. A child bind-collision retry uses random allocation without
+retrying the preference. A cached address conveys no ownership and cannot
+override another session's lease.
 
 The helper reserves each candidate address by binding a Linux abstract Unix
 socket whose name is keyed solely by that address. The kernel socket namespace
@@ -916,10 +925,14 @@ Possible services include:
 - telnet;
 - RTT.
 
-Disabled services have no local listener.
+The runner does not request local forwarding for disabled services. An external
+sharing mechanism may still retain a listener from an earlier operation.
 
-The forward manager owns the local SSH-forward processes and their local
-loopback endpoints. The corresponding remote listeners remain owned by
+The forward manager owns the local SSH-forward subprocesses it launches and
+their pipes and diagnostic drains. When the client uses external connection
+sharing, its master may own and retain local loopback listeners independently
+of those subprocesses. The runner does not own that externally retained
+forwarding state. The corresponding remote listeners remain owned by
 OpenOCD. A successfully created local forward proves only that SSH accepted the
 forward; it does not prove that OpenOCD has a listener behind the remote
 endpoint.
@@ -1053,6 +1066,39 @@ requirements are defined in §29.
 The runner does not manage or require SSH connection sharing. Multiple SSH
 processes are used by the runner; the configured SSH client may multiplex them
 according to its normal configuration.
+
+The runner neither disables sharing nor adds OpenSSH-specific `-O cancel`
+handling. Its cleanup boundary ends at the SSH subprocesses and local I/O
+resources it acquired; a sharing master and retained forwards remain externally
+managed. Subprocess exit therefore does not prove that a shared listener has
+been removed, and retained external state alone is not a runner cleanup failure.
+
+`remote/preferred_address_cache.py` stores a disposable preferred address under
+`~/.cache/zephyr_remote_openocd/preferred-addresses/`. The filename is a SHA-256
+digest of an unambiguous encoding of the configured SSH argv prefix and host;
+the file contains only the canonical loopback address. Remotes with identical
+SSH prefixes and hosts share a cached preferred address, while distinct
+identities use separate files. The cache directory is created with mode `0700`
+and temporary files with mode `0600`. Closing the temporary file and atomically replacing the destination
+prevents partial updates. No cache lock is needed: concurrent updates may select
+either successfully forwarded address, and the helper independently validates
+every subsequent preferred address.
+
+The session reads a preferred address only when it selects initial or reserved
+services. It updates the cache after each non-empty required forwarding batch
+succeeds, including deferred RTT forwarding. Failed required startup and best-effort-only
+forwarding do not update it; flash neither reads nor writes the preferred address
+cache. Cache read, validation, and write failures are ignored. No cache durability,
+retention, or successful-reuse guarantee is needed for correctness. Recording mode never
+opens a session and does not access this cache.
+
+Reusing the same remote address and ports can allow an external sharing master
+to reuse an already retained forward. Reuse is not guaranteed: an active lease,
+occupied remote port, changed endpoint, lost hint, or changed SSH identity can
+prevent it. A stale external forward may then keep the requested local port
+occupied or point at an old remote endpoint. The user must manage such retained
+state through their SSH client; the preferred address cache does not cancel or
+repair it.
 
 ---
 
@@ -1199,6 +1245,7 @@ or control-channel loss. The ownership boundaries are:
 | `_HelperClient` | Owns the helper control channel, protocol reader, helper observations, output delivery, and helper shutdown. |
 | `_ForwardManager` | Owns local forwarding SSH processes, forward status checks, and forward cleanup. |
 | `ManagedSshProcess` | Owns one local SSH subprocess and its stderr drain. |
+| External SSH connection-sharing mechanism | Owns its master and any forwarding state retained independently of runner-launched subprocesses; outside runner cleanup. |
 | Remote `ControlSession` | Owns remote session state, workspace, command dispatch, and final cleanup. |
 | `SupervisedChild` | Owns the OpenOCD process group, output relays, startup observation, termination, and stream closure. |
 
@@ -1275,7 +1322,8 @@ diagnostics, or make cleanup potentially unbounded. The per-process wrapper
 does not replace the helper and forwarding resource owners.
 
 `RemoteSession` is the sole local remote-session coordinator and owns all
-local session resources. It is acquired once through `RemoteSession.open()`, which
+runner-acquired local session resources, excluding externally retained sharing
+state as described in §32. It is acquired once through `RemoteSession.open()`, which
 returns only a usable session, and is released once through cleanup-only
 `RemoteSession.close()`. The helper client and forward manager own their
 respective resources and cleanup sequences beneath this boundary. A session is
@@ -1812,6 +1860,8 @@ is more durable than a duplicate path sketch:
 - `remote_helper.py` owns remote supervision, output relay, protocol dispatch,
   and cleanup.
 - `remote/ssh.py` is the only boundary for configured SSH command behavior.
+- `remote/preferred_address_cache.py` owns the best-effort local preferred address
+  cache; it does not own remote leases or external SSH sharing state.
 
 Platform-specific SSH behavior, if any is eventually needed, shall remain inside the SSH transport layer rather than spread through runner logic.
 
@@ -1858,6 +1908,8 @@ Selected for the current architecture:
 - default SSH command `ssh`;
 - SSH command may contain fixed arguments;
 - all SSH operations use the configured client abstraction;
+- SSH sharing state remains externally managed, with a disposable local preferred
+  address cache and authoritative remote lease/port validation;
 - the SSH client continues to use its normal configuration;
 - unprivileged remote helper;
 - explicit path mappings with staging fallback;

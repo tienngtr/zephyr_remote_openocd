@@ -12,6 +12,21 @@ LOOPBACK_RANGE = ipaddress.IPv4Network("127.64.0.0/10")
 MAX_LOOPBACK_ALLOCATION_ATTEMPTS = 32
 
 
+def validate_preferred_address(address: str | None) -> None:
+    """Validate a canonical, usable address hint without reserving it."""
+    if address is None:
+        return
+    if not isinstance(address, str):
+        raise ValueError("preferred address must be a string or null")
+    parsed = ipaddress.IPv4Address(address)
+    if (
+        str(parsed) != address
+        or parsed not in LOOPBACK_RANGE
+        or parsed in (LOOPBACK_RANGE.network_address, LOOPBACK_RANGE.broadcast_address)
+    ):
+        raise ValueError("preferred address must be a usable address in 127.64.0.0/10")
+
+
 def random_loopback_address() -> str:
     offset = 1 + secrets.randbelow(LOOPBACK_RANGE.num_addresses - 2)
     return str(ipaddress.IPv4Address(int(LOOPBACK_RANGE.network_address) + offset))
