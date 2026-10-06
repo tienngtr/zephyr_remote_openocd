@@ -8,10 +8,10 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from .arguments import ArgumentTemplate, SessionValue, TclPathArgument
 from .model import RemoteProcess
 from .openocd_plan import OpenOcdBasePlan, plan_openocd_base
-from .paths import REMOTE_ADDRESS_PLACEHOLDER, PathPlanner
-from .tcl import TclPathArgument
+from .paths import PathPlanner
 
 
 class FlashPlanError(RuntimeError):
@@ -62,6 +62,7 @@ class PlannedFlashImage:
     source: Path
     remote: str
     entry: str | None = None
+    template: ArgumentTemplate | None = None
 
 
 def _commands(commands: tuple[str, ...]) -> list[str]:
@@ -113,9 +114,9 @@ def _plan_image(inputs: FlashInputs, planner: PathPlanner) -> PlannedFlashImage:
     if not image_source:
         raise FlashPlanError(f"cannot flash; no {kind} image specified")
     source_path = Path(image_source).resolve()
-    remote_image = planner.plan_file(source_path, "firmware").remote
+    remote_image = planner.plan_file(source_path, "firmware")
     entry = _elf_entry(source_path) if kind == "elf" else None
-    return PlannedFlashImage(kind, source_path, remote_image, entry)
+    return PlannedFlashImage(kind, source_path, remote_image.remote, entry, remote_image.template)
 
 
 def _common_flash_commands(inputs: FlashInputs) -> list[str]:
@@ -134,10 +135,17 @@ def _elf_flash_commands(
     if not inputs.verify_only:
         commands.extend(_commands(inputs.pre_load))
         commands.extend(
-            ("-c", inputs.reset_halt, "-c", TclPathArgument("load_image ", image.remote))
+            (
+                "-c",
+                inputs.reset_halt,
+                "-c",
+                TclPathArgument("load_image ", image.remote, template=image.template),
+            )
         )
     if inputs.verify or inputs.verify_only:
-        commands.extend(("-c", TclPathArgument("verify_image ", image.remote)))
+        commands.extend(
+            ("-c", TclPathArgument("verify_image ", image.remote, template=image.template))
+        )
         commands.extend(_commands(inputs.post_verify))
     commands.extend(("-c", f"resume {image.entry}", "-c", "shutdown"))
     return tuple(commands)
@@ -163,7 +171,10 @@ def _bin_flash_commands(
             (
                 "-c",
                 TclPathArgument(
-                    f"{inputs.load_command} ", image.remote, f" {inputs.flash_address}"
+                    f"{inputs.load_command} ",
+                    image.remote,
+                    f" {inputs.flash_address}",
+                    image.template,
                 ),
             )
         )
@@ -173,7 +184,10 @@ def _bin_flash_commands(
             (
                 "-c",
                 TclPathArgument(
-                    f"{inputs.verify_command} ", image.remote, f" {inputs.flash_address}"
+                    f"{inputs.verify_command} ",
+                    image.remote,
+                    f" {inputs.flash_address}",
+                    image.template,
                 ),
             )
         )
@@ -191,14 +205,16 @@ def _hex_flash_commands(
             commands.extend(_commands(inputs.erase_commands))
             if load_command.endswith(" erase"):
                 load_command = load_command[:-6]
-        commands.extend(("-c", TclPathArgument(f"{load_command} ", image.remote)))
+        commands.extend(
+            ("-c", TclPathArgument(f"{load_command} ", image.remote, template=image.template))
+        )
     if inputs.verify or inputs.verify_only:
         commands.extend(
             (
                 "-c",
                 inputs.reset_halt,
                 "-c",
-                TclPathArgument(f"{inputs.verify_command} ", image.remote),
+                TclPathArgument(f"{inputs.verify_command} ", image.remote, template=image.template),
             )
         )
     return _finish_standard_commands(commands, inputs)
@@ -233,7 +249,7 @@ def build_flash_plan(
         inputs.search_paths,
         inputs.config_files,
         planner,
-        (f"bindto {REMOTE_ADDRESS_PLACEHOLDER}",),
+        (ArgumentTemplate(("bindto ", SessionValue.ADDRESS)),),
     )
     image = _plan_image(inputs, planner)
     if image.kind == "bin" and (inputs.verify or inputs.verify_only) and not inputs.verify_command:
@@ -248,8 +264,11 @@ def build_flash_plan(
         environment,
         tuple(planner.remote_checks),
         literal_prefix=base.literal_prefix,
-        tcl_path_arguments=tuple(
-            (index, arg) for index, arg in enumerate(arguments) if isinstance(arg, TclPathArgument)
+        argv_templates=base.argv_templates
+        + tuple(
+            (index, arg.argument_template())
+            for index, arg in enumerate(arguments)
+            if isinstance(arg, TclPathArgument)
         ),
     )
     return FlashPlan(process, tuple(planner.staged_files), image.remote)

@@ -296,6 +296,16 @@ not contact the remote host. Mappings refer to resources already present on the
 remote host and do not stage local contents. Local and remote paths may contain
 spaces; quote them as required by YAML syntax.
 
+Mapping destinations and filenames are literal paths. `{workspace}` and
+`{address}` are not configuration placeholders or reserved spellings. The runner
+resolves its own session references separately, without substituting matching
+text in your paths, inherited Tcl commands, or fixed command arguments.
+Configurations retain the same schema and need no format migration. If an older
+revision substituted those spellings in a mapping or Tcl command, use the
+intended literal remote path or supported runner options instead of relying on
+that substitution. Matching client and helper revisions are deployed together;
+the internal Protocol v1 representation changes without a numeric version bump.
+
 The schema enforces the lexical forms above. Post-schema processing is limited
 to contextual semantics that cannot be expressed truthfully as string syntax:
 local home expansion and filesystem resolution, normalized-local-path collision

@@ -7,7 +7,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from .paths import PathPlanner
+from .arguments import ArgumentTemplate
+from .paths import PathPlanner, PlannedPath
 
 
 @dataclass(frozen=True)
@@ -16,6 +17,7 @@ class OpenOcdBasePlan:
 
     argv: tuple[str, ...]
     literal_prefix: int
+    argv_templates: tuple[tuple[int, ArgumentTemplate], ...]
 
 
 def executable_argv(executable: str | tuple[str, ...]) -> list[str]:
@@ -40,16 +42,16 @@ def _resolve_config_file(path: str, search_paths: tuple[str, ...]) -> Path:
 
 def plan_support_paths(
     search_paths: tuple[str, ...], config_files: tuple[str, ...], planner: PathPlanner
-) -> tuple[list[str], list[str]]:
+) -> tuple[list[PlannedPath], list[PlannedPath]]:
     """Plan search/config paths in Zephyr's stable indexed order."""
 
     indexed_search = list(enumerate(search_paths))
-    planned_search: dict[int, str] = {}
+    planned_search: dict[int, PlannedPath] = {}
     for index, path in sorted(indexed_search, key=lambda item: len(Path(item[1]).resolve().parts)):
-        planned_search[index] = planner.plan_directory(Path(path), f"search_{index}").remote
+        planned_search[index] = planner.plan_directory(Path(path), f"search_{index}")
     remote_search = [planned_search[index] for index, _ in indexed_search]
     remote_configs = [
-        planner.plan_file(_resolve_config_file(path, search_paths), f"config-{index}").remote
+        planner.plan_file(_resolve_config_file(path, search_paths), f"config-{index}")
         for index, path in enumerate(config_files)
     ]
     return remote_search, remote_configs
@@ -58,22 +60,37 @@ def plan_support_paths(
 def base_argv(
     executable: str | tuple[str, ...],
     serial: str | None,
-    remote_search: list[str],
-    remote_configs: list[str],
-    pre_config_commands: tuple[str, ...],
-) -> list[str]:
+    remote_search: list[PlannedPath],
+    remote_configs: list[PlannedPath],
+    pre_config_commands: tuple[str | ArgumentTemplate, ...],
+) -> OpenOcdBasePlan:
     """Put runner setup before board configs, after the opaque configured prefix."""
 
     argv = executable_argv(executable)
+    literal_prefix = len(argv)
+    templates: list[tuple[int, ArgumentTemplate]] = []
+
+    def append(value: str, template: ArgumentTemplate | None = None) -> None:
+        if template is not None:
+            templates.append((len(argv), template))
+        argv.append(value)
+
     for path in remote_search:
-        argv.extend(("-s", path))
-    argv.extend(argument for command in pre_config_commands for argument in ("-c", command))
+        argv.append("-s")
+        append(path.remote, path.template)
+    for command in pre_config_commands:
+        argv.append("-c")
+        if isinstance(command, ArgumentTemplate):
+            append(command.preview(), command)
+        else:
+            append(command)
     if serial:
         # Board configurations may consume this variable while they load.
         argv.extend(("-c", "set _ZEPHYR_BOARD_SERIAL " + serial))
     for path in remote_configs:
-        argv.extend(("-f", path))
-    return argv
+        argv.append("-f")
+        append(path.remote, path.template)
+    return OpenOcdBasePlan(tuple(argv), literal_prefix, tuple(templates))
 
 
 def plan_openocd_base(
@@ -82,21 +99,10 @@ def plan_openocd_base(
     search_paths: tuple[str, ...],
     config_files: tuple[str, ...],
     planner: PathPlanner,
-    pre_config_commands: tuple[str, ...],
+    pre_config_commands: tuple[str | ArgumentTemplate, ...],
 ) -> OpenOcdBasePlan:
     """Plan executable, support paths, runner setup, serial, and board configs."""
 
     executable_parts = tuple(executable_argv(executable))
     remote_search, remote_configs = plan_support_paths(search_paths, config_files, planner)
-    return OpenOcdBasePlan(
-        tuple(
-            base_argv(
-                executable_parts,
-                serial,
-                remote_search,
-                remote_configs,
-                pre_config_commands,
-            )
-        ),
-        len(executable_parts),
-    )
+    return base_argv(executable_parts, serial, remote_search, remote_configs, pre_config_commands)

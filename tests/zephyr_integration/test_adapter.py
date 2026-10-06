@@ -23,6 +23,7 @@ import yaml
 from zephyr_remote_openocd.config import ConfigError, PathMapping, ResolvedRemote
 from zephyr_remote_openocd.remote import RemoteSession
 from zephyr_remote_openocd.remote import backend as backend_module
+from zephyr_remote_openocd.remote.arguments import ArgumentTemplate, SessionValue
 from zephyr_remote_openocd.remote.debug import DebugInputs, DebugPlan, build_debug_plan
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
 from zephyr_remote_openocd.remote.forwarding import ForwardStartError
@@ -168,9 +169,9 @@ def test_runner_logs_effective_remote_argv(
         argv = shlex.split(commands[0])
         assert argv[: len(fixed)] == fixed
         assert "bindto 127.64.0.1" in argv
-        assert "echo /workspace with spaces/generated.cfg" in argv
+        assert "echo {workspace}/generated.cfg" in argv
         assert argv == fixed + [
-            arg.replace("{workspace}", "/workspace with spaces").replace("{address}", "127.64.0.1")
+            "bindto 127.64.0.1" if arg == "bindto {address}" else arg
             for arg in processes[0].argv[len(fixed) :]
         ]
     else:
@@ -235,6 +236,10 @@ def test_runner_logs_effective_argv_when_remote_startup_fails(
             (*fixed, "{workspace}/generated file", "{address}"),
             required_output_sentinels=("missing-startup-marker",),
             literal_prefix=len(fixed),
+            argv_templates=(
+                (len(fixed), ArgumentTemplate((SessionValue.WORKSPACE, "/generated file"))),
+                (len(fixed) + 1, ArgumentTemplate((SessionValue.ADDRESS,))),
+            ),
         ),
     )
     runner = create_autospec(runner_api[2], instance=True)

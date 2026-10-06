@@ -246,6 +246,7 @@ def start_frame(
     required_output_sentinels=(),
     readiness_timeout=30.0,
     literal_prefix=0,
+    argv_templates=(),
 ):
     return encode_message(
         "START",
@@ -256,6 +257,7 @@ def start_frame(
         required_output_sentinels=list(required_output_sentinels),
         readiness_timeout=readiness_timeout,
         literal_prefix=literal_prefix,
+        argv_templates=list(argv_templates),
     )
 
 
@@ -809,10 +811,14 @@ def helper_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterato
 
 
 class TestRealProcessHelper:
-    def test_helper_materializes_only_arguments_after_literal_prefix(self, tmp_path):
+    def test_helper_materializes_only_explicit_runner_owned_arguments(self, tmp_path):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        runtime = tmp_path / "runtime {workspace} {address}"
+        runtime.mkdir()
+        literal_file = tmp_path / "literal {workspace} {address}"
+        literal_file.write_text("required literal file\n")
         environment = os.environ.copy()
-        environment["XDG_RUNTIME_DIR"] = str(tmp_path)
+        environment["XDG_RUNTIME_DIR"] = str(runtime)
         with subprocess.Popen(
             [sys.executable, str(helper), "control"],
             env=environment,
@@ -834,8 +840,36 @@ class TestRealProcessHelper:
                             "",
                             "{workspace}/staged/file with spaces",
                             "{address}",
+                            "puts {workspace} {address}",
+                            "generated Tcl preview",
                         ],
                         literal_prefix=5,
+                        required_paths=[
+                            {"kind": "file", "path": str(literal_file)},
+                            {
+                                "kind": "directory",
+                                "path": {"parts": [{"session": "workspace"}, "/staged"]},
+                            },
+                        ],
+                        argv_templates=[
+                            {
+                                "index": 5,
+                                "parts": [{"session": "workspace"}, "/staged/file with spaces"],
+                            },
+                            {"index": 6, "parts": [{"session": "address"}]},
+                            {
+                                "index": 8,
+                                "parts": [
+                                    "load_image ",
+                                    {
+                                        "tcl_word": [
+                                            {"session": "workspace"},
+                                            "/firmware {workspace} {address}",
+                                        ]
+                                    },
+                                ],
+                            },
+                        ],
                     )
                 )
                 process.stdin.flush()
@@ -850,6 +884,10 @@ class TestRealProcessHelper:
                     "",
                     str(workspace / "staged/file with spaces"),
                     ready["remote_address"],
+                    "puts {workspace} {address}",
+                    'load_image "'
+                    + str(workspace).replace("{", r"\{").replace("}", r"\}")
+                    + r'/firmware \{workspace\} \{address\}"',
                 ]
                 assert events[0]["argv"] == [
                     sys.executable,
@@ -1589,6 +1627,7 @@ helper['stage'](sys.argv[2])
                         environment={"ZRO_COLLISION_STATE": str(state)},
                         required_output_sentinels=(output_sentinel,),
                         readiness_timeout=5,
+                        argv_templates=[{"index": 2, "parts": [{"session": "address"}]}],
                     )
                 )
                 process.stdin.flush()

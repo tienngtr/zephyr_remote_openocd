@@ -16,16 +16,21 @@ from typing import Any, BinaryIO, cast, override
 import pytest
 from zephyr_remote_openocd.config import PathMapping
 from zephyr_remote_openocd.remote import helper_client as helper_client_module
+from zephyr_remote_openocd.remote.arguments import ArgumentTemplate, SessionValue, TclWord
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
 from zephyr_remote_openocd.remote.flash import FlashInputs, build_flash_plan
 from zephyr_remote_openocd.remote.helper_client import _HelperClient
 from zephyr_remote_openocd.remote.model import RemoteProcess, RemoteSessionRequest
 from zephyr_remote_openocd.remote.paths import PathPlanner
-from zephyr_remote_openocd.remote.protocol import ProtocolError, decode_message, encode_message
+from zephyr_remote_openocd.remote.protocol import (
+    ProtocolError,
+    decode_message,
+    encode_message,
+    write_start,
+)
 from zephyr_remote_openocd.remote.session import SessionError
 from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand, SshLocalForward
-from zephyr_remote_openocd.remote.tcl import TclPathArgument
-from zephyr_remote_openocd.remote_helper import _decode_start, materialize_argv
+from zephyr_remote_openocd.remote_helper import _decode_start, materialize_argv, materialize_path
 
 OPENOCD_FAILURE_RC = 7
 
@@ -175,14 +180,42 @@ def test_helper_client_reports_every_attempt_before_startup_error():
         client.close()
 
 
-def test_tcl_path_render_escapes_workspace_and_retains_planned_address():
-    argument = TclPathArgument("load_image ", "{workspace}/{address}/firmware.bin", " 0x1000")
-
-    assert argument.render(
-        r'/runtime/[review] $value "quoted" \backslash {workspace} {address}/session'
-    ) == (
+def test_explicit_session_values_are_not_recursively_expanded():
+    process = RemoteProcess(
+        ("openocd", "preview"),
+        argv_templates=(
+            (
+                1,
+                ArgumentTemplate(
+                    (
+                        "load_image ",
+                        TclWord(
+                            (
+                                SessionValue.WORKSPACE,
+                                "/",
+                                SessionValue.ADDRESS,
+                                "/{workspace}/{address}/firmware.bin",
+                            )
+                        ),
+                        " 0x1000",
+                    )
+                ),
+            ),
+        ),
+    )
+    stream = io.BytesIO()
+    write_start(stream, process, ())
+    request = _decode_start(decode_message(stream.getvalue()))
+    argv = materialize_argv(
+        request.argv,
+        workspace=r'/runtime/[review] $value "quoted" \backslash {workspace} {address}/session',
+        address="127.64.0.1",
+        argv_templates=request.argv_templates,
+    )
+    assert argv[1] == (
         r'load_image "/runtime/\[review\] \$value \"quoted\" \\backslash '
-        r'\{workspace\} \{address\}/session/{address}/firmware.bin" 0x1000'
+        r'\{workspace\} \{address\}/session/127.64.0.1/'
+        r'\{workspace\}/\{address\}/firmware.bin" 0x1000'
     )
 
 
@@ -196,7 +229,8 @@ def test_tcl_path_render_escapes_workspace_and_retains_planned_address():
             r'/runtime/\[review\] \$value \"quoted\" \\backslash '
             r'\{workspace\} \{address\}/session/staged/files',
         ),
-        ("/workspace", "/shared/{address}", "/shared/127.64.0.1"),
+        ("/workspace", "/shared/{address}", r"/shared/\{address\}"),
+        ("/workspace", "/shared/{workspace}", r"/shared/\{workspace\}"),
     ),
 )
 def test_flash_paths_are_quoted_after_session_allocation(
@@ -213,9 +247,9 @@ def test_flash_paths_are_quoted_after_session_allocation(
         image.write_bytes(b":00000001FF\n")
     config = tmp_path / "board.cfg"
     config.write_text("# fixture\n")
-    config_remote = r'/configs/[review] $value "quoted" \backslash/board.cfg'
+    config_remote = r'/configs/[review] $value "quoted" \backslash {workspace} {address}/board.cfg'
     executable = r'/tools/[review] $value "quoted" \backslash {workspace} {address}/openocd'
-    user_tcl = 'puts "user [expr {1 + 2}] $value"'
+    user_tcl = 'puts "user [expr {1 + 2}] $value {workspace} {address}"'
     mappings: tuple[PathMapping, ...] = (PathMapping(config, PurePosixPath(config_remote)),)
     if mapped_root is not None:
         mappings += (PathMapping(tmp_path, PurePosixPath(mapped_root)),)
@@ -255,6 +289,7 @@ def test_flash_paths_are_quoted_after_session_allocation(
             workspace=workspace,
             address="127.64.0.1",
             literal_prefix=request.literal_prefix,
+            argv_templates=request.argv_templates,
         )
     finally:
         client.close()
@@ -263,12 +298,11 @@ def test_flash_paths_are_quoted_after_session_allocation(
     assert argv[argv.index("-f") + 1] == config_remote
     assert "bindto 127.64.0.1" in argv
     if mapped_root is not None:
-        checked_paths = materialize_argv(
-            (check.path for check in request.required_paths),
-            workspace=workspace,
-            address="127.64.0.1",
+        checked_paths = tuple(
+            materialize_path(check.path, workspace=workspace, address="127.64.0.1")
+            for check in request.required_paths
         )
-        assert f"/shared/127.64.0.1/firmware.{image_type}" in checked_paths
+        assert f"{mapped_root}/firmware.{image_type}" in checked_paths
     assert user_tcl in argv
     commands = [
         argv[index + 1]

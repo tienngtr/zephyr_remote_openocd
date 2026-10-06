@@ -852,8 +852,11 @@ SHALL take precedence. For example, with `/src` mapped to `/remote/a` and
 `/src/board` mapped to `/remote/b`, paths under `/src/board` SHALL use
 `/remote/b` and other paths under `/src` SHALL use `/remote/a`. The selected
 mapping SHALL translate the path by appending its path relative to the selected
-local root to the selected remote root. An overlapping ancestor mapping SHALL
-NOT also apply to that path or create a mapping collision.
+local root to the selected remote root. Mapping destinations and relative path
+components SHALL remain literal, including `{workspace}` and `{address}` text;
+session-value substitution SHALL apply only at runner-owned substitution points.
+An overlapping ancestor mapping SHALL NOT also apply to that path or create a
+mapping collision.
 
 ### REQ-FUNC-FILE-005
 

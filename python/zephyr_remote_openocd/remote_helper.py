@@ -590,15 +590,90 @@ def _validate_options(sentinels, timeout, literal_prefix, argv_length):
     _validate_literal_prefix(literal_prefix, argv_length)
 
 
-def _expand(value, replacements):
-    for placeholder, replacement in replacements.items():
-        value = value.replace(placeholder, replacement)
-    return value
+class SessionValue(NamedTuple):
+    name: str
+
+
+class TclWord(NamedTuple):
+    parts: tuple[str | SessionValue, ...]
+
+
+class ArgumentTemplate(NamedTuple):
+    parts: tuple[str | SessionValue | TclWord, ...]
+
+
+def _parse_template_parts(values, *, allow_tcl=True):
+    if not isinstance(values, list) or not values:
+        raise ValueError("invalid argument template parts")
+    parts: list[str | SessionValue | TclWord] = []
+    for value in values:
+        if isinstance(value, str) and "\0" not in value:
+            parts.append(value)
+        elif isinstance(value, dict) and set(value) == {"session"}:
+            if value["session"] not in ("workspace", "address"):
+                raise ValueError("invalid argument template session value")
+            parts.append(SessionValue(value["session"]))
+        elif allow_tcl and isinstance(value, dict) and set(value) == {"tcl_word"}:
+            parts.append(TclWord(_parse_template_parts(value["tcl_word"], allow_tcl=False)))
+        else:
+            raise ValueError("invalid argument template part")
+    return tuple(parts)
+
+
+def _parse_argv_templates(values, argv_length, literal_prefix):
+    if not isinstance(values, list):
+        raise ValueError("invalid argv templates")
+    templates = []
+    seen = set()
+    for value in values:
+        if not isinstance(value, dict) or set(value) != {"index", "parts"}:
+            raise ValueError("invalid argv template")
+        index = value["index"]
+        if (
+            isinstance(index, bool)
+            or not isinstance(index, int)
+            or not literal_prefix <= index < argv_length
+            or index in seen
+        ):
+            raise ValueError("invalid argv template index")
+        seen.add(index)
+        templates.append((index, ArgumentTemplate(_parse_template_parts(value["parts"]))))
+    return tuple(templates)
+
+
+def _tcl_quote(value):
+    # Keep the literal-word quoting rule in sync with remote/tcl.py. The helper
+    # is deployed standalone and cannot import the local package.
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    for character in "$[]{}":
+        escaped = escaped.replace(character, "\\" + character)
+    return '"' + escaped + '"'
+
+
+def _render_parts(parts, replacements):
+    result = []
+    for part in parts:
+        if isinstance(part, str):
+            result.append(part)
+        elif isinstance(part, SessionValue):
+            result.append(replacements[part.name])
+        else:
+            result.append(_tcl_quote(_render_parts(part.parts, replacements)))
+    return "".join(result)
+
+
+def materialize_path(value, *, workspace, address):
+    if isinstance(value, str):
+        return value
+    return _render_parts(value.parts, {"workspace": workspace, "address": address})
 
 
 def _check_required_paths(checks, replacements):
     for check in checks:
-        candidate = Path(_expand(check.path, replacements))
+        path = materialize_path(check.path, **replacements)
+        if not path:
+            raise ValueError("required remote path must not be empty")
+        candidate = Path(path)
         valid = candidate.is_file() if check.kind == "file" else candidate.is_dir()
         if not valid:
             raise ValueError(f"required remote {check.kind} is missing: {candidate}")
@@ -613,7 +688,7 @@ class ServiceRequest(NamedTuple):
 
 class RequiredPath(NamedTuple):
     kind: str
-    path: str
+    path: str | ArgumentTemplate
 
 
 class StartRequest(NamedTuple):
@@ -624,6 +699,7 @@ class StartRequest(NamedTuple):
     required_output_sentinels: tuple[str, ...]
     readiness_timeout: float
     literal_prefix: int
+    argv_templates: tuple[tuple[int, ArgumentTemplate], ...]
 
 
 class StopRequest:
@@ -641,12 +717,17 @@ def _parse_required_path(item):
         not isinstance(item, dict)
         or set(item) != {"kind", "path"}
         or item.get("kind") not in ("file", "directory")
-        or not isinstance(item.get("path"), str)
-        or not item["path"]
-        or "\0" in item["path"]
     ):
         raise ValueError("invalid required-path assertion")
-    return RequiredPath(item["kind"], item["path"])
+    path = item["path"]
+    if isinstance(path, str):
+        if not path or "\0" in path:
+            raise ValueError("invalid required-path assertion")
+    elif isinstance(path, dict) and set(path) == {"parts"}:
+        path = ArgumentTemplate(_parse_template_parts(path["parts"], allow_tcl=False))
+    else:
+        raise ValueError("invalid required-path assertion")
+    return RequiredPath(item["kind"], path)
 
 
 def _decode_start(message):
@@ -660,6 +741,7 @@ def _decode_start(message):
         "required_output_sentinels",
         "readiness_timeout",
         "literal_prefix",
+        "argv_templates",
     }
     if set(message) != fields:
         raise ValueError("START fields are invalid")
@@ -673,6 +755,7 @@ def _decode_start(message):
     _validate_options(sentinels, timeout, literal_prefix, len(argv))
     services = _parse_services(message["services"], "START")
     checks = _parse_required_paths(message["required_paths"])
+    templates = _parse_argv_templates(message["argv_templates"], len(argv), literal_prefix)
     return StartRequest(
         tuple(argv),
         tuple(environment.items()),
@@ -681,6 +764,7 @@ def _decode_start(message):
         tuple(sentinels),
         float(timeout),
         literal_prefix,
+        templates,
     )
 
 
@@ -1090,16 +1174,24 @@ def _spawn_child(argv, *, cwd=None, environment=None, required_output_sentinels=
 
 
 def materialize_argv(
-    argv: Iterable[str], *, workspace: str, address: str, literal_prefix: int = 0
+    argv: Iterable[str],
+    *,
+    workspace: str,
+    address: str,
+    literal_prefix: int = 0,
+    argv_templates: Iterable[tuple[int, ArgumentTemplate]] = (),
 ) -> tuple[str, ...]:
-    """Resolve session placeholders while preserving the configured literal prefix.
+    """Resolve only explicit runner-owned templates, preserving all literal text.
 
     The helper reports this exact argv before spawning each child attempt so
     diagnostics never reconstruct session expansion independently.
     """
-    replacements = {"{workspace}": workspace, "{address}": address}
+    replacements = {"workspace": workspace, "address": address}
+    templates = dict(argv_templates)
     return tuple(
-        arg if index < literal_prefix else _expand(arg, replacements)
+        _render_parts(templates[index].parts, replacements)
+        if index >= literal_prefix and index in templates
+        else arg
         for index, arg in enumerate(argv)
     )
 
@@ -1347,8 +1439,9 @@ class ControlSession:
             workspace=str(self.work),
             address=self.address,
             literal_prefix=request.literal_prefix,
+            argv_templates=request.argv_templates,
         )
-        replacements = {"{workspace}": str(self.work), "{address}": self.address}
+        replacements = {"workspace": str(self.work), "address": self.address}
         _check_required_paths(request.required_paths, replacements)
         emit("PROCESS_STARTING", argv=list(argv))
         self.child = _spawn_child(

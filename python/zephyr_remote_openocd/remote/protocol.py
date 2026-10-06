@@ -99,7 +99,13 @@ def write_start(stream: BinaryIO, process: RemoteProcess, services: Iterable[Ser
         argv=list(process.argv),
         environment=dict(process.environment),
         required_paths=[
-            {"kind": check.kind, "path": check.path} for check in process.required_paths
+            {
+                "kind": check.kind,
+                "path": check.path
+                if check.template is None
+                else {"parts": check.template.wire_parts()},
+            }
+            for check in process.required_paths
         ],
         services=[
             {"name": service.name, "remote_port": service.remote_port} for service in services
@@ -107,6 +113,10 @@ def write_start(stream: BinaryIO, process: RemoteProcess, services: Iterable[Ser
         required_output_sentinels=list(process.required_output_sentinels),
         readiness_timeout=process.readiness_timeout,
         literal_prefix=process.literal_prefix,
+        argv_templates=[
+            {"index": index, "parts": template.wire_parts()}
+            for index, template in process.argv_templates
+        ],
     )
 
 

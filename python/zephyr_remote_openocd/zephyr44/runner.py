@@ -577,11 +577,21 @@ def _request_record(request):
             "argv": list(request.process.argv),
             "environment": [name for name, _ in request.process.environment],
             "required_paths": [
-                {"path": item.path, "kind": item.kind} for item in request.process.required_paths
+                {
+                    "path": item.path
+                    if item.template is None
+                    else {"parts": item.template.wire_parts()},
+                    "kind": item.kind,
+                }
+                for item in request.process.required_paths
             ],
             "required_output_sentinels": list(request.process.required_output_sentinels),
             "readiness_timeout": request.process.readiness_timeout,
             "literal_prefix": request.process.literal_prefix,
+            "argv_templates": [
+                {"index": index, "parts": template.wire_parts()}
+                for index, template in request.process.argv_templates
+            ],
         }
     return result
 

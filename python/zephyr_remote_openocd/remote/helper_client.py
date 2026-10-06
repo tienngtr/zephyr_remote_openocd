@@ -119,7 +119,6 @@ class _HelperClient:
         helper = self._process_or_error()
         if helper.stdin is None:
             raise SessionError("helper stdin was not captured")
-        process = process.resolve_tcl_paths(self.allocation.remote_workspace)
         write_start(cast(BinaryIO, helper.stdin), process, service_list)
         address = self._await_process_ready()
         self._start_event_drain()

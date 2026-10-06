@@ -21,6 +21,7 @@ from zephyr_remote_openocd.remote import (
     SessionError,
     StagedFile,
 )
+from zephyr_remote_openocd.remote.arguments import ArgumentTemplate, SessionValue
 from zephyr_remote_openocd.remote.deploy import deploy_helper
 from zephyr_remote_openocd.remote.forwarding import _ForwardManager
 from zephyr_remote_openocd.remote.ssh import SshCommand, SshLocalForward
@@ -73,6 +74,7 @@ def session_echo_process() -> RemoteProcess:
         ("python3", "-c", REMOTE_SESSION_ECHO, "{address}", "3333"),
         required_output_sentinels=("ZRO_TEST_READY",),
         literal_prefix=3,
+        argv_templates=((3, ArgumentTemplate((SessionValue.ADDRESS,))),),
     )
 
 
@@ -448,6 +450,12 @@ class TestSshTransportIntegration:
             process = RemoteProcess(
                 (*openocd_command, "-f", "{workspace}/staged/environment.cfg"),
                 (("ZRO_CONFIG_VALUE", "channel_1"),),
+                argv_templates=(
+                    (
+                        len(openocd_command) + 1,
+                        ArgumentTemplate((SessionValue.WORKSPACE, "/staged/environment.cfg")),
+                    ),
+                ),
             )
             request = RemoteSessionRequest(
                 self.host,

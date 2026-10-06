@@ -30,9 +30,11 @@ complete and partial frames.
 The helper emits one `SESSION_CREATED` event before reading commands. The
 client writes commands to helper stdin and reads events from stdout. There is
 no feature negotiation. Compatibility requires the complete current contract,
-including the pre-spawn `PROCESS_STARTING` event, not version equality alone.
-An earlier version-1 helper that omits that event is incompatible. Normal
-deployment installs the matching content-addressed helper automatically;
+including explicit argument templates and the pre-spawn `PROCESS_STARTING`
+event, not version equality alone. Earlier version-1 clients or helpers using
+automatic textual placeholder expansion are incompatible: `START` now requires
+`argv_templates`, even when empty. Normal deployment installs the matching
+content-addressed helper automatically;
 no user configuration migration is required and the numeric version remains 1.
 
 ## Session commands
@@ -44,15 +46,42 @@ required; no other fields are allowed:
 | --- | --- |
 | `argv` | Non-empty string list; the first string is non-empty and later strings may be empty. |
 | `environment` | Object whose names are non-empty strings without `=` or NUL and whose values are strings without NUL. |
-| `required_paths` | List of exact `{kind, path}` objects. `kind` is `file` or `directory`; `path` is a non-empty string without NUL. |
+| `required_paths` | List of exact `{kind, path}` objects. `kind` is `file` or `directory`; `path` is a non-empty literal string without NUL or an exact `{parts}` path template as defined below. |
 | `services` | List of exact `{name, remote_port}` objects. `name` is a non-empty string; `remote_port` is a non-Boolean integer in `1..65535`. Names and ports are unique within the request. |
 | `required_output_sentinels` | List of unique non-empty, trimmed startup output markers without `CR`, `LF`, or NUL; may be empty. |
 | `readiness_timeout` | Positive finite, non-Boolean number. |
-| `literal_prefix` | Non-Boolean, non-negative integer no greater than the length of `argv`. Placeholder expansion skips this many leading arguments. |
+| `literal_prefix` | Non-Boolean, non-negative integer no greater than the length of `argv`. Templates cannot target this many leading arguments. |
+| `argv_templates` | List of exact `{index, parts}` objects. Indices are unique non-Boolean integers at least `literal_prefix` and less than the length of `argv`. Each template replaces its indexed argv element. An empty list is valid and required when no templates are used. |
 
-`START` expands `{workspace}` and `{address}` in arguments at and after
-`literal_prefix`, and in required-path values. It checks required paths and
-starts the child in `<remote_workspace>/staged` with the helper environment
+All ordinary strings are literal, including `{workspace}` and `{address}`
+spellings in argv, required paths, mapping destinations, and inherited Tcl.
+There is no automatic textual replacement. A template's `parts` is a non-empty
+list containing literal strings without NUL and exact `{session}` objects whose
+value is `workspace` or `address`. The helper concatenates these parts in order,
+inserting its actual workspace or the current attempt's allocated address only
+at those explicit references. Inserted values are not scanned for additional
+substitutions. An argv element targeted by a template is a planning preview;
+the template supplies its complete effective value.
+
+Only argv templates may also contain exact `{tcl_word}` objects. Their value is
+a non-empty parts list of literal strings and session references, with no nested
+Tcl words. The helper resolves those parts, then quotes the complete result as
+one double-quoted Tcl word, backslash-escaping backslashes, double quotes,
+`$`, `[`, `]`, `{`, and `}`. Quoting is applied after session values are inserted,
+so their literal characters cannot introduce Tcl substitutions. A required-path
+template is an exact `{parts}` object containing only literal strings and
+session references, and must resolve to a non-empty filesystem path; Tcl word
+quoting is invalid there. Unknown fields, invalid parts, repeated indices,
+prefix-targeting indices, and out-of-range indices are rejected before startup.
+
+For example, an argv template with
+`parts: ["bindto ", {"session": "address"}]` resolves the runner-owned bind
+address, while the ordinary string `"echo {address}"` stays literal.
+`parts: ["load_image ", {"tcl_word": [{"session": "workspace"}, "/staged/fw.hex"]}]`
+resolves and quotes a runner-owned staged firmware path.
+
+The helper materializes templates for each spawn attempt, checks required paths,
+and starts the child in `<remote_workspace>/staged` with the helper environment
 overlaid by `environment`. Service `remote_port` values are unique by
 contract, and duplicate values are rejected during validation before startup.
 
@@ -63,7 +92,8 @@ the address, materializing the argv, and validating required paths, the helper
 emits `PROCESS_STARTING` with the exact argv immediately before attempting to
 spawn the child. A required-path failure emits no `PROCESS_STARTING` event.
 Each bind-collision retry emits its own event with that attempt's
-resolved values. This event does not indicate successful spawning or readiness
+resolved values. Literal strings remain unchanged across retries. This event
+does not indicate successful spawning or readiness
 and remains observable when spawning or readiness subsequently fails.
 
 With an empty marker list, the process is immediately startup-ready after
@@ -129,7 +159,7 @@ The client rejects child output or readiness before `PROCESS_STARTING`, and
 rejects `PROCESS_STARTING` after readiness or any session-ending event. It
 delivers each reported argv to the process-start observer while awaiting
 readiness, before required forwarding or dependent client startup. The observer
-does not reconstruct placeholder expansion locally.
+does not reconstruct template materialization locally.
 Fragment order is preserved within each child stream. Events from stdout and
 stderr are serialized in helper-observed order; no ordering relationship
 between writes to different child streams is guaranteed.

@@ -131,7 +131,7 @@ zephyr_remote_openocd/
                 services.py, session.py, forwarding.py
                 helper_client.py, cleanup.py, protocol.py
                 backend.py, deploy.py, debug.py, flash.py, rtt.py
-                openocd_plan.py
+                openocd_plan.py, arguments.py, tcl.py
 
             remote_helper.py
 
@@ -687,16 +687,22 @@ Flash command construction is phase-oriented: a shared immutable OpenOCD
 prefix is combined with a resolved image plan and one concrete ELF, BIN, or
 HEX operation plan. The public flash-plan result remains the runner boundary.
 
-Generated firmware Tcl arguments retain their path separately from surrounding
-command text in immutable local process metadata and remain unquoted during
-planning. After the helper reports the allocated session workspace, the
-client resolves those paths and Tcl-quotes them before serializing the
-process-start command. Quoted braces prevent the helper's subsequent
-placeholder expansion from interpreting placeholder-like text in a resolved
-workspace. Address placeholders already present in the planned path remain
-available for helper allocation. Literal argv paths still use ordinary helper
-expansion, and user-provided Tcl remains opaque. The process-start wire
-details remain defined solely in [protocol.md](protocol.md).
+Planning distinguishes literal strings from explicit runner-owned session-value
+references. Mapped paths are literal; staged paths carry a workspace reference
+followed by a literal relative suffix. Generated bind commands carry an address
+reference. Neither a mapping destination nor a filename becomes a template
+because it contains `{workspace}` or `{address}`. Inherited Tcl and the
+configured command prefix also remain literal.
+
+Generated firmware Tcl arguments retain the path separately from surrounding
+command text in immutable argument templates. The helper materializes these
+templates for each attempt and quotes each resolved firmware path as one Tcl
+word before reporting and spawning the exact effective argv. Values introduced
+by workspace or address resolution are not scanned again. Offline argv previews
+may show unresolved session references; execution uses the explicit templates,
+not inference from preview text. Required-path checks preserve the same
+literal/session-reference distinction without applying Tcl quoting. The
+process-start wire details remain defined solely in [protocol.md](protocol.md).
 
 ---
 
@@ -1586,8 +1592,9 @@ invokes the session's process-start observer while awaiting readiness; the
 adapter shell-escapes the reported elements without reconstructing expansion.
 This preserves the diagnostic on spawn, readiness, and required-forwarding
 failures, and reports each bind-collision retry with its actual workspace and
-allocated address. Only elements after the literal configured prefix receive
-workspace/address expansion.
+allocated address. Only explicit runner-owned templates receive workspace or
+address values; all other arguments remain literal, and templates cannot target
+the configured prefix.
 
 The pre-spawn event's ordering, retry eligibility, and compatibility
 requirements are defined solely in [protocol.md](protocol.md). Version
@@ -1778,7 +1785,8 @@ is more durable than a duplicate path sketch:
 - `remote/session.py`, `helper_client.py`, and `backend.py` coordinate local
   session lifecycle, helper protocol, and OpenOCD result propagation.
 - `remote/model.py` defines transport and service data; `services.py`, `rtt.py`,
-  and `tcl.py` own service, RTT, and Tcl-specific planning models.
+  `arguments.py`, and `tcl.py` own service, RTT, explicit session-value argument
+  templates, and Tcl-word quoting.
 - `forwarding.py` manages local SSH forwards to remote OpenOCD-owned listeners;
   `remote_helper.py` allocates remote addresses and checks selected ports for
   bind collisions.

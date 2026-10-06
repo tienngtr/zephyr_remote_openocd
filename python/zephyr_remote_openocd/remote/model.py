@@ -6,12 +6,12 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
+from .arguments import ArgumentTemplate, TclWord
 from .ssh import SshCommand
-from .tcl import TclPathArgument
 
 
 class DuplicateServiceError(ValueError):
@@ -123,12 +123,19 @@ class SessionDescriptor:
 class RemotePathCheck:
     path: str
     kind: Literal["file", "directory"]
+    template: ArgumentTemplate | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.path, str) or not self.path or "\0" in self.path:
             raise ValueError("remote path check must have a non-empty path")
         if self.kind not in {"file", "directory"}:
             raise ValueError("remote path check kind is invalid")
+        if self.template is not None and any(
+            isinstance(part, TclWord) for part in self.template.parts
+        ):
+            raise ValueError("remote path checks cannot contain Tcl words")
+        if self.template is not None and not self.template.preview():
+            raise ValueError("remote path check template must not be empty")
 
 
 @dataclass(frozen=True)
@@ -139,16 +146,7 @@ class RemoteProcess:
     required_output_sentinels: tuple[str, ...] = field(default_factory=tuple)
     readiness_timeout: float = 30.0
     literal_prefix: int = 0
-    tcl_path_arguments: tuple[tuple[int, TclPathArgument], ...] = ()
-
-    def resolve_tcl_paths(self, workspace: str) -> RemoteProcess:
-        """Materialize only generated Tcl paths before sending ordinary wire argv."""
-        if not self.tcl_path_arguments:
-            return self
-        argv = list(self.argv)
-        for index, argument in self.tcl_path_arguments:
-            argv[index] = argument.render(workspace)
-        return replace(self, argv=tuple(argv), tcl_path_arguments=())
+    argv_templates: tuple[tuple[int, ArgumentTemplate], ...] = ()
 
     def __post_init__(self) -> None:
         argv, environment, required_paths, required_output_sentinels = _normalized_process_fields(
@@ -163,7 +161,17 @@ class RemoteProcess:
         object.__setattr__(self, "environment", environment)
         object.__setattr__(self, "required_paths", required_paths)
         object.__setattr__(self, "required_output_sentinels", required_output_sentinels)
-        object.__setattr__(self, "tcl_path_arguments", tuple(self.tcl_path_arguments))
+        templates = tuple(self.argv_templates)
+        indices = [index for index, _ in templates]
+        if len(indices) != len(set(indices)) or any(
+            isinstance(index, bool)
+            or not isinstance(index, int)
+            or not self.literal_prefix <= index < len(argv)
+            or not isinstance(template, ArgumentTemplate)
+            for index, template in templates
+        ):
+            raise ValueError("argv templates must target unique non-prefix argument indices")
+        object.__setattr__(self, "argv_templates", templates)
 
 
 def _normalized_process_fields(

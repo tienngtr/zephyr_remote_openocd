@@ -7,9 +7,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from .arguments import ArgumentTemplate, SessionValue
 from .model import DuplicateServiceError, RemoteProcess, Service, validated_services
 from .openocd_plan import plan_openocd_base
-from .paths import REMOTE_ADDRESS_PLACEHOLDER, PathPlanner
+from .paths import PathPlanner
 
 RTT_SEARCH_RANGE_SIZE = 0x10
 RTT_CHANNEL = 0
@@ -262,7 +263,7 @@ def build_debug_plan(
     telnet_port = services.remote_telnet if services.remote_telnet is not None else "disabled"
     pre_config_commands = (
         f"lappend post_init_commands {{echo {inputs.openocd_init_sentinel}}}",
-        f"bindto {REMOTE_ADDRESS_PLACEHOLDER}",
+        ArgumentTemplate(("bindto ", SessionValue.ADDRESS)),
         f"tcl_port {tcl_port}",
         f"telnet_port {telnet_port}",
         f"gdb_port {services.remote_gdb}",
@@ -286,6 +287,7 @@ def build_debug_plan(
         (inputs.openocd_init_sentinel, inputs.startup_complete_sentinel),
         readiness_timeout=OPENOCD_READINESS_TIMEOUT,
         literal_prefix=base.literal_prefix,
+        argv_templates=base.argv_templates,
     )
     return DebugPlan(
         process,

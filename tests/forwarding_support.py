@@ -23,9 +23,9 @@ from zephyr_remote_openocd.remote.model import (
     Service,
     SessionAllocation,
 )
-from zephyr_remote_openocd.remote.protocol import encode_message
+from zephyr_remote_openocd.remote.protocol import decode_message, encode_message, write_start
 from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand, SshLocalForward
-from zephyr_remote_openocd.remote_helper import materialize_argv
+from zephyr_remote_openocd.remote_helper import decode_command, materialize_argv
 
 GDB = Service("gdb", 3333, 3333)
 TCL = Service("tcl", 6333, 6333)
@@ -78,12 +78,16 @@ class ControlledHelper:
 
     def start_process(self, process: RemoteProcess, services: Iterable[Service]) -> str:
         if self.process_start_handler is not None:
+            stream = io.BytesIO()
+            write_start(stream, process, ())
+            request = decode_command(decode_message(stream.getvalue()))
             self.process_start_handler(
                 materialize_argv(
                     process.argv,
                     workspace=self.allocation.remote_workspace,
                     address="127.64.0.1",
                     literal_prefix=process.literal_prefix,
+                    argv_templates=request.argv_templates,
                 )
             )
         self.services = tuple(services)

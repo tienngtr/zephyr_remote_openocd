@@ -72,6 +72,7 @@ def test_control_session_services_input_during_readiness(
                 "required_output_sentinels": ["not-ready"],
                 "readiness_timeout": 30,
                 "literal_prefix": 1,
+                "argv_templates": [],
             }
         ).encode()
         + b"\n"
@@ -267,6 +268,7 @@ def start_command():
         "required_output_sentinels": ["READY"],
         "readiness_timeout": 30.0,
         "literal_prefix": 1,
+        "argv_templates": [],
     }
 
 
@@ -519,6 +521,7 @@ def test_relay_real_child_flushes_newline_free_output_before_exit(
                 "required_output_sentinels": [],
                 "readiness_timeout": 30,
                 "literal_prefix": 3,
+                "argv_templates": [],
             }
         ).encode()
         + b"\n"
@@ -805,6 +808,7 @@ def _start_session_command(argv, sentinels=()):
                 "required_output_sentinels": list(sentinels),
                 "readiness_timeout": 30,
                 "literal_prefix": len(argv),
+                "argv_templates": [],
             }
         ).encode()
         + b"\n"
@@ -1702,6 +1706,41 @@ def test_decode_command_rejects_malformed_required_path_before_launch(start_comm
         remote_helper.decode_command(start_command)
 
 
+def test_decode_command_rejects_previous_textual_expansion_contract(start_command):
+    del start_command["argv_templates"]
+    with pytest.raises(ValueError):
+        remote_helper.decode_command(start_command)
+
+
+@pytest.mark.parametrize(
+    "templates",
+    (
+        None,
+        [{"index": True, "parts": ["text"]}],
+        [{"index": 0, "parts": ["cannot override configured prefix"]}],
+        [{"index": 2, "parts": ["outside argv"]}],
+        [{"index": 1, "parts": []}],
+        [{"index": 1, "parts": ["nul\0"]}],
+        [{"index": 1, "parts": [{"session": "unknown"}]}],
+        [{"index": 1, "parts": [{"session": "address", "extra": True}]}],
+        [{"index": 1, "parts": [{"tcl_word": [{"tcl_word": ["nested"]}]}]}],
+        [{"index": 1, "parts": ["first"]}, {"index": 1, "parts": ["duplicate"]}],
+    ),
+)
+def test_decode_command_rejects_malformed_owned_substitutions(start_command, templates):
+    start_command["argv_templates"] = templates
+    with pytest.raises(ValueError):
+        remote_helper.decode_command(start_command)
+
+
+def test_decode_command_rejects_tcl_quoting_in_a_filesystem_path(start_command):
+    start_command["required_paths"] = [
+        {"kind": "file", "path": {"parts": [{"tcl_word": ["not a path template"]}]}}
+    ]
+    with pytest.raises(ValueError):
+        remote_helper.decode_command(start_command)
+
+
 @pytest.mark.parametrize("service_less", (False, True))
 def test_control_session_does_not_launch_when_required_file_is_missing(
     tmp_path, monkeypatch, start_command, control_pipe, capsys, service_less
@@ -1710,7 +1749,9 @@ def test_control_session_does_not_launch_when_required_file_is_missing(
     staged = workspace / "staged"
     staged.mkdir(parents=True)
     missing_file = staged / "image"
-    start_command["required_paths"] = [{"kind": "file", "path": "{workspace}/staged/image"}]
+    start_command["required_paths"] = [
+        {"kind": "file", "path": {"parts": [{"session": "workspace"}, "/staged/image"]}}
+    ]
     spawn_calls = []
     monkeypatch.setattr(
         remote_helper,

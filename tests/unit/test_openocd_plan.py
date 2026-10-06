@@ -2,13 +2,66 @@
 
 """OpenOCD config lookup through real staged and mapped search trees."""
 
+import io
 from pathlib import Path, PurePosixPath
 
 import pytest
 from zephyr_remote_openocd.config import PathMapping
-from zephyr_remote_openocd.remote.model import RemotePathCheck, StagedDirectory, StagedFile
-from zephyr_remote_openocd.remote.openocd_plan import plan_support_paths
+from zephyr_remote_openocd.remote.model import (
+    RemotePathCheck,
+    RemoteProcess,
+    StagedDirectory,
+    StagedFile,
+)
+from zephyr_remote_openocd.remote.openocd_plan import plan_openocd_base, plan_support_paths
 from zephyr_remote_openocd.remote.paths import PathPlanner, PathPlanningError
+from zephyr_remote_openocd.remote.protocol import decode_message, write_start
+from zephyr_remote_openocd.remote_helper import _decode_start, materialize_argv, materialize_path
+
+
+@pytest.mark.parametrize("mapped", (False, True), ids=("staged", "mapped"))
+def test_search_tree_token_text_remains_literal_through_helper_materialization(
+    tmp_path: Path, mapped: bool
+) -> None:
+    root = tmp_path / "scripts"
+    root.mkdir()
+    config_name = "{workspace} {address}.cfg"
+    (root / config_name).write_text("# fixture\n")
+    remote_root = "/remote/{workspace}/{address}"
+    mappings = (PathMapping(root, PurePosixPath(remote_root)),) if mapped else ()
+    planner = PathPlanner(mappings)
+    base = plan_openocd_base("openocd", None, (str(root),), (str(root / config_name),), planner, ())
+    stream = io.BytesIO()
+    write_start(
+        stream,
+        RemoteProcess(
+            base.argv,
+            required_paths=tuple(planner.remote_checks),
+            literal_prefix=base.literal_prefix,
+            argv_templates=base.argv_templates,
+        ),
+        (),
+    )
+    request = _decode_start(decode_message(stream.getvalue()))
+    workspace = "/runtime/{address}/{workspace}/session"
+    argv = materialize_argv(
+        request.argv,
+        workspace=workspace,
+        address="127.64.0.1",
+        literal_prefix=request.literal_prefix,
+        argv_templates=request.argv_templates,
+    )
+    if not mapped:
+        tree = next(item for item in planner.staged_files if isinstance(item, StagedDirectory))
+        remote_root = f"{workspace}/staged/{tree.destination}"
+
+    assert argv[argv.index("-s") + 1] == remote_root
+    assert argv[argv.index("-f") + 1] == remote_root + "/" + config_name
+    if mapped:
+        assert tuple(
+            materialize_path(check.path, workspace=workspace, address="127.64.0.1")
+            for check in request.required_paths
+        ) == (remote_root, remote_root + "/" + config_name)
 
 
 @pytest.mark.parametrize("mapped", (False, True), ids=("staged", "mapped"))
@@ -44,10 +97,10 @@ def test_relative_config_uses_first_search_root(
     expected_search = [remote_parent, remote_parent + "/nested"]
     if nested_first:
         expected_search.reverse()
-    assert search == expected_search
-    assert configs == [expected_search[0] + "/interface/example.cfg"]
+    assert [path.remote for path in search] == expected_search
+    assert [path.remote for path in configs] == [expected_search[0] + "/interface/example.cfg"]
     if mapped:
-        assert RemotePathCheck(configs[0], "file") in planner.remote_checks
+        assert RemotePathCheck(configs[0].remote, "file") in planner.remote_checks
         assert not planner.staged_files
     else:
         staged = [item for item in planner.staged_files if isinstance(item, StagedFile)]
@@ -75,7 +128,7 @@ def test_relative_config_skips_search_roots_without_a_file(
     )
 
     assert len(search) == 3
-    assert configs == [search[2] + "/interface/example.cfg"]
+    assert [path.remote for path in configs] == [search[2].remote + "/interface/example.cfg"]
     assert len([item for item in planner.staged_files if item.source == config]) == 1
 
 
@@ -98,7 +151,7 @@ def test_direct_config_takes_precedence_over_search_roots(
     )
 
     if mapped:
-        assert configs == ["/remote/example.cfg"]
+        assert [path.remote for path in configs] == ["/remote/example.cfg"]
         assert RemotePathCheck("/remote/example.cfg", "file") in planner.remote_checks
     else:
         staged_configs = [
@@ -107,7 +160,9 @@ def test_direct_config_takes_precedence_over_search_roots(
             if isinstance(item, StagedFile) and item.source == config
         ]
         assert len(staged_configs) == 1
-        assert configs == [f"{{workspace}}/staged/{staged_configs[0].destination}"]
+        assert [path.remote for path in configs] == [
+            f"{{workspace}}/staged/{staged_configs[0].destination}"
+        ]
 
 
 @pytest.mark.parametrize("absolute", (False, True), ids=("relative", "absolute"))

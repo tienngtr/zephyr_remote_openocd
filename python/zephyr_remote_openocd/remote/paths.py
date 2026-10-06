@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath
 
 from zephyr_remote_openocd.config import PathMapping
 
+from .arguments import ArgumentTemplate, SessionValue
 from .model import RemotePathCheck, StagedDirectory, StagedEntry, StagedFile
 
 WORKSPACE_PLACEHOLDER = "{workspace}"
@@ -25,6 +26,7 @@ class PlannedPath:
     remote: str
     kind: str
     mapped: bool
+    template: ArgumentTemplate | None = None
 
 
 class PathPlanner:
@@ -51,7 +53,12 @@ class PathPlanner:
                 return mapping, relative
         return None
 
-    def _existing_staged(self, path: Path) -> str | None:
+    @staticmethod
+    def _staged_path(destination: PurePosixPath) -> tuple[str, ArgumentTemplate]:
+        template = ArgumentTemplate((SessionValue.WORKSPACE, f"/staged/{destination}"))
+        return template.preview(), template
+
+    def _existing_staged(self, path: Path) -> tuple[str, ArgumentTemplate] | None:
         candidates = []
         for root, destination in self._staged_roots:
             relative = self._relative(path, root)
@@ -60,7 +67,7 @@ class PathPlanner:
         if not candidates:
             return None
         _, destination, relative = max(candidates, key=lambda item: item[0])
-        return f"{WORKSPACE_PLACEHOLDER}/staged/{destination.joinpath(*relative.parts)}"
+        return self._staged_path(destination.joinpath(*relative.parts))
 
     def plan_directory(self, source: Path, namespace: str) -> PlannedPath:
         source = Path(source).expanduser().resolve()
@@ -74,14 +81,13 @@ class PathPlanner:
             return PlannedPath(source, remote, "directory", True)
         existing = self._existing_staged(source)
         if existing:
-            return PlannedPath(source, existing, "directory", False)
+            return PlannedPath(source, existing[0], "directory", False, existing[1])
         destination = PurePosixPath("trees", namespace)
         self._staged_roots.append((source, destination))
         self._add_directory(source, destination)
         self._walk(source, source, destination, set())
-        return PlannedPath(
-            source, f"{WORKSPACE_PLACEHOLDER}/staged/{destination}", "directory", False
-        )
+        remote, template = self._staged_path(destination)
+        return PlannedPath(source, remote, "directory", False, template)
 
     def plan_file(self, source: Path, namespace: str) -> PlannedPath:
         source = Path(source).expanduser().resolve()
@@ -95,10 +101,11 @@ class PathPlanner:
             return PlannedPath(source, remote, "file", True)
         existing = self._existing_staged(source)
         if existing:
-            return PlannedPath(source, existing, "file", False)
+            return PlannedPath(source, existing[0], "file", False, existing[1])
         destination = PurePosixPath("files", namespace + source.suffix)
         self._add_file(source, destination)
-        return PlannedPath(source, f"{WORKSPACE_PLACEHOLDER}/staged/{destination}", "file", False)
+        remote, template = self._staged_path(destination)
+        return PlannedPath(source, remote, "file", False, template)
 
     def _add_entry(self, entry: StagedEntry) -> None:
         destination = entry.destination
