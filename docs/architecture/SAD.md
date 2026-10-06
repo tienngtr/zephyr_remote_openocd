@@ -1654,7 +1654,12 @@ This includes:
 - RTT diagnostics;
 - semihosting console output.
 
-Application console output is not interpreted or rewritten.
+Application console output is not interpreted as application-level data or
+semantically rewritten. The helper does inspect output for configured complete
+startup-marker lines and the bind-collision diagnostic when making readiness and
+retry decisions. Relayed output is also represented through the protocol's
+incremental UTF-8 decoding with replacement and fragment rules, so the payload
+is not a byte-preserving channel.
 
 ---
 
