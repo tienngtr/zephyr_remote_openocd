@@ -5,16 +5,19 @@ from __future__ import annotations
 import asyncio
 import fcntl
 import importlib.util
+import io
 import json
 import math
 import os
 import select
 import signal
+import subprocess
 import sys
 import time
 from contextlib import suppress
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -1233,6 +1236,73 @@ def test_control_session_natural_exit_cleanup_failure_emits_error_event(
     original_rmtree(workspace)
 
 
+@pytest.mark.parametrize("observation", ("exists", "permission-denied"))
+def test_control_session_unconfirmed_group_exit_fails_after_other_cleanup(
+    tmp_path, monkeypatch, control_pipe, observation
+):
+    _reader, writer = control_pipe
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    session = remote_helper.ControlSession.create()
+    children = []
+    events = []
+    original_spawn = remote_helper._spawn_child
+    original_killpg = os.killpg
+    original_sleep = asyncio.sleep
+    now = 0.0
+
+    def spawn(*args, **kwargs):
+        child = original_spawn(*args, **kwargs)
+        children.append(child)
+        return child
+
+    def killpg(pid, signum):
+        if children and pid == children[0].pid and children[0].process.returncode is not None:
+            assert signum == 0
+            if observation == "permission-denied":
+                raise PermissionError("group cannot be inspected")
+            return
+        original_killpg(pid, signum)
+
+    async def controlled_sleep(delay):
+        nonlocal now
+        if (
+            children
+            and children[0].process.returncode is not None
+            and 0 < delay <= remote_helper.CHILD_POLL_INTERVAL
+        ):
+            now += delay
+        else:
+            await original_sleep(delay)
+
+    def emit(kind, **values):
+        events.append((kind, values))
+        if kind == "PROCESS_READY":
+            writer.write(b'{"version":1,"type":"STOP"}\n')
+
+    monkeypatch.setattr(remote_helper, "_spawn_child", spawn)
+    monkeypatch.setattr(remote_helper.os, "killpg", killpg)
+    monkeypatch.setattr(remote_helper, "time", SimpleNamespace(monotonic=lambda: now))
+    monkeypatch.setattr(remote_helper.asyncio, "sleep", controlled_sleep)
+    monkeypatch.setattr(remote_helper, "emit", emit)
+    writer.write(
+        _start_session_command(
+            [sys.executable, "-c", "import signal;print('ready',flush=True);signal.pause()"],
+            ("ready",),
+        )
+    )
+
+    expected = TimeoutError if observation == "exists" else PermissionError
+    with pytest.raises(expected):
+        session.run()
+
+    assert events[-1][0] == "ERROR"
+    assert not any(kind == "SESSION_CLOSED" for kind, _ in events)
+    assert children[0].process.returncode is not None
+    assert children[0].process.stdout.closed and children[0].process.stderr.closed
+    assert session.workspace_lock.closed
+    assert not list(session.work.parent.iterdir())
+
+
 def test_protocol_error_remains_primary_when_cleanup_also_fails(
     tmp_path, monkeypatch, control_pipe
 ):
@@ -1299,6 +1369,8 @@ def test_supervised_child_terminates_descendant_after_leader_term(tmp_path):
 
         assert child.returncode == 0
         _assert_pidfd_exited(descendant_pidfd)
+        with pytest.raises(ProcessLookupError):
+            os.killpg(child.pid, 0)
     finally:
         _cleanup_test_child(child, descendant_pidfd)
         if descendant_pidfd is not None:
@@ -1329,6 +1401,8 @@ def test_supervised_child_warns_and_terminates_descendant_after_leader_exit(tmp_
         assert child.returncode == 0
         _assert_pidfd_exited(descendant_pidfd)
         assert str(descendant_pid) in capfd.readouterr().err
+        with pytest.raises(ProcessLookupError):
+            os.killpg(child.pid, 0)
     finally:
         _cleanup_test_child(child, descendant_pidfd)
         if descendant_pidfd is not None:
@@ -1427,16 +1501,21 @@ def test_supervised_child_group_cleanup_ignores_diagnostic_failure(monkeypatch):
 
     child = remote_helper.SupervisedChild(Process())
     signals = []
-    monkeypatch.setattr(remote_helper.os, "killpg", lambda _pid, signum: signals.append(signum))
+
+    def killpg(_pid, signum):
+        signals.append(signum)
+        if signum == 0 and child.process.returncode is not None:
+            raise ProcessLookupError
+
+    monkeypatch.setattr(remote_helper.os, "killpg", killpg)
 
     async def leader_exited():
         return True
 
     monkeypatch.setattr(child, "_wait_for_leader_exit", leader_exited)
-    monkeypatch.setattr(child, "_group_exists", lambda: True)
     monkeypatch.setattr(
         child,
-        "_warn_remaining_group_members",
+        "_remaining_group_members",
         lambda: (_ for _ in ()).throw(OSError("proc unavailable")),
     )
 
@@ -1445,6 +1524,120 @@ def test_supervised_child_group_cleanup_ignores_diagnostic_failure(monkeypatch):
     assert signals.count(signal.SIGTERM) == 1
     assert signals.count(signal.SIGKILL) == 1
     assert signals.index(signal.SIGTERM) < signals.index(signal.SIGKILL)
+
+
+@pytest.fixture
+def cleanup_process():
+    process = create_autospec(subprocess.Popen, instance=True)
+    process.pid = 123
+    process.returncode = None
+    process.stdout = io.BytesIO()
+    process.stderr = io.BytesIO()
+
+    def reap(timeout=None):
+        assert timeout is not None and math.isfinite(timeout) and timeout > 0
+        process.returncode = -signal.SIGKILL
+        return process.returncode
+
+    process.wait.side_effect = reap
+    return process
+
+
+def _run_group_cleanup(process, mode):
+    if mode == "rollback":
+        remote_helper._rollback_spawned_process(process)
+    else:
+        child = remote_helper.SupervisedChild(process)
+        child._observed_returncode = 0
+        try:
+            asyncio.run(child.terminate())
+        finally:
+            child.close_streams()
+
+
+@pytest.mark.parametrize("mode", ("supervised", "rollback"))
+@pytest.mark.parametrize("observation", ("exists", "late-exit", "permission-denied"))
+def test_group_cleanup_fails_when_disappearance_is_unconfirmed(
+    monkeypatch, cleanup_process, mode, observation
+):
+    now = 0.0
+    waits = []
+    group_gone = False
+
+    def advance(delay):
+        nonlocal now, group_gone
+        assert math.isfinite(delay) and delay > 0
+        waits.append(delay)
+        if observation == "late-exit":
+            # The final member exits, but observation resumes after expiry.
+            now += remote_helper.CHILD_GROUP_EXIT_TIMEOUT + delay
+            group_gone = True
+        else:
+            now += delay
+
+    async def async_advance(delay):
+        advance(delay)
+
+    def killpg(pid, signum):
+        assert pid == cleanup_process.pid
+        if cleanup_process.returncode is not None:
+            # No further signalling is safe once reaping releases the PID.
+            assert signum == 0
+            if observation == "permission-denied":
+                raise PermissionError("group cannot be inspected")
+            if group_gone:
+                raise ProcessLookupError
+
+    monkeypatch.setattr(remote_helper.os, "killpg", killpg)
+    monkeypatch.setattr(
+        remote_helper, "time", SimpleNamespace(monotonic=lambda: now, sleep=advance)
+    )
+    monkeypatch.setattr(remote_helper.asyncio, "sleep", async_advance)
+
+    expected = PermissionError if observation == "permission-denied" else TimeoutError
+    with pytest.raises(expected):
+        _run_group_cleanup(cleanup_process, mode)
+
+    assert cleanup_process.returncode is not None
+    assert cleanup_process.stdout.closed and cleanup_process.stderr.closed
+    if observation == "exists":
+        assert waits
+        assert now <= remote_helper.CHILD_GROUP_EXIT_TIMEOUT
+
+
+@pytest.mark.parametrize("mode", ("supervised", "rollback"))
+def test_group_cleanup_waits_for_disappearance_after_reaping(monkeypatch, cleanup_process, mode):
+    group_gone = False
+    now = 0.0
+
+    def finish_group_exit(delay):
+        nonlocal group_gone, now
+        assert cleanup_process.returncode is not None
+        assert math.isfinite(delay) and delay > 0
+        # Model the last member being reaped during the observation wait.
+        group_gone = True
+        now += delay
+
+    async def async_finish_group_exit(delay):
+        finish_group_exit(delay)
+
+    def killpg(pid, signum):
+        assert pid == cleanup_process.pid
+        if cleanup_process.returncode is not None:
+            assert signum == 0
+        if group_gone:
+            raise ProcessLookupError
+
+    monkeypatch.setattr(remote_helper.os, "killpg", killpg)
+    monkeypatch.setattr(
+        remote_helper, "time", SimpleNamespace(monotonic=lambda: now, sleep=finish_group_exit)
+    )
+    monkeypatch.setattr(remote_helper.asyncio, "sleep", async_finish_group_exit)
+
+    _run_group_cleanup(cleanup_process, mode)
+
+    assert group_gone
+    assert cleanup_process.returncode is not None
 
 
 def test_supervised_child_cleanup_uses_finite_budgets_after_failures(monkeypatch):
@@ -1474,6 +1667,15 @@ def test_supervised_child_cleanup_uses_finite_budgets_after_failures(monkeypatch
     async def fail_leader_wait():
         raise RuntimeError("leader wait failed")
 
+    now = 0.0
+
+    async def advance(delay):
+        nonlocal now
+        assert math.isfinite(delay) and delay > 0
+        now += delay
+
+    monkeypatch.setattr(remote_helper, "time", SimpleNamespace(monotonic=lambda: now))
+    monkeypatch.setattr(remote_helper.asyncio, "sleep", advance)
     monkeypatch.setattr(remote_helper.os, "killpg", fail_signal)
     monkeypatch.setattr(child, "_wait_for_leader_exit", fail_leader_wait)
     monkeypatch.setattr(child, "_warn_remaining_group_members", lambda: None)

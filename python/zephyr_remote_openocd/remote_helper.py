@@ -43,6 +43,7 @@ WORKSPACE_LEASE_POLL_INTERVAL = 0.05
 CHILD_TERM_TIMEOUT = 5
 CHILD_POLL_INTERVAL = 0.05
 CHILD_REAP_TIMEOUT = 1
+CHILD_GROUP_EXIT_TIMEOUT = 1
 CHILD_RELAY_JOIN_TIMEOUT = 2
 RELAY_CHUNK_SIZE = 64 * 1024
 # Keep in sync with remote/protocol.py; this file is deployed standalone.
@@ -853,6 +854,27 @@ class _AsyncInput:
         os.set_blocking(self.descriptor, self.was_blocking)
 
 
+def _group_exists(pid: int) -> bool:
+    try:
+        os.killpg(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _group_exit_waits(pid: int) -> Iterator[float]:
+    """Poll group disappearance after reaping, without signalling or enumerating."""
+    deadline = time.monotonic() + CHILD_GROUP_EXIT_TIMEOUT
+    while time.monotonic() < deadline:
+        if not _group_exists(pid):
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        yield min(CHILD_POLL_INTERVAL, remaining)
+    raise TimeoutError(f"process group {pid} did not disappear during cleanup")
+
+
 class SupervisedChild:
     """Own a process group; observe the leader before explicitly reaping it."""
 
@@ -926,13 +948,6 @@ class SupervisedChild:
             return False
         return True
 
-    def _group_exists(self):
-        try:
-            os.killpg(self.pid, 0)
-        except ProcessLookupError:
-            return False
-        return True
-
     def _remaining_group_members(self):
         """Return observable non-leader members of the owned process group."""
         members = []
@@ -989,7 +1004,7 @@ class SupervisedChild:
                 except Exception as exc:
                     errors.append(exc)
                 try:
-                    group_exists = self._group_exists()
+                    group_exists = _group_exists(self.pid)
                 except Exception as exc:
                     errors.append(exc)
                     group_exists = True
@@ -1005,6 +1020,13 @@ class SupervisedChild:
             try:
                 # Reap only after group signalling; this wait has a finite budget.
                 self._observed_returncode = self.process.wait(timeout=CHILD_REAP_TIMEOUT)
+            except Exception as exc:
+                errors.append(exc)
+            try:
+                # An unreaped leader itself keeps the group observable. Once
+                # reaped, only observe: its PID is no longer reserved for us.
+                for delay in _group_exit_waits(self.pid):
+                    await asyncio.sleep(delay)
             except Exception as exc:
                 errors.append(exc)
         _raise_cleanup_errors(errors)
@@ -1030,6 +1052,11 @@ def _rollback_spawned_process(process):
         errors.append(error)
     try:
         process.wait(timeout=CHILD_REAP_TIMEOUT)
+    except BaseException as error:
+        errors.append(error)
+    try:
+        for delay in _group_exit_waits(process.pid):
+            time.sleep(delay)
     except BaseException as error:
         errors.append(error)
     for stream in (process.stdout, process.stderr):

@@ -1341,12 +1341,30 @@ Cleanup sends `SIGTERM` to the owned group and waits a bounded grace period for
 the leader. It then checks whether the group still exists. If so, the helper
 may inspect `/proc` once and warn about observable non-leader members before
 sending `SIGKILL`. Failure or a race during this best-effort diagnostic does
-not affect the group cleanup decision. The helper then reaps the leader with
-a finite budget, drains output observations with a shared bounded deadline,
-and cancels and awaits remaining attempt tasks before releasing their streams.
-Graceful leader waiting is async, so output can continue draining throughout
-termination. The session cancels and awaits all observer tasks before its
-TaskGroup ends.
+not affect the group cleanup decision or success criterion; complete `/proc`
+enumeration is not required.
+
+The helper then attempts to reap the leader with a finite budget. After that
+attempt, it polls group existence with `killpg(pgid, 0)` under a separate
+one-second deadline. Only `ESRCH` (Python's `ProcessLookupError`) confirms that
+the group is gone. Successful signal delivery or leader reaping alone does not
+confirm complete group termination. A still-observable group at the deadline,
+or another error from the existence check, is a cleanup failure. Expiration
+remains a cleanup failure even if the group disappears later. A failed
+signalling or reaping operation remains a cleanup failure even if the final
+check finds no group. Reaping precedes the final check because an unreaped
+leader itself can keep the group observable; zombie descendants likewise keep
+it observable until their adopter reaps them. No further termination signals
+are sent after the reaping attempt, so a reused numeric process-group ID is
+never signalled during final confirmation. Startup ownership rollback uses the
+same final bounded existence criterion after its kill and reaping attempts.
+
+Regardless of process-group cleanup success, the helper drains output
+observations with a shared bounded deadline, and cancels and awaits remaining
+attempt tasks before releasing their streams. Graceful leader waiting and final
+group observation waits are async, so output can continue draining throughout
+supervised termination. The session cancels and awaits all observer tasks before
+its TaskGroup ends.
 Workspace removal and lock release are attempted once even if child cleanup
 fails. Unix signal callbacks record a pending signal in plain state and schedule
 its observation with `call_soon_threadsafe()`. An event-loop callback updates
