@@ -623,6 +623,12 @@ normalize path
 
 Mappings are recursive and component-aware.
 
+When a required path matches more than one mapping, the mapping with the
+longest normalized local root takes precedence. The selected mapping translates
+the path by appending its relative suffix to the mapped remote root; other
+matching mappings do not also apply. If no mapping matches, the path is staged
+into the current session.
+
 ---
 
 ## 20. OpenOCD Search Trees
