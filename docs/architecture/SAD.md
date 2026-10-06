@@ -438,14 +438,16 @@ or:
 default_runner: remote_openocd
 ```
 
-During CMake configuration:
+For an OpenOCD-capable build, during CMake configuration:
 
 ```text
 openocd        -> openocd
 remote_openocd -> remote_openocd
 ```
 
-is written into generated flash/debug runner defaults.
+is written into generated flash/debug runner defaults. These defaults are
+generated runner-selection metadata; they do not claim that a target, probe,
+or OpenOCD service is reachable.
 
 The generated setting is only the default. Normal west `-r openocd` or
 `-r remote_openocd` selection remains available and takes precedence when
@@ -1622,7 +1624,7 @@ RemoteSession.open()
        +-- wait for OpenOCD startup readiness
        +-- establish required and best-effort forwarding
        |
-usable remote session
+session available to the local operation
        |
 run the local client or relay operation output
        |
@@ -1632,9 +1634,14 @@ stop owned processes and clean up resources
 ```
 
 `RemoteSession.open()` returns only after the helper, OpenOCD process, and
-required startup conditions are ready. It may also have active best-effort
-forwards. The local runner then starts the requested client or relays the
-operation output. `RemoteSession.close()` performs one bounded local cleanup
+required startup conditions are ready. In this document, a "usable" session
+means that those required lifecycle observations and required transport setup
+have completed; it does not assert end-to-end reachability of every service,
+successful connection by a local client, or continued OpenOCD liveness after
+the call returns. Best-effort forwards may still be unavailable and active
+components may fail later under their normal health checks. The local runner
+then starts the requested client or relays the operation output.
+`RemoteSession.close()` performs one bounded local cleanup
 attempt and, while the helper control channel is usable, requests remote
 cleanup. After transport loss, helper-side cleanup proceeds independently.
 
