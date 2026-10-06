@@ -785,8 +785,9 @@ bidirectional channel-0 bytes, uses noncanonical/no-echo TTY input without
 disabling normal signal handling, and restores the complete terminal state on
 every exit path. Non-TTY input is supported without terminal operations.
 
-For `debug --rtt-server` and `debugserver --rtt-server`, RTT setup is included
-in OpenOCD's startup command sequence before its startup-complete marker.
+For `debug --rtt-server`, `attach --rtt-server`, and `debugserver --rtt-server`,
+RTT setup is included in OpenOCD's startup command sequence before its
+startup-complete marker.
 OpenOCD owns the RTT listener; the helper does not probe it. These operations
 expose the endpoint but do not launch a local RTT client. The `rtt` command reuses the
 same remote OpenOCD version and Zephyr thread-info decision as debug/attach.
@@ -796,10 +797,11 @@ GDB forwarding is required during the `rtt` command's batch setup. After setup s
 the Zephyr runner integration explicitly marks the owned GDB forward best-effort
 and starts the deferred RTT forward as required. A GDB exit first observed
 after this transition produces a warning; an RTT-forward exit remains fatal.
-Explicitly requested RTT forwarding for `debug --rtt-server` and
-`debugserver --rtt-server` is required alongside GDB at startup and throughout
-the operation. The planner classifies only enabled Tcl/telnet forwards as
-best-effort. GDB and requested RTT start in the same required forwarding batch;
+Explicitly requested RTT forwarding for `debug --rtt-server`,
+`attach --rtt-server`, and `debugserver --rtt-server` is required alongside GDB
+at startup and throughout the operation. The planner classifies only enabled
+Tcl/telnet forwards as best-effort. GDB and requested RTT start in the same
+required forwarding batch;
 RTT forwarding startup failure aborts session opening, and runtime failure is
 fatal at the next forwarding status check. During interactive GDB that check
 may occur after GDB returns; concurrent interruption is not required. This
@@ -872,7 +874,7 @@ Flash requests no services and therefore creates no local forwards. `debug`,
 service. The `rtt` command requests GDB plus each enabled Tcl/telnet service
 for batch setup and reserves its deferred RTT service for helper-side address
 validation; after batch GDB setup, RTT is required and GDB becomes best-effort.
-RTT is selected and required for `debug --rtt-server` and
+RTT is selected and required for `debug --rtt-server`, `attach --rtt-server`, and
 `debugserver --rtt-server`. This service and forwarding configuration is
 derived from the operation and runner options, not
 from runtime discovery of the effective OpenOCD configuration.

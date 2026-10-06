@@ -702,7 +702,7 @@ def test_required_gdb_startup_failure_aborts_operation(runner_api, monkeypatch, 
     assert harness.helper.close_calls == 1
 
 
-@pytest.mark.parametrize("command", ("debug", "debugserver"))
+@pytest.mark.parametrize("command", ("debug", "attach", "debugserver"))
 @pytest.mark.parametrize("phase", ("startup", "runtime"))
 def test_requested_rtt_failure_aborts_operation(
     runner_api, monkeypatch, tmp_path, caplog, command, phase
@@ -743,7 +743,7 @@ def test_requested_rtt_failure_aborts_operation(
         assert not any(
             "RTT forwarding established" in record.getMessage() for record in caplog.records
         )
-    elif command == "debug":
+    elif command in {"debug", "attach"}:
         runner.run_client.assert_called_once()
     assert harness.helper.close_calls == 1
     for service in (GDB, RTT):
@@ -875,10 +875,15 @@ def test_parser_preserves_applicable_upstream_options(runner_api, argv):
     assert {name: actual[name] for name in expected} == expected
 
 
-def test_attach_rejects_rtt_server_before_remote_work(runner_api, tmp_path, monkeypatch):
+def test_attach_rtt_server_forwards_without_loading(runner_api, tmp_path, monkeypatch, caplog):
     from zephyr_remote_openocd.zephyr44 import runner as runner_module
 
     core, _, remote = runner_api
+    harness = ForwardingHarness(monkeypatch)
+    rtt_service = Service("rtt", 19021, 19021)
+    for service in (GDB, TCL, TELNET, rtt_service):
+        harness.ssh.process(service)
+    monkeypatch.setattr(runner_module, "SshCommand", lambda _prefix: harness.ssh)
     build = tmp_path / "build"
     (build / "zephyr").mkdir(parents=True)
     (build / "zephyr" / ".config").write_text("# CONFIG_DEBUG_THREAD_INFO is not set\n")
@@ -910,23 +915,40 @@ def test_attach_rejects_rtt_server_before_remote_work(runner_api, tmp_path, monk
         gdb="gdb",
         openocd="openocd",
         openocd_search=[],
+        rtt_address=0x20000000,
     )
-    args = parser_for(remote).parse_args(["--rtt-server"])
+    args = parser_for(remote).parse_args(["--rtt-server", "--rtt-port=19021"])
     runner = remote.create(cfg, args)
 
-    monkeypatch.setattr(SshCommand, "run", Mock(side_effect=AssertionError("SSH action started")))
-    monkeypatch.setattr(
-        runner_module.RemoteSession,
-        "open",
-        Mock(side_effect=AssertionError("remote session started")),
-    )
+    client_argv: list[list[str]] = []
 
-    with pytest.raises(RuntimeError) as raised:
+    def attach_client(argv: list[str]) -> None:
+        client_argv.append(argv)
+        assert set(harness.helper.services) == {GDB, TCL, TELNET, rtt_service}
+        assert harness.ssh.process(GDB).returncode is None
+        assert harness.ssh.process(rtt_service).returncode is None
+
+    monkeypatch.setattr(runner, "require", create_autospec(runner.require))
+    monkeypatch.setattr(runner, "run_client", attach_client)
+    monkeypatch.setattr(
+        runner_module,
+        "run_rtt_client",
+        Mock(side_effect=AssertionError("attach must not launch an RTT client")),
+    )
+    with caplog.at_level(logging.INFO, logger=runner.logger.name):
         runner.run("attach")
 
-    message = str(raised.value)
-    assert "attach" in message
-    assert "--rtt-server" in message
+    assert len(client_argv) == 1
+    assert client_argv[0][0] == "gdb"
+    assert "target extended-remote 127.0.0.1:3333" in client_argv[0]
+    assert str(image) in client_argv[0]
+    assert "load" not in client_argv[0]
+    assert any(
+        "RTT" in record.getMessage() and "127.0.0.1:19021" in record.getMessage()
+        for record in caplog.records
+    )
+    assert harness.helper.close_calls == 1
+    assert all(process.returncode == 0 for process in harness.ssh.processes.values())
 
 
 @pytest.fixture
@@ -949,7 +971,17 @@ def forbid_external_io(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "command", ("flash", "debug", "attach", "debugserver", "rtt", "debug-rtt", "debugserver-rtt")
+    "command",
+    (
+        "flash",
+        "debug",
+        "attach",
+        "debugserver",
+        "rtt",
+        "debug-rtt",
+        "attach-rtt",
+        "debugserver-rtt",
+    ),
 )
 @pytest.mark.parametrize("thread_info", (False, True))
 def test_recording_runs_real_runner_integration_without_external_io(
@@ -1085,5 +1117,9 @@ def test_recording_runs_real_runner_integration_without_external_io(
         }
         assert result["thread_info"]["requested"] is thread_info
         assert result["thread_info"]["version_source"] == ("injected" if thread_info else None)
+        if command == "attach":
+            assert "load" not in result["local_gdb_argv"]
+        if rtt_server:
+            assert "rtt server start 19021 0" in argv
     if command == "rtt":
         assert result["rtt"]["port"] == 19021

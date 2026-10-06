@@ -977,7 +977,7 @@ The selected service set and forwarding requirement SHALL be distinct:
 | Operation | Required initially | Required during the client operation | Best-effort forwarding |
 | --- | --- | --- | --- |
 | `debug` | GDB; RTT when `--rtt-server` is requested | GDB; requested RTT | Tcl, telnet |
-| `attach` | GDB | GDB | Tcl, telnet |
+| `attach` | GDB; RTT when `--rtt-server` is requested | GDB; requested RTT | Tcl, telnet |
 | `debugserver` | GDB; RTT when `--rtt-server` is requested | GDB; requested RTT | Tcl, telnet |
 | `rtt` | GDB for batch setup | RTT after batch setup | Tcl, telnet; GDB after setup |
 | `flash` | None | None | None |
@@ -996,10 +996,11 @@ best-effort before RTT forwarding is established as required. Forwarding
 failures SHALL be classified as required or best-effort when the runner checks
 them.
 
-Explicitly requested RTT forwarding for `debug --rtt-server` and
-`debugserver --rtt-server` SHALL be required at startup and throughout the
-operation. This requirement concerns SSH forwarding only; the runner SHALL
-NOT probe the remote RTT service. A local forward does not guarantee that a
+Explicitly requested RTT forwarding for `debug --rtt-server`,
+`attach --rtt-server`, and `debugserver --rtt-server` SHALL be required at
+startup and throughout the operation. This requirement concerns SSH forwarding
+only; the runner SHALL NOT probe the remote RTT service. A local forward does
+not guarantee that a
 corresponding remote listener is available.
 
 ### REQ-FUNC-SVC-002
@@ -1057,7 +1058,8 @@ Custom `--rtt-port` values SHALL be supported.
 
 ### REQ-FUNC-RTT-005
 
-`west debug -r remote_openocd --rtt-server` SHALL provide GDB and a bidirectional
+`west debug -r remote_openocd --rtt-server` and
+`west attach -r remote_openocd --rtt-server` SHALL provide GDB and a bidirectional
 RTT service during the same runner invocation. Both SSH forwards SHALL be
 required; RTT forwarding startup or observed runtime failure SHALL fail the
 operation without probing the RTT service.

@@ -39,6 +39,7 @@ west attach -r remote_openocd
 west debugserver -r remote_openocd
 west rtt -r remote_openocd
 west debug -r remote_openocd --rtt-server
+west attach -r remote_openocd --rtt-server
 west debugserver -r remote_openocd --rtt-server
 ```
 
@@ -49,7 +50,7 @@ operation. `flash` creates no SSH forwards. `debug`, `attach`, and
 `debugserver` forward GDB plus Tcl and telnet unless the corresponding runner
 port option is `disabled`. The `rtt` command configures RTT through batch GDB,
 changes GDB to best-effort, and then adds the required RTT forward before
-launching the local channel-0 client. The two `--rtt-server` forms expose the
+launching the local channel-0 client. The three `--rtt-server` forms expose the
 RTT endpoint with their configured initial forwards but do not launch a local
 RTT client.
 
@@ -58,7 +59,7 @@ Service availability has command-specific requirements:
 | Command | Required forwarding | Best-effort forwarding |
 | --- | --- | --- |
 | `debug`, `attach`, `debugserver` | GDB | Enabled Tcl and telnet |
-| `debug --rtt-server`, `debugserver --rtt-server` | GDB and RTT | Enabled Tcl and telnet |
+| `debug --rtt-server`, `attach --rtt-server`, `debugserver --rtt-server` | GDB and RTT | Enabled Tcl and telnet |
 | `rtt` | GDB during setup, then RTT | Enabled Tcl/telnet; GDB after setup |
 | `flash` | None | None |
 

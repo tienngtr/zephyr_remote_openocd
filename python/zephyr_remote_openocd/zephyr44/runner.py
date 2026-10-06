@@ -489,11 +489,7 @@ def _search_paths(runner):
 def _debug_plan(runner, command, selected, version):
     planner = PathPlanner(selected.path_mappings)
     sentinel_suffix = secrets.token_hex(16)
-    if command == "attach" and runner.parsed_args.rtt_server:
-        raise DebugPlanError("--rtt-server is not supported with attach")
-    rtt_requested = command == "rtt" or (
-        command in {"debug", "debugserver"} and runner.parsed_args.rtt_server
-    )
+    rtt_requested = command == "rtt" or runner.parsed_args.rtt_server
     return build_debug_plan(
         DebugInputs(
             command=command,
