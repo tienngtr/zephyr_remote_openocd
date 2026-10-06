@@ -13,6 +13,9 @@ Choose the smallest layer that covers the change:
 - Real board behavior: `tests/hardware/` with a board, probe, serial endpoint,
   and remote OpenOCD.
 
+When practical, automated integration coverage exercises the supported Linux
+platform.
+
 Run external nodes only after `--collect-only` confirms the intended selection.
 Hardware and SSH tests can change external state; keep destructive profiles
 serial and inspect cleanup output before reusing a target.

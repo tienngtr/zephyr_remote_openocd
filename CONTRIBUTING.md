@@ -6,6 +6,10 @@ environment provides `pyelftools`, PyYAML, and jsonschema. Module developers may
 install the convenience tooling in `requirements_dev.txt`; normal users should
 not install that file.
 
+Keep production dependencies minimal. Reuse dependencies already supplied by
+the supported Zephyr environment where appropriate instead of adding a
+project-specific installation path.
+
 ## Validation checklist
 
 Run the checks appropriate to every change and state the actual coverage in the

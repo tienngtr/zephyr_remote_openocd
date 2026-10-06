@@ -93,7 +93,9 @@ platform is also Linux with Python 3.12 or newer. The generic local Python
 implementation uses one Linux architecture and does not select platform
 backends. Linux-specific remote process supervision and filesystem mechanisms,
 including process groups, signals, pidfds, `/proc`, and `fcntl` locking, belong
-to the helper and supervision layer.
+to the helper and supervision layer. Setup and generic runner code avoid adding
+further Linux-specific assumptions, so future native Windows work can remain
+localized; native Windows execution is outside the current scope.
 
 ---
 

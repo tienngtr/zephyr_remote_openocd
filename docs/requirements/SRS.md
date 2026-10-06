@@ -1353,26 +1353,9 @@ The local platform SHALL be Linux with Python 3.12 or newer.
 
 The remote platform SHALL be Linux with Python 3.12 or newer.
 
-### REQ-NFUNC-PORT-001
-
-The setup program and generic runner SHOULD avoid Linux-specific assumptions
-that would prevent a future native Windows port.
-
-Native Windows execution itself remains outside the current scope.
-
 ---
 
 ## 25. Other Non-Functional Requirements
-
-### REQ-NFUNC-MAINT-001
-
-The custom runner implementation SHOULD use Python 3.12 or newer.
-
-### REQ-NFUNC-MAINT-002
-
-Runtime implementation SHOULD minimize additional third-party Python
-dependencies. Dependencies already required by the supported Zephyr runner
-environment MAY be reused where appropriate.
 
 ### REQ-NFUNC-ADMIN-001
 
@@ -1385,11 +1368,6 @@ Runner option and OpenOCD command construction SHALL be testable without physica
 ### REQ-NFUNC-TEST-002
 
 Remote-session and forwarding behavior SHALL be testable using fake OpenOCD endpoints.
-
-### REQ-NFUNC-TEST-003
-
-Automated integration tests SHOULD exercise the supported Linux platform where
-practical.
 
 ---
 
