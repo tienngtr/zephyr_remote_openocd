@@ -103,7 +103,9 @@ def _closure_path(work: Path) -> Path:
 def _stage_lease(work: Path) -> Iterator[None]:
     # Acquire ownership before checking closure. If cleanup wins before this
     # check, reject; if it wins afterwards, our shared lease prevents removal.
-    with _lease_path(work).open("a+b") as lease:
+    # Allocation creates the lease. A delayed upload must not recreate metadata
+    # after successful cleanup has removed the workspace and its admission state.
+    with _lease_path(work).open("r+b") as lease:
         try:
             fcntl.flock(lease, fcntl.LOCK_SH | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -116,8 +118,8 @@ def _stage_lease(work: Path) -> Iterator[None]:
 def remove_workspace(work: Path) -> None:
     """Close admission before waiting for all admitted stages to release ownership."""
     # O_CREAT publishes closure atomically without depending on any lock owner.
-    # Retain both sibling files after removal so pending stage descriptors and
-    # late callers observe the same lease identity and closed admission.
+    # Keep the lease identity and closed admission until workspace removal
+    # succeeds; delayed stages reject missing workspaces even on an old inode.
     with _closure_path(work).open("ab"):
         pass
     with _lease_path(work).open("a+b") as lease:
@@ -135,6 +137,13 @@ def remove_workspace(work: Path) -> None:
         except FileNotFoundError:
             if work.exists():
                 raise
+        errors = []
+        for metadata in (_closure_path(work), _lease_path(work)):
+            try:
+                metadata.unlink(missing_ok=True)
+            except OSError as exc:
+                errors.append(exc)
+        _raise_cleanup_errors(errors)
 
 
 def reclaim_stale_workspaces(root, now=None):
@@ -196,6 +205,8 @@ def new_workspace():
             lock = (path / SESSION_LOCK).open("xb")
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             (path / "staged").mkdir(mode=0o700)
+            with _lease_path(path).open("xb"):
+                pass
             return session_id, path, lock
         except BaseException:
             if lock is not None:

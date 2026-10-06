@@ -1625,7 +1625,43 @@ def test_workspace_cleanup_timeout_closes_admission_without_removing_live_stage(
     with pytest.raises(ValueError), remote_helper._stage_lease(workspace):
         pytest.fail("failed cleanup reopened staging")
     remote_helper.remove_workspace(workspace)
+    assert tuple(tmp_path.iterdir()) == ()
+
+
+@pytest.mark.parametrize("failed_suffixes", (("lease",), ("closed",), ("lease", "closed")))
+def test_metadata_removal_failure_fails_session_and_is_reclaimed_later(
+    tmp_path, monkeypatch, control_pipe, capsys, failed_suffixes
+):
+    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
+    session_id, workspace, owner_lock = remote_helper.new_workspace()
+    session = remote_helper.ControlSession(session_id, workspace, owner_lock)
+    metadata = {tmp_path / f".{session_id}.{suffix}" for suffix in failed_suffixes}
+    path_type = type(tmp_path)
+    original_unlink = path_type.unlink
+
+    def fail_metadata_removal(path, *args, **kwargs):
+        if path in metadata:
+            raise PermissionError(f"cannot remove {path.name}")
+        return original_unlink(path, *args, **kwargs)
+
+    _reader, writer = control_pipe
+    writer.write(b'{"version":1,"type":"STOP"}\n')
+    with monkeypatch.context() as patch:
+        patch.setattr(path_type, "unlink", fail_metadata_removal)
+        with pytest.raises(PermissionError):
+            session.run()
+
     assert not workspace.exists()
+    assert owner_lock.closed
+    assert set(tmp_path.iterdir()) == metadata
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert events[-1]["type"] == "ERROR"
+    assert not any(event["type"] == "SESSION_CLOSED" for event in events)
+
+    for path in metadata:
+        os.utime(path, (1.0, 1.0))
+    remote_helper.reclaim_stale_workspaces(tmp_path, now=remote_helper.STALE_SESSION_AGE + 2)
+    assert tuple(tmp_path.iterdir()) == ()
 
 
 @pytest.mark.parametrize("suffix", ("lease", "closed"))

@@ -20,13 +20,14 @@ import tempfile
 import termios
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from contextlib import suppress
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO, override
 from unittest.mock import patch
 
 import pytest
+from zephyr_remote_openocd import remote_helper
 from zephyr_remote_openocd.remote import backend as backend_module
 from zephyr_remote_openocd.remote import forwarding as forwarding_module
 from zephyr_remote_openocd.remote import helper_client as helper_client_module
@@ -792,6 +793,21 @@ class TestRttClient:
         assert set_attributes.call_args_list[-1].args[2] == original
 
 
+@pytest.fixture
+def helper_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    _session_id, workspace, owner_lock = remote_helper.new_workspace()
+    try:
+        yield workspace
+    finally:
+        try:
+            remote_helper.remove_workspace(workspace)
+        finally:
+            owner_lock.close()
+
+
 class TestRealProcessHelper:
     def test_helper_materializes_only_arguments_after_literal_prefix(self, tmp_path):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
@@ -944,7 +960,7 @@ helper['stage'](sys.argv[2])
             control.stdin.close()
             if pause != "extraction":
                 assert control.wait(timeout=30) == 0
-                assert not workspace.exists()
+                assert tuple(workspace.parent.iterdir()) == ()
             else:
                 assert read_line(control.stderr).strip() == b"CLEANUP"
                 assert workspace.is_dir()
@@ -965,7 +981,7 @@ helper['stage'](sys.argv[2])
             assert staging.stdout is not None
             output = staging.stdout.read()
             assert (b'STAGED' in output) == (pause == "extraction")
-            assert not workspace.exists()
+            assert tuple(workspace.parent.iterdir()) == ()
         finally:
             os.close(release_read)
             os.close(release_write)
@@ -977,7 +993,7 @@ helper['stage'](sys.argv[2])
                     if stream is not None and not stream.closed:
                         stream.close()
 
-    def test_helper_normalizes_restricted_directory_for_cleanup(self, tmp_path):
+    def test_helper_normalizes_restricted_directory_for_cleanup(self, helper_workspace):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
         archive_stream = io.BytesIO()
         with tarfile.open(fileobj=archive_stream, mode="w", format=tarfile.PAX_FORMAT) as archive:
@@ -990,11 +1006,8 @@ helper['stage'](sys.argv[2])
             restricted.mode = 0o500
             archive.addfile(restricted)
 
-        runtime = tmp_path / "runtime"
-        workspace = runtime / "zephyr_remote_openocd" / "session"
-        (workspace / "staged").mkdir(parents=True)
+        workspace = helper_workspace
         environment = os.environ.copy()
-        environment["XDG_RUNTIME_DIR"] = str(runtime)
         result = subprocess.run(
             [sys.executable, str(helper), "stage", str(workspace)],
             env=environment,
@@ -1007,18 +1020,15 @@ helper['stage'](sys.argv[2])
         assert (workspace / "staged" / "restricted").stat().st_mode & 0o777 == 0o700
         shutil.rmtree(workspace)
 
-    def test_helper_stages_large_archive_through_spooled_stdin(self, tmp_path):
+    def test_helper_stages_large_archive_through_spooled_stdin(self, tmp_path, helper_workspace):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
         payload = bytes(range(256)) * 8192
         source = tmp_path / "firmware.bin"
         source.write_bytes(payload)
         archive = build_archive((StagedFile(source, PurePosixPath("firmware.bin")),))
 
-        runtime = tmp_path / "runtime"
-        workspace = runtime / "zephyr_remote_openocd" / "session"
-        (workspace / "staged").mkdir(parents=True)
+        workspace = helper_workspace
         environment = os.environ.copy()
-        environment["XDG_RUNTIME_DIR"] = str(runtime)
         try:
             result = subprocess.run(
                 [sys.executable, str(helper), "stage", str(workspace)],
@@ -1041,7 +1051,7 @@ helper['stage'](sys.argv[2])
         }
         assert (workspace / "staged" / "firmware.bin").read_bytes() == payload
 
-    def test_helper_stages_empty_search_root(self, tmp_path):
+    def test_helper_stages_empty_search_root(self, tmp_path, helper_workspace):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
         local_root = tmp_path / "empty-search"
         local_root.mkdir()
@@ -1049,11 +1059,8 @@ helper['stage'](sys.argv[2])
         planner.plan_directory(local_root, "search_0")
         archive = build_archive(planner.staged_files)
 
-        runtime = tmp_path / "runtime"
-        workspace = runtime / "zephyr_remote_openocd" / "session"
-        (workspace / "staged").mkdir(parents=True)
+        workspace = helper_workspace
         environment = os.environ.copy()
-        environment["XDG_RUNTIME_DIR"] = str(runtime)
         try:
             result = subprocess.run(
                 [sys.executable, str(helper), "stage", str(workspace)],
@@ -1071,7 +1078,7 @@ helper['stage'](sys.argv[2])
         assert response["directories"] == ["trees/search_0"]
         assert (workspace / "staged" / "trees" / "search_0").is_dir()
 
-    def test_helper_stages_empty_and_nested_directories(self, tmp_path):
+    def test_helper_stages_empty_and_nested_directories(self, tmp_path, helper_workspace):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
         local_root = tmp_path / "search"
         (local_root / "empty").mkdir(parents=True)
@@ -1081,11 +1088,8 @@ helper['stage'](sys.argv[2])
         planner.plan_directory(local_root, "search_0")
         archive = build_archive(planner.staged_files)
 
-        runtime = tmp_path / "runtime"
-        workspace = runtime / "zephyr_remote_openocd" / "session"
-        (workspace / "staged").mkdir(parents=True)
+        workspace = helper_workspace
         environment = os.environ.copy()
-        environment["XDG_RUNTIME_DIR"] = str(runtime)
         try:
             result = subprocess.run(
                 [sys.executable, str(helper), "stage", str(workspace)],
@@ -1116,7 +1120,9 @@ helper['stage'](sys.argv[2])
             "trees/search_0/nested/payload.cfg",
         }
 
-    def test_helper_stages_multiple_files_with_interspersed_directories(self, tmp_path):
+    def test_helper_stages_multiple_files_with_interspersed_directories(
+        self, tmp_path, helper_workspace
+    ):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
         tree = tmp_path / "tree"
         nested = tree / "nested"
@@ -1134,11 +1140,8 @@ helper['stage'](sys.argv[2])
             )
         )
 
-        runtime = tmp_path / "runtime"
-        workspace = runtime / "zephyr_remote_openocd" / "session"
-        (workspace / "staged").mkdir(parents=True)
+        workspace = helper_workspace
         environment = os.environ.copy()
-        environment["XDG_RUNTIME_DIR"] = str(runtime)
         try:
             result = subprocess.run(
                 [sys.executable, str(helper), "stage", str(workspace)],
@@ -1185,13 +1188,10 @@ helper['stage'](sys.argv[2])
             ),
         ),
     )
-    def test_helper_rejects_unsafe_staging_members(self, tmp_path, members):
+    def test_helper_rejects_unsafe_staging_members(self, helper_workspace, members):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
-        runtime = tmp_path / "runtime"
-        workspace = runtime / "zephyr_remote_openocd" / "session"
-        (workspace / "staged").mkdir(parents=True)
+        workspace = helper_workspace
         environment = os.environ.copy()
-        environment["XDG_RUNTIME_DIR"] = str(runtime)
 
         result = subprocess.run(
             [sys.executable, str(helper), "stage", str(workspace)],

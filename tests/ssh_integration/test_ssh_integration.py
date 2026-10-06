@@ -278,7 +278,19 @@ class TestSshTransportIntegration:
             finally:
                 workspace = descriptor.remote_workspace
                 session.close()
-            gone = self.ssh.run(self.host, f"test ! -e {shlex.quote(workspace)}", timeout=20)
+            gone = self.ssh.run(
+                self.host,
+                "python3 -c "
+                + shlex.quote(
+                    "import pathlib,sys; p=pathlib.Path(sys.argv[1]); "
+                    "artifacts=(p, p.with_name('.'+p.name+'.lease'), "
+                    "p.with_name('.'+p.name+'.closed')); "
+                    "sys.exit(any(path.exists() for path in artifacts))"
+                )
+                + " "
+                + shlex.quote(workspace),
+                timeout=20,
+            )
             assert gone.returncode == 0, gone.stderr.decode(errors="replace")
 
     def test_concurrent_sessions_isolate_identical_remote_ports(self):

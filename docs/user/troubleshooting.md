@@ -18,6 +18,12 @@ of the SSH control connection. A failure message containing a session workspace
 or forwarding endpoint is useful diagnostic evidence; do not remove another
 user's workspace.
 
+Successful session cleanup removes the workspace and its lease/closure metadata.
+Failure to remove any of these artifacts is reported as a cleanup failure.
+Orphaned coordination metadata older than 24 hours is reclaimed opportunistically
+during later session allocation when its workspace is absent; this does not
+guarantee a maximum retention time.
+
 A best-effort forwarding warning identifies an unavailable Tcl or telnet
 forward. Check the named local port and SSH diagnostic; the operation can
 continue when its required forwards are healthy. With `debug --rtt-server`,

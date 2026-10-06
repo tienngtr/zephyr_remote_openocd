@@ -1408,8 +1408,9 @@ ignored.
 Standalone staging first spools its upload without workspace ownership. Before
 archive validation or extraction, it acquires a shared workspace lease using a
 nonblocking lock, then checks that admission remains open and the workspace
-exists. Each lease file is a sibling `.<session-id>.lease`, outside the deletable
-workspace. Cleanup atomically creates a separate sibling
+exists. Allocation creates each sibling `.<session-id>.lease` before exposing
+the workspace. Staging opens only that existing lease and never creates
+coordination metadata. Cleanup atomically creates a separate sibling
 `.<session-id>.closed` marker before attempting exclusive lease ownership. This
 closure needs no mutex and remains observable even when another process is
 suspended holding the lease. No root-wide admission lock is used.
@@ -1423,14 +1424,22 @@ workspace; a timeout reports failure and leaves admission closed. A contended
 lease affects only its own session. The existing `.session.lock` continues to
 track control-helper liveness for stale reclamation.
 
-Lease and closure metadata survive successful workspace removal as well as
-failed cleanup. The same root snapshot considers only older sibling files whose
-names identify `.lease` or `.closed` metadata. It removes each such file once
-only when its corresponding workspace is absent; metadata with a live
-workspace is retained. Metadata inspection or removal errors leave the file for
-a later allocation. A delayed stage still checks workspace existence after
-acquiring ownership, so retired metadata cannot let it recreate the deleted
-workspace. Stale workspace removal uses the same closure and lease procedure.
+After workspace removal succeeds, cleanup attempts removal of both the lease
+and closure metadata while holding exclusive lease ownership. Each removal is
+attempted even if the other fails; any removal failure is a session cleanup
+failure. Successful normal cleanup leaves no per-session artifacts. If workspace
+removal fails or times out, both coordination files remain to preserve closed
+admission and the lease identity.
+
+Orphaned metadata left by unsuccessful cleanup is eligible for opportunistic
+reclamation once older than 24 hours. The same root snapshot considers sibling
+files whose names identify `.lease` or `.closed` metadata. It attempts removal
+of each eligible file once only when its corresponding workspace is absent;
+metadata with an existing workspace is retained. Metadata inspection or removal
+errors leave the file for a later allocation. A delayed stage either cannot
+open the removed lease or checks workspace absence after locking an already
+open descriptor; neither path can recreate session artifacts. Stale workspace
+removal uses the same closure and lease procedure.
 Kernel locks release on stage-process exit, including uncatchable termination.
 All lease acquisitions are nonblocking; cleanup retries have a bounded
 deadline. Filesystem operations retain their ordinary OS behavior.

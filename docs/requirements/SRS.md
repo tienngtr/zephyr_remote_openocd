@@ -1373,11 +1373,14 @@ A session workspace older than 24 hours SHALL be eligible for reclamation when
 the helper can establish that it is not owned by an active session and is not
 protected by an active staging operation.
 
+Orphaned session coordination metadata older than 24 hours SHALL also be
+eligible for reclamation when its corresponding workspace is absent.
+
 When allocating a new session, the helper SHALL attempt to reclaim each
-workspace that it can safely establish as eligible. If eligibility cannot be
-safely established, or if inspection or removal fails, the helper MAY leave the
-workspace for a later allocation. Such failure SHALL NOT require another
-reclamation attempt during the same allocation.
+workspace or metadata entry that it can safely establish as eligible. If
+eligibility cannot be safely established, or if inspection or removal fails,
+the helper MAY leave the entry for a later allocation. Such failure SHALL NOT
+require another reclamation attempt during the same allocation.
 
 Normal cleanup failures SHALL remain visible under REQ-FUNC-DATA-003.
 Opportunistic reclamation does not guarantee bounded disk growth when no later
