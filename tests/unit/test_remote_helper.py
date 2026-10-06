@@ -815,6 +815,128 @@ def _start_session_command(argv, sentinels=()):
     )
 
 
+@pytest.mark.parametrize(
+    ("interruption", "expected_error", "publication"),
+    (
+        pytest.param(b'{"version":1,"type":"STOP"}\n', None, "queued", id="queued-stop"),
+        pytest.param(None, None, "queued", id="queued-eof"),
+        pytest.param(b"not-json\n", json.JSONDecodeError, "queued", id="queued-malformed"),
+        pytest.param(b"START", ValueError, "queued", id="queued-duplicate-start"),
+        pytest.param(b'{"version":1,"type":"STOP"}\n', None, "pending", id="pending-stop"),
+        pytest.param(None, None, "pending", id="pending-eof"),
+        pytest.param(b"not-json\n", json.JSONDecodeError, "pending", id="pending-malformed"),
+        pytest.param(b"START", ValueError, "pending", id="pending-duplicate-start"),
+        pytest.param(b'{"version":1,"type":"STOP"}', ValueError, "pending", id="partial-eof"),
+        pytest.param(b'{"version":1,"type":"STOP"}\n', None, "full", id="backpressure-stop"),
+        pytest.param(b"SIGNAL", None, "pending", id="latched-signal"),
+    ),
+)
+def test_retry_does_not_spawn_after_terminal_control_observed_during_cleanup(
+    tmp_path, monkeypatch, control_pipe, interruption, expected_error, publication
+):
+    _reader, writer = control_pipe
+    workspace = tmp_path / "workspace"
+    (workspace / "staged").mkdir(parents=True)
+    lock = (workspace / remote_helper.SESSION_LOCK).open("w+b")
+    session = remote_helper.ControlSession("session", workspace, lock)
+    consumed = asyncio.Event()
+    publish = asyncio.Event()
+    pending = []
+    children = []
+    events = []
+    original_put = session._events.put
+    original_spawn = remote_helper._spawn_child
+    start = _start_session_command(
+        [
+            sys.executable,
+            "-c",
+            "import sys;print('Address already in use',file=sys.stderr,flush=True)",
+        ],
+        ("not-ready",),
+    )
+
+    async def controlled_put(observation):
+        terminal_control = (
+            isinstance(observation, (remote_helper._ControlFrame, remote_helper._ControlEOF))
+            and session.request is not None
+        ) or (
+            isinstance(observation, remote_helper._ObservationFailed)
+            and observation.source == "control"
+        )
+        if terminal_control:
+            pending.append(observation)
+            consumed.set()
+            await publish.wait()
+            if publication == "queued":
+                return
+        await original_put(observation)
+
+    def spawn(*args, **kwargs):
+        child = original_spawn(*args, **kwargs)
+        children.append(child)
+        if len(children) != 1:
+            # Keep a buggy extra launch owned and ensure the failing test exits.
+            session.handle_signal()
+            return child
+        terminate = child.terminate
+        close_streams = child.close_streams
+
+        async def terminate_then_observe_control():
+            await terminate()
+            if interruption == b"SIGNAL":
+                return
+            if interruption is None:
+                writer.close()
+            else:
+                writer.write(start if interruption == b"START" else interruption)
+                if interruption != b"START" and not interruption.endswith(b"\n"):
+                    writer.close()
+            await consumed.wait()
+
+        def close_then_release_publication():
+            close_streams()
+            if interruption == b"SIGNAL":
+                session.handle_signal()
+            elif publication == "queued":
+                session._events.put_nowait(pending[0])
+            elif publication == "full":
+                for _ in range(session._events.maxsize):
+                    session._events.put_nowait(remote_helper._ChildOutput(child, "stdout", b""))
+            publish.set()
+
+        monkeypatch.setattr(child, "terminate", terminate_then_observe_control)
+        monkeypatch.setattr(child, "close_streams", close_then_release_publication)
+        return child
+
+    monkeypatch.setattr(session._events, "put", controlled_put)
+    monkeypatch.setattr(remote_helper, "_spawn_child", spawn)
+    monkeypatch.setattr(remote_helper, "emit", lambda kind, **values: events.append((kind, values)))
+    writer.write(start)
+
+    async def run():
+        tasks_before = asyncio.all_tasks()
+        await session.run_async()
+        assert asyncio.all_tasks() == tasks_before
+
+    asyncio.run(run())
+
+    assert len(children) == 1
+    assert [kind for kind, _values in events].count("PROCESS_STARTING") == 1
+    assert not any(kind == "PROCESS_READY" for kind, _values in events)
+    assert children[0].process.returncode is not None
+    assert children[0].process.stdout.closed and children[0].process.stderr.closed
+    assert not workspace.exists()
+    assert lock.closed
+    if expected_error is not None:
+        assert isinstance(session.protocol_error, expected_error)
+        assert events[-1][0] == "ERROR"
+        assert events[-1][1]["code"] == "PROTOCOL_ERROR"
+    else:
+        assert session.protocol_error is None
+        if interruption == b'{"version":1,"type":"STOP"}\n':
+            assert events[-1] == ("SESSION_CLOSED", {"reason": "requested", "returncode": None})
+
+
 def test_control_session_cleanup_attempts_all_resources_once(tmp_path, monkeypatch, control_pipe):
     _reader, writer = control_pipe
     workspace = tmp_path / "workspace"
@@ -1071,8 +1193,9 @@ def test_readiness_deadline_processes_final_visible_observation(
     assert lock.closed
 
 
+@pytest.mark.parametrize("phase", ("active", "retry-fence"))
 def test_cancelled_session_cleans_child_before_leaving_task_scope(
-    tmp_path, monkeypatch, control_pipe
+    tmp_path, monkeypatch, control_pipe, phase
 ):
     _reader, writer = control_pipe
     workspace = tmp_path / "workspace"
@@ -1093,11 +1216,35 @@ def test_cancelled_session_cleans_child_before_leaving_task_scope(
             assert task is not None
             task.cancel()
 
+    original_put = session._events.put
+    coordinator_task: asyncio.Task[None] | None = None
+
+    async def cancel_at_fence(observation):
+        if isinstance(observation, remote_helper._ControlFence):
+            assert coordinator_task is not None
+            coordinator_task.cancel()
+        await original_put(observation)
+
+    if phase == "retry-fence":
+        monkeypatch.setattr(session._events, "put", cancel_at_fence)
+        writer.write(
+            _start_session_command(
+                [
+                    sys.executable,
+                    "-c",
+                    "import sys;print('Address already in use',file=sys.stderr,flush=True)",
+                ],
+                ("not-ready",),
+            )
+        )
     monkeypatch.setattr(remote_helper, "_spawn_child", spawn)
     monkeypatch.setattr(remote_helper, "emit", emit)
-    writer.write(_start_session_command([sys.executable, "-c", "import signal;signal.pause()"]))
+    if phase == "active":
+        writer.write(_start_session_command([sys.executable, "-c", "import signal;signal.pause()"]))
 
     async def run():
+        nonlocal coordinator_task
+        coordinator_task = asyncio.current_task()
         tasks_before = asyncio.all_tasks()
         with pytest.raises(asyncio.CancelledError):
             await session.run_async()
@@ -1105,6 +1252,7 @@ def test_cancelled_session_cleans_child_before_leaving_task_scope(
 
     asyncio.run(run())
 
+    assert len(children) == 1
     assert children[0].process.returncode is not None
     assert children[0].process.stdout.closed and children[0].process.stderr.closed
     assert not workspace.exists()

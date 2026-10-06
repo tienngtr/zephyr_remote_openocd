@@ -1336,6 +1336,21 @@ attempt, so obsolete events cannot affect its replacement. Control framing
 persists across attempts. A control-side termination request, EOF, or a
 protocol failure during retry cleanup prevents another launch.
 
+Retry eligibility is not permission to spawn immediately after old-attempt
+cleanup. Before committing a retry, the coordinator requests a publication
+fence from the control observer and continues dispatching ordinary observations.
+The observer acknowledges only after publishing every framed control fact from
+its consumed batch, or after an idle scan; it then pauses until the coordinator
+releases the fence. If control observation has ended, its guarded task must have
+published EOF or its failure before the fence is published. This ordering covers
+facts waiting on the bounded queue as well as facts already queued. The
+coordinator dispatches those facts before the fence and checks terminal state,
+cleanup/observer failures, and latched signals before starting another attempt.
+The retired child remains the current observation owner through this boundary;
+queued failures belonging to that attempt cannot be mistaken for obsolete
+replacement events. No additional control reader or observer-side lifecycle
+policy is introduced. The fence does not wait for future control input.
+
 A `SupervisedChild` owns the configured OpenOCD process-group resources and
 per-stream decoding state, which only the coordinator consumes. Process
 creation retains `Popen(start_new_session=True)` and explicit reaping: using

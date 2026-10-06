@@ -111,6 +111,15 @@ readiness or emitting `PROCESS_READY`; malformed or unexpected commands cause
 protocol failure and cleanup. Incomplete frames remain buffered until their LF
 arrives, and EOF with an incomplete frame is a protocol error.
 
+A bind-collision retry cannot emit another `PROCESS_STARTING` or spawn another
+child after STOP, EOF, or a control-protocol failure has become an observed
+pending fact during old-attempt cleanup. Before committing the retry, the
+coordinator accounts for consumed control facts even when their publication is
+blocked by the bounded observation queue. The retry boundary also accounts for
+latched termination signals and cleanup/observer failures. It does not wait for
+future input or promise to detect bytes that have not yet been observed. This
+is lifecycle ordering within the existing wire contract, not a new frame type.
+
 `STOP` has no fields other than `version` and `type`. On successful cleanup, it
 terminates the child process group, removes the workspace, emits `SESSION_CLOSED`
 with `reason: "requested"` and `returncode: null`, and exits. A cleanup failure

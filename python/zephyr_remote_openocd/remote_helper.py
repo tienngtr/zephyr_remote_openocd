@@ -27,7 +27,7 @@ import tarfile
 import tempfile
 import time
 from collections import deque
-from collections.abc import Coroutine, Iterable, Iterator
+from collections.abc import Callable, Coroutine, Iterable, Iterator
 from contextlib import contextmanager, suppress
 from enum import Enum, auto
 from pathlib import Path, PurePosixPath
@@ -889,8 +889,14 @@ class _ProtocolOutput:
 class _AsyncInput:
     """One cancellable raw observation path for an owned input descriptor."""
 
-    def __init__(self, descriptor: int):
+    def __init__(
+        self,
+        descriptor: int,
+        *,
+        on_idle: Callable[[], Coroutine[Any, Any, None]] | None = None,
+    ):
         self.descriptor = descriptor
+        self._on_idle = on_idle
         self.was_blocking = os.get_blocking(descriptor)
         self._wake: asyncio.Future[None] | None = None
         self._checkpoint: asyncio.Future[None] | None = None
@@ -904,6 +910,10 @@ class _AsyncInput:
     def _wake_reader(self) -> None:
         if self._wake is not None and not self._wake.done():
             self._wake.set_result(None)
+
+    def wake(self) -> None:
+        """Let the sole observer make progress without another descriptor reader."""
+        self._wake_reader()
 
     def checkpoint(self) -> asyncio.Future[None]:
         """Request one final raw observation by this reader, without a competitor."""
@@ -920,6 +930,8 @@ class _AsyncInput:
                 chunk = os.read(self.descriptor, RELAY_CHUNK_SIZE)
             except BlockingIOError:
                 self._observed()
+                if self._on_idle is not None:
+                    await self._on_idle()
                 loop = asyncio.get_running_loop()
                 self._wake = loop.create_future()
                 loop.add_reader(self.descriptor, self._wake_reader)
@@ -1275,6 +1287,11 @@ class _GroupCleaned(NamedTuple):
     exception: Exception | None
 
 
+class _ControlFence(NamedTuple):
+    observed: asyncio.Future[None]
+    resume: asyncio.Future[None]
+
+
 _Observation = (
     _ControlFrame
     | _ControlEOF
@@ -1284,6 +1301,7 @@ _Observation = (
     | _SignalReceived
     | _ObservationFailed
     | _GroupCleaned
+    | _ControlFence
 )
 
 
@@ -1317,6 +1335,8 @@ class ControlSession:
         self._resources_released = False
         self._output_available = True
         self._control_reader: _AsyncInput | None = None
+        self._control_task: asyncio.Task[_ObservationFailed | None] | None = None
+        self._control_fence: _ControlFence | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
 
     @classmethod
@@ -1351,7 +1371,7 @@ class ControlSession:
 
     async def _observe_control(self) -> None:
         frames = _ControlFrames()
-        reader = _AsyncInput(sys.stdin.buffer.fileno())
+        reader = _AsyncInput(sys.stdin.buffer.fileno(), on_idle=self._acknowledge_control_fence)
         self._control_reader = reader
         try:
             while True:
@@ -1363,8 +1383,27 @@ class ControlSession:
                 frames.feed(chunk)
                 while (frame := frames.pop_frame()) is not None:
                     await self._events.put(_ControlFrame(frame))
+                await self._acknowledge_control_fence()
         finally:
             reader.close()
+
+    async def _acknowledge_control_fence(self) -> None:
+        fence = self._control_fence
+        if fence is not None:
+            # Called only after publishing a whole consumed batch or scanning
+            # an idle descriptor. Pause observation until the coordinator has
+            # dispatched the fence and made its retry decision.
+            fence.observed.set_result(None)
+            await fence.resume
+
+    async def _observe_control_fence(self, fence: _ControlFence) -> None:
+        if self._control_task is not None:
+            # A completed guard has published EOF or its framing/read failure.
+            # Unlike a raw-reader checkpoint, this also covers queue backpressure.
+            await asyncio.wait(
+                (fence.observed, self._control_task), return_when=asyncio.FIRST_COMPLETED
+            )
+        await self._events.put(fence)
 
     async def _observe_output(self, child: SupervisedChild, name: str, stream: IO[bytes]) -> None:
         reader = _AsyncInput(stream.fileno())
@@ -1659,12 +1698,17 @@ class ControlSession:
             child.close_streams()
         except Exception as exc:
             self.cleanup_errors.append(exc)
+        retry = (
+            not self.ending
+            and not self.cleanup_errors
+            and is_bind_collision(child.startup_output)
+            and self.attempt + 1 < MAX_ADDRESS_ALLOCATION_ATTEMPTS
+        )
+        if retry:
+            await self._retry_commit_boundary()
         self.child = None
         if not self.ending and not self.cleanup_errors:
-            if (
-                is_bind_collision(child.startup_output)
-                and self.attempt + 1 < MAX_ADDRESS_ALLOCATION_ATTEMPTS
-            ):
+            if retry:
                 self.attempt += 1
                 try:
                     self._start_attempt()
@@ -1676,6 +1720,30 @@ class ControlSession:
                 protocol=True,
             )
         self.ending = True
+
+    async def _retry_commit_boundary(self) -> None:
+        loop = asyncio.get_running_loop()
+        fence = _ControlFence(loop.create_future(), loop.create_future())
+        self._control_fence = fence
+        if self._control_reader is not None:
+            self._control_reader.wake()
+        self._observe("retry control fence", self._observe_control_fence(fence))
+        try:
+            while not self.ending and not self.cleanup_errors:
+                if self._pending_signum is not None:
+                    self.ending = True
+                    break
+                observation = await self._events.get()
+                if observation is fence:
+                    break
+                self._handle(observation)
+                await asyncio.sleep(0)
+            if self._pending_signum is not None:
+                self.ending = True
+        finally:
+            self._control_fence = None
+            if not fence.resume.done():
+                fence.resume.set_result(None)
 
     def _release_workspace(self) -> None:
         if self._resources_released:
@@ -1737,7 +1805,7 @@ class ControlSession:
                     for signum in (signal.SIGTERM, signal.SIGINT):
                         previous_handlers[signum] = signal.getsignal(signum)
                         signal.signal(signum, self.handle_signal)
-                    self._observe("control", self._observe_control())
+                    self._control_task = self._observe("control", self._observe_control())
                     self._observe("signal", self._observe_signals())
                     await self._coordinate()
                 except BaseException as exc:
