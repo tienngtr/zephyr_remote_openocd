@@ -39,7 +39,7 @@ imply that the hardware test has been executed.
 | `REQ-FUNC-CONFIG-011` | Automated | [`test_unknown_and_invalid_values_are_rejected`](../../tests/unit/test_config.py); [`test_null_and_wrong_types_are_rejected`](../../tests/unit/test_config.py); [`test_duplicate_yaml_keys_are_rejected`](../../tests/unit/test_config.py) |
 | `REQ-FUNC-CONFIG-012` | Automated | [Configuration schema and loader tests](../../tests/unit/test_config.py) |
 | `REQ-FUNC-CONFIG-013` | Automated | [Configuration validator unit tests](../../tests/unit/test_validate_configuration.py) |
-| `REQ-FUNC-CONFIG-014` | Automated | [`test_default_path_honors_configuration_environment`](../../tests/unit/test_validate_configuration.py); [`test_default_path_uses_yaml_and_override`](../../tests/unit/test_config.py) |
+| `REQ-FUNC-CONFIG-014` | Automated | [`test_summary_allows_independent_configuration_and_home_environment_reads`](../../tests/unit/test_validate_configuration.py); [`test_default_path_uses_yaml_and_override`](../../tests/unit/test_config.py) |
 | `REQ-FUNC-CONFIG-015` | Automated | [`test_canonical_template_loads`](../../tests/unit/test_config.py); [`test_unknown_and_invalid_values_are_rejected`](../../tests/unit/test_config.py) |
 | `REQ-FUNC-CONFIG-016` | Automated | [`test_selection_precedence_and_empty_environment`](../../tests/unit/test_config.py); [`test_default_remote_is_resolved_without_environment_override`](../../tests/unit/test_validate_configuration.py) |
 | `REQ-FUNC-CONFIG-017` | Automated | [`test_remote_overrides_replace_whole_settings`](../../tests/unit/test_config.py); [`test_selected_remote_and_preset_errors_are_deferred`](../../tests/unit/test_config.py) |

@@ -476,9 +476,14 @@ The module SHALL provide a user-facing command that validates an existing
 configuration and summarizes its effective settings without SSH,
 OpenOCD, GDB, subprocess, socket, or hardware operations.
 
-For this summary, the omitted data is limited to the current local values of
-environment variables named by `forward_env`; the command SHALL NOT read or
-print those values, but MAY print their names. The summary SHALL include
+For this summary, the omitted data is the current local values of environment
+variables named by `forward_env`. The command SHALL NOT retrieve those values
+solely because their names appear in `forward_env`, and SHALL NOT display those
+values as forwarded-environment settings, but MAY print their names. This does
+not prohibit reading an environment variable when independently required for
+configuration discovery, path resolution, or other behavior defined by this
+specification. Results of such independent behavior, such as a resolved
+configuration path, MAY appear in the summary. The summary SHALL include
 configured SSH and OpenOCD argv elements, hosts, path mappings, and selected
 definition names as diagnostic content. It SHALL NOT infer or redact secrets
 from command arguments or paths; configured command arguments MAY therefore

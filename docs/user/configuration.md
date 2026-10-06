@@ -64,6 +64,12 @@ configuration path is passed. An explicit validator `--remote` takes precedence
 over `default_remote`; unlike a real runner operation, validation deliberately
 ignores `ZEPHYR_REMOTE_OPENOCD_REMOTE` so its result is deterministic.
 
+The validator lists `forward_env` names without collecting or displaying their
+current values as forwarded-environment settings. It still reads variables
+independently needed for configuration discovery and path resolution, even
+when those names also appear in `forward_env`. Resolved paths may appear in the
+summary; this is not general secret redaction.
+
 The complete machine-readable contract is
 [`configuration.schema.json`](../../python/zephyr_remote_openocd/resources/configuration.schema.json), and
 the commented template is [`config.example.yaml`](../../resources/config.example.yaml).

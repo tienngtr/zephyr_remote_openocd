@@ -7,7 +7,9 @@ import os
 import socket
 import subprocess
 import sys
+from collections import UserDict
 from pathlib import Path
+from typing import override
 from unittest.mock import Mock
 
 import pytest
@@ -96,20 +98,24 @@ def test_no_selected_remote_reports_structural_success(tmp_path: Path, monkeypat
     assert validator.main([str(path)]) == 0
 
 
-def test_default_path_honors_configuration_environment(tmp_path: Path, monkeypatch) -> None:
+def test_summary_allows_independent_configuration_and_home_environment_reads(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
     path = tmp_path / "custom.yaml"
-    path.write_text("{}\n")
-    monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", str(path))
-    loaded: list[Path] = []
-    load_config = validator.load_config
-
-    def capture_path(candidate):
-        loaded.append(candidate)
-        return load_config(candidate)
-
-    monkeypatch.setattr(validator, "load_config", capture_path)
+    path.write_text(
+        "default_remote: lab\n"
+        "remotes:\n  lab:\n    openocd_command: [openocd]\n"
+        "    forward_env: [HOME, ZEPHYR_REMOTE_OPENOCD_CONFIG]\n"
+    )
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", "~/custom.yaml")
     assert validator.main([]) == 0
-    assert loaded == [path]
+    output = capsys.readouterr()
+    assert output.err == ""
+    assert str(path) in output.out
+    assert "HOME" in output.out
+    assert "ZEPHYR_REMOTE_OPENOCD_CONFIG" in output.out
+    assert "~/custom.yaml" not in output.out
 
 
 def test_missing_file_fails_with_setup_guidance(tmp_path: Path, capsys) -> None:
@@ -154,7 +160,7 @@ def test_configuration_and_resolution_errors_are_actionable(tmp_path: Path, caps
     assert "openocd_command is required for remote 'lab'" in output.err
 
 
-def test_summary_does_not_read_or_print_forwarded_values(
+def test_summary_does_not_collect_or_print_forwarded_environment_values(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
     path = tmp_path / "config.yaml"
@@ -162,6 +168,15 @@ def test_summary_does_not_read_or_print_forwarded_values(
         "remotes:\n  lab:\n    openocd_command: [openocd]\n    forward_env: [PRIVATE_VALUE]\n"
     )
     monkeypatch.setenv("PRIVATE_VALUE", "do-not-print-this")
+
+    class GuardedEnvironment(UserDict[str, str]):
+        @override
+        def __getitem__(self, key: str) -> str:
+            if key == "PRIVATE_VALUE":
+                pytest.fail("summary must not collect forwarded environment values")
+            return super().__getitem__(key)
+
+    monkeypatch.setattr(os, "environ", GuardedEnvironment(os.environ))
     assert validator.main([str(path), "--remote", "lab"]) == 0
     output = capsys.readouterr().out
     assert "PRIVATE_VALUE" in output
