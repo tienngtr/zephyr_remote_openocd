@@ -1216,11 +1216,13 @@ temporary file, flushes and synchronizes it, and atomically renames it to the
 digest-named target. The selected target's timestamp is refreshed while the
 lock is held.
 
-Revisions matching `helper-*.py` that are older than 24 hours are reclaimed,
-except for the selected target. A failure to remove a stale revision does not
-remove the selected target. The deployment lock is released before the session
-helper starts. Exact deployment response fields remain part of the wire
-contract defined in [protocol.md](protocol.md).
+Revisions matching `helper-*.py` that are older than 24 hours are eligible for
+opportunistic reclamation, except for the selected target. Deployment attempts
+to remove every eligible stale revision, but tolerates an individual stat or
+removal failure and continues. Reclamation is best effort and never makes
+deployment fail; the selected target is never removed. The deployment lock is
+released before the session helper starts. Exact deployment response fields
+remain part of the wire contract defined in [protocol.md](protocol.md).
 
 No assumption is made that the local SSH executable comes from the local Linux distribution.
 

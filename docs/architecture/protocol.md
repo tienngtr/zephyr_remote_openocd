@@ -248,10 +248,14 @@ OpenOCD and instead attempts session cleanup.
 --version` and emits `OPENOCD_VERSION` on success.
 
 The deployment bootstrap emits `DEPLOYED` on success. Helpers are installed
-atomically at `protocol_v1/helper-<sha256>.py`, matching content is reused, and
-stale digest revisions are pruned. Deployment serializes installation, reuse
-refresh, and pruning with a per-protocol lock so a concurrently selected
-revision cannot be removed from a stale observation.
+atomically at `protocol_v1/helper-<sha256>.py`, and matching content is reused.
+Stale digest revisions older than 24 hours are eligible for opportunistic
+reclamation, excluding the selected revision. The bootstrap attempts each
+eligible removal and tolerates an individual stat or removal failure; such a
+failure does not fail deployment, and the selected revision is never removed.
+Deployment serializes installation, reuse refresh, and reclamation with a
+per-protocol lock so a concurrently selected revision cannot be removed from a
+stale observation.
 
 After a valid `stage` or `openocd-version` helper invocation has been selected,
 an operation failure emits one `ERROR` frame and exits nonzero. Invocation
