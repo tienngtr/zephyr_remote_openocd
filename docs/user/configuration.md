@@ -50,12 +50,13 @@ west flash -r remote_openocd --remote lab
 
 After that works, uncomment `default_remote: lab` if desired. Keep
 `default_runner: openocd` to preserve local OpenOCD as the default, or change it
-to `remote_openocd`. Once this module is already configured into the build, the
-next ordinary `west flash` or `west debug` performs its pre-run incremental
-build and refreshes the generated runner configuration. Run `west build` for
-explicit regeneration, or run `west build --cmake-only -d <build>` first if the
-build directory predates activation of this module. A `--no-rebuild` runner
-command intentionally consumes existing generated state.
+to `remote_openocd`. Once this module is already configured into the build,
+changes to the contents, creation, or deletion of the configuration file selected
+when CMake last configured that build are detected by the pre-run incremental
+build of ordinary `west flash` or `west debug` commands. Run `west build` to apply
+these file changes explicitly, or run `west build --cmake-only -d <build>` first
+if the build directory predates activation of this module. A `--no-rebuild`
+runner command intentionally consumes existing generated state.
 
 Set a non-empty `ZEPHYR_REMOTE_OPENOCD_CONFIG` to read a different file; a
 leading current-user `~` is expanded, and the file contents are YAML regardless
@@ -63,6 +64,12 @@ of the filename extension. The validator uses the same override when no
 configuration path is passed. An explicit validator `--remote` takes precedence
 over `default_remote`; unlike a real runner operation, validation deliberately
 ignores `ZEPHYR_REMOTE_OPENOCD_REMOTE` so its result is deterministic.
+
+After changing `ZEPHYR_REMOTE_OPENOCD_CONFIG` for an existing build directory,
+run a CMake reconfiguration such as `west build --cmake-only -d <build>` before
+relying on the generated default runner. Each process still reads the
+configuration selected by its current environment; changing the override alone
+does not update the existing build's generated default.
 
 The validator lists `forward_env` names without collecting or displaying their
 current values as forwarded-environment settings. It still reads variables

@@ -646,13 +646,19 @@ Explicit `-r` selection SHALL override the generated default.
 
 ### REQ-FUNC-SELECT-008
 
-Changes to user configuration that affect generated Zephyr runner state SHALL
-be detected by the normal Zephyr build and reconfiguration machinery for builds
-using the module. After such a change, a normal build or reconfiguration
+Changes to user configuration at the configuration path selected when the build
+was last configured that affect generated Zephyr runner state SHALL be detected
+by the normal Zephyr build and reconfiguration machinery for builds using the
+module. This includes changes to the contents, creation, or deletion of the
+selected configuration file. After such a change, a normal build or reconfiguration
 operation SHALL regenerate the affected runner state before a subsequent west
 runner command consumes it. This SHALL be possible without a pristine build or
 a full firmware compile and link. A runner command is not required to perform
 a full firmware build solely to apply that configuration change.
+
+Changing `ZEPHYR_REMOTE_OPENOCD_CONFIG` so that it selects a different
+configuration path SHALL require CMake reconfiguration before generated runner
+state is expected to reflect that path.
 
 ### REQ-FUNC-SELECT-010
 
