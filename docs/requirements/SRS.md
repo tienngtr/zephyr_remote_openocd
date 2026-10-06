@@ -1170,8 +1170,14 @@ Python 3.12+ standard library on the remote host.
 ### REQ-FUNC-HELP-005
 
 After the remote helper observes that its controlling SSH channel has ended,
-whether through EOF or a termination signal, it SHALL terminate the associated
-OpenOCD process. Remote SSH/operating-system detection latency is outside this
+whether through EOF or a termination signal, it SHALL initiate the bounded
+process-group cleanup specified in REQ-FUNC-HELP-012. When process-group
+signalling and reaping complete successfully within that cleanup attempt, the
+associated OpenOCD process SHALL be terminated. If termination fails or cannot
+be confirmed within the bound, the helper SHALL record a cleanup failure and
+report the unsuccessful termination as a helper/session failure when control
+output remains usable. Loss of the control channel MAY prevent delivery of
+that report. Remote SSH/operating-system detection latency is outside this
 requirement's bound. Local SSH-client detection SHALL NOT be treated as remote
 helper observation, and the project SHALL NOT bound the interval from local
 detection to remote OpenOCD termination.
@@ -1234,7 +1240,11 @@ the resources it owns after that side observes the loss. These SSH-loss
 cleanup bounds do not include loss-detection latency or the interval before
 the other side observes the loss. Repeated shutdown requests SHALL be
 harmless. Successful continuation or retry of a partially failed cleanup
-sequence SHALL NOT be required.
+sequence SHALL NOT be required. Failure to terminate an owned process or to
+release an owned resource within the cleanup attempt is a cleanup failure and
+SHALL remain visible under REQ-FUNC-HELP-011. The remote helper SHALL report
+such an unsuccessful termination as a helper/session failure instead of a
+successful session close when its control output remains usable.
 
 ### REQ-FUNC-HELP-011
 
@@ -1276,7 +1286,12 @@ relay resources. Diagnosis of surviving descendants when observable SHOULD be
 provided, but failure of best-effort descendant inspection SHALL NOT by itself
 make otherwise successful process-group cleanup fail. The exact signal, wait,
 inspection, escalation, reaping, and relay-cleanup algorithm belongs in the
-SAD.
+SAD. Successful termination is required when the termination and reaping
+operations complete successfully within the bounded cleanup attempt. Otherwise,
+the attempt is unsuccessful and conformance requires the cleanup-failure
+recording and reporting specified by REQ-FUNC-HELP-010 and REQ-FUNC-HELP-011;
+a failed attempt is not required to guarantee that the process group has
+terminated.
 
 ---
 
