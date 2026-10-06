@@ -1368,11 +1368,22 @@ after it observes control-channel EOF or a termination signal. Neither side's
 cleanup bound includes its own detection latency, and the project does not add
 a separate network-loss polling deadline or bound the interval between the
 observations.
-Each session holds an advisory lock in its workspace. When allocating a new
-session, the helper opportunistically removes session workspaces older than 24
-hours when their lock is no longer held or lock creation never completed. This
-reclaims state left by uncatchable termination without disturbing concurrent
-active sessions.
+Each session holds an advisory lock in its workspace. During new-session
+allocation, the helper takes one directory snapshot of the session root and
+checks each older workspace entry once. A missing session root is treated as
+empty. An older workspace is eligible when the helper can inspect it, acquire
+its session lock exclusively without blocking, and confirm that staging does
+not protect it. A held lock means that the workspace is active and is skipped;
+a missing or non-file session lock represents incomplete lock creation and is
+handled as an abandoned workspace. The helper uses the closure and lease-aware
+workspace-removal procedure for each safely eligible workspace and does not
+retry it during the same allocation.
+
+Inspection, lock acquisition, or workspace removal errors leave that workspace
+for a later allocation and do not stop inspection of other entries. Errors
+while taking the root snapshot other than a missing root are propagated. Root
+entries that are neither workspaces nor recognized staging metadata are
+ignored.
 
 Standalone staging first spools its upload without workspace ownership. Before
 archive validation or extraction, it acquires a shared workspace lease using a
@@ -1393,13 +1404,16 @@ lease affects only its own session. The existing `.session.lock` continues to
 track control-helper liveness for stale reclamation.
 
 Lease and closure metadata survive successful workspace removal as well as
-failed cleanup. Opportunistic reclamation removes metadata older than 24 hours
-only when its workspace is absent. A delayed stage still checks workspace
-existence after acquiring ownership, so retired metadata cannot let it recreate
-the deleted workspace. Stale workspace removal uses the same closure and lease
-procedure. Kernel locks release on stage-process exit, including uncatchable
-termination. All lease acquisitions are nonblocking; cleanup retries have a
-bounded deadline. Filesystem operations retain their ordinary OS behavior.
+failed cleanup. The same root snapshot considers only older sibling files whose
+names identify `.lease` or `.closed` metadata. It removes each such file once
+only when its corresponding workspace is absent; metadata with a live
+workspace is retained. Metadata inspection or removal errors leave the file for
+a later allocation. A delayed stage still checks workspace existence after
+acquiring ownership, so retired metadata cannot let it recreate the deleted
+workspace. Stale workspace removal uses the same closure and lease procedure.
+Kernel locks release on stage-process exit, including uncatchable termination.
+All lease acquisitions are nonblocking; cleanup retries have a bounded
+deadline. Filesystem operations retain their ordinary OS behavior.
 Standalone staging behavior and protocol framing remain coordinated through
 [protocol.md](protocol.md).
 

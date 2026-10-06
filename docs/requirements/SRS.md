@@ -1315,7 +1315,19 @@ staging operations to resume use of the workspace.
 
 ### REQ-FUNC-DATA-005
 
-Repeated use SHALL NOT cause unbounded accumulation of abandoned session data.
+A session workspace older than 24 hours SHALL be eligible for reclamation when
+the helper can establish that it is not owned by an active session and is not
+protected by an active staging operation.
+
+When allocating a new session, the helper SHALL attempt to reclaim each
+workspace that it can safely establish as eligible. If eligibility cannot be
+safely established, or if inspection or removal fails, the helper MAY leave the
+workspace for a later allocation. Such failure SHALL NOT require another
+reclamation attempt during the same allocation.
+
+Normal cleanup failures SHALL remain visible under REQ-FUNC-DATA-003.
+Opportunistic reclamation does not guarantee bounded disk growth when no later
+allocation occurs or when inspection or removal continues to fail.
 
 ---
 
