@@ -1245,7 +1245,7 @@ or control-channel loss. The ownership boundaries are:
 
 | Owner | Resources and decisions |
 | --- | --- |
-| `RemoteSession` | Coordinates staging and cleanup order and reports session/cleanup failures to the active operation. |
+| `RemoteSession` | Coordinates staging and subsystem cleanup and reports session/cleanup failures to the active operation. |
 | `_HelperClient` | Owns the helper control channel, protocol reader, helper observations, output delivery, and helper shutdown. |
 | `_ForwardManager` | Owns local forwarding SSH processes, forward status checks, and forward cleanup. |
 | `ManagedSshProcess` | Owns one local SSH subprocess and its stderr drain. |
@@ -1253,10 +1253,12 @@ or control-channel loss. The ownership boundaries are:
 | Remote `ControlSession` | Owns remote session state, workspace, command dispatch, and final cleanup. |
 | `SupervisedChild` | Owns the OpenOCD process group, output relays, startup observation, termination, and stream closure. |
 
-`RemoteSession.close()` invokes subsystem cleanup in the required order and
-chooses the primary failure across helper and forwarding cleanup. Each owner
-cleans up the resources it acquired; no owner transfers an active resource to
-another owner merely because cleanup encountered an error.
+`RemoteSession.close()` coordinates the subsystem cleanup sequences and chooses
+the primary failure across helper and forwarding cleanup. Failure of one
+subsystem cleanup does not prevent the other applicable cleanup sequence from
+being attempted. Each owner cleans up the resources it acquired; no owner
+transfers an active resource to another owner merely because cleanup encountered
+an error.
 
 ### 38.1 Local SSH subprocess ownership
 
@@ -1315,7 +1317,7 @@ shutdown open indefinitely.
 
 This separation is intentional: `_HelperClient` and `_ForwardManager`
 perform process cleanup within their own subsystem sequences,
-`RemoteSession.close()` orders those cleanup sequences, `ManagedSshProcess`
+`RemoteSession.close()` coordinates those cleanup sequences, `ManagedSshProcess`
 exposes per-process control and diagnostic access, and `_StderrDrain` alone
 owns stderr consumption and stream closing. In this design, removing the
 wrapper, drain thread, bounded tail, or bounded reader shutdown would require
