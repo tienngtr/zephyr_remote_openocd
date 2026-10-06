@@ -63,6 +63,12 @@ Protocol v1 unless the work explicitly requires it. When either changes, update
 its specification, implementation, examples, and tests together. Version
 changes are compatibility decisions, not development-history labels.
 
+The packaged configuration schema is the sole source for the structural and
+lexical rules it expresses. Runtime configuration validation must use
+`jsonschema` against that schema; do not duplicate those rules in handwritten
+validators. Parser safeguards and contextual semantic checks remain separate
+from schema-defined validation.
+
 Environment variables read by the product use the
 `ZEPHYR_REMOTE_OPENOCD_` prefix. Reserve the shorter `ZRO_` prefix for the test
 harness, validation tools, test payloads, and generated internal markers. In

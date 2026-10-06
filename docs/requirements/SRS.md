@@ -440,12 +440,13 @@ mappings and SHALL NOT be treated as conflicts.
 
 ### REQ-FUNC-CONFIG-012
 
-The implementation SHALL validate parsed YAML against the canonical machine-
-readable schema at runtime rather than maintaining a separate copy of the
-structural or lexical rules in handwritten validators. Post-schema validation
-SHALL be limited to contextual semantics, including local path resolution and
-collision detection, selected-definition references, operationally required
-settings, and remote-home expansion.
+Configuration documents SHALL be accepted or rejected according to the
+canonical machine-readable schema for every structural and lexical rule that
+the schema expresses. The implementation SHALL additionally enforce the
+contextual semantics required by this specification where the schema cannot
+express them, including local path resolution and collision detection,
+selected-definition references, operationally required settings, and
+remote-home expansion.
 
 ### REQ-FUNC-CONFIG-013
 

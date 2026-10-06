@@ -243,12 +243,14 @@ operation.
 `python/zephyr_remote_openocd/resources/configuration.schema.json` defines the
 configuration's structure and lexical rules. The loader reads it by package
 identity through `importlib.resources`, independently of repository depth. The
-loader safely parses YAML with duplicate-key rejection, then validates the
-parsed document against the canonical schema, which rejects explicit nulls and
-other structural and lexical violations. The schema alone validates command
-and path spelling, including NUL exclusion and normalized remote path syntax.
-Code then expands and resolves local mapping keys and detects collisions because
-those operations depend on the local filesystem. Remote references and required
+loader safely parses YAML with duplicate-key rejection, then uses `jsonschema`
+at runtime to validate the parsed document against that canonical schema. The
+schema is the sole source for the structural and lexical rules it expresses;
+those rules are not duplicated in handwritten validators. It rejects explicit
+nulls and other structural and lexical violations, including invalid command
+and path spelling, NULs, and invalid normalized remote paths. Code then
+expands and resolves local mapping keys and detects collisions because those
+operations depend on the local filesystem. Remote references and required
 `openocd_command` are checked only when the selected remote is used, allowing
 incomplete unused definitions.
 
