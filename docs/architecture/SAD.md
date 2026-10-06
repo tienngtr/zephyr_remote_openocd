@@ -671,9 +671,11 @@ target
 
 There is no command-line re-parsing stage.
 
-Only files directly required by remote OpenOCD are mapped or staged. Source
-files, debug symbols and other local development output, GDB, and the
-compiler/toolchain remain on the development host.
+Only firmware/configuration inputs and search trees selected through the
+supported OpenOCD input boundary are mapped or staged. A selected search tree
+may contain files that OpenOCD does not ultimately consume. GDB, the toolchain,
+and the authoritative local development artifacts—including source files,
+debug symbols, and local build output—remain on the development host.
 
 Flash command construction is phase-oriented: a shared immutable OpenOCD
 prefix is combined with a resolved image plan and one concrete ELF, BIN, or
