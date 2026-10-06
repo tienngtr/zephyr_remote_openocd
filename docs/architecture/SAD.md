@@ -879,6 +879,11 @@ random candidates. A child bind-collision retry uses random allocation without
 retrying the preference. A cached address conveys no ownership and cannot
 override another session's lease.
 
+The optional preferred candidate is additional to the 32-candidate random
+allocation budget. Exhausting that budget fails startup without launching a
+child for that allocation attempt. This candidate budget is distinct from the
+child startup-attempt limit described in §38.
+
 The helper reserves each candidate address by binding a Linux abstract Unix
 socket whose name is keyed solely by that address. The kernel socket namespace
 coordinates helpers across remote users, runtime directories, and helper
@@ -1389,6 +1394,23 @@ attempt before starting another; child observations identify their owning
 attempt, so obsolete events cannot affect its replacement. Control framing
 persists across attempts. A control-side termination request, EOF, or a
 protocol failure during retry cleanup prevents another launch.
+
+Only a child that exits before readiness is eligible for a bind-collision
+retry. Recognition depends on the case-insensitive phrase
+`address already in use` in bounded captured startup output; it is not a
+structured OpenOCD error code and does not classify every possible bind failure.
+Other startup failures and exits after readiness do not trigger this retry
+policy. A session permits at most 32 child startup attempts, including the
+initial launch, so at most 31 retries.
+Reaching this limit produces ordinary startup failure rather than another
+launch.
+
+An eligible retry requires successful old-attempt process-group, output-observer,
+and stream cleanup, with no cleanup failure or pending termination. The old
+address lease is released before randomized allocation obtains a fresh lease
+and validates the service ports for the replacement attempt (§27). Restarting
+OpenOCD repeats its configuration and startup commands, which may already have
+touched the target; cleanup does not roll back those target effects.
 
 Retry eligibility is not permission to spawn immediately after old-attempt
 cleanup. Before committing a retry, the coordinator requests a publication
