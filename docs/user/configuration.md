@@ -202,8 +202,9 @@ configured arguments unchanged. No YAML keys change and no configuration
 migration is needed.
 
 The executable need not be named `ssh`. A bare name is found through `PATH`,
-and an explicit path is preserved. For example, a Linux environment that can
-execute an OpenSSH-compatible client at a mounted path may use:
+and an explicit path is preserved. For example, a Linux environment with an
+SSH client satisfying the required transport and forwarding capabilities at a
+mounted path may use:
 
 ```yaml
 ssh_command: [/mnt/c/Windows/System32/OpenSSH/ssh.exe]

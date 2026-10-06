@@ -12,7 +12,7 @@ For shell activation in every Zephyr session, put the same export in
 Zephyr application normally. The built-in `openocd` runner remains the default
 unless `default_runner: remote_openocd` is selected.
 
-For a concrete Zephyr 4.4 example, build the `samples/hello_world` application
+For a concrete Zephyr 4.4.x example, build the `samples/hello_world` application
 for the OpenOCD-capable `stm32f746g_disco` board, inspect the available
 runners, and select the `lab` remote from your configuration:
 

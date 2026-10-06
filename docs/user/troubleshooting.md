@@ -3,7 +3,7 @@
 If setup fails, check that the module copy is readable, the configuration parent
 is writable, and the command is running with Python 3.12 or newer. Missing
 `pyelftools`, PyYAML, or jsonschema produces a setup warning. Use the Python
-environment configured for Zephyr 4.4; the runner has no separate product
+environment configured for Zephyr 4.4.x; the runner has no separate product
 dependency-installation step.
 
 For remote operations, verify the configured SSH argv can connect directly and

@@ -16,7 +16,7 @@ Run the checks appropriate to every change and state the actual coverage in the
 pull request:
 
 - Every change: run `.venv/bin/python -m pytest` and `.venv/bin/python scripts/contributor/static_check.py`.
-- Zephyr runner or build-integration changes: run the applicable Zephyr 4.4
+- Zephyr runner or build-integration changes: run the applicable Zephyr 4.4.x
   integration tests.
 - SSH, helper, session, or forwarding changes: run the applicable SSH
   integration tests when a suitable host is available.
@@ -52,7 +52,7 @@ CI additionally publishes a Markdown job summary. Coverage is informational and
 has no minimum threshold.
 
 The repository map is small: `python/zephyr_remote_openocd/remote/` contains
-generic transport and session logic, `zephyr44/runner.py` contains Zephyr 4.4
+generic transport and session logic, `zephyr44/runner.py` contains Zephyr 4.4.x
 integration, `runners/remote_openocd.py` registers the west runner,
 `remote_helper.py` is the deployed helper, and `resources/` contains the user
 configuration contract. Matching tests live under `tests/unit/`,
@@ -60,7 +60,7 @@ configuration contract. Matching tests live under `tests/unit/`,
 `tests/ssh_integration/`, and `tests/hardware/`.
 
 Production code belongs under `python/zephyr_remote_openocd/` and must remain
-board/vendor-agnostic. Keep Zephyr 4.4-specific coupling in `zephyr44/runner.py`,
+board/vendor-agnostic. Keep Zephyr 4.4.x-specific coupling in `zephyr44/runner.py`,
 use only the supported runner interface, and do not access private
 `OpenOcdBinaryRunner` members. Do not change the configuration schema or
 Protocol v1 unless the work explicitly requires it. When either changes, update

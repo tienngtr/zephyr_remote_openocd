@@ -26,7 +26,7 @@ The primary drivers are:
 - no development-repository changes;
 - board-agnostic design;
 - one Linux implementation;
-- Zephyr 4.4 compatibility;
+- Zephyr 4.4.x compatibility;
 - local GDB and remote OpenOCD;
 - reuse of existing board OpenOCD configuration;
 - concurrent remote sessions;
@@ -183,10 +183,11 @@ from zephyr_remote_openocd.zephyr44.runner import (
 The substantive implementation remains split into normal Python modules.
 
 The local runner may use `pyelftools` for ELF inspection and PyYAML plus
-jsonschema for configuration loading. Zephyr 4.4's configured Python environment
-already provides these accepted runtime dependencies; they are not functionality
-to reimplement. Setup reports discoverability of `pyelftools`, PyYAML, and
-jsonschema in the active Python environment. Missing dependencies warn and
+jsonschema for configuration loading. The configured Python environment for the
+supported Zephyr 4.4.x environment already provides these accepted runtime
+dependencies; they are not functionality to reimplement. Setup reports
+discoverability of `pyelftools`, PyYAML, and jsonschema in the active Python
+environment. Missing dependencies warn and
 direct users back to that environment without preventing configuration
 initialization. The module does not require pip packaging or a separate
 dependency installation path.
@@ -501,25 +502,27 @@ remain until a later regeneration.
 
 ## 16. Zephyr Runner Reuse Strategy
 
-The runner may subclass and reuse the non-private interface of Zephyr 4.4's
-`OpenOcdBinaryRunner` when doing so reduces duplication.
+The runner may subclass and reuse the non-private interface of the built-in
+`openocd` runner from the particular supported Zephyr 4.4.x environment when
+doing so reduces duplication.
 
 The compatibility policy is:
 
 > Zephyr supports `runners.core` as its external-runner API. It does not make
-> that compatibility guarantee for `OpenOcdBinaryRunner`. The Zephyr 4.4
+> that compatibility guarantee for `OpenOcdBinaryRunner`. The Zephyr 4.4.x
 > runner integration may use the class's non-private interface, but that code
 > remains version-specific and confined to the Zephyr compatibility layer.
 
-The built-in Zephyr 4.4 `openocd` runner's user-facing option names and value
-forms define the compatibility boundary for the supported west commands. The
+The built-in `openocd` runner from the particular supported Zephyr 4.4.x
+environment in use defines the compatibility boundary for the supported west
+commands. The
 adapter preserves the functional effect of inherited options while translating
 them into remote plans, except where a specific SRS requirement defines
 different remote behavior. In particular, the remote runner owns the remote
 bind address and service and forwarding configuration because it must allocate
 remote ports and construct SSH forwards before local clients can use them.
 
-The Zephyr 4.4 runner integration reuses `capabilities()` and the constructor.
+The Zephyr 4.4.x runner integration reuses `capabilities()` and the constructor.
 It overrides
 `name()`, `do_create()`, `do_add_parser()`, and `do_run()`. The parser override
 delegates to `OpenOcdBinaryRunner.do_add_parser()` before adding `--remote`.
@@ -1003,14 +1006,14 @@ It does not duplicate:
 - host-key configuration;
 - host aliases.
 
-This permits users to select another OpenSSH-compatible executable and rely on
+This permits users to select another external SSH executable and rely on
 the configuration, credentials, and agent behavior provided by that client.
 
 ---
 
 ## 31. SSH Transport Capability Model
 
-Correctness shall depend only on the subset of functionality required from the configured OpenSSH-compatible client.
+Correctness shall depend only on the SSH capabilities defined in SRS §2.8.
 
 Conceptually:
 
@@ -1048,7 +1051,7 @@ Additional SSH processes provide forwarding.
 Advantages:
 
 - simple;
-- relies on common OpenSSH behavior.
+- uses the required SSH forwarding behavior.
 
 Disadvantages:
 
@@ -1767,7 +1770,7 @@ Selected for the current architecture:
 - `openocd` default initially;
 - normal build and reconfiguration detection for generated runner state;
 - Zephyr-version-specific reuse of the non-private `OpenOcdBinaryRunner` interface only;
-- configurable OpenSSH-compatible client command;
+- configurable external SSH client command satisfying the SRS capabilities;
 - default SSH command `ssh`;
 - SSH command may contain fixed arguments;
 - all SSH operations use the configured client abstraction;

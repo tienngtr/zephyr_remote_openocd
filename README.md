@@ -5,14 +5,14 @@ host while keeping west, GDB, and client tools on the local machine. It accesses
 the remote host through SSH.
 
 The project is under active development and has not produced a release. Its
-current integration target is Zephyr 4.4.
+current integration target is the Zephyr 4.4 release series (4.4.x).
 
 ## Prerequisites and support
 
-The supported integration boundary is Zephyr 4.4 on Linux with Python 3.12 or
-newer.
+The supported integration boundary is the Zephyr 4.4 release series (4.4.x) on
+Linux with Python 3.12 or newer.
 
-The local machine needs a Zephyr 4.4 workspace, its configured Python
+The local machine needs a Zephyr 4.4.x workspace, its configured Python
 environment, west, and a board build that supports Zephyr's built-in `openocd`
 runner. The remote machine needs Linux, SSH access, `python3` version 3.12 or
 newer, and an OpenOCD executable compatible with the board. OpenOCD and its
@@ -49,8 +49,9 @@ in the Zephyr documentation for more details.
 
 Setup creates `~/.config/zephyr_remote_openocd/config.yaml` without overwriting
 an existing file. It also reports the module path and diagnoses required Python
-dependencies. If it reports a dependency warning, use Zephyr 4.4's configured
-Python environment; there is no separate product installation step.
+dependencies. If it reports a dependency warning, use the supported Zephyr
+4.4.x environment's configured Python environment; there is no separate
+product installation step.
 
 The generated configuration contains a safe, unselected `lab` remote. Replace
 its SSH host and remote OpenOCD path:

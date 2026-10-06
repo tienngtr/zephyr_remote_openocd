@@ -8,7 +8,7 @@ Choose the smallest layer that covers the change:
 
 - Every change: `.venv/bin/python -m pytest` and `.venv/bin/python scripts/contributor/static_check.py`.
 - Zephyr runner integration or build integration: `tests/zephyr_integration/` with a
-  Zephyr 4.4 source tree and its configured Python environment.
+  Zephyr 4.4.x source tree and its configured Python environment.
 - SSH transport behavior: `tests/ssh_integration/` with a local hardware inventory.
 - Real board behavior: `tests/hardware/` with a board, probe, serial endpoint,
   and remote OpenOCD.
@@ -26,7 +26,7 @@ Tcl regressions assert the exact escaping syntax through planning, client
 serialization, and helper expansion; no Tcl interpreter is required.
 GitHub Actions runs four independent validation jobs: the self-contained suite,
 static checks, the SSH suite against an isolated SSH server container, and the full
-Zephyr 4.4 integration suite with a real workspace and SDK. That suite runs
+Zephyr 4.4.x integration suite with a real workspace and SDK. That suite runs
 real Zephyr CMake configuration and west runner commands in recording mode;
 it does not compile or execute firmware. The SSH server has its own filesystem,
 process namespace, and network namespace; the tests use the real SSH client
@@ -165,7 +165,7 @@ requested and is not a substitute for testing the configured remote executable.
 The focused runner-integration contract tests need only the Zephyr source and its Python
 runner dependencies, not a board, SDK, or firmware build. GitHub Actions also
 runs these alongside the full Zephyr integration suite. The integration suite
-uses real Zephyr 4.4 `west build --cmake-only` configuration for module
+uses real Zephyr 4.4.x `west build --cmake-only` configuration for module
 discovery, runner metadata, and clean-install coverage, then invokes real
 `west flash` and `west debug` commands with `--no-rebuild` in recording mode;
 it requires the SDK/toolchain for CMake discovery but does not compile or link
@@ -203,16 +203,16 @@ the Python environment used by `west`. Hardware tests require the declared
 board, probe, serial endpoint, and remote OpenOCD setup.
 
 GitHub Actions supplies the SSH layer with an ephemeral key and an isolated
-container running `sshd`, Python, and OpenOCD. The Zephyr job fetches
-Zephyr 4.4.0 and Zephyr 4.4 branch, updates the modules needed for their test
-board, and installs the matching SDK toolchain. Zephyr 4.4.0 is used for the
-Zephyr integration suite. Zephyr 4.4.1 and 4.4.2 don't change the runner
-framework so testing with Zephyr 4.4.0 is enough. Testing with Zephyr 4.4 branch
-is used to detect possibly breaking changes from upstream project and is non-gating.
-These jobs use `--require-external-tests` so a missing prerequisite or skipped
-test fails the job. Physical hardware remains an explicit lab-only validation
-layer and never runs on GitHub-hosted runners. Spike and virtual OpenOCD target
-testing are not part of this CI setup.
+container running `sshd`, Python, and OpenOCD. The Zephyr job checks the 4.4.x
+product boundary using a v4.4.0 baseline and a separate rolling
+`v4.4-branch` check, updates the modules needed for their test board, and
+installs the matching SDK toolchain. The v4.4.0 checkout is a CI baseline, not
+a product-version restriction. The rolling `v4.4-branch` check detects
+possibly breaking changes from upstream and is non-gating. These jobs use
+`--require-external-tests` so a missing prerequisite or skipped test fails the
+job. Physical hardware remains an explicit lab-only validation layer and never
+runs on GitHub-hosted runners. Spike and virtual OpenOCD target testing are not
+part of this CI setup.
 
 Real `west debug` acceptance is source-level and architecture-independent. The
 selected debug profile supplies an ELF and breakpoint symbol. GDB loads that

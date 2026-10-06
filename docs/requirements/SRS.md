@@ -91,10 +91,20 @@ A separate operation performed after installation which initializes per-user fil
 
 ### 2.8 SSH command
 
-The OpenSSH-compatible client command selected by the user for remote communication.
+The external SSH client command selected by the user for remote communication.
+For this specification, a compatible SSH client supports:
+
+- executing a remote command while carrying stdin to that command, relaying
+  stdout and stderr, and returning its exit status;
+- local TCP forwarding with an OpenSSH-compatible `-L` option;
+- the runner-owned forwarding controls `ExitOnForwardFailure=yes` and
+  `ClearAllForwardings=no` with their stated OpenSSH-compatible behavior.
+
+This capability definition does not require compatibility with the complete
+OpenSSH feature set.
 
 This will normally be `ssh` found through `PATH`, but configuration may name
-another OpenSSH-compatible executable and fixed arguments.
+another executable and fixed arguments.
 
 ### 2.9 Remote helper
 
@@ -213,8 +223,9 @@ The project has the following primary goals:
 5. Support concurrent use by multiple developers.
 6. Preserve ordinary local OpenOCD operation.
 7. Minimize remote-host administration.
-8. Reuse the Zephyr 4.4 OpenOCD runner's user-facing interface while defining
-   remote-specific behavior explicitly in this specification.
+8. Reuse the built-in `openocd` runner from the particular supported Zephyr
+   4.4.x environment in use while defining remote-specific behavior explicitly
+   in this specification.
 9. Keep Zephyr-version-specific integration isolated from the generic remote subsystem.
 10. Support Linux as the local platform.
 11. Avoid imposing a particular SSH-key or SSH-agent arrangement on developers.
@@ -225,7 +236,7 @@ The project has the following primary goals:
 
 ### REQ-FUNC-SCOPE-001
 
-The runner SHALL target Zephyr 4.4.
+The runner SHALL target the Zephyr 4.4 release series (4.4.x).
 
 ### REQ-FUNC-SCOPE-002
 
@@ -323,7 +334,7 @@ The project SHALL NOT require:
 for installation or operation.
 
 This prohibits a project-specific package-installation step; it does not
-prohibit reuse of dependencies supplied by the supported Zephyr 4.4 runner
+prohibit reuse of dependencies supplied by the supported Zephyr 4.4.x runner
 environment, including `pyelftools`, PyYAML, and jsonschema.
 
 ### REQ-FUNC-INSTALL-004
@@ -367,9 +378,9 @@ pre-existing parent, directory, or file.
 
 The setup program SHALL report whether `pyelftools`, PyYAML, and jsonschema are
 discoverable in the active Python environment. A missing dependency SHALL
-produce a warning directing the user to the Zephyr 4.4-configured Python
-environment, but SHALL NOT prevent configuration initialization or recommend a
-separate product installation.
+produce a warning directing the user to the Python environment configured for
+the supported Zephyr 4.4.x environment, but SHALL NOT prevent configuration
+initialization or recommend a separate product installation.
 
 ---
 
@@ -687,8 +698,9 @@ Users SHALL NOT need to duplicate built-in OpenOCD board-runner arguments in:
 ### REQ-FUNC-OPT-001
 
 For the west commands in REQ-FUNC-SCOPE-002, the custom runner SHALL accept
-the user-facing runner option names and value forms that Zephyr 4.4 exposes for
-the built-in `openocd` runner. Unless another requirement in this SRS defines
+the user-facing runner option names and value forms exposed by the built-in
+`openocd` runner from the particular supported Zephyr 4.4.x environment in use.
+Unless another requirement in this SRS defines
 different remote-execution behavior, inherited options SHALL preserve their
 functional effect on runner configuration and generated OpenOCD or GDB
 behavior. Identical diagnostics, logging, help text, or other incidental
@@ -704,7 +716,8 @@ specification.
 
 ### REQ-FUNC-OPT-002
 
-The runner SHALL support probe selection through Zephyr 4.4's `--serial` option.
+The runner SHALL support probe selection through the built-in `openocd` runner's
+`--serial` option in the particular supported Zephyr 4.4.x environment in use.
 
 Rationale:
 
@@ -726,7 +739,9 @@ where Zephyr exposes both.
 ### REQ-FUNC-OPT-006
 
 User-supplied OpenOCD command options inherited under REQ-FUNC-OPT-001 SHALL
-retain their Zephyr 4.4 semantics when constructing the remote OpenOCD command.
+retain their semantics from the built-in `openocd` runner in the particular
+supported Zephyr 4.4.x environment in use when constructing the remote OpenOCD
+command.
 
 ### REQ-FUNC-OPT-007
 
@@ -883,7 +898,8 @@ NOT rewrite user-provided Tcl or opaque fixed arguments.
 ### REQ-FUNC-FLASH-004
 
 Flash-related options inherited under REQ-FUNC-OPT-001 SHALL retain their
-Zephyr 4.4 `openocd` runner semantics for:
+semantics from the built-in `openocd` runner from the particular supported
+Zephyr 4.4.x environment in use for:
 
 - erase;
 - load;
@@ -931,9 +947,10 @@ allow an independent GDB client to control the target.
 
 ### REQ-FUNC-DEBUG-007
 
-`west debug -r remote_openocd` SHALL preserve the supported Zephyr 4.4
-`openocd` runner's GDB invocation and initialization behavior, except for
-remote-execution behavior explicitly defined by this specification.
+`west debug -r remote_openocd` SHALL preserve the GDB invocation and
+initialization behavior of the built-in `openocd` runner from the particular
+supported Zephyr 4.4.x environment in use, except for remote-execution
+behavior explicitly defined by this specification.
 
 ---
 
@@ -1094,8 +1111,8 @@ outside the runner's compatibility guarantees.
 
 ### REQ-FUNC-SSH-001
 
-The runner SHALL use a configured OpenSSH-compatible external client command
-for every SSH transport operation.
+The runner SHALL use a configured external SSH client command satisfying the
+capabilities defined in §2.8 for every SSH transport operation.
 
 ### REQ-FUNC-SSH-002
 
@@ -1420,6 +1437,22 @@ The remote Linux host can run multiple OpenOCD instances using identical TCP por
 
 Firmware and configuration artifacts are sufficiently small that a persistent artifact cache is unnecessary.
 
+### ASM-008
+
+The configured remote SSH account can execute the configured OpenOCD executable
+and Python, and can create the per-user helper and session state required by the
+selected operation.
+
+### ASM-009
+
+The configured remote SSH account has permission to access the selected debug
+probe or channel.
+
+### ASM-010
+
+The SSH service permits the local TCP forwarding required by the selected
+operation.
+
 ---
 
 ## 27. Explicit Non-Goals
@@ -1460,18 +1493,17 @@ Severity: Medium.
 
 Mitigation:
 
-Keep all use of `OpenOcdBinaryRunner` in the Zephyr 4.4 compatibility layer.
+Keep all use of `OpenOcdBinaryRunner` in the Zephyr 4.4.x compatibility layer.
 Do not use private attributes or methods. Validate or update the runner
 integration for each newly supported Zephyr version.
 
 ### RISK-007 - SSH client differences
 
-OpenSSH-compatible clients can differ in supported options, process behavior,
-authentication, and forwarding behavior.
+External SSH clients can differ in process behavior, authentication, and
+forwarding behavior.
 
 Severity: Medium.
 
 Mitigation:
 
-Depend only on the required OpenSSH-compatible behavior and preserve configured
-argv.
+Depend only on the capabilities defined in §2.8 and preserve configured argv.
