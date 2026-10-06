@@ -1645,18 +1645,19 @@ produces a warning. The active RTT client must connect to establish
 end-to-end reachability.
 
 Generic processes with no required output markers are ready immediately. The
-startup timeout is 30 seconds. The timeout bounds the wait in the absence of
-another terminal condition. The deadline is an observation, not cancellation of startup. At the deadline,
-the coordinator requests a final nonblocking scan by each existing input
-observer, continuing to consume queued facts while observers acknowledge that
-scan. It then checks leader exit/readiness before choosing a timeout. There is
-no competing reader or scheduling assumption about which coroutine runs first.
-Ready output or child exit visible at that final bounded observation may be
-processed slightly after the nominal deadline, within the former
-`CHILD_POLL_INTERVAL` observation tolerance. Control termination, EOF, and
-protocol failures remain responsive throughout startup. This preserves
-observation granularity rather than imposing a strict timestamp cutoff or
-requiring readiness polling.
+nominal readiness deadline for OpenOCD startup is 30 seconds. The deadline is
+an observation, not cancellation of startup. At the deadline, the coordinator
+requests a final nonblocking scan by each existing input observer, continuing
+to consume queued facts while observers acknowledge that scan. It then checks
+leader exit/readiness before choosing a timeout. There is no competing reader
+or scheduling assumption about which coroutine runs first. Ready output or
+child exit visible at this cooperative final observation may be processed after
+the nominal deadline. Observer acknowledgment and final event dispatch have no
+specified wall-clock completion bound; `CHILD_POLL_INTERVAL` does not bound this
+phase. The coordinator continues observing and dispatching control termination,
+EOF, and protocol failures throughout startup. This preserves observation
+granularity rather than imposing a strict timestamp cutoff or requiring
+readiness polling.
 
 ---
 
