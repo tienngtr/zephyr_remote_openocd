@@ -173,11 +173,22 @@ it requires the SDK/toolchain for CMake discovery but does not compile or link
 `samples/hello_world`. It uses fixed `rpi_pico` and
 `native_sim/native/64` board configurations and does not require hardware:
 the configuration-regeneration acceptance uses `west build -d <build> -t help`
-as a lightweight test-only mechanism for exercising the same build dependency
-and regeneration path without compiling firmware. It then uses recorded
+with Ninja as a lightweight test-only mechanism for exercising the same build
+dependency and regeneration path without compiling firmware. Make path-switch
+acceptance uses `west build -d <build> -t zro_runner_state` to refresh runner
+metadata without firmware compilation. It then uses recorded
 `west flash --no-rebuild` to consume the updated state. User documentation
 continues to recommend ordinary `west flash` or `west debug` after the module
 is configured into the build; explicit `west build` is also available.
+
+The path-switch regression starts with two existing configuration files, changes
+the override without touching either file, and checks the regenerated default
+before a recorded runner command consumes it. Local CMake tests also cover
+unchanged selection, clearing the override, clean recovery, validation failure
+and repair, and explicitly suppressed regeneration. Local Make tests exercise
+both the default aggregate and standalone metadata target, including preservation
+of other metadata and recovery from invalid configuration. Distinct Ninja and
+Make external nodes exercise real Zephyr metadata with parallel build flags.
 
 ```sh
 ZEPHYR_BASE=/path/to/zephyr \

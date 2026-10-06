@@ -5,15 +5,29 @@ if(NOT "openocd" IN_LIST _zro_runners)
   return()
 endif()
 
-set(_zro_config "$ENV{HOME}/.config/zephyr_remote_openocd/config.yaml")
-if(NOT "$ENV{ZEPHYR_REMOTE_OPENOCD_CONFIG}" STREQUAL "")
-  set(_zro_config "$ENV{ZEPHYR_REMOTE_OPENOCD_CONFIG}")
-  if(_zro_config STREQUAL "~")
-    set(_zro_config "$ENV{HOME}")
-  elseif(_zro_config MATCHES "^~/")
-    string(SUBSTRING "${_zro_config}" 1 -1 _zro_config_suffix)
-    set(_zro_config "$ENV{HOME}${_zro_config_suffix}")
-  endif()
+if(CMAKE_GENERATOR STREQUAL "Unix Makefiles" AND NOT CMAKE_SUPPRESS_REGENERATION)
+  # Refresh metadata only; never reconfigure an active parallel Make build.
+  # ALL covers normal builds. This target can also run without building firmware.
+  add_custom_target(zro_runner_state ALL
+    COMMAND "${PYTHON_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/config_default.py"
+            --refresh-runner-state "${PROJECT_BINARY_DIR}/runners.yaml"
+    VERBATIM)
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/configuration_path.cmake")
+
+if(CMAKE_GENERATOR MATCHES "^Ninja")
+  # Make environment-only path changes visible to CMake's file-based checks.
+  set(_zro_config_state "${CMAKE_CURRENT_BINARY_DIR}/zro-config-path.txt")
+  file(WRITE "${_zro_config_state}" "${_zro_config}")
+  configure_file("${_zro_config_state}" "${_zro_config_state}.configured" COPYONLY)
+  # A generated configure input runs before Ninja's CMake regeneration rule.
+  # Restat suppresses regeneration when the selected path remains unchanged.
+  add_custom_target(zro_config_path_check
+    COMMAND "${CMAKE_COMMAND}" "-DZRO_CONFIG_STATE=${_zro_config_state}"
+            -P "${CMAKE_CURRENT_LIST_DIR}/check_configuration_path.cmake"
+    BYPRODUCTS "${_zro_config_state}"
+    VERBATIM)
 endif()
 
 # A normal incremental build asks CMake to reconfigure when this file changes.

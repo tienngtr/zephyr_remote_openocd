@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 from tests.support import ROOT
 
@@ -18,6 +19,7 @@ def _configure_module(
     *,
     generator: str | None = None,
     home_name: str = "home",
+    suppress_regeneration: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     home = tmp_path / home_name
     source = tmp_path / "source"
@@ -41,6 +43,13 @@ def _configure_module(
         "load_zro_module()\n"
         'file(WRITE "${CMAKE_BINARY_DIR}/zro-result.txt" '
         '"${ZRO_DEPENDENCIES}\\n${BOARD_FLASH_RUNNER}\\n")\n'
+        'file(APPEND "${CMAKE_BINARY_DIR}/configuration-runs.txt" "configured\\n")\n'
+        'file(WRITE "${PROJECT_BINARY_DIR}/runners.yaml" '
+        '"flash-runner: ${BOARD_FLASH_RUNNER}\\n'
+        'debug-runner: ${BOARD_DEBUG_RUNNER}\\n'
+        'runners: [openocd, remote_openocd]\\n'
+        'args: {openocd: [--verify], remote_openocd: [--verify]}\\n'
+        'config: {elf_file: firmware.elf}\\n")\n'
     )
     environment = os.environ.copy()
     environment.update(
@@ -52,6 +61,8 @@ def _configure_module(
     command = ["cmake", "-S", str(source), "-B", str(build)]
     if generator is not None:
         command.extend(("-G", generator))
+    if suppress_regeneration:
+        command.append("-DCMAKE_SUPPRESS_REGENERATION=ON")
     result = subprocess.run(
         command,
         env=environment,
@@ -64,7 +75,9 @@ def _configure_module(
     return result, build / "zro-result.txt"
 
 
-def _build_module(build: Path, *, home: Path, override: str) -> subprocess.CompletedProcess[str]:
+def _build_module(
+    build: Path, *, home: Path, override: str, target: str | None = None
+) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     environment.update(
         {
@@ -72,8 +85,11 @@ def _build_module(build: Path, *, home: Path, override: str) -> subprocess.Compl
             "ZEPHYR_REMOTE_OPENOCD_CONFIG": override,
         }
     )
+    command = ["cmake", "--build", str(build)]
+    if target is not None:
+        command.extend(("--target", target))
     return subprocess.run(
-        ["cmake", "--build", str(build)],
+        command,
         env=environment,
         text=True,
         stdout=subprocess.PIPE,
@@ -150,3 +166,151 @@ def test_cmake_config_presence_changes_regenerate_default_runner(
 
     assert result.returncode == 0, result.stdout
     assert report.read_text().splitlines() == [str(config), "openocd"]
+
+
+@pytest.mark.parametrize("target", (None, "help"), ids=("default-target", "help-target"))
+def test_ninja_config_path_switch_regenerates_default_runner(tmp_path: Path, target: str | None):
+    home = tmp_path / "home"
+    default = home / ".config" / "zephyr_remote_openocd" / "config.yaml"
+    default.parent.mkdir(parents=True)
+    default.write_text("default_runner: openocd\n")
+    selected = tmp_path / "selected config[*?].yaml"
+    selected.write_text("default_runner: remote_openocd\n")
+
+    result, report = _configure_module(tmp_path, "", generator="Ninja")
+    assert result.returncode == 0, result.stdout
+    assert report.read_text().splitlines()[-1] == "openocd"
+
+    result = _build_module(report.parent, home=home, override=str(selected), target=target)
+    assert result.returncode == 0, result.stdout
+    assert report.read_text().splitlines()[-1] == "remote_openocd"
+
+    configurations = report.parent / "configuration-runs.txt"
+    assert len(configurations.read_text().splitlines()) == 2
+    result = _build_module(report.parent, home=home, override=str(selected), target=target)
+    assert result.returncode == 0, result.stdout
+    assert len(configurations.read_text().splitlines()) == 2
+
+    result = _build_module(report.parent, home=home, override="", target=target)
+    assert result.returncode == 0, result.stdout
+    assert report.read_text().splitlines()[-1] == "openocd"
+
+
+def test_ninja_config_path_check_survives_clean(tmp_path: Path):
+    result, report = _configure_module(tmp_path, "", generator="Ninja")
+    assert result.returncode == 0, result.stdout
+    home = tmp_path / "home"
+    result = _build_module(report.parent, home=home, override="", target="clean")
+    assert result.returncode == 0, result.stdout
+
+    selected = tmp_path / "selected.yaml"
+    selected.write_text("default_runner: remote_openocd\n")
+    result = _build_module(report.parent, home=home, override=str(selected))
+    assert result.returncode == 0, result.stdout
+    assert report.read_text().splitlines()[-1] == "remote_openocd"
+
+
+def test_ninja_config_path_switch_rejects_invalid_selected_config(tmp_path: Path):
+    result, report = _configure_module(tmp_path, "", generator="Ninja")
+    assert result.returncode == 0, result.stdout
+    home = tmp_path / "home"
+    selected = tmp_path / "invalid.yaml"
+    selected.write_text("default_runner: unsupported\n")
+
+    result = _build_module(report.parent, home=home, override=str(selected))
+    assert result.returncode != 0
+    assert report.read_text().splitlines()[-1] == "openocd"
+
+    selected.write_text("default_runner: remote_openocd\n")
+    result = _build_module(report.parent, home=home, override=str(selected))
+    assert result.returncode == 0, result.stdout
+    assert report.read_text().splitlines()[-1] == "remote_openocd"
+
+
+def test_ninja_suppressed_regeneration_keeps_existing_default_runner(tmp_path: Path):
+    result, report = _configure_module(tmp_path, "", generator="Ninja", suppress_regeneration=True)
+    assert result.returncode == 0, result.stdout
+    selected = tmp_path / "selected.yaml"
+    selected.write_text("default_runner: remote_openocd\n")
+
+    result = _build_module(report.parent, home=tmp_path / "home", override=str(selected))
+
+    assert result.returncode == 0, result.stdout
+    assert report.read_text().splitlines()[-1] == "openocd"
+
+
+@pytest.mark.parametrize("target", (None, "zro_runner_state"), ids=("default", "metadata"))
+def test_make_config_path_switch_refreshes_runner_metadata(tmp_path: Path, target: str | None):
+    selected = tmp_path / "selected config[*?].yaml"
+    selected.write_text("default_runner: remote_openocd\n")
+    result, report = _configure_module(tmp_path, "", generator="Unix Makefiles")
+    assert result.returncode == 0, result.stdout
+    metadata = report.parent / "runners.yaml"
+    before = yaml.safe_load(metadata.read_text())
+    home = tmp_path / "home"
+
+    result = _build_module(report.parent, home=home, override=str(selected), target=target)
+    assert result.returncode == 0, result.stdout
+    state = yaml.safe_load(metadata.read_text())
+    assert state == {**before, "flash-runner": "remote_openocd", "debug-runner": "remote_openocd"}
+    # Updating metadata must not reconfigure the active Make build graph.
+    assert len((report.parent / "configuration-runs.txt").read_text().splitlines()) == 1
+    modified = metadata.stat().st_mtime_ns
+    result = _build_module(report.parent, home=home, override=str(selected), target=target)
+    assert result.returncode == 0, result.stdout
+    assert metadata.stat().st_mtime_ns == modified
+
+    result = _build_module(report.parent, home=home, override="", target=target)
+    assert result.returncode == 0, result.stdout
+    assert yaml.safe_load(metadata.read_text()) == before
+
+
+def test_make_config_path_switch_rejects_invalid_config_and_recovers(tmp_path: Path):
+    selected = tmp_path / "selected.yaml"
+    selected.write_text("default_runner: unsupported\n")
+    result, report = _configure_module(tmp_path, "", generator="Unix Makefiles")
+    assert result.returncode == 0, result.stdout
+    metadata = report.parent / "runners.yaml"
+    before = metadata.read_bytes()
+    home = tmp_path / "home"
+
+    result = _build_module(report.parent, home=home, override=str(selected))
+    assert result.returncode != 0
+    assert metadata.read_bytes() == before
+
+    selected.write_text("default_runner: remote_openocd\n")
+    result = _build_module(report.parent, home=home, override=str(selected))
+    assert result.returncode == 0, result.stdout
+    assert yaml.safe_load(metadata.read_text())["flash-runner"] == "remote_openocd"
+
+
+def test_make_config_path_refresh_survives_clean(tmp_path: Path):
+    result, report = _configure_module(tmp_path, "", generator="Unix Makefiles")
+    assert result.returncode == 0, result.stdout
+    home = tmp_path / "home"
+    result = _build_module(report.parent, home=home, override="", target="clean")
+    assert result.returncode == 0, result.stdout
+    selected = tmp_path / "selected.yaml"
+    selected.write_text("default_runner: remote_openocd\n")
+
+    result = _build_module(report.parent, home=home, override=str(selected))
+
+    assert result.returncode == 0, result.stdout
+    assert (
+        yaml.safe_load((report.parent / "runners.yaml").read_text())["debug-runner"]
+        == "remote_openocd"
+    )
+
+
+def test_make_suppressed_regeneration_keeps_existing_default_runner(tmp_path: Path):
+    result, report = _configure_module(
+        tmp_path, "", generator="Unix Makefiles", suppress_regeneration=True
+    )
+    assert result.returncode == 0, result.stdout
+    selected = tmp_path / "selected.yaml"
+    selected.write_text("default_runner: remote_openocd\n")
+
+    result = _build_module(report.parent, home=tmp_path / "home", override=str(selected))
+
+    assert result.returncode == 0, result.stdout
+    assert yaml.safe_load((report.parent / "runners.yaml").read_text())["flash-runner"] == "openocd"

@@ -64,6 +64,17 @@ configuration path is passed. An explicit validator `--remote` takes precedence
 over `default_remote`; unlike a real runner operation, validation deliberately
 ignores `ZEPHYR_REMOTE_OPENOCD_REMOTE` so its result is deterministic.
 
+With Ninja and Unix Makefiles, changing or clearing the configuration override
+also refreshes the generated default during the next ordinary default build,
+even when both configuration files already exist. Ninja checks the effective
+path before CMake regeneration; an unchanged path does not cause an extra
+reconfiguration. Make validates the current configuration and refreshes runner
+metadata without reconfiguring its active build graph. For a metadata-only Make
+refresh, use `west build -d <build> -t zro_runner_state`; Make's `help` and unrelated
+explicit targets do not refresh these defaults. `west build --cmake-only -d
+<build>` also refreshes the selection. `--no-rebuild` continues to use existing
+generated state. These implementations are retained on an experimental branch.
+
 The validator lists `forward_env` names without collecting or displaying their
 current values as forwarded-environment settings. It still reads variables
 independently needed for configuration discovery and path resolution, even

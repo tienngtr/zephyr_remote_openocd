@@ -86,6 +86,7 @@ class TestZephyrIntegration:
             "-d",
             str(cls.build_in_tree),
             "--",
+            "-GNinja",
             f"-DUSER_CACHE_DIR={cls.cache}",
             f"-DOPENOCD={cls.fake_openocd}",
         )
@@ -100,6 +101,7 @@ class TestZephyrIntegration:
             "-d",
             str(cls.build_out_tree),
             "--",
+            "-GNinja",
             f"-DUSER_CACHE_DIR={cls.cache}",
             f"-DOPENOCD={cls.fake_openocd}",
         )
@@ -112,6 +114,7 @@ class TestZephyrIntegration:
             "-d",
             str(cls.build_without_openocd),
             "--",
+            "-GNinja",
             f"-DUSER_CACHE_DIR={cls.cache}",
         )
 
@@ -241,6 +244,46 @@ class TestZephyrIntegration:
         self._west("flash", "-d", str(self.build_in_tree), "--no-rebuild")
         assert self._runner_state(self.build_in_tree)["flash-runner"] == "openocd"
 
+    @pytest.mark.parametrize("generator", ("Ninja", "Unix Makefiles"), ids=("ninja", "make"))
+    def test_config_path_switch_regenerates_default_runner(self, generator: str):
+        selected = self.scratch / "selected-config.yaml"
+        self._write_config("remote_openocd", path=selected)
+        selected_environment = {"ZEPHYR_REMOTE_OPENOCD_CONFIG": str(selected)}
+        build = self.scratch / f"path_switch_{generator.replace(' ', '_')}"
+        self._west(
+            "build",
+            "--cmake-only",
+            "-b",
+            self.openocd_board,
+            str(self.zephyr_base / "samples" / "hello_world"),
+            "-d",
+            str(build),
+            "--",
+            f"-G{generator}",
+            f"-DUSER_CACHE_DIR={self.cache}",
+            f"-DOPENOCD={self.fake_openocd}",
+        )
+        self._create_recording_flash_artifact(build)
+        before = self._runner_state(build)
+        assert before["flash-runner"] == "openocd"
+        target = "help" if generator == "Ninja" else "zro_runner_state"
+
+        self._west(
+            "build", "-d", str(build), "-t", target, "-o=-j4", extra_env=selected_environment
+        )
+        assert self._runner_state(build) == {
+            **before,
+            "flash-runner": "remote_openocd",
+            "debug-runner": "remote_openocd",
+        }
+        result = self._west(
+            "flash", "-d", str(build), "--no-rebuild", extra_env=selected_environment
+        )
+        assert self._recording(result.stdout)["command"] == "flash"
+
+        self._west("build", "-d", str(build), "-t", target)
+        assert self._runner_state(build) == before
+
     def test_created_config_regenerates_default_runner(self):
         with tempfile.TemporaryDirectory(
             prefix="zro_created_config_", dir=ROOT / ".scratch"
@@ -259,6 +302,7 @@ class TestZephyrIntegration:
                 "-d",
                 str(build),
                 "--",
+                "-GNinja",
                 f"-DUSER_CACHE_DIR={self.cache}",
                 f"-DOPENOCD={self.fake_openocd}",
                 extra_env=config_environment,
