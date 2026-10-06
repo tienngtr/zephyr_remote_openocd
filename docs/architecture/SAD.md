@@ -1268,12 +1268,13 @@ remote OpenOCD termination.
 
 The helper's `ControlSession` is the sole lifecycle coordinator. Its synchronous
 entry point runs a Python 3.12+ standard-library asyncio session with one
-`TaskGroup`. Tasks observe control frames, stdout, stderr, leader exit,
-readiness/drain deadlines, and signals and report immutable facts through a
-bounded queue. An owned nonblocking writer serializes protocol output. The
-coordinator alone dispatches commands, changes lifecycle
-state, interprets output/readiness, selects the logical outcome, and initiates
-cleanup. Observers have no independent teardown or terminal-event policy.
+`TaskGroup`. The session owns one structured lifetime for observers of control
+frames, stdout, stderr, leader exit, readiness/drain deadlines, and signals.
+Those observers report immutable facts through a bounded queue and have no
+independent teardown or terminal-event policy. An owned nonblocking writer
+serializes protocol output. The coordinator alone dispatches commands, changes
+lifecycle state, interprets output/readiness, selects the logical outcome, and
+initiates cleanup.
 
 Internal states are CREATED, STARTING, ACTIVE, TERMINATING, and CLOSED.
 STARTING is a state in the event loop, not a nested readiness wait: control,
