@@ -214,7 +214,36 @@ in archive encounter order, without paths, metadata, directory entries, or
 boundary bytes.
 
 `helper stage <workspace>` reads tar stdin and emits `STAGED` on success.
-Duplicate archive paths and file ancestors are rejected before extraction.
+The destination is `<workspace>/staged` within an active helper session.
+The helper spools the upload and validates the complete member list before
+extracting any member. Archive members must satisfy all of these rules:
+
+- Only directories and regular files are accepted. Symlinks, hard links,
+  devices, FIFOs, and other special member types are rejected. Directory members
+  must have zero content size.
+- Decoded member names must be normalized relative POSIX paths as defined above.
+  One trailing slash on a directory name is removed before validation and
+  manifest reporting. Absolute or empty names, NUL, empty components, `.` or
+  `..` components, and other non-normalized spellings are rejected.
+- Normalized member paths must be unique across both kinds. A regular-file path
+  must not be an ancestor of any other member, regardless of encounter order.
+- Every resolved destination must remain strictly below the resolved staging
+  root. A destination that resolves outside it or to the root itself is rejected.
+
+An invalid member rejects the archive before any member is extracted. During
+extraction, implicit parent directories are created with mode `0700`, and
+explicit directory entries are forced to mode `0700`, regardless of archive
+permissions. Regular files receive `member.mode & 0700`, or `0600` if that mask
+is zero. Group/other permissions and special mode bits are discarded; archive
+ownership, timestamps, and other filesystem metadata are not applied.
+
+The client accepts staging only after a successful invocation and exactly one
+valid `STAGED` response. Its ordered `files` and `directories` lists must match
+the local archive's respective manifests, and `byte_count` and `sha256` must
+match the locally computed values using the content rules above. Missing,
+malformed, or mismatched confirmation fails staging; the session must not start
+OpenOCD and instead attempts session cleanup.
+
 `helper openocd-version <command...>` executes exactly `<command...>
 --version` and emits `OPENOCD_VERSION` on success.
 

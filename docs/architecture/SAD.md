@@ -1169,10 +1169,26 @@ Advantages include:
 - no separate `scp` configuration;
 - use of the same configurable abstraction for any selected client.
 
-The helper and flash implementation handle the staging manifest, safe archive
-encoding and extraction, private remote filesystem layout, path rewriting,
-helper deployment, and OpenOCD artifact staging. The staging wire contract is
-defined solely in [protocol.md](protocol.md).
+The local staging builder creates a POSIX tar archive from the planned file and
+directory manifest. The helper accepts only regular files and directories;
+symlinks, hard links, and special files are rejected. Before extraction, it
+validates every member's normalized relative path, rejects duplicate paths and
+file/descendant conflicts, and checks that resolved targets remain strictly
+below the staging root. An invalid member rejects the archive before any
+member is extracted.
+
+Extraction creates owner-private parent directories and forces explicit
+directory entries to be owner-writable and searchable. File modes retain only
+owner permission bits, with an owner-readable/writable fallback. Archive
+ownership and timestamps are not applied. The exact path, member-type, and
+permission rules are defined in [protocol.md](protocol.md), which is the sole
+staging wire-contract definition.
+
+Before accepting staging or starting OpenOCD, the local session coordinator
+requires a successful staging invocation and validates its sole `STAGED`
+response. Both ordered file/directory manifests, the regular-file byte count,
+and the SHA-256 content digest must match the locally built archive. A malformed
+or mismatched confirmation fails session startup and invokes session cleanup.
 The archive represents directory entries explicitly, including empty search
 roots and empty nested directories, so staged OpenOCD search trees preserve
 their required lookup structure.
