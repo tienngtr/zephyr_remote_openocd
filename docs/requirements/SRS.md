@@ -1374,20 +1374,6 @@ Runtime implementation SHOULD minimize additional third-party Python
 dependencies. Dependencies already required by the supported Zephyr runner
 environment MAY be reused where appropriate.
 
-### REQ-NFUNC-MAINT-003
-
-The implementation SHOULD separate:
-
-- Zephyr-version compatibility;
-- configuration;
-- OpenOCD command construction;
-- staging;
-- SSH transport;
-- local service forwarding;
-- helper protocol;
-- process supervision;
-- diagnostics.
-
 ### REQ-NFUNC-ADMIN-001
 
 Routine use, helper deployment, upgrades, cleanup, and diagnostics SHALL NOT require root privileges.

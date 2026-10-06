@@ -1702,14 +1702,24 @@ session after the helper observes control-channel loss.
 The physical Python tree in §5 is the current module layout. Logical ownership
 is more durable than a duplicate path sketch:
 
+- `config.py` owns configuration loading, schema validation, and selection
+  resolution.
 - `zephyr44/runner.py` adapts Zephyr runner state to board-independent plans.
 - `remote/openocd_plan.py`, `debug.py`, and `flash.py` construct OpenOCD
   commands without owning their execution.
+- `remote/paths.py` classifies required paths, and `remote/staging.py` builds
+  staging manifests and local archives; the backend and remote helper carry
+  out configured transfer and safe extraction.
 - `remote/session.py`, `helper_client.py`, and `backend.py` coordinate local
   session lifecycle, helper protocol, and OpenOCD result propagation.
-- `remote/model.py` defines service descriptions and `forwarding.py` manages
-  local SSH forwards to remote OpenOCD-owned listeners; `remote_helper.py`
-  allocates remote addresses and checks selected ports for bind collisions.
+- `remote/model.py` defines transport and service data; `services.py`, `rtt.py`,
+  and `tcl.py` own service, RTT, and Tcl-specific planning models.
+- `forwarding.py` manages local SSH forwards to remote OpenOCD-owned listeners;
+  `remote_helper.py` allocates remote addresses and checks selected ports for
+  bind collisions.
+- `remote/protocol.py` owns helper wire framing and validation. Diagnostics are
+  produced and propagated at the subsystem boundary that observes each
+  failure, rather than through a shared cross-cutting implementation.
 - `remote_helper.py` owns remote supervision, output relay, protocol dispatch,
   and cleanup.
 - `remote/ssh.py` is the only boundary for configured SSH command behavior.
