@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Exercise terminal-style interrupts without signalling pytest's group."""
+"""Exercise terminal prompts and interrupts with inherited SIGINT blocking.
+
+The synthetic transport retains the inherited mask. This validates the launch
+mechanism under that assumption, not survival of every compatible SSH client.
+The scenario is isolated so terminal interrupts cannot signal pytest's group.
+"""
 
 from __future__ import annotations
 
@@ -48,6 +53,7 @@ transport_code = """
 import os
 import signal
 import sys
+# Reset disposition, but intentionally retain inherited SIGINT blocking.
 signal.signal(signal.SIGINT, signal.SIG_DFL)
 with open("/dev/tty", "r+b", buffering=0) as terminal:
     assert os.tcgetpgrp(terminal.fileno()) == os.getpgrp()

@@ -1200,9 +1200,23 @@ temporarily blocks SIGINT so the child inherits that mask across exec, then
 establishes managed ownership and starts the stderr drain before restoring its
 exact previous mask. The drain inherits blocked SIGINT and stops through pipe EOF
 and explicit cleanup. Existing threads' masks and process-wide signal handlers
-remain unchanged. Terminal SIGINT intended for GDB therefore leaves these
-transports running without detaching them from the terminal or subjecting
-authentication reads to background-group SIGTTIN.
+remain unchanged. Keeping the transports in the foreground group preserves
+terminal authentication without introducing background-group SIGTTIN reads.
+
+The inherited mask is a launch-time mitigation, not unconditional SIGINT
+isolation. Terminal SIGINT intended for GDB leaves a transport unaffected
+while its client retains SIGINT blocking. The executed client or wrapper can
+change its mask, including unblocking a pending SIGINT, and may then terminate.
+SRS §2.8 does not require clients to preserve the inherited mask, and this
+behavior is not an additional SSH compatibility requirement. The terminal
+SIGINT integration test exercises a synthetic transport that resets the signal
+disposition but retains the blocked mask; it does not establish survival for
+all compatible SSH clients.
+
+If a client terminates on SIGINT, resulting control-transport or required-forward
+loss follows the existing session-failure and bounded-cleanup rules. Loss of a
+best-effort forward follows the existing warning policy. The runner does not
+transparently reconstruct an interrupted debugging session.
 Explicit lifecycle cleanup still terminates and reaps each owned SSH process
 directly. If restoring the launch thread's mask delivers a pending interruption,
 the transport boundary rolls back the managed process before propagating it. The
