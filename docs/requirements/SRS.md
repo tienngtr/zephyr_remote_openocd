@@ -783,17 +783,32 @@ The local development host SHALL retain:
 
 ## 15. OpenOCD Configuration and Files
 
+For REQ-FUNC-FILE-001 through REQ-FUNC-FILE-007 and REQ-FUNC-FLASH-002 through
+REQ-FUNC-FLASH-003, a required file or required local search directory is one
+identified through a supported runner input, such as a `RunnerConfig` path, a
+Zephyr-generated OpenOCD runner argument or search path, a supported runner
+option, or an explicit configured path mapping. Files or directories referenced
+only by arbitrary user-written Tcl or opaque fixed `openocd_command` arguments
+are outside this definition.
+
 ### REQ-FUNC-FILE-001
 
 Files directly required by remote OpenOCD SHALL be accessible on the remote host.
 
 ### REQ-FUNC-FILE-002
 
-Board-specific OpenOCD configuration from the developer's local Zephyr tree SHALL remain usable remotely.
+Board-specific OpenOCD configuration from the developer's local Zephyr tree
+identified through supported runner inputs SHALL remain usable remotely within
+that input boundary.
 
 ### REQ-FUNC-FILE-003
 
-Board OpenOCD configuration SHALL retain the ability to source common configuration files when the equivalent local OpenOCD setup can resolve them.
+Board OpenOCD configuration SHALL retain the ability to source common
+configuration files identified through supported runner inputs when the
+equivalent local OpenOCD setup can resolve them. This compatibility requirement
+does not require translation of arbitrary local paths embedded in arbitrary
+user-written Tcl or alteration of fixed arguments treated as opaque under
+REQ-FUNC-CONFIG-020.
 
 ### REQ-FUNC-FILE-004
 
@@ -834,14 +849,15 @@ SHALL program the intended remote target and start the selected image.
 
 ### REQ-FUNC-FLASH-002
 
-Firmware directly required by remote OpenOCD SHALL be staged when not available through a configured mapping.
+Firmware identified through supported runner inputs and directly required by
+remote OpenOCD SHALL be staged when not available through a configured mapping.
 
 ### REQ-FUNC-FLASH-003
 
-Commands executed by remote OpenOCD SHALL reference remote paths for remotely accessed firmware.
-Runner-generated Tcl SHALL quote the resolved firmware path after session
-workspace allocation, preserving literal path characters. This quoting SHALL
-NOT rewrite user-provided Tcl or Tcl-escape literal argv path arguments.
+Runner-generated OpenOCD commands and Tcl that reference remotely accessed
+firmware identified through supported runner inputs SHALL reference its mapped
+or staged remote path and preserve literal path characters. The runner SHALL
+NOT rewrite user-provided Tcl or opaque fixed arguments.
 
 ### REQ-FUNC-FLASH-004
 
