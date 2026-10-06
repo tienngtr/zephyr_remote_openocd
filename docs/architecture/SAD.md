@@ -675,13 +675,14 @@ prefix is combined with a resolved image plan and one concrete ELF, BIN, or
 HEX operation plan. The public flash-plan result remains the runner boundary.
 
 Generated firmware Tcl arguments retain their path separately from surrounding
-command text in immutable local process metadata. After the helper reports the
-session workspace, the client resolves those paths and Tcl-quotes them before
-serializing the process-start command. Quoted braces prevent the helper's
-subsequent placeholder expansion from interpreting placeholder-like text in a
-resolved workspace. Address placeholders already present in the planned path
-remain available for helper allocation. Literal argv paths still use ordinary
-helper expansion, and user-provided Tcl remains opaque. The process-start wire
+command text in immutable local process metadata and remain unquoted during
+planning. After the helper reports the allocated session workspace, the
+client resolves those paths and Tcl-quotes them before serializing the
+process-start command. Quoted braces prevent the helper's subsequent
+placeholder expansion from interpreting placeholder-like text in a resolved
+workspace. Address placeholders already present in the planned path remain
+available for helper allocation. Literal argv paths still use ordinary helper
+expansion, and user-provided Tcl remains opaque. The process-start wire
 details remain defined solely in [protocol.md](protocol.md).
 
 ---
