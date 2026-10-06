@@ -4,9 +4,9 @@
 
 - [Context, terminology, and scope](#1-purpose)
 - [Integration and configuration](#6-source-repository-independence)
-- [Remote execution and user operations](#14-remote-host-and-openocd)
-- [Lifecycle, platform, and quality requirements](#22-concurrent-users-and-probe-contention)
-- [Assumptions, risks, and non-goals](#27-assumptions)
+- [Remote execution and user operations](#13-remote-host-and-openocd)
+- [Lifecycle, platform, and quality requirements](#21-concurrent-users-and-probe-contention)
+- [Assumptions, risks, and non-goals](#26-assumptions)
 - [Verification traceability](../traceability/verification.md)
 
 ## 1. Purpose
@@ -723,26 +723,7 @@ The runner SHALL NOT be required to translate arbitrary local paths embedded in 
 
 ---
 
-## 12. Zephyr OpenOCD Runner Reuse Boundary
-
-### REQ-NFUNC-COMPAT-002
-
-Zephyr does not include `OpenOcdBinaryRunner` in its supported external-runner
-API. Code that uses this class SHALL remain in the Zephyr-version-specific
-compatibility layer.
-
-### REQ-NFUNC-COMPAT-003
-
-The custom runner SHALL NOT depend on private attributes or private methods of `OpenOcdBinaryRunner`.
-
-### REQ-NFUNC-COMPAT-004
-
-Supporting a new Zephyr version SHALL require either validation of the existing
-runner integration or a version-specific compatibility-layer update.
-
----
-
-## 13. Runtime Environment Forwarding
+## 12. Runtime Environment Forwarding
 
 ### REQ-FUNC-ENV-001
 
@@ -775,7 +756,7 @@ available to OpenOCD.
 
 ---
 
-## 14. Remote Host and OpenOCD
+## 13. Remote Host and OpenOCD
 
 ### REQ-FUNC-REMOTE-001
 
@@ -801,7 +782,7 @@ The local development host SHALL retain:
 
 ---
 
-## 15. OpenOCD Configuration and Files
+## 14. OpenOCD Configuration and Files
 
 For REQ-FUNC-FILE-001 through REQ-FUNC-FILE-007 and REQ-FUNC-FLASH-002 through
 REQ-FUNC-FLASH-003, a required file or required local search directory is one
@@ -869,7 +850,7 @@ The runner SHALL NOT maintain a persistent cross-session firmware or configurati
 
 ---
 
-## 16. Flash
+## 15. Flash
 
 ### REQ-FUNC-FLASH-001
 
@@ -909,7 +890,7 @@ A failed remote OpenOCD flash operation SHALL cause the west operation to fail.
 
 ---
 
-## 17. Debug and Attach
+## 16. Debug and Attach
 
 ### REQ-FUNC-DEBUG-001
 
@@ -937,7 +918,7 @@ allow an independent GDB client to control the target.
 
 ---
 
-## 18. OpenOCD Network Services
+## 17. OpenOCD Network Services
 
 ### REQ-FUNC-SVC-001
 
@@ -1020,7 +1001,7 @@ and port.
 
 ---
 
-## 19. RTT
+## 18. RTT
 
 ### REQ-FUNC-RTT-001
 
@@ -1059,7 +1040,7 @@ The runner SHALL NOT require GDB Remote Serial Protocol inspection solely to det
 
 ---
 
-## 20. Semihosting Console
+## 19. Semihosting Console
 
 Semihosting console output is the semihosting behavior explicitly guaranteed
 by this runner. Other semihosting behavior can be available through OpenOCD or
@@ -1090,7 +1071,7 @@ outside the runner's compatibility guarantees.
 
 ---
 
-## 21. SSH Client Selection and Compatibility
+## 20. SSH Client Selection and Compatibility
 
 ### REQ-FUNC-SSH-001
 
@@ -1151,7 +1132,7 @@ The runner SHALL NOT attempt transparent reconstruction of an interrupted debugg
 
 ---
 
-## 22. Concurrent Users and Probe Contention
+## 21. Concurrent Users and Probe Contention
 
 ### REQ-FUNC-CONC-001
 
@@ -1172,7 +1153,7 @@ If OpenOCD cannot acquire the requested probe or channel because another process
 
 ---
 
-## 23. Remote Helper
+## 22. Remote Helper
 
 ### REQ-FUNC-HELP-001
 
@@ -1326,7 +1307,7 @@ terminated.
 
 ---
 
-## 24. Session Data
+## 23. Session Data
 
 ### REQ-FUNC-DATA-002
 
@@ -1362,7 +1343,7 @@ allocation occurs or when inspection or removal continues to fail.
 
 ---
 
-## 25. Platform Requirements
+## 24. Platform Requirements
 
 ### REQ-NFUNC-PLAT-001
 
@@ -1381,7 +1362,7 @@ Native Windows execution itself remains outside the current scope.
 
 ---
 
-## 26. Other Non-Functional Requirements
+## 25. Other Non-Functional Requirements
 
 ### REQ-NFUNC-MAINT-001
 
@@ -1426,7 +1407,7 @@ practical.
 
 ---
 
-## 27. Assumptions
+## 26. Assumptions
 
 ### ASM-001
 
@@ -1459,7 +1440,7 @@ Firmware and configuration artifacts are sufficiently small that a persistent ar
 
 ---
 
-## 28. Explicit Non-Goals
+## 27. Explicit Non-Goals
 
 The current scope does not include:
 
@@ -1485,7 +1466,7 @@ The current scope does not include:
 
 ---
 
-## 29. Major Risks
+## 28. Major Risks
 
 ### RISK-003 - Zephyr-version API coupling
 
