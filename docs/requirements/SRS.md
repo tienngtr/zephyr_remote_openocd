@@ -429,6 +429,12 @@ empty command executables, SSH hosts containing NUL, duplicate environment
 names, invalid paths, duplicate mappings, and conflicting mappings SHALL
 produce actionable configuration errors.
 
+For path mappings, a duplicate mapping has a local key that normalizes to an
+already defined local root with the same destination. A conflicting mapping has
+the same normalized local root with a different destination. Distinct
+normalized local roots in an ancestor/descendant relationship are overlapping
+mappings and SHALL NOT be treated as conflicts.
+
 ### REQ-FUNC-CONFIG-012
 
 The implementation SHALL validate parsed YAML against the canonical machine-
@@ -528,10 +534,10 @@ reported only when that remote is used.
 
 ### REQ-FUNC-CONFIG-025
 
-Local mapping paths SHALL be normalized before duplicate detection. During a
-real operation, a home-relative `openocd_command` executable and home-relative
-remote path-mapping destinations SHALL be resolved using the remote SSH user's
-home.
+Local mapping paths SHALL be normalized before duplicate or conflict detection
+and precedence selection. During a real operation, a home-relative
+`openocd_command` executable and home-relative remote path-mapping destinations
+SHALL be resolved using the remote SSH user's home.
 
 ### REQ-FUNC-CONFIG-026
 
@@ -813,6 +819,15 @@ REQ-FUNC-CONFIG-020.
 ### REQ-FUNC-FILE-004
 
 The runner SHALL support explicit recursive local-to-remote path mappings.
+Mapping matches SHALL be component-aware. Overlapping mappings with distinct
+normalized local roots are valid; when a required local path matches more than
+one mapping, the mapping with the most specific (longest) normalized local root
+SHALL take precedence. For example, with `/src` mapped to `/remote/a` and
+`/src/board` mapped to `/remote/b`, paths under `/src/board` SHALL use
+`/remote/b` and other paths under `/src` SHALL use `/remote/a`. The selected
+mapping SHALL translate the path by appending its path relative to the selected
+local root to the selected remote root. An overlapping ancestor mapping SHALL
+NOT also apply to that path or create a mapping collision.
 
 ### REQ-FUNC-FILE-005
 
