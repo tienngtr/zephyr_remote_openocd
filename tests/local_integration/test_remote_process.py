@@ -1815,6 +1815,10 @@ helper['stage'](sys.argv[2])
         try:
             assert process.stdout is not None and process.stdin is not None
             created = json.loads(read_line(process.stdout))
+            capacity = fcntl.fcntl(process.stdout.fileno(), fcntl.F_GETPIPE_SZ)
+            # Fill the protocol pipe without queuing a scheduling-dependent
+            # multi-megabyte decoding backlog ahead of shutdown.
+            output_bytes = 2 * capacity
             process.stdin.write(
                 start_frame(
                     [
@@ -1822,15 +1826,16 @@ helper['stage'](sys.argv[2])
                         "-c",
                         "import os,pathlib,signal,sys;"
                         "pathlib.Path(sys.argv[1]).write_text(str(os.getpid()));"
-                        "sys.stdout.buffer.write(b'x'*(10*1024*1024));sys.stdout.flush();signal.pause()",
+                        "sys.stdout.buffer.write(b'x'*int(sys.argv[2]));"
+                        "sys.stdout.flush();signal.pause()",
                         str(child_pid_file),
+                        str(output_bytes),
                     ],
                     required_output_sentinels=("not-ready",),
                 )
             )
             process.stdin.flush()
             assert json.loads(read_line(process.stdout))["type"] == "PROCESS_STARTING"
-            capacity = fcntl.fcntl(process.stdout.fileno(), fcntl.F_GETPIPE_SZ)
             deadline = time.monotonic() + 30
             # Poll an explicit OS condition; expiry is only a deadlock backstop.
             while True:
