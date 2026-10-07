@@ -214,6 +214,20 @@ ordinary blocking behavior of individual operating-system or filesystem
 operations that the project does not wrap with a deadline, are outside this
 guarantee.
 
+Note:
+
+A bounded cleanup attempt is a bounded-effort guarantee for project-controlled
+cleanup logic, not an end-to-end wall-clock guarantee that cleanup will always
+complete within a fixed elapsed time. In particular, this specification does
+not bound failure-detection latency or blocking performed inside operating-system,
+filesystem, subprocess, or other external operations for which the project has
+not established its own deadline.
+
+This distinction is intentional. A requirement for a fixed total cleanup
+duration would require stronger platform and external-operation assumptions
+than this specification makes. The absence of such a total duration therefore
+does not by itself constitute an unspecified cleanup bound.
+
 ---
 
 ## 4. Product Goals
