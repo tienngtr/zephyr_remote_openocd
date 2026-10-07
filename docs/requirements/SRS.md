@@ -1321,9 +1321,16 @@ The client and helper SHALL validate the session control contract before
 acting on commands or events. The helper SHALL report readiness only after the
 configured process-readiness conditions are met. A process with no configured
 readiness conditions SHALL be ready immediately. The helper SHALL preserve
-child-output ordering within each stream. Orderly session closure and helper
-failure SHALL remain distinguishable, and either SHALL end the session. Loss
-of the control transport MAY prevent delivery of a final outcome.
+child-output ordering within each stream. Remote OpenOCD stdout and stderr
+SHALL be relayed incrementally while the child is running, so diagnostics,
+progress, and application console output, including long newline-free output,
+become locally visible without waiting for a newline or process termination
+while the control transport remains usable. This observable availability
+guarantee does not define chunking, UTF-8 decoding, framing, or cross-stream
+serialization; those details SHALL remain defined by the protocol and
+architecture documents. Orderly session closure and helper failure SHALL remain
+distinguishable, and either SHALL end the session. Loss of the control
+transport MAY prevent delivery of a final outcome.
 
 The exact Protocol v1 messages, fields, framing, state transitions, ordering,
 validation rules, and frame-size limits SHALL be defined solely in
