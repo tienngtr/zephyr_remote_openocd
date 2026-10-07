@@ -985,6 +985,14 @@ rollback cleanup errors. The session warns only when a best-effort attempt
 rolled back successfully. Failed rollback remains fatal; pending processes
 receive one bounded cleanup attempt and need not be adopted for a retry.
 
+Forward startup blocks SIGINT only while registering each returned transport in
+the pending rollback set and while committing both the process and service
+lists. Commitment relinquishes pending rollback ownership before restoring the
+caller's previous signal mask. At every point where SIGINT can be delivered,
+each acquired forwarding process belongs to either the startup rollback set or
+the manager's committed ownership set. Readiness waits retain the caller's
+previous mask, so startup remains interruptible.
+
 The manager reports newly observed exits with service identity and transport
 diagnostics. The session retains those facts, classifies them as required or
 best-effort, and emits each best-effort runtime warning once. Required failures

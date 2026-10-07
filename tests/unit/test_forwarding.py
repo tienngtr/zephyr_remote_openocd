@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import io
 import os
+import shlex
 import signal
+import subprocess
 import sys
 from collections.abc import Iterator
 from contextlib import suppress
@@ -16,7 +18,13 @@ from zephyr_remote_openocd.remote import forwarding as forwarding_module
 from zephyr_remote_openocd.remote.forwarding import _ForwardManager
 from zephyr_remote_openocd.remote.model import Service
 from zephyr_remote_openocd.remote.session import SessionError
-from zephyr_remote_openocd.remote.ssh import SSH_STDERR_TAIL_BYTES, SshCommand, SshLocalForward
+from zephyr_remote_openocd.remote.ssh import (
+    SSH_STDERR_TAIL_BYTES,
+    ManagedSshProcess,
+    SshCommand,
+    SshLocalForward,
+    _stop_process,
+)
 
 FORWARD_FAILURE_RC = 13
 SAMPLE_FORWARD_EXIT_CODE = 9
@@ -354,6 +362,91 @@ def test_failed_later_forward_batch_preserves_committed_processes(monkeypatch):
     assert [process.terminate_calls for process in failed_processes] == [1, 1]
     assert committed_process.close_stderr_calls == 1
     assert [process.close_stderr_calls for process in failed_processes] == [1, 1]
+
+
+@pytest.mark.parametrize("phase", ("launch-handoff", "commit-handoff", "readiness"))
+def test_sigint_during_forward_start_preserves_cleanup_ownership(monkeypatch, phase):
+    service = Service("gdb", 32265, 3333)
+    popen = subprocess.Popen
+    read = os.read
+    sigmask = signal.pthread_sigmask
+    managed_processes: list[ManagedSshProcess] = []
+    previous_handler = signal.getsignal(signal.SIGINT)
+    previous_mask = sigmask(signal.SIG_BLOCK, {signal.SIGUSR1})
+    expected_mask = sigmask(signal.SIG_BLOCK, set())
+    requested = False
+    services_at_delivery: tuple[Service, ...] = ()
+
+    def request_interrupt():
+        nonlocal requested
+        requested = True
+        signal.raise_signal(signal.SIGINT)
+
+    class InterruptingCommand(SshCommand):
+        @override
+        def popen(
+            self, host: str, remote_command: str, *, local_forward: SshLocalForward | None = None
+        ) -> ManagedSshProcess:
+            process = super().popen(host, remote_command, local_forward=local_forward)
+            managed_processes.append(process)
+            if phase == "launch-handoff":
+                request_interrupt()
+            return process
+
+    manager = _ForwardManager(InterruptingCommand(), "host")
+
+    def launch(argv, **kwargs):
+        # Substitute the executable only; production transport management,
+        # readiness observation, and cleanup still operate on a real child.
+        code = shlex.split(argv[-1])[2]
+        return popen([sys.executable, "-u", "-c", code], **kwargs)
+
+    def read_readiness(descriptor, size):
+        if phase == "readiness" and any(
+            process.stdout is not None and descriptor == process.stdout.fileno()
+            for process in managed_processes
+        ):
+            request_interrupt()
+        return read(descriptor, size)
+
+    def restore_signal_mask(how, mask):
+        # Interrupt at the effectful boundary that exposes committed ownership.
+        if phase == "commit-handoff" and how == signal.SIG_SETMASK and manager.has_forwards:
+            request_interrupt()
+        return sigmask(how, mask)
+
+    def handle_interrupt(_signum, _frame):
+        nonlocal services_at_delivery
+        services_at_delivery = manager.services
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(subprocess, "Popen", launch)
+    monkeypatch.setattr(os, "read", read_readiness)
+    monkeypatch.setattr(signal, "pthread_sigmask", restore_signal_mask)
+    monkeypatch.setattr(_ForwardManager, "_preflight", staticmethod(lambda _service: None))
+    signal.signal(signal.SIGINT, handle_interrupt)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            manager.start((service,), "127.64.0.1")
+        assert requested
+        assert sigmask(signal.SIG_BLOCK, set()) == expected_mask
+        if phase == "commit-handoff":
+            assert services_at_delivery == (service,)
+            assert manager.check_health() == ()
+        else:
+            assert services_at_delivery == ()
+        manager.close()
+        assert managed_processes
+        for process in managed_processes:
+            assert process.poll() is not None
+            assert process.stdin is not None and process.stdin.closed
+            assert process.stdout is not None and process.stdout.closed
+    finally:
+        signal.signal(signal.SIGINT, previous_handler)
+        sigmask(signal.SIG_SETMASK, previous_mask)
+        manager.close()
+        for process in managed_processes:
+            _stop_process(process)
 
 
 class _ForwardProcess:

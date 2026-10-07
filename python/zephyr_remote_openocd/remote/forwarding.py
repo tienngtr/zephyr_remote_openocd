@@ -8,6 +8,7 @@ import os
 import secrets
 import selectors
 import shlex
+import signal
 import socket
 import subprocess
 import time
@@ -145,14 +146,19 @@ class _ForwardManager:
             for service in service_list:
                 active_service = service
                 sentinel = "ZRO_FORWARD_" + secrets.token_hex(16)
-                process = self._ssh_command.popen(
-                    self._host,
-                    self._ready_command(sentinel),
-                    local_forward=SshLocalForward(
-                        service.local_port, remote_address, service.remote_port
-                    ),
-                )
-                pending_processes.append(process)
+                # Adopt the returned transport before delivering pending SIGINT.
+                previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
+                try:
+                    process = self._ssh_command.popen(
+                        self._host,
+                        self._ready_command(sentinel),
+                        local_forward=SshLocalForward(
+                            service.local_port, remote_address, service.remote_port
+                        ),
+                    )
+                    pending_processes.append(process)
+                finally:
+                    signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
                 connected = self._await_ready(
                     process, sentinel, time.monotonic() + FORWARD_START_TIMEOUT
                 )
@@ -176,6 +182,14 @@ class _ForwardManager:
                     raise readiness_error
             committed_processes = [*self._processes, *pending_processes]
             committed_services = [*self._services, *service_list]
+            previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
+            try:
+                self._processes = committed_processes
+                self._services = committed_services
+                # Committed ownership replaces rollback ownership before unmasking.
+                pending_processes.clear()
+            finally:
+                signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
         except BaseException as error:
             cleanup_errors = (
                 list(error.cleanup_errors) if isinstance(error, SshProcessStartError) else []
@@ -195,8 +209,6 @@ class _ForwardManager:
             ):
                 raise ForwardStartError(active_service, error, tuple(cleanup_errors)) from error
             raise
-        self._processes = committed_processes
-        self._services = committed_services
 
     def check_health(self) -> tuple[ForwardFailure, ...]:
         """Report newly observed exits without classifying forwarding requirements."""
