@@ -1268,7 +1268,20 @@ permissions. Staging directories and associated session metadata remain
 beneath that protected hierarchy, so ordinary remote users cannot access
 session files.
 
-Persistent fallback data older than 24 hours may be cleaned opportunistically.
+For opportunistic reclamation, a session workspace older than 24 hours is
+eligible only when the helper can establish that it is not owned by an active
+session and is not protected by an active staging operation. Orphaned session
+coordination metadata older than 24 hours is eligible when its corresponding
+workspace is absent and the helper can establish the same safety conditions.
+
+When allocating a new session, the helper attempts to reclaim each workspace or
+metadata entry that it can safely establish as eligible. If eligibility cannot
+be safely established, or if inspection or removal fails, the helper may leave
+the entry for a later allocation and does not repeat that reclamation attempt
+during the same allocation. Normal cleanup failures remain visible under the
+SRS cleanup requirements. This opportunistic policy does not guarantee bounded
+disk growth when no later allocation occurs or when inspection or removal
+continues to fail.
 
 ---
 

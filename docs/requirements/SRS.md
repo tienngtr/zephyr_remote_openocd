@@ -580,10 +580,11 @@ configured command arguments MAY appear in it.
 
 ### REQ-FUNC-CONFIG-023
 
-The helper SHALL report the exact effective argv before each spawn attempt, and
-the client SHALL deliver it for logging while awaiting readiness. Spawn,
-readiness, or required-forwarding failure SHALL NOT suppress this diagnostic.
-Bind-collision retries SHALL each report their own effective argv.
+The runner SHALL make the exact effective remote OpenOCD argv available as
+diagnostic content before each spawn attempt, including attempts that later
+fail and each bind-collision retry. Spawn, readiness, or required-forwarding
+failure SHALL NOT suppress this diagnostic. Wire-event and framing details are
+defined in [protocol.md](../architecture/protocol.md).
 
 ### REQ-FUNC-CONFIG-024
 
@@ -1012,8 +1013,8 @@ The service and forwarding configuration SHALL be:
 - GDB for `debug`, `attach`, and `debugserver`;
 - Tcl and telnet for `debug`, `attach`, and `debugserver` unless the
   corresponding runner port option is `disabled`;
-- GDB plus enabled Tcl/telnet for initial `rtt` setup; after batch GDB setup,
-  RTT forwarding is required and GDB forwarding becomes best-effort;
+- GDB plus enabled Tcl/telnet for initial `rtt` setup; after initial setup
+  succeeds, RTT forwarding is required and GDB forwarding becomes best-effort;
 - RTT when the selected operation requests an RTT endpoint.
 
 The selected service set and forwarding requirement SHALL be distinct:
@@ -1023,7 +1024,7 @@ The selected service set and forwarding requirement SHALL be distinct:
 | `debug` | GDB; RTT when `--rtt-server` is requested | GDB; requested RTT | Tcl, telnet |
 | `attach` | GDB; RTT when `--rtt-server` is requested | GDB; requested RTT | Tcl, telnet |
 | `debugserver` | GDB; RTT when `--rtt-server` is requested | GDB; requested RTT | Tcl, telnet |
-| `rtt` | GDB for batch setup | RTT after batch setup | Tcl, telnet; GDB after setup |
+| `rtt` | GDB for initial setup | RTT after initial setup | Tcl, telnet; GDB after setup |
 | `flash` | None | None | None |
 
 Required forwarding startup or runtime failure SHALL fail the operation.
@@ -1034,11 +1035,11 @@ succeeds. Best-effort runtime failure SHOULD warn at the next forwarding
 status check and SHALL NOT terminate an otherwise usable required operation.
 Concurrent supervision or interruption of interactive GDB is not required.
 
-RTT forwarding for the `rtt` command SHALL remain deferred until successful
-batch GDB setup. After that setup succeeds, GDB forwarding SHALL become
-best-effort before RTT forwarding is established as required. Forwarding
-failures SHALL be classified as required or best-effort when the runner checks
-them.
+For the `rtt` command, forwarding classification SHALL change only after
+successful initial GDB setup: GDB is required before the transition, RTT is
+required after the transition, and GDB is best-effort after the transition.
+Forwarding failures SHALL be classified as required or best-effort when the
+runner checks them.
 
 Explicitly requested RTT forwarding for `debug --rtt-server`,
 `attach --rtt-server`, and `debugserver --rtt-server` SHALL be required at
@@ -1230,27 +1231,14 @@ SSH connection sharing, including OpenSSH `ControlMaster`, SHALL remain managed
 by the configured client and the user. The runner SHALL NOT disable connection
 sharing or require OpenSSH-specific forwarding cancellation commands.
 
-The runner SHALL maintain a best-effort local preferred address cache per SSH
-remote, identified by the configured SSH command prefix and host. It SHALL
-remember the helper-selected loopback address only after a non-empty required
-forwarding batch succeeds, and SHALL offer the remembered address as a preference
-on a later session that selects services. Best-effort-only forwarding and operations
-without forwarding SHALL NOT update the remembered address.
-
-The remote helper SHALL remain authoritative: it SHALL attempt to lease and
-validate all runner-selected initial and reserved service ports on the preferred
-address before using it. If the preference cannot be acquired, it SHALL fall
-back to randomized allocation under the existing lease and port checks.
-Concurrent sessions SHALL NOT share an active address lease. A startup retry
-after child bind failure SHALL use randomized allocation rather than retrying
-the preference.
-
-Missing, invalid, stale, or inaccessible preferred address cache data SHALL NOT
-by itself fail an operation or weaken helper validation. The preferred address
-cache is an optimization and SHALL NOT guarantee reuse. User documentation SHALL
-explain that externally retained forwards may require user cleanup when the
-preferred address cannot be reused or retained endpoints differ from those
-requested by the operation.
+Any preferred-address optimization used by the runner SHALL be best effort. The
+remote helper SHALL remain authoritative for address leases and service-port
+validation; a preferred address SHALL NOT bypass those checks. Missing, invalid,
+stale, or inaccessible preference data, inability to reuse a preferred address,
+or a retained endpoint mismatch SHALL NOT by itself fail an operation or weaken
+helper validation. Concurrent sessions SHALL NOT share an active address lease.
+User documentation SHALL explain that externally retained forwards may require
+user cleanup.
 
 ---
 
@@ -1340,12 +1328,10 @@ SHALL provide the helper revision matching the local client.
 ### REQ-FUNC-HELP-007
 
 Concurrent helper deployments SHALL be safe: they SHALL NOT expose a partial
-helper revision or remove the revision selected by an active deployment. Stale
-helper revisions matching the deployment naming scheme and older than 24 hours
-SHALL be eligible for opportunistic reclamation during automatic deployment,
-excluding the selected revision. Deployment SHALL attempt to reclaim each
-eligible stale revision; failure to remove one SHALL NOT fail deployment or
-affect the selected revision.
+helper revision or remove the revision selected by an active deployment.
+Deployment SHALL attempt opportunistic reclamation of eligible unselected
+helper revisions. Failure to inspect or remove an eligible revision SHALL NOT fail
+deployment or affect the selected revision.
 
 ### REQ-FUNC-HELP-008
 
@@ -1463,18 +1449,13 @@ staging operations to resume use of the workspace.
 
 ### REQ-FUNC-DATA-005
 
-A session workspace older than 24 hours SHALL be eligible for reclamation when
-the helper can establish that it is not owned by an active session and is not
-protected by an active staging operation.
-
-Orphaned session coordination metadata older than 24 hours SHALL also be
-eligible for reclamation when its corresponding workspace is absent.
-
-When allocating a new session, the helper SHALL attempt to reclaim each
-workspace or metadata entry that it can safely establish as eligible. If
-eligibility cannot be safely established, or if inspection or removal fails,
+The helper SHALL protect active session workspaces and staging operations. It
+SHALL attempt opportunistic reclamation of session workspaces and orphaned
+coordination metadata that it can safely establish are inactive or orphaned.
+If eligibility cannot be safely established, or if inspection or removal fails,
 the helper MAY leave the entry for a later allocation. Such failure SHALL NOT
-require another reclamation attempt during the same allocation.
+fail allocation or require another reclamation attempt during the same
+allocation.
 
 Normal cleanup failures SHALL remain visible under REQ-FUNC-DATA-003.
 Opportunistic reclamation does not guarantee bounded disk growth when no later
