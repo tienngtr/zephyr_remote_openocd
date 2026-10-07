@@ -1177,10 +1177,13 @@ The runner SHALL NOT require users to duplicate normal SSH credentials, keys, or
 ### REQ-FUNC-SSH-010
 
 When the configured SSH client reports loss of the controlling SSH session,
-the runner SHALL fail the local operation and make its bounded local
-session-cleanup attempt as defined in §3.5. This local observation SHALL NOT
-be treated as evidence that the remote helper has observed control-channel
-loss or begun remote OpenOCD cleanup.
+the runner SHALL record a local operation failure. The runner SHALL report that
+failure and begin its bounded local session-cleanup attempt as defined in §3.5
+at the next defined session status check. If an active local client is running,
+that status check MAY occur after the client returns; the runner is not required
+to asynchronously interrupt the local client solely because the loss was
+recorded. This local observation SHALL NOT be treated as evidence that the
+remote helper has observed control-channel loss or begun remote OpenOCD cleanup.
 
 Local SSH-loss detection latency SHALL be delegated to the configured SSH
 client and the local operating system. This requirement does not impose an
