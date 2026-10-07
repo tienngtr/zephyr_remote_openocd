@@ -372,8 +372,13 @@ class _HelperClient:
         if self._reader_thread is not None:
             return
         reader_thread = threading.Thread(target=self._drain_events, daemon=True)
-        reader_thread.start()
-        self._reader_thread = reader_thread
+        # Adopt the started reader before pending SIGINT can escape to cleanup.
+        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
+        try:
+            reader_thread.start()
+            self._reader_thread = reader_thread
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
 
     def _dispatch(self, event: dict) -> None:
         if event["type"] == "PROCESS_STARTING" and self._process_start_handler is not None:

@@ -1398,10 +1398,14 @@ is a convenience for callers that need a usable returned session; it combines
 preparation and acquisition with startup rollback. The helper client and
 forward manager own their respective resources and cleanup sequences beneath
 this boundary. The session stores a resource-free `_HelperClient` before calling
-its instance `acquire()`. The client blocks SIGINT only while launching and
+its instance `acquire()`. The client briefly blocks SIGINT while launching and
 adopting the control transport, then restores the caller's mask before awaiting
 `SESSION_CREATED`. Thus pending launch interruption is delivered with transport
-ownership established, and helper startup remains interruptible. If acquisition
+ownership established, and helper startup remains interruptible. Protocol-reader
+startup likewise blocks SIGINT until the started thread is registered with the
+client, then restores the caller's previous mask. Pending interruption therefore
+leaves that reader owned for shutdown instead of permitting a second reader.
+If acquisition
 ends before the allocation is accepted, client cleanup terminates and reaps the
 owned control process without attempting a protocol shutdown exchange. An owned
 client with no acquired transport closes harmlessly. Helper acquisition and

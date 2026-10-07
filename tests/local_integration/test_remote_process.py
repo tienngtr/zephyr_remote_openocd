@@ -173,6 +173,60 @@ def test_interrupted_helper_acquisition_cleans_owned_control_process(tmp_path, m
                     stream.close()
 
 
+def test_sigint_during_helper_reader_start_keeps_one_owned_reader(monkeypatch):
+    created = encode_message(
+        "SESSION_CREATED", helper="test", session_id="session", remote_workspace="/workspace"
+    )
+    ready = encode_message("PROCESS_STARTING", argv=["test-process"]) + encode_message(
+        "PROCESS_READY", remote_address="127.64.0.1", child_pid=1
+    )
+    closed = encode_message("SESSION_CLOSED", reason="requested", returncode=None)
+    code = (
+        "import json,os,sys\n"
+        f"os.write(1, {created!r})\n"
+        "assert json.loads(sys.stdin.readline())['type'] == 'START'\n"
+        f"os.write(1, {ready!r})\n"
+        "assert json.loads(sys.stdin.readline())['type'] == 'STOP'\n"
+        f"os.write(1, {closed!r})\n"
+    )
+    helper = _HelperClient(
+        SshCommand((sys.executable, "-u", "-c", code)),
+        "local",
+        DeploymentResult("/helper.py", "digest", False),
+    )
+    started: list[threading.Thread] = []
+    start = threading.Thread.start
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+
+    def interrupt_reader_start(reader: threading.Thread) -> None:
+        start(reader)
+        started.append(reader)
+        if len(started) == 1:
+            signal.raise_signal(signal.SIGINT)
+
+    try:
+        helper.acquire()
+        # The transport's stderr reader is already owned. Inject only at the
+        # real protocol reader's startup, after Thread.start() has returned.
+        monkeypatch.setattr(threading.Thread, "start", interrupt_reader_start)
+        with pytest.raises(KeyboardInterrupt):
+            helper.start_process(TEST_PROCESS, ())
+
+        result = helper.close()
+
+        assert result.error is None
+        assert result.cleanup_errors == ()
+        assert len(started) == 1
+        assert not started[0].is_alive()
+        assert signal.pthread_sigmask(signal.SIG_BLOCK, set()) == previous_mask
+    finally:
+        with suppress(BaseException):
+            helper.close()
+        for reader in started:
+            reader.join(timeout=30)
+            assert not reader.is_alive()
+
+
 @pytest.mark.parametrize(
     ("openocd_returncode", "transport_timeout"),
     ((0, False), (OPENOCD_FAILURE_RC, False), (0, True)),
