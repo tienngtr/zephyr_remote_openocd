@@ -899,6 +899,11 @@ A required local search directory not covered by an explicit mapping SHALL be
 staged while preserving relative structure required by OpenOCD lookup,
 including an empty search root and empty nested directories.
 
+The supported staged search-tree input consists of directories, regular files,
+and non-cyclic symlinks whose targets resolve within the selected tree. A
+symlink that escapes the tree or creates a traversal cycle, and any other
+special filesystem entry, SHALL cause staging to fail.
+
 ### REQ-FUNC-FILE-007
 
 The runner SHALL preserve every OpenOCD search path supplied by the Zephyr
