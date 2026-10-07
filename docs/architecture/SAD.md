@@ -651,6 +651,16 @@ mapping or staging logic as an absolute configuration path. Search trees may be
 staged in parent-first order to reuse overlapping roots, but that staging order
 does not change configuration lookup or the remote `-s` argument order.
 
+When a search directory is staged, the local path planner resolves each entry
+before building the archive. A symlink whose target remains within the selected
+tree is followed and represented as the target's ordinary file or directory
+entry. A link that escapes the selected tree or creates a traversal cycle is
+rejected, as are filesystem entries that are neither directories nor regular
+files. The resulting archive therefore contains no symlink members. This local
+source-tree policy precedes the helper's independent archive validation, which
+also rejects symlink, hard-link, and special-file members from any archive
+producer.
+
 No assumption is made that a particular board uses or does not use files from a given search path.
 
 Board-support directories from the active Zephyr checkout will typically be staged because they may contain local developer changes.
