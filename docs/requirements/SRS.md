@@ -410,8 +410,9 @@ as its default per-user configuration path on Linux.
 
 The configuration format SHALL be YAML. The enforceable data contract is
 [`configuration.schema.json`](../../python/zephyr_remote_openocd/resources/configuration.schema.json);
-YAML is parsed
-safely with duplicate-key rejection before schema validation.
+YAML input SHALL be parsed as data only: parsing SHALL NOT construct arbitrary
+language objects or execute configuration-supplied code. Duplicate YAML keys
+SHALL be rejected before schema validation.
 
 ### REQ-FUNC-CONFIG-003
 
@@ -531,9 +532,9 @@ replace preset settings in full; lists and mappings SHALL NOT be merged.
 
 ### REQ-FUNC-CONFIG-018
 
-Built-in defaults SHALL be `ssh_command: [ssh]`, empty `forward_env`, and empty
-`path_mappings`. When `ssh_host` is omitted, it SHALL default to the selected
-remote name.
+Built-in defaults SHALL be `default_runner: openocd`, `ssh_command: [ssh]`,
+empty `forward_env`, and empty `path_mappings`. When `ssh_host` is omitted, it
+SHALL default to the selected remote name.
 
 ### REQ-FUNC-CONFIG-019
 
@@ -965,7 +966,12 @@ The OpenOCD GDB server SHALL execute remotely.
 
 The custom runner SHALL NOT launch local GDB until remote OpenOCD has reached
 the runner-generated startup-completion point and required local-to-remote GDB
-transport has been established.
+transport has been established. Any dependent local client SHALL NOT start
+until the runner has observed successful completion of its generated OpenOCD
+startup sequence. The runner SHALL apply a finite startup-readiness deadline.
+If OpenOCD exits, startup readiness cannot be established, or readiness is not
+established by that deadline, the operation SHALL fail without starting a
+dependent local client.
 
 ### REQ-FUNC-DEBUG-005
 
@@ -1270,16 +1276,16 @@ the Python 3.12+ standard library on the remote host.
 
 After the remote helper observes that its controlling SSH channel has ended,
 whether through EOF or a termination signal, it SHALL initiate the bounded
-process-group cleanup specified in REQ-FUNC-HELP-012. When process-group
-signalling and reaping complete successfully within that cleanup attempt, the
-associated OpenOCD process SHALL be terminated. If termination fails or cannot
-be confirmed within the bound, the helper SHALL record a cleanup failure and
-report the unsuccessful termination as a helper/session failure when control
-output remains usable. Loss of the control channel MAY prevent delivery of
-that report. Remote SSH/operating-system detection latency is outside this
-requirement's bound. Local SSH-client detection SHALL NOT be treated as remote
-helper observation, and the project SHALL NOT bound the interval from local
-detection to remote OpenOCD termination.
+process cleanup specified in REQ-FUNC-HELP-012. When termination and reaping
+of the owned OpenOCD process and descendants complete successfully within that
+cleanup attempt, the associated OpenOCD process SHALL be terminated. If
+termination fails or cannot be confirmed within the bound, the helper SHALL
+record a cleanup failure and report the unsuccessful termination as a
+helper/session failure when control output remains usable. Loss of the control
+channel MAY prevent delivery of that report. Remote SSH/operating-system
+detection latency is outside this requirement's bound. Local SSH-client
+detection SHALL NOT be treated as remote helper observation, and the project
+SHALL NOT bound the interval from local detection to remote OpenOCD termination.
 The helper SHALL continue observing control input while process readiness is
 pending, without waiting for readiness success, failure, or timeout.
 
@@ -1287,8 +1293,7 @@ pending, without waiting for readiness success, failure, or timeout.
 
 The client and helper SHALL validate the session control contract before
 acting on commands or events. The helper SHALL report readiness only after the
-configured process-readiness conditions are met. A process with no configured
-readiness conditions SHALL be ready immediately. The helper SHALL preserve
+configured process-readiness conditions are met. The helper SHALL preserve
 child-output ordering within each stream. Remote OpenOCD stdout and stderr
 SHALL be relayed incrementally while the child is running, so diagnostics,
 progress, and application console output, including long newline-free output,
@@ -1387,24 +1392,23 @@ client to return earlier.
 REQ-FUNC-HELP-012 applies to OpenOCD launched as the session process of a
 remote-runner session. Standalone helper operations, including OpenOCD version
 probing, are not session processes and are outside the scope of the session
-helper's process-group supervision contract.
+helper's owned-process supervision contract.
 
-The remote session's OpenOCD process SHALL execute within a helper-owned
-process-group boundary. Once the helper observes loss or termination of the
-controlling session, it SHALL begin a bounded cleanup attempt as defined in
-§3.5 for that owned process group and associated session resources. Cleanup
-SHALL attempt to terminate the complete owned process group and release the
-OpenOCD leader and owned relay resources. Diagnosis of surviving descendants
-when observable SHOULD be provided, but failure of best-effort descendant
-inspection SHALL NOT by itself make otherwise successful process-group cleanup
-fail. The exact signal, wait,
-inspection, escalation, reaping, and relay-cleanup algorithm belongs in the
-SAD. Successful termination is required when the termination and reaping
-operations complete successfully within the bounded cleanup attempt. Otherwise,
-the attempt is unsuccessful and conformance requires the cleanup-failure
-recording and reporting specified by REQ-FUNC-HELP-010 and REQ-FUNC-HELP-011;
-a failed attempt is not required to guarantee that the process group has
-terminated.
+The remote session helper SHALL own the OpenOCD process and its descendants for
+cleanup. Once the helper observes loss or termination of the controlling
+session, it SHALL begin a bounded cleanup attempt as defined in §3.5 for those
+owned processes and associated session resources. Cleanup SHALL attempt to
+terminate the owned OpenOCD process and descendants and release the OpenOCD
+leader and owned relay resources. Diagnosis of surviving descendants when
+observable SHOULD be provided, but failure of best-effort descendant
+inspection SHALL NOT by itself make otherwise successful cleanup fail. The exact
+ownership boundary and signal, wait, inspection, escalation, reaping, and
+relay-cleanup algorithm belongs in the SAD. Successful termination is required
+when the termination and reaping operations complete successfully within the
+bounded cleanup attempt. Otherwise, the attempt is unsuccessful and
+conformance requires the cleanup-failure recording and reporting specified by
+REQ-FUNC-HELP-010 and REQ-FUNC-HELP-011; a failed attempt is not required to
+guarantee that every descendant has terminated.
 
 ### REQ-FUNC-HELP-013
 
@@ -1431,7 +1435,10 @@ Remote session files SHALL be protected from other ordinary remote users by file
 
 ### REQ-FUNC-DATA-003
 
-Normal session termination SHALL remove temporary session artifacts.
+Normal session termination SHALL attempt to remove temporary session artifacts.
+Successful cleanup SHALL leave no temporary session artifacts. If removal
+fails, the failure SHALL be reported according to REQ-FUNC-HELP-010 and
+REQ-FUNC-HELP-011.
 
 Cleanup SHALL NOT remove a workspace while staging operations already using it
 are validating or extracting their archives or reporting success. Once cleanup
@@ -1516,7 +1523,8 @@ The remote Linux host can run multiple OpenOCD instances using identical TCP por
 
 ### ASM-007
 
-Firmware and configuration artifacts are sufficiently small that a persistent artifact cache is unnecessary.
+Firmware, configuration, and staged search-tree artifacts are sufficiently
+small that a persistent artifact cache is unnecessary.
 
 ### ASM-008
 
