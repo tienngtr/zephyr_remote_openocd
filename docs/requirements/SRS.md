@@ -882,6 +882,13 @@ session-value substitution SHALL apply only at runner-owned substitution points.
 An overlapping ancestor mapping SHALL NOT also apply to that path or create a
 mapping collision.
 
+Note:
+
+An explicit path mapping is a user-managed remote copy. The runner does not
+stage, compare, or verify mapped contents. The selected-image and
+configuration compatibility guarantees therefore depend on the assumption in
+ASM-012.
+
 ### REQ-FUNC-FILE-005
 
 A required local file not covered by an explicit mapping SHALL be staged into the current remote session.
@@ -1532,6 +1539,22 @@ probe or channel.
 
 The SSH service permits the local TCP forwarding required by the selected
 operation.
+
+### ASM-011
+
+The configured remote OpenOCD installation is assumed to support the commands,
+configuration files, debug adapter, target, and network services required by
+the selected Zephyr OpenOCD runner operation.
+
+The runner does not attempt general OpenOCD feature discovery or certify
+compatibility of arbitrary OpenOCD versions or vendor forks.
+
+### ASM-012
+
+Explicit path mappings are assumed to point to remote destination contents
+equivalent to the corresponding local inputs, including mapped firmware,
+OpenOCD configuration, and search-tree contents. The runner does not stage,
+compare, or verify mapped contents.
 
 ---
 
