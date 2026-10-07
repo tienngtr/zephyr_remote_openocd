@@ -91,8 +91,9 @@ def deployment() -> DeploymentResult:
 
 
 def test_control_progresses_when_configured_ssh_stderr_exceeds_pipe_capacity(tmp_path):
-    backend = _opened_session(request(fake_ssh_command(tmp_path)), deployment())
+    backend = _session_with_helper(request(fake_ssh_command(tmp_path)), deployment())
     try:
+        backend._helper_or_error().acquire()
         descriptor = backend._start_process(())
         assert descriptor.remote_address == "127.64.0.1"
     finally:
@@ -106,8 +107,9 @@ def test_forward_progresses_when_configured_ssh_stderr_exceeds_pipe_capacity(tmp
     # test usable in restricted sandboxes where socket creation is disabled.
     local_port = 45678
     service = Service("gdb", local_port, 3333)
-    backend = _opened_session(request(fake_ssh_command(tmp_path)), deployment())
+    backend = _session_with_helper(request(fake_ssh_command(tmp_path)), deployment())
     try:
+        backend._helper_or_error().acquire()
         descriptor = backend._start_process((service,))
         assert descriptor.remote_address == "127.64.0.1"
     finally:
@@ -115,9 +117,9 @@ def test_forward_progresses_when_configured_ssh_stderr_exceeds_pipe_capacity(tmp
     assert backend.closed
 
 
-def _opened_session(request, deployment):
+def _session_with_helper(request, deployment):
     session = RemoteSession(request, deployment)
-    session._helper = _HelperClient.open(
+    session._helper = _HelperClient(
         session.request.ssh_command,
         session.request.host,
         session.deployment,

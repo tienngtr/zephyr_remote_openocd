@@ -1406,6 +1406,21 @@ recording and reporting specified by REQ-FUNC-HELP-010 and REQ-FUNC-HELP-011;
 a failed attempt is not required to guarantee that the process group has
 terminated.
 
+### REQ-FUNC-HELP-013
+
+User interruption of a local `flash`, `rtt`, or `debugserver` operation,
+including Ctrl-C, SHALL terminate that operation and initiate bounded session
+closure under REQ-FUNC-HELP-010. The cleanup attempt SHALL cover session
+resources already acquired, including when interruption occurs during startup.
+Cleanup failures SHALL remain visible under REQ-FUNC-HELP-011.
+
+During `debug` or `attach`, Ctrl-C handled by interactive GDB SHALL retain the
+normal GDB interaction semantics of the built-in `openocd` runner from the
+particular supported Zephyr 4.4.x environment in use. Such an interruption
+SHALL NOT by itself cause the runner to cancel the operation or close the remote
+session. Independently observed session or transport failures SHALL still be
+handled under REQ-FUNC-HELP-011.
+
 ---
 
 ## 23. Session Data

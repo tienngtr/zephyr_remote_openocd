@@ -16,7 +16,7 @@ from zephyr_remote_openocd.remote import backend as backend_module
 from zephyr_remote_openocd.remote.backend import RemoteSession
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
 from zephyr_remote_openocd.remote.forwarding import ForwardAdvisory, _ForwardManager
-from zephyr_remote_openocd.remote.helper_client import _HelperClient, _HelperCloseResult
+from zephyr_remote_openocd.remote.helper_client import _HelperCloseResult
 from zephyr_remote_openocd.remote.model import (
     RemoteProcess,
     RemoteSessionRequest,
@@ -76,6 +76,9 @@ class ControlledHelper:
         self.on_wait: Callable[[], None] | None = None
         self.process_start_handler: Callable[[tuple[str, ...]], None] | None = None
         self.preferred_address: str | None = None
+
+    def acquire(self) -> None:
+        pass
 
     def start_process(
         self,
@@ -175,11 +178,11 @@ class ForwardingHarness:
         self.advisories: list[ForwardAdvisory] = []
         deployment = DeploymentResult("/helper.py", "digest", False)
         monkeypatch.setattr(backend_module, "deploy_helper", lambda *_args: deployment)
-        monkeypatch.setattr(_HelperClient, "open", self.open_helper)
+        monkeypatch.setattr(backend_module, "_HelperClient", self.make_helper)
         monkeypatch.setattr(_ForwardManager, "_await_ready", staticmethod(self.await_ready))
         monkeypatch.setattr(_ForwardManager, "_preflight", staticmethod(lambda _service: None))
 
-    def open_helper(self, *_args, process_start_handler=None, **_kwargs):
+    def make_helper(self, *_args, process_start_handler=None, **_kwargs):
         self.helper.process_start_handler = process_start_handler
         return self.helper
 

@@ -11,7 +11,7 @@ from zephyr_remote_openocd.remote import backend as backend_module
 from zephyr_remote_openocd.remote.backend import RemoteSession, query_remote_openocd_version
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
 from zephyr_remote_openocd.remote.forwarding import ForwardFailure
-from zephyr_remote_openocd.remote.helper_client import _HelperClient, _HelperCloseResult
+from zephyr_remote_openocd.remote.helper_client import _HelperCloseResult
 from zephyr_remote_openocd.remote.model import (
     RemoteProcess,
     RemoteSessionRequest,
@@ -29,6 +29,9 @@ HELPER_FAILURE_RC = 17
 
 
 class _BlockedHelper:
+    def acquire(self) -> None:
+        raise AssertionError("acquire() is not expected")
+
     @property
     def openocd_returncode(self) -> int | None:
         raise AssertionError("openocd_returncode is not expected")
@@ -60,6 +63,12 @@ class _BlockedHelper:
 
     def close(self) -> _HelperCloseResult:
         raise AssertionError("close() is not expected")
+
+
+class _PreparedHelper(_BlockedHelper):
+    @override
+    def acquire(self) -> None:
+        pass
 
 
 class _BlockedForwards:
@@ -97,10 +106,10 @@ def test_open_rolls_back_failed_acquisition_once(monkeypatch):
     def deploy(_ssh_command, _host):
         return deployment
 
-    def open_helper(
+    def make_helper(
         _ssh_command, _host, _deployment, *, output_handler=None, process_start_handler=None
     ):
-        return _BlockedHelper()
+        return _PreparedHelper()
 
     monkeypatch.setattr(backend_module, "deploy_helper", deploy)
 
@@ -111,7 +120,7 @@ def test_open_rolls_back_failed_acquisition_once(monkeypatch):
         nonlocal cleanup_calls
         cleanup_calls += 1
 
-    monkeypatch.setattr(_HelperClient, "open", open_helper)
+    monkeypatch.setattr(backend_module, "_HelperClient", make_helper)
     monkeypatch.setattr(RemoteSession, "_stage", fail_stage)
     monkeypatch.setattr(RemoteSession, "close", close)
 
@@ -132,13 +141,13 @@ def test_open_retains_nested_rollback_cleanup_diagnostics(monkeypatch):
     def deploy(_ssh_command, _host):
         return deployment
 
-    def open_helper(
+    def make_helper(
         _ssh_command, _host, _deployment, *, output_handler=None, process_start_handler=None
     ):
-        return _BlockedHelper()
+        return _PreparedHelper()
 
     monkeypatch.setattr(backend_module, "deploy_helper", deploy)
-    monkeypatch.setattr(_HelperClient, "open", open_helper)
+    monkeypatch.setattr(backend_module, "_HelperClient", make_helper)
     monkeypatch.setattr(
         RemoteSession,
         "_stage",
@@ -323,7 +332,7 @@ def test_staging_rejects_response_without_lf(monkeypatch):
             del host, stream, timeout
             return subprocess.CompletedProcess(remote_command, 0, response, b"")
 
-    class Helper(_BlockedHelper):
+    class Helper(_PreparedHelper):
         @property
         @override
         def allocation(self) -> SessionAllocation:
@@ -333,7 +342,7 @@ def test_staging_rejects_response_without_lf(monkeypatch):
         def close(self) -> _HelperCloseResult:
             return _HelperCloseResult(None, ())
 
-    def open_helper(
+    def make_helper(
         _ssh_command, _host, _deployment, *, output_handler=None, process_start_handler=None
     ):
         del output_handler
@@ -344,7 +353,7 @@ def test_staging_rejects_response_without_lf(monkeypatch):
         "deploy_helper",
         lambda _ssh_command, _host: deployment,
     )
-    monkeypatch.setattr(_HelperClient, "open", open_helper)
+    monkeypatch.setattr(backend_module, "_HelperClient", make_helper)
     request = RemoteSessionRequest("target", ReplyCommand(), RemoteProcess(("openocd",)))
 
     with pytest.raises(SessionError):

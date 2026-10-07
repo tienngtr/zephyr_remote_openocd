@@ -145,16 +145,10 @@ def _build_operation(runner, command, selected):
 
 
 def _execute_operation(runner, command, request, plan):
-    session = RemoteSession.open(
+    session = RemoteSession.prepare(
         request,
-        output_handler=_write_output,
         advisory_handler=lambda advisory: _report_forward_advisory(runner, advisory),
-        process_start_handler=lambda argv: runner.logger.debug(
-            "Remote OpenOCD: %s", shlex.join(argv)
-        ),
     )
-    assert session.descriptor is not None
-    descriptor = session.descriptor
     operation_error = None
     observed_returncode = None
 
@@ -163,6 +157,14 @@ def _execute_operation(runner, command, request, plan):
         observed_returncode = returncode
 
     try:
+        session.acquire(
+            output_handler=_write_output,
+            process_start_handler=lambda argv: runner.logger.debug(
+                "Remote OpenOCD: %s", shlex.join(argv)
+            ),
+        )
+        assert session.descriptor is not None
+        descriptor = session.descriptor
         runner.logger.info(
             "Remote session %s OpenOCD workspace=%s bindto=%s",
             descriptor.session_id,
@@ -180,7 +182,8 @@ def _execute_operation(runner, command, request, plan):
             observe_openocd_exit(returncode)
     except BaseException as error:
         operation_error = error
-    _finalize_operation(session, operation_error, observed_returncode)
+    finally:
+        _finalize_operation(session, operation_error, observed_returncode)
 
 
 def _finalize_operation(session, operation_error, observed_returncode):

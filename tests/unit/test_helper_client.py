@@ -9,7 +9,7 @@ import signal
 import subprocess
 import sys
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO, cast, override
 
@@ -20,7 +20,7 @@ from zephyr_remote_openocd.remote.arguments import ArgumentTemplate, SessionValu
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
 from zephyr_remote_openocd.remote.flash import FlashInputs, build_flash_plan
 from zephyr_remote_openocd.remote.helper_client import _HelperClient
-from zephyr_remote_openocd.remote.model import RemoteProcess, RemoteSessionRequest
+from zephyr_remote_openocd.remote.model import RemoteProcess
 from zephyr_remote_openocd.remote.paths import PathPlanner
 from zephyr_remote_openocd.remote.protocol import (
     ProtocolError,
@@ -66,10 +66,6 @@ class _PopenOnlySshCommand(SshCommand):
         timeout: float = 60,
     ):
         raise AssertionError("run_stream() is not expected in this test")
-
-
-def _helper_client() -> _HelperClient:
-    return _HelperClient(SshCommand(), "host", DeploymentResult("/helper.py", "digest", False))
 
 
 class _RecordingInput:
@@ -135,12 +131,18 @@ def _open_helper_client(
             del host, remote_command, local_forward
             return process
 
-    return _HelperClient.open(
+    client = _HelperClient(
         Command(),
         "host",
         DeploymentResult("/helper.py", "digest", False),
         process_start_handler=process_start_handler,
     )
+    try:
+        client.acquire()
+    except BaseException:
+        client.close()
+        raise
+    return client
 
 
 def _open_helper_client_with_events(
@@ -159,6 +161,19 @@ def _open_helper_client_with_events(
         )
     )
     return _open_helper_client(process, process_start_handler=process_start_handler), process
+
+
+@pytest.fixture
+def helper_client() -> Iterator[_HelperClient]:
+    client, process = _open_helper_client_with_events()
+    try:
+        yield client
+    finally:
+        # Fault tests may replace the transport; release the acquisition
+        # transport's pipes independently of the injected shutdown behavior.
+        process.stdin.close()
+        process.stdout.close()
+        process.close_stderr()
 
 
 def test_helper_client_sends_preference_and_reports_attempts_before_startup_error():
@@ -331,8 +346,7 @@ def test_open_rejects_initial_frame_without_lf():
 
 
 @pytest.mark.timeout(10)
-def test_recorded_openocd_exit_is_available_while_reader_remains_alive():
-    helper_client = _helper_client()
+def test_recorded_openocd_exit_is_available_while_reader_remains_alive(helper_client):
     close_recorded = threading.Event()
     release_reader = threading.Event()
 
@@ -360,7 +374,7 @@ def test_recorded_openocd_exit_is_available_while_reader_remains_alive():
     assert not reader.is_alive()
 
 
-def test_close_waits_when_process_exit_wins_stop_race(monkeypatch):
+def test_close_waits_when_process_exit_wins_stop_race(monkeypatch, helper_client):
     wait_called = threading.Event()
 
     class Process:
@@ -403,7 +417,6 @@ def test_close_waits_when_process_exit_wins_stop_race(monkeypatch):
         def is_alive(self):
             return False
 
-    helper_client = _helper_client()
     process = Process()
     helper_client._process = cast(ManagedSshProcess, process)
     helper_client._reader_thread = Reader()
@@ -538,8 +551,7 @@ def test_close_keeps_helper_error_primary_when_forced_cleanup_also_fails(monkeyp
     assert any("helper cleanup also failed" in note for note in result.error.__notes__)
 
 
-def test_reader_failure_takes_precedence_over_known_openocd_result():
-    helper_client = _helper_client()
+def test_reader_failure_takes_precedence_over_known_openocd_result(helper_client):
     helper_client._observations.record_close("process_exit", OPENOCD_FAILURE_RC)
     reader_error = RuntimeError("protocol failed")
     helper_client._observations.record_reader_failure(reader_error)
@@ -550,7 +562,7 @@ def test_reader_failure_takes_precedence_over_known_openocd_result():
     assert raised.value.__cause__ is reader_error
 
 
-def test_close_keeps_stop_failure_primary_when_forced_cleanup_also_fails():
+def test_close_keeps_stop_failure_primary_when_forced_cleanup_also_fails(helper_client):
     graceful_stop_error = RuntimeError("graceful stop failed")
     forced_stop_error = RuntimeError("forced stop failed")
 
@@ -571,9 +583,7 @@ def test_close_keeps_stop_failure_primary_when_forced_cleanup_also_fails():
         def __init__(self):
             self.args = ("fake-helper",)
             self.stdin = FailingStdin()
-            self.stdout = io.BytesIO(
-                encode_message("SESSION_CLOSED", reason="requested", returncode=None)
-            )
+            self.stdout = io.BytesIO()
             self.returncode = None
 
         def poll(self):
@@ -596,7 +606,6 @@ def test_close_keeps_stop_failure_primary_when_forced_cleanup_also_fails():
         def close_stderr():
             pass
 
-    helper_client = _helper_client()
     helper_client._process = cast(ManagedSshProcess, Process())
 
     result = helper_client.close()
@@ -606,7 +615,7 @@ def test_close_keeps_stop_failure_primary_when_forced_cleanup_also_fails():
     assert any("helper cleanup also failed" in note for note in graceful_stop_error.__notes__)
 
 
-def test_close_cleans_up_helper_when_initial_status_observation_fails():
+def test_close_cleans_up_helper_when_initial_status_observation_fails(helper_client):
     observation_error = RuntimeError("helper status failed")
 
     class Process:
@@ -638,7 +647,6 @@ def test_close_cleans_up_helper_when_initial_status_observation_fails():
             self.stderr.close()
 
     process = Process()
-    helper_client = _helper_client()
     helper_client._process = cast(ManagedSshProcess, process)
 
     result = helper_client.close()
@@ -651,7 +659,7 @@ def test_close_cleans_up_helper_when_initial_status_observation_fails():
     assert process.stderr.closed
 
 
-def test_close_cleans_up_helper_when_reader_join_fails():
+def test_close_cleans_up_helper_when_reader_join_fails(helper_client):
     join_error = RuntimeError("helper reader join failed")
 
     class Process:
@@ -685,7 +693,6 @@ def test_close_cleans_up_helper_when_reader_join_fails():
             return False
 
     process = Process()
-    helper_client = _helper_client()
     helper_client._process = cast(ManagedSshProcess, process)
     helper_client._reader_thread = Reader()
     helper_client._observations.record_close("process_exit", 0)
@@ -699,7 +706,7 @@ def test_close_cleans_up_helper_when_reader_join_fails():
     assert process.stderr.closed
 
 
-def test_close_preserves_cleanup_error_when_final_status_observation_fails():
+def test_close_preserves_cleanup_error_when_final_status_observation_fails(helper_client):
     status_error = RuntimeError("helper final status failed")
     cleanup_error = RuntimeError("helper stderr cleanup failed")
 
@@ -721,7 +728,6 @@ def test_close_preserves_cleanup_error_when_final_status_observation_fails():
             raise cleanup_error
 
     process = Process()
-    helper_client = _helper_client()
     helper_client._process = cast(ManagedSshProcess, process)
     helper_client._observations.record_close("process_exit", 0)
 
@@ -734,7 +740,7 @@ def test_close_preserves_cleanup_error_when_final_status_observation_fails():
     assert any("helper cleanup also failed" in note for note in status_error.__notes__)
 
 
-def test_close_closes_streams_when_reader_thread_does_not_start(monkeypatch):
+def test_close_closes_streams_when_reader_thread_does_not_start(monkeypatch, helper_client):
     reader_start_error = RuntimeError("helper reader did not start")
 
     class Process:
@@ -765,7 +771,6 @@ def test_close_closes_streams_when_reader_thread_does_not_start(monkeypatch):
         raise reader_start_error
 
     process = Process()
-    helper_client = _helper_client()
     helper_client._process = cast(ManagedSshProcess, process)
     monkeypatch.setattr(threading.Thread, "start", fail_start)
 
@@ -778,7 +783,7 @@ def test_close_closes_streams_when_reader_thread_does_not_start(monkeypatch):
     assert process.stderr.closed
 
 
-def test_close_forces_cleanup_after_helper_stop_timeout():
+def test_close_forces_cleanup_after_helper_stop_timeout(helper_client):
     close_event = encode_message("SESSION_CLOSED", reason="requested", returncode=None)
 
     class StopInput(io.BytesIO):
@@ -824,7 +829,6 @@ def test_close_forces_cleanup_after_helper_stop_timeout():
             self.stderr.close()
 
     process = Process()
-    helper_client = _helper_client()
     helper_client._process = cast(ManagedSshProcess, process)
 
     result = helper_client.close()
@@ -836,36 +840,7 @@ def test_close_forces_cleanup_after_helper_stop_timeout():
     assert process.stderr.closed
 
 
-def test_helper_open_retains_nested_cleanup_diagnostics(monkeypatch):
-    request = RemoteSessionRequest("host", SshCommand(), RemoteProcess(("openocd",)))
-    deployment = DeploymentResult("/helper.py", "digest", False)
-    cleanup_error = RuntimeError("helper process cleanup failed")
-    cleanup_error.add_note("process cleanup also failed: stream close failed")
-
-    class Process:
-        stdout = None
-
-    def fail_stop(_process, *, close_streams=True):
-        del close_streams
-        raise cleanup_error
-
-    def popen(_self, _host, _remote_command):
-        return Process()
-
-    monkeypatch.setattr(SshCommand, "popen", popen)
-    monkeypatch.setattr(helper_client_module, "_stop_process", fail_stop)
-
-    with pytest.raises(SessionError) as raised:
-        _HelperClient.open(request.ssh_command, request.host, deployment)
-
-    assert raised.value is not cleanup_error
-    notes = raised.value.__notes__
-    assert any("helper process cleanup failed" in note for note in notes)
-    assert any("stream close failed" in note for note in notes)
-    assert all("helper startup cleanup also failed" in note for note in notes)
-
-
-def test_helper_close_keeps_reader_owned_stdout_open_until_reader_stops():
+def test_helper_close_keeps_reader_owned_stdout_open_until_reader_stops(helper_client):
     reader_stopped = threading.Event()
 
     class ReaderOwnedStream(io.BytesIO):
@@ -907,7 +882,7 @@ def test_helper_close_keeps_reader_owned_stdout_open_until_reader_stops():
         def close_stderr(self):
             self.stderr.close()
 
-    helper = _HelperClient(SshCommand(), "host", DeploymentResult("/helper.py", "digest", False))
+    helper = helper_client
     process = Process()
     reader = Reader()
     helper._process = cast(ManagedSshProcess, process)
@@ -923,7 +898,7 @@ def test_helper_close_keeps_reader_owned_stdout_open_until_reader_stops():
     assert process.stderr.closed
 
 
-def test_helper_close_retains_nested_process_cleanup_diagnostics():
+def test_helper_close_retains_nested_process_cleanup_diagnostics(helper_client):
     terminate_error = RuntimeError("helper terminate failed")
     stderr_error = RuntimeError("helper stderr close failed")
 
@@ -943,7 +918,7 @@ def test_helper_close_retains_nested_process_cleanup_diagnostics():
         def close_stderr(self):
             raise stderr_error
 
-    helper = _HelperClient(SshCommand(), "host", DeploymentResult("/helper.py", "digest", False))
+    helper = helper_client
     helper._process = cast(ManagedSshProcess, Process())
     helper._observations.record_close("requested", None)
 
@@ -1029,12 +1004,12 @@ def test_helper_startup_timeout_does_not_block_on_partial_output(monkeypatch):
         monkeypatch.setattr(helper_client_module.time, "monotonic", clock.monotonic)
         monkeypatch.setattr(helper_client_module.selectors, "DefaultSelector", Selector)
 
+        client = _HelperClient(Command(), "host", DeploymentResult("/helper.py", "digest", False))
         with pytest.raises(SessionError) as raised:
-            _HelperClient.open(
-                Command(),
-                "host",
-                DeploymentResult("/helper.py", "digest", False),
-            )
+            try:
+                client.acquire()
+            finally:
+                assert client.close().cleanup_errors == ()
 
         assert isinstance(raised.value.__cause__, TimeoutError)
         assert process.terminate_calls == 1
@@ -1125,7 +1100,7 @@ def test_helper_client_output_delivery_does_not_retain_event_history():
 
     handled = []
     command = Command()
-    helper_client = _HelperClient.open(
+    helper_client = _HelperClient(
         command,
         "host",
         DeploymentResult("/helper.py", "digest", False),
@@ -1134,6 +1109,7 @@ def test_helper_client_output_delivery_does_not_retain_event_history():
         ),
     )
     try:
+        helper_client.acquire()
         helper_client.start_process(RemoteProcess(("child",)), ())
         assert helper_client._reader_thread is not None
         helper_client._reader_thread.join(timeout=10)

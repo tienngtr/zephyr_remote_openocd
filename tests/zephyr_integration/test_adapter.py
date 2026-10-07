@@ -526,8 +526,8 @@ def test_operation_primary_failure_rules(
     session.close.side_effect = close
     monkeypatch.setattr(
         runner_module.RemoteSession,
-        "open",
-        create_autospec(RemoteSession.open, return_value=session),
+        "prepare",
+        create_autospec(RemoteSession.prepare, return_value=session),
     )
     monkeypatch.setattr(runner_module, "_execute_started_operation", execute_started_operation)
     request = RemoteSessionRequest("host", SshCommand(), TEST_PROCESS)
@@ -550,6 +550,54 @@ def test_operation_primary_failure_rules(
             assert not notes
 
     session.close.assert_called_once_with()
+
+
+@pytest.mark.parametrize("command", ("flash", "rtt", "debugserver"))
+@pytest.mark.parametrize("phase", ("staging", "ready"))
+def test_interruption_during_session_acquisition_closes_owned_resources(
+    runner_api, monkeypatch, command, phase
+):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
+    harness = ForwardingHarness(monkeypatch)
+    services = () if command == "flash" else (GDB,)
+    request = harness.request(services=services, auxiliary=())
+    runner = create_autospec(runner_api[1], instance=True)
+    runner.logger = logging.getLogger("test.remote_openocd.interruption")
+    interruption = KeyboardInterrupt()
+    acquired: RemoteSession | None = None
+    original_acquire = RemoteSession.acquire
+
+    def acquire_and_interrupt(session, **kwargs):
+        nonlocal acquired
+        acquired = session
+        original_acquire(session, **kwargs)
+        raise interruption
+
+    monkeypatch.setattr(RemoteSession, "acquire", acquire_and_interrupt)
+    if phase == "staging":
+
+        def interrupt_staging(*_args, **_kwargs):
+            raise interruption
+
+        monkeypatch.setattr(harness.ssh, "run_stream", interrupt_staging)
+    try:
+        with pytest.raises(KeyboardInterrupt) as raised:
+            runner_module._execute_operation(runner, command, request, None)
+
+        assert raised.value is interruption
+        assert acquired is not None
+        assert acquired.closed
+        assert not acquired.forwarded_services
+        assert harness.helper.close_calls == 1
+        runner.run_client.assert_not_called()
+        for service in services if phase == "ready" else ():
+            process = harness.ssh.process(service)
+            assert process.returncode is not None
+            assert process.managed.stdin.closed
+    finally:
+        if acquired is not None:
+            acquired.close()
 
 
 @pytest.mark.parametrize(
@@ -576,6 +624,9 @@ def test_background_openocd_result_does_not_replace_active_operation_failure(
             self.openocd_returncode = None
             self.close_calls = 0
 
+        def acquire(self, **_kwargs):
+            pass
+
         def close(self):
             self.close_calls += 1
             reader_can_record.set()
@@ -601,8 +652,8 @@ def test_background_openocd_result_does_not_replace_active_operation_failure(
 
     monkeypatch.setattr(
         runner_module.RemoteSession,
-        "open",
-        create_autospec(RemoteSession.open, return_value=session),
+        "prepare",
+        create_autospec(RemoteSession.prepare, return_value=session),
     )
     monkeypatch.setattr(runner_module, "_execute_started_operation", fail_operation)
     request = RemoteSessionRequest("host", SshCommand(), TEST_PROCESS)
@@ -796,8 +847,8 @@ def test_rtt_cleanup_failure_does_not_replace_observed_openocd_failure(runner_ap
 
     monkeypatch.setattr(
         runner_module.RemoteSession,
-        "open",
-        create_autospec(RemoteSession.open, return_value=session),
+        "prepare",
+        create_autospec(RemoteSession.prepare, return_value=session),
     )
     monkeypatch.setattr(runner_module, "run_rtt_client", run_rtt)
     request = RemoteSessionRequest("host", SshCommand(), TEST_PROCESS)

@@ -1378,11 +1378,24 @@ does not replace the helper and forwarding resource owners.
 
 `RemoteSession` is the sole local remote-session coordinator and owns all
 runner-acquired local session resources, excluding externally retained sharing
-state as described in §32. It is acquired once through `RemoteSession.open()`, which
-returns only a usable session, and is released once through cleanup-only
-`RemoteSession.close()`. The helper client and forward manager own their
-respective resources and cleanup sequences beneath this boundary. A session is
-single-use: it cannot be reopened or restarted.
+state as described in §32. `RemoteSession.prepare()` deploys the helper revision
+and returns a coordinator with no live session resources. The adapter adopts
+that coordinator before calling its instance `acquire()` operation, and
+releases it through cleanup-only `RemoteSession.close()`. `RemoteSession.open()`
+is a convenience for callers that need a usable returned session; it combines
+preparation and acquisition with startup rollback. The helper client and
+forward manager own their respective resources and cleanup sequences beneath
+this boundary. The session stores a resource-free `_HelperClient` before calling
+its instance `acquire()`. The client blocks SIGINT only while launching and
+adopting the control transport, then restores the caller's mask before awaiting
+`SESSION_CREATED`. Thus pending launch interruption is delivered with transport
+ownership established, and helper startup remains interruptible. If acquisition
+ends before the allocation is accepted, client cleanup terminates and reaps the
+owned control process without attempting a protocol shutdown exchange. An owned
+client with no acquired transport closes harmlessly. Helper acquisition and
+startup rollback belong to the session owner; `_HelperClient` has no
+resource-acquiring factory. A session is single-use: it cannot be reopened or
+restarted.
 
 OpenOCD launched as the session process of a remote-runner session executes
 in a helper-supervised process group and session. The process group is the
@@ -1638,9 +1651,11 @@ Standalone staging behavior and protocol framing remain coordinated through
 ```text
 prepare operation
        |
-RemoteSession.open()
-       |
+RemoteSession.prepare()
        +-- deploy helper
+       |
+adopt coordinator, then RemoteSession.acquire()
+       |
        +-- open the helper control channel
        +-- stage files
        +-- start OpenOCD
@@ -1668,6 +1683,16 @@ then starts the requested client or relays the operation output.
 `RemoteSession.close()` performs one bounded local cleanup
 attempt and, while the helper control channel is usable, requests remote
 cleanup. After transport loss, helper-side cleanup proceeds independently.
+
+The Zephyr adapter adopts a prepared coordinator before acquiring live session
+resources and guards instance acquisition, descriptor access, and operation
+execution in the same exception-handling scope. Finalization runs from `finally`
+for that owned coordinator, including when acquisition is interrupted before it
+returns or before the active operation begins. No acquired session is
+transferred to the adapter through a return value, and SIGINT remains unblocked
+during staging and readiness waits. Finalization preserves the
+primary-failure rules; interactive GDB continues using Zephyr's `run_client()`
+behavior rather than treating every Ctrl-C as runner cancellation.
 
 The helper reader distinguishes three local outcomes:
 

@@ -91,6 +91,8 @@ def query_remote_openocd_version(
 class _SessionHelper(Protocol):
     """Helper-control operations owned by ``RemoteSession``."""
 
+    def acquire(self) -> None: ...
+
     @property
     def openocd_returncode(self) -> int | None: ...
 
@@ -161,6 +163,37 @@ class RemoteSession:
         return None if self._helper is None else self._helper.openocd_returncode
 
     @classmethod
+    def prepare(
+        cls,
+        request: RemoteSessionRequest,
+        *,
+        advisory_handler: Callable[[ForwardAdvisory], None] | None = None,
+    ) -> RemoteSession:
+        """Create the coordinator without acquiring live session resources."""
+        deployment = deploy_helper(request.ssh_command, request.host)
+        return cls(request, deployment, advisory_handler=advisory_handler)
+
+    def acquire(
+        self,
+        *,
+        output_handler: Callable[[str, str, bool], None] | None = None,
+        process_start_handler: Callable[[tuple[str, ...]], None] | None = None,
+    ) -> None:
+        """Acquire resources on an owned coordinator; the caller must close it."""
+        if self.closed or self._helper is not None:
+            raise SessionError("remote session has already been acquired or closed")
+        self._helper = _HelperClient(
+            self.request.ssh_command,
+            self.request.host,
+            self.deployment,
+            output_handler=output_handler,
+            process_start_handler=process_start_handler,
+        )
+        self._helper.acquire()
+        self._stage(self.request.staged_files)
+        self._start_process(self.request.services)
+
+    @classmethod
     def open(
         cls,
         request: RemoteSessionRequest,
@@ -169,18 +202,12 @@ class RemoteSession:
         advisory_handler: Callable[[ForwardAdvisory], None] | None = None,
         process_start_handler: Callable[[tuple[str, ...]], None] | None = None,
     ) -> RemoteSession:
-        deployment = deploy_helper(request.ssh_command, request.host)
-        session = cls(request, deployment, output_handler, advisory_handler=advisory_handler)
-        session._helper = _HelperClient.open(
-            request.ssh_command,
-            request.host,
-            deployment,
-            output_handler=output_handler,
-            process_start_handler=process_start_handler,
-        )
+        session = cls.prepare(request, advisory_handler=advisory_handler)
         try:
-            session._stage(request.staged_files)
-            session._start_process(request.services)
+            session.acquire(
+                output_handler=output_handler,
+                process_start_handler=process_start_handler,
+            )
         except BaseException as error:
             try:
                 session.close()

@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 import selectors
 import shlex
+import signal
 import subprocess
 import threading
 import time
@@ -82,26 +83,6 @@ class _HelperClient:
         self._allocation: SessionAllocation | None = None
         self._order: EventOrder | None = None
 
-    @classmethod
-    def open(
-        cls,
-        ssh_command: SshCommand,
-        host: str,
-        deployment: DeploymentResult,
-        *,
-        output_handler: Callable[[str, str, bool], None] | None = None,
-        process_start_handler: Callable[[tuple[str, ...]], None] | None = None,
-    ) -> _HelperClient:
-        client = cls(
-            ssh_command,
-            host,
-            deployment,
-            output_handler,
-            process_start_handler=process_start_handler,
-        )
-        client._open()
-        return client
-
     @property
     def allocation(self) -> SessionAllocation:
         assert self._allocation is not None
@@ -155,6 +136,12 @@ class _HelperClient:
 
     def close(self) -> _HelperCloseResult:
         """Stop the helper without choosing the whole-session primary failure."""
+        if self._process is None:
+            return _HelperCloseResult(None, ())
+        if self._allocation is None:
+            # No accepted SESSION_CREATED means protocol shutdown is not yet
+            # available. Closing the control process triggers remote EOF cleanup.
+            return _HelperCloseResult(None, self._cleanup_control_process(self._process))
         helper = self._process_or_error()
         shutdown = self._request_shutdown(helper)
         cleanup_errors = list(shutdown.cleanup_errors)
@@ -301,21 +288,22 @@ class _HelperClient:
             logical_error = reader_failure
         return logical_error
 
-    def _open(self) -> None:
+    def acquire(self) -> None:
+        """Acquire control resources; the owning caller must close on failure."""
         command = f"python3 {shlex.quote(self._deployment.path)} control"
-        self._process = self._ssh_command.popen(self._host, command)
+        # Mask only launch and adoption, not authentication/session readiness.
+        # SshCommand.popen() preserves this mask until the returned transport
+        # has been stored on the already-owned helper client.
+        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
         try:
-            if self._process.stdout is None:
-                raise SessionError("helper stdout was not captured")
-            self._order = EventOrder()
-            created = self._read_event(time.monotonic() + HELPER_START_TIMEOUT)
-            self._allocation = SessionAllocation(created["session_id"], created["remote_workspace"])
-        except BaseException as error:
-            try:
-                _stop_process(self._process)
-            except BaseException as cleanup_error:
-                _add_failure_note(error, "helper startup cleanup also failed", cleanup_error)
-            raise
+            self._process = self._ssh_command.popen(self._host, command)
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+        if self._process.stdout is None:
+            raise SessionError("helper stdout was not captured")
+        self._order = EventOrder()
+        created = self._read_event(time.monotonic() + HELPER_START_TIMEOUT)
+        self._allocation = SessionAllocation(created["session_id"], created["remote_workspace"])
 
     def _read_event(self, deadline: float | None = None, *, report_error: bool = True) -> dict:
         helper = self._process_or_error()

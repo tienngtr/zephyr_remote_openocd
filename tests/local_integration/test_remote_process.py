@@ -97,6 +97,82 @@ class _BlockedSshCommand(SshCommand):
         raise AssertionError("run_stream() is not expected in this test")
 
 
+@pytest.mark.parametrize("phase", ("before-control", "control-launch", "allocation", "ready"))
+def test_interrupted_helper_acquisition_cleans_owned_control_process(tmp_path, monkeypatch, phase):
+    helper_path = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+    environment = {**os.environ, "XDG_RUNTIME_DIR": str(tmp_path)}
+    processes: list[subprocess.Popen[bytes]] = []
+    managed_processes: list[ManagedSshProcess] = []
+    workspaces: list[Path] = []
+    interruption = KeyboardInterrupt()
+    original_acquire = _HelperClient.acquire
+    original_read = _HelperClient._read_initial_message
+
+    class LocalCommand(_BlockedSshCommand):
+        @override
+        def popen(self, host, remote_command, *, local_forward=None):
+            del host, remote_command
+            assert local_forward is None
+            process = subprocess.Popen(
+                [sys.executable, str(helper_path), "control"],
+                env=environment,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            processes.append(process)
+            managed = ManagedSshProcess.from_popen(process)
+            managed_processes.append(managed)
+            if phase == "control-launch":
+                signal.raise_signal(signal.SIGINT)
+            return managed
+
+    def read_and_interrupt(stream, deadline):
+        message = original_read(stream, deadline)
+        workspaces.append(Path(message["remote_workspace"]))
+        if phase == "allocation":
+            raise interruption
+        return message
+
+    def acquire_and_interrupt(client):
+        if phase == "before-control":
+            raise interruption
+        original_acquire(client)
+        raise interruption
+
+    monkeypatch.setattr(_HelperClient, "acquire", acquire_and_interrupt)
+    monkeypatch.setattr(_HelperClient, "_read_initial_message", staticmethod(read_and_interrupt))
+    session = RemoteSession(
+        RemoteSessionRequest("local", LocalCommand(), TEST_PROCESS),
+        DeploymentResult(str(helper_path), "test", False),
+    )
+    try:
+        with pytest.raises(KeyboardInterrupt) as raised:
+            try:
+                session.acquire()
+            finally:
+                session.close()
+
+        if phase != "control-launch":
+            assert raised.value is interruption
+        assert session.closed
+        assert all(process.poll() is not None for process in processes)
+        assert all(not workspace.exists() for workspace in workspaces)
+        for managed in managed_processes:
+            assert managed.stdin is not None and managed.stdin.closed
+            assert managed.stdout is not None and managed.stdout.closed
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=5)
+        for managed in managed_processes:
+            managed.close_stderr()
+            for stream in (managed.stdin, managed.stdout):
+                if stream is not None:
+                    stream.close()
+
+
 @pytest.mark.parametrize(
     ("openocd_returncode", "transport_timeout"),
     ((0, False), (OPENOCD_FAILURE_RC, False), (0, True)),
@@ -160,9 +236,10 @@ def test_helper_close_allows_recorded_natural_exit_before_termination(
         return wait(timeout=timeout)
 
     try:
-        helper = _HelperClient.open(
+        helper = _HelperClient(
             LocalCommand(), "local", DeploymentResult("/helper.py", "digest", False)
         )
+        helper.acquire()
         helper.start_process(TEST_PROCESS, ())
         # EOF and protocol completion are observed while OS exit remains gated.
         assert helper._join_reader(timeout=5)
@@ -198,6 +275,9 @@ def test_helper_close_allows_recorded_natural_exit_before_termination(
 
 class _StagingHelper:
     """Strict helper fake exposing only the staging allocation."""
+
+    def acquire(self) -> None:
+        raise AssertionError("acquire() is not expected in this test")
 
     @property
     def openocd_returncode(self) -> int | None:
@@ -372,11 +452,15 @@ class TestForwardingLifecycle:
                 "remote_workspace": "/workspace",
             },
         )
+        helper = _helper_client(
+            RemoteSessionRequest("target", command, TEST_PROCESS),
+            DeploymentResult("/helper.py", "digest", False),
+        )
         with patch.object(_HelperClient, "_read_event", side_effect=events):
-            _opened_helper_client(
-                RemoteSessionRequest("target", command, TEST_PROCESS),
-                DeploymentResult("/helper.py", "digest", False),
-            )
+            try:
+                helper.acquire()
+            finally:
+                helper.close()
 
         assert len(command.calls) == 1
         host, _remote_command, local_forward = command.calls[0]
@@ -390,6 +474,11 @@ class TestForwardingLifecycle:
         startup_error = SessionError("invalid helper response")
 
         with (
+            patch.object(
+                backend_module,
+                "deploy_helper",
+                return_value=DeploymentResult("/helper.py", "digest", False),
+            ),
             patch.object(_HelperClient, "_read_event", side_effect=startup_error),
             patch.object(
                 helper_client_module,
@@ -398,16 +487,9 @@ class TestForwardingLifecycle:
             ),
             pytest.raises(SessionError) as raised,
         ):
-            _opened_helper_client(
-                RemoteSessionRequest("target", command, TEST_PROCESS),
-                DeploymentResult("/helper.py", "digest", False),
-            )
+            RemoteSession.open(RemoteSessionRequest("target", command, TEST_PROCESS))
 
         assert raised.value is startup_error
-        assert any(
-            note.startswith("helper startup cleanup also failed:")
-            for note in raised.value.__notes__
-        )
         assert any("process cleanup failed" in note for note in raised.value.__notes__)
 
     def test_stale_gdb_forward_cannot_mask_current_forward_failure(self, monkeypatch):
@@ -2085,12 +2167,13 @@ helper['stage'](sys.argv[2])
                 required_output_sentinels=("ZRO_DESCENDANT_READY",),
             )
             output = []
-            backend = _opened_session(
+            backend = _session_with_helper(
                 RemoteSessionRequest("local", LocalCommand(), process=remote_process),
                 DeploymentResult(str(helper), "digest", False),
                 lambda stream, payload, line_end: output.append((stream, payload, line_end)),
             )
             try:
+                backend._helper_or_error().acquire()
                 backend._start_process(())
                 backend.close()
             finally:
@@ -2249,11 +2332,12 @@ sys.exit({exit_code})
                     stderr=subprocess.PIPE,
                 )
 
-        helper_client = _opened_helper_client(
+        helper_client = _helper_client(
             RemoteSessionRequest("local", LocalCommand(), TEST_PROCESS),
             DeploymentResult("/helper.py", "digest", False),
         )
         try:
+            helper_client.acquire()
             if expected is None:
                 result = helper_client.close()
                 assert result.error is None
@@ -2301,7 +2385,7 @@ sys.stdin.buffer.read()
                     stderr=subprocess.PIPE,
                 )
 
-        helper_client = _opened_helper_client(
+        helper_client = _helper_client(
             RemoteSessionRequest("local", LocalCommand(), TEST_PROCESS),
             DeploymentResult("/helper.py", "digest", False),
         )
@@ -2313,11 +2397,12 @@ sys.stdin.buffer.read()
             if event["type"] == "SESSION_CLOSED":
                 session_close_consumed.set()
 
-        with patch.object(helper_client, "_dispatch", side_effect=observe_session_close):
-            helper_client._start_event_drain()
-            assert helper_client._reader_thread is not None
-            assert session_close_consumed.wait(5)
         try:
+            helper_client.acquire()
+            with patch.object(helper_client, "_dispatch", side_effect=observe_session_close):
+                helper_client._start_event_drain()
+                assert helper_client._reader_thread is not None
+                assert session_close_consumed.wait(5)
             result = helper_client.close()
             assert isinstance(result.error, SessionError)
         finally:
@@ -2362,7 +2447,7 @@ sys.exit({HELPER_FAILURE_RC})
                 return process
 
         command = LocalCommand()
-        helper_client = _opened_helper_client(
+        helper_client = _helper_client(
             RemoteSessionRequest("local", command, TEST_PROCESS),
             DeploymentResult("/helper.py", "digest", False),
         )
@@ -2374,6 +2459,7 @@ sys.exit({HELPER_FAILURE_RC})
             drain_events()
 
         try:
+            helper_client.acquire()
             with patch.object(helper_client, "_drain_events", side_effect=drain_after_exit):
                 helper_client.start_process(TEST_PROCESS, ())
                 command.process.wait(timeout=5)
@@ -2423,14 +2509,15 @@ sys.exit({HELPER_FAILURE_RC})
                 required_output_sentinels=(output_sentinel,),
             )
             command = LocalCommand()
-            helper_client = _opened_helper_client(
+            helper_client = _helper_client(
                 RemoteSessionRequest("local", command, process=remote_process),
                 DeploymentResult(str(helper), "digest", False),
             )
-            workspace = Path(helper_client.allocation.remote_workspace)
             child_pid = None
             child_pidfd = None
             try:
+                helper_client.acquire()
+                workspace = Path(helper_client.allocation.remote_workspace)
                 helper_client.start_process(remote_process, ())
                 child_pid = int(child_pid_path.read_text(encoding="ascii"))
                 child_pidfd = os.pidfd_open(child_pid)
@@ -2488,12 +2575,13 @@ sys.exit({HELPER_FAILURE_RC})
             def fail_on_output(_stream, _payload, _line_end):
                 raise output_error
 
-            backend = _opened_session(
+            backend = _session_with_helper(
                 request,
                 DeploymentResult(str(helper), "digest", False),
                 fail_on_output,
             )
             try:
+                backend._helper_or_error().acquire()
                 backend._stage(())
                 backend._start_process(())
                 with pytest.raises(SessionError) as raised:
@@ -2508,8 +2596,8 @@ sys.exit({HELPER_FAILURE_RC})
                     backend.close()
 
 
-def _opened_helper_client(request, deployment, output_handler=None):
-    return _HelperClient.open(
+def _helper_client(request, deployment, output_handler=None):
+    return _HelperClient(
         request.ssh_command,
         request.host,
         deployment,
@@ -2517,7 +2605,7 @@ def _opened_helper_client(request, deployment, output_handler=None):
     )
 
 
-def _opened_session(request, deployment, output_handler=None):
+def _session_with_helper(request, deployment, output_handler=None):
     session = RemoteSession(request, deployment, output_handler)
-    session._helper = _opened_helper_client(request, deployment, output_handler)
+    session._helper = _helper_client(request, deployment, output_handler)
     return session
