@@ -273,14 +273,6 @@ west rtt
 Supported runner operations SHALL NOT require project-specific OpenOCD
 extensions.
 
-### REQ-FUNC-SCOPE-004
-
-The custom runner SHALL be available only for builds for which the built-in `openocd` runner is available.
-
-### REQ-FUNC-SCOPE-005
-
-The custom runner SHALL NOT automatically advertise remote OpenOCD support for boards which do not support the built-in OpenOCD runner.
-
 ### REQ-FUNC-SCOPE-007
 
 The implementation SHALL NOT contain board- or board-vendor-specific behavior solely to support remote OpenOCD operation.
@@ -621,11 +613,8 @@ using the local filesystem before collision detection.
 
 ### REQ-FUNC-SELECT-001
 
-For a build which registers `openocd`, module integration SHALL also register:
-
-```text
-remote_openocd
-```
+Module integration SHALL register `remote_openocd` for a build if and only if
+that build registers the built-in `openocd` runner.
 
 ### REQ-FUNC-SELECT-002
 
@@ -1197,11 +1186,6 @@ discarded and local bind failure remains fatal.
 
 The runner SHALL invoke the SSH argv directly without inserting a shell.
 
-### REQ-FUNC-SSH-007
-
-The configured SSH command SHALL be used consistently for remote-runner SSH
-operations.
-
 ### REQ-FUNC-SSH-009
 
 The runner SHALL NOT require users to duplicate normal SSH credentials, keys, or proxy configuration in the remote-runner configuration.
@@ -1264,10 +1248,6 @@ If OpenOCD cannot acquire the requested probe or channel because another process
 ---
 
 ## 22. Remote Helper
-
-### REQ-FUNC-HELP-001
-
-Routine helper installation and execution SHALL NOT require root privileges.
 
 ### REQ-FUNC-HELP-002
 
@@ -1479,7 +1459,8 @@ The remote platform SHALL be Linux with Python 3.12 or newer.
 
 ### REQ-NFUNC-ADMIN-001
 
-Routine use, helper deployment, upgrades, cleanup, and diagnostics SHALL NOT require root privileges.
+Routine runner use, helper installation and deployment, helper execution,
+upgrades, cleanup, and diagnostics SHALL NOT require root privileges.
 
 ### REQ-NFUNC-TEST-001
 
