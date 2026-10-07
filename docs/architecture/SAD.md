@@ -1723,10 +1723,12 @@ allocated address. Only explicit runner-owned templates receive workspace or
 address values; all other arguments remain literal, and templates cannot target
 the configured prefix.
 
-The pre-spawn event's ordering, retry eligibility, and compatibility
-requirements are defined solely in [protocol.md](protocol.md). Version
-compatibility is supplied by content-addressed deployment, which installs the
-matching helper revision automatically.
+The pre-spawn event's wire ordering and full-contract compatibility
+requirements are defined in [protocol.md](protocol.md). The architectural
+retry eligibility and attempt policy are defined in §38; the protocol document
+defines the event and control-observation ordering at that retry boundary.
+Version compatibility is supplied by content-addressed deployment, which
+installs the matching helper revision automatically.
 
 The runner's init-complete and startup-complete markers establish distinct
 lifecycle facts. The helper applies the readiness rules defined in
