@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 from contextlib import suppress
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import create_autospec
@@ -771,6 +772,34 @@ def test_reclaimer_removes_stale_directory_without_lock(tmp_path):
     remote_helper.reclaim_stale_workspaces(tmp_path, now=remote_helper.STALE_SESSION_AGE + 2)
 
     assert not abandoned.exists()
+
+
+def test_reclaimer_continues_after_stale_lock_error(tmp_path, monkeypatch):
+    blocked = tmp_path / "blocked"
+    blocked.mkdir()
+    (blocked / remote_helper.SESSION_LOCK).touch()
+    removable = tmp_path / "removable"
+    removable.mkdir()
+    (removable / remote_helper.SESSION_LOCK).touch()
+    old = 1.0
+    os.utime(blocked, (old, old))
+    os.utime(removable, (old, old))
+
+    original_flock = remote_helper.fcntl.flock
+
+    def fail_blocked_lock(stream, operation):
+        if (
+            Path(stream.name).name == remote_helper.SESSION_LOCK
+            and Path(stream.name).parent.name == blocked.name
+        ):
+            raise PermissionError("injected stale-lock failure")
+        return original_flock(stream, operation)
+
+    monkeypatch.setattr(remote_helper.fcntl, "flock", fail_blocked_lock)
+    remote_helper.reclaim_stale_workspaces(tmp_path, now=remote_helper.STALE_SESSION_AGE + 2)
+
+    assert blocked.exists()
+    assert not removable.exists()
 
 
 def test_new_workspace_holds_exclusive_lock(tmp_path, monkeypatch):

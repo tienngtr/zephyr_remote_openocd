@@ -182,7 +182,7 @@ def reclaim_stale_workspaces(root, now=None):
         try:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
+            except OSError:
                 continue
             with suppress(OSError):
                 remove_workspace(path)
