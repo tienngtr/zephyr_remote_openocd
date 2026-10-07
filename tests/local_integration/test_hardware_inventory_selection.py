@@ -73,4 +73,10 @@ def test_hardware_timings_report_pytest_phases(tmp_path: Path) -> None:
 
     assert result.returncode == pytest.ExitCode.OK, result.stdout
     assert "hardware timings" in result.stdout
-    assert "test call" in result.stdout
+    timing_lines = [
+        line
+        for line in result.stdout.splitlines()
+        if line.startswith("test ") and "::test_timing_marker" in line
+    ]
+    phases = {line.split(maxsplit=2)[1] for line in timing_lines}
+    assert phases == {"setup", "call", "teardown"}
