@@ -104,8 +104,15 @@ def _validate_flash_options(inputs: FlashInputs, kind: str) -> None:
         raise FlashPlanError("cannot flash BIN; load command and flash address are required")
     if kind not in ("elf", "bin") and (not inputs.load_command or not inputs.verify_command):
         raise FlashPlanError("cannot flash image; load and verify commands are required")
-    if inputs.erase and not inputs.erase_commands:
+
+
+def _plan_erase_commands(inputs: FlashInputs, kind: str) -> tuple[str, ...]:
+    """Resolve explicit erase commands only for operations that execute them."""
+    if not inputs.erase or inputs.verify_only or kind == "elf":
+        return ()
+    if not inputs.erase_commands:
         raise FlashPlanError("erase requested but the target supplies no erase command")
+    return inputs.erase_commands
 
 
 def _plan_image(inputs: FlashInputs, planner: PathPlanner) -> PlannedFlashImage:
@@ -160,13 +167,12 @@ def _finish_standard_commands(
 
 
 def _bin_flash_commands(
-    inputs: FlashInputs, image: PlannedFlashImage
+    inputs: FlashInputs, image: PlannedFlashImage, erase_commands: tuple[str, ...]
 ) -> tuple[str | TclPathArgument, ...]:
     commands: list[str | TclPathArgument] = list(_commands(inputs.pre_load))
     if not inputs.verify_only:
         commands.extend(("-c", inputs.reset_halt))
-        if inputs.erase:
-            commands.extend(_commands(inputs.erase_commands))
+        commands.extend(_commands(erase_commands))
         commands.extend(
             (
                 "-c",
@@ -195,14 +201,14 @@ def _bin_flash_commands(
 
 
 def _hex_flash_commands(
-    inputs: FlashInputs, image: PlannedFlashImage
+    inputs: FlashInputs, image: PlannedFlashImage, erase_commands: tuple[str, ...]
 ) -> tuple[str | TclPathArgument, ...]:
     commands: list[str | TclPathArgument] = list(_commands(inputs.pre_load))
     load_command = inputs.load_command or ""
     if not inputs.verify_only:
         commands.extend(("-c", inputs.reset_halt))
-        if inputs.erase:
-            commands.extend(_commands(inputs.erase_commands))
+        if erase_commands:
+            commands.extend(_commands(erase_commands))
             if load_command.endswith(" erase"):
                 load_command = load_command[:-6]
         commands.extend(
@@ -221,19 +227,26 @@ def _hex_flash_commands(
 
 
 def _operation_commands(
-    inputs: FlashInputs, image: PlannedFlashImage
+    inputs: FlashInputs, image: PlannedFlashImage, erase_commands: tuple[str, ...]
 ) -> tuple[str | TclPathArgument, ...]:
     if image.kind == "elf":
         return _elf_flash_commands(inputs, image)
     if image.kind == "bin":
-        return _bin_flash_commands(inputs, image)
-    return _hex_flash_commands(inputs, image)
+        return _bin_flash_commands(inputs, image, erase_commands)
+    return _hex_flash_commands(inputs, image, erase_commands)
 
 
 def _flash_argv(
-    inputs: FlashInputs, base: OpenOcdBasePlan, image: PlannedFlashImage
+    inputs: FlashInputs,
+    base: OpenOcdBasePlan,
+    image: PlannedFlashImage,
+    erase_commands: tuple[str, ...],
 ) -> tuple[str | TclPathArgument, ...]:
-    return base.argv + tuple(_common_flash_commands(inputs)) + _operation_commands(inputs, image)
+    return (
+        base.argv
+        + tuple(_common_flash_commands(inputs))
+        + _operation_commands(inputs, image, erase_commands)
+    )
 
 
 def build_flash_plan(
@@ -243,6 +256,7 @@ def build_flash_plan(
 ) -> FlashPlan:
     kind = _image_kind(inputs)
     _validate_flash_options(inputs, kind)
+    erase_commands = _plan_erase_commands(inputs, kind)
     base = plan_openocd_base(
         inputs.executable,
         inputs.serial,
@@ -258,7 +272,7 @@ def build_flash_plan(
             "skipping verification to preserve Zephyr 4.4 OpenOCD runner behavior"
         )
 
-    arguments = _flash_argv(inputs, base, image)
+    arguments = _flash_argv(inputs, base, image, erase_commands)
     process = RemoteProcess(
         tuple(arg.render() if isinstance(arg, TclPathArgument) else arg for arg in arguments),
         environment,

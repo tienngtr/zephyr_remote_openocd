@@ -703,6 +703,10 @@ debug symbols, and local build output—remain on the development host.
 Flash command construction is phase-oriented: a shared immutable OpenOCD
 prefix is combined with a resolved image plan and one concrete ELF, BIN, or
 HEX operation plan. The public flash-plan result remains the runner boundary.
+Explicit erase commands are resolved and validated once for the selected
+operation, then consumed by command construction. Only HEX/BIN load operations
+with erase requested require them; ELF and verification-only operations omit
+explicit erase commands, matching the inherited Zephyr behavior.
 
 Planning distinguishes literal strings from explicit runner-owned session-value
 references. Mapped paths are literal; staged paths carry a workspace reference
