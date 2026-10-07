@@ -969,9 +969,11 @@ the runner-generated startup-completion point and required local-to-remote GDB
 transport has been established. Any dependent local client SHALL NOT start
 until the runner has observed successful completion of its generated OpenOCD
 startup sequence. The runner SHALL apply a finite startup-readiness deadline.
-If OpenOCD exits, startup readiness cannot be established, or readiness is not
-established by that deadline, the operation SHALL fail without starting a
-dependent local client.
+Expiration of that deadline SHALL initiate the startup-timeout determination;
+it need not constitute an immediate hard cutoff of observations already in
+progress. If OpenOCD exits, startup readiness cannot be established, or
+readiness remains unestablished after the deadline determination completes,
+the operation SHALL fail without starting a dependent local client.
 
 ### REQ-FUNC-DEBUG-005
 
