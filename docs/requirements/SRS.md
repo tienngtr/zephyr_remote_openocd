@@ -1050,6 +1050,11 @@ corresponding remote listener is available.
 ### REQ-FUNC-SVC-002
 
 A disabled OpenOCD service SHALL NOT require a corresponding local listener.
+A runner-selected service required by the selected operation or operation phase
+SHALL NOT be configured as `disabled`. The runner SHALL reject that
+configuration before launching OpenOCD. Disabling optional Tcl or telnet
+services remains supported and means that no corresponding local listener or
+forward is requested.
 
 ### REQ-FUNC-SVC-003
 
