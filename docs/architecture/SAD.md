@@ -477,6 +477,11 @@ compile and link. By default, the configuration path is:
 A non-empty `ZEPHYR_REMOTE_OPENOCD_CONFIG` selects the configuration file used by
 each process that loads configuration. During CMake configuration, that path is
 also selected for build-time change detection and generation of runner defaults.
+Relative selections are resolved against the initial CMake invocation directory.
+The absolute file identity is retained in the build cache while the selection
+input is unchanged, so regeneration from the build directory watches and loads
+the same file. Content dependencies, presence tracking, and the Python loader
+all use that identity.
 Changing the override to select another file is a configuration-input change:
 CMake must be reconfigured before generated runner state is expected to reflect
 that path. An ordinary incremental build does not detect an environment-only

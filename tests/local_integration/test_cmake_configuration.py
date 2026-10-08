@@ -18,6 +18,7 @@ def _configure_module(
     *,
     generator: str | None = None,
     home_name: str = "home",
+    cwd: Path | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     home = tmp_path / home_name
     source = tmp_path / "source"
@@ -54,6 +55,7 @@ def _configure_module(
         command.extend(("-G", generator))
     result = subprocess.run(
         command,
+        cwd=cwd,
         env=environment,
         text=True,
         stdout=subprocess.PIPE,
@@ -150,3 +152,30 @@ def test_cmake_config_presence_changes_regenerate_default_runner(
 
     assert result.returncode == 0, result.stdout
     assert report.read_text().splitlines() == [str(config), "openocd"]
+
+
+@pytest.mark.parametrize("generator", ("Ninja", "Unix Makefiles"))
+def test_relative_config_identity_survives_incremental_regeneration(tmp_path: Path, generator: str):
+    invocation = tmp_path / "invocation"
+    invocation.mkdir()
+    config = invocation / "selected[*?].yaml"
+    override = config.name
+    result, report = _configure_module(tmp_path, override, generator=generator, cwd=invocation)
+    assert result.returncode == 0, result.stdout
+    assert report.read_text().splitlines()[-1] == "openocd"
+
+    # Regeneration runs CMake from the build directory, with a different cwd
+    # from both initial configuration and the build caller.
+    for contents, expected in (
+        ("default_runner: remote_openocd\n", "remote_openocd"),
+        ("default_runner: openocd\n", "openocd"),
+        ("default_runner: remote_openocd\n", "remote_openocd"),
+        (None, "openocd"),
+    ):
+        if contents is None:
+            config.unlink()
+        else:
+            config.write_text(contents)
+        result = _build_module(report.parent, home=tmp_path / "home", override=override)
+        assert result.returncode == 0, result.stdout
+        assert report.read_text().splitlines() == [str(config), expected]

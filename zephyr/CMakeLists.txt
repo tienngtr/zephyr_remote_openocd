@@ -16,6 +16,26 @@ if(NOT "$ENV{ZEPHYR_REMOTE_OPENOCD_CONFIG}" STREQUAL "")
   endif()
 endif()
 
+# Resolve relative selections in the initial invocation directory, just as the
+# Python loader does. Incremental regeneration runs from the build directory;
+# retain the selected identity while the configuration input is unchanged.
+if(NOT DEFINED _ZRO_CONFIG_INPUT OR NOT "${_ZRO_CONFIG_INPUT}" STREQUAL "${_zro_config}")
+  execute_process(
+    COMMAND "${PYTHON_EXECUTABLE}" -c
+            "import os, sys; print(os.path.abspath(sys.argv[1]))" "${_zro_config}"
+    RESULT_VARIABLE _zro_path_result
+    OUTPUT_VARIABLE _zro_config_path
+    ERROR_VARIABLE _zro_path_error
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+  )
+  if(NOT _zro_path_result EQUAL 0)
+    message(FATAL_ERROR "${_zro_path_error}")
+  endif()
+  set(_ZRO_CONFIG_INPUT "${_zro_config}" CACHE INTERNAL "Selected configuration input" FORCE)
+  set(_ZRO_CONFIG_PATH "${_zro_config_path}" CACHE INTERNAL "Selected configuration path" FORCE)
+endif()
+set(_zro_config "${_ZRO_CONFIG_PATH}")
+
 # A normal incremental build asks CMake to reconfigure when this file changes.
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_zro_config}")
 
