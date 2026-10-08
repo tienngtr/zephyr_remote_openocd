@@ -1904,7 +1904,10 @@ warnings.
 Cleanup failures affecting acquired resources remain fatal regardless of whether the
 service was required or best-effort. A later OpenOCD result or session failure
 is retained as diagnostic information when it cannot replace the primary
-failure. The following table defines the required outcomes:
+failure. The helper includes retained exception notes in the existing Protocol v1
+`ERROR.message` string so remote callers receive secondary cleanup diagnostics
+without changing the primary failure or adding protocol fields.
+The following table defines the required outcomes:
 
 | Active operation state | Later status check | Primary outcome |
 | --- | --- | --- |

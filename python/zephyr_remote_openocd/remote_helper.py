@@ -83,7 +83,8 @@ def emit(kind, **values):
 
 
 def error(message, code="HELPER_ERROR"):
-    emit("ERROR", code=code, message=str(message))
+    diagnostic = "\n".join((str(message), *getattr(message, "__notes__", ())))
+    emit("ERROR", code=code, message=diagnostic)
 
 
 def workspace_root():

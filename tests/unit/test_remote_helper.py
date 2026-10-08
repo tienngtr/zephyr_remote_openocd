@@ -22,6 +22,7 @@ from typing import Any
 from unittest.mock import create_autospec
 
 import pytest
+from zephyr_remote_openocd.remote.protocol import decode_message
 
 from tests.support import ROOT
 
@@ -1674,52 +1675,50 @@ def test_control_session_unconfirmed_group_exit_fails_after_other_cleanup(
     assert not list(session.work.parent.iterdir())
 
 
-def test_protocol_error_remains_primary_when_cleanup_also_fails(
-    tmp_path, monkeypatch, control_pipe
+@pytest.mark.parametrize("protocol_failure", (True, False))
+def test_remote_cleanup_diagnostics_survive_error_serialization(
+    tmp_path, monkeypatch, control_pipe, capsys, protocol_failure
 ):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    lock = (workspace / remote_helper.SESSION_LOCK).open("w+b")
-    events = []
-    monkeypatch.setattr(
-        remote_helper,
-        "emit",
-        lambda kind, **values: events.append((kind, values)),
-    )
+    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
+    session = remote_helper.ControlSession.create()
     original_rmtree = remote_helper.shutil.rmtree
+    original_close = session.workspace_lock.close
+    workspace_failure = OSError("injected workspace removal failure")
+    lock_failure = OSError("injected workspace lock closure failure")
 
     def fail_workspace_removal(path):
-        if path == workspace:
-            raise OSError("injected workspace removal failure")
+        if path == session.work:
+            raise workspace_failure
         original_rmtree(path)
 
-    session = remote_helper.ControlSession("session", workspace, lock)
+    def fail_lock_close():
+        original_close()
+        raise lock_failure
+
     monkeypatch.setattr(remote_helper.ControlSession, "create", lambda: session)
     monkeypatch.setattr(remote_helper.shutil, "rmtree", fail_workspace_removal)
+    monkeypatch.setattr(session.workspace_lock, "close", fail_lock_close)
     monkeypatch.setattr(remote_helper.sys, "argv", ["remote_helper.py", "control"])
-
     _reader, writer = control_pipe
-    writer.write(b"not-json\n")
+    writer.write(b"not-json\n" if protocol_failure else b'{"version":1,"type":"STOP"}\n')
 
-    with pytest.raises(SystemExit) as raised:
-        remote_helper.main()
+    try:
+        with pytest.raises(SystemExit) as raised:
+            remote_helper.main()
 
-    assert raised.value.code == 1
-    assert [kind for kind, _values in events] == ["SESSION_CREATED", "ERROR"]
-    assert events[-1][1]["code"] == "PROTOCOL_ERROR"
-    assert any(
-        note.startswith("session cleanup also failed:") for note in session.protocol_error.__notes__
-    )
-    assert any(
-        "injected workspace removal failure" in note for note in session.protocol_error.__notes__
-    )
-    assert isinstance(events[-1][1]["message"], str)
-    assert events[-1][1]["message"]
-    assert workspace.exists()
-    assert lock.closed
-
-    monkeypatch.undo()
-    original_rmtree(workspace)
+        assert raised.value.code == 1
+        events = [decode_message(line) for line in capsys.readouterr().out.splitlines()]
+        assert [event["type"] for event in events] == ["SESSION_CREATED", "ERROR"]
+        assert events[-1]["code"] == ("PROTOCOL_ERROR" if protocol_failure else "HELPER_ERROR")
+        primary = session.protocol_error if protocol_failure else workspace_failure
+        assert events[-1]["message"].startswith(str(primary))
+        assert str(workspace_failure) in events[-1]["message"]
+        assert str(lock_failure) in events[-1]["message"]
+        assert session.work.exists()
+        assert session.workspace_lock.closed
+    finally:
+        original_rmtree(session.work)
+        original_close()
 
 
 def test_supervised_child_terminates_descendant_after_leader_term(tmp_path):
