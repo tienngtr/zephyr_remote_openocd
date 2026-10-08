@@ -1734,6 +1734,16 @@ successful connection by a local client, or continued OpenOCD liveness after
 the call returns. Best-effort forwards may still be unavailable and active
 components may fail later under their normal health checks. The local runner
 then starts the requested client or relays the operation output.
+
+Before acquisition returns, the session reconciles helper outcomes recorded
+during forwarding. A recorded helper failure rejects acquisition, and a
+recorded natural exit rejects startup when forwards were requested; a finite
+operation without forwards may retain its natural process result. The adapter
+checks recorded outcomes again immediately before GDB dispatch and after
+required RTT forwarding, before starting the RTT client. Even a natural status
+zero at either dependent-client boundary is premature termination. These checks
+account for recorded facts without guaranteeing continued process liveness.
+
 `RemoteSession.close()` performs one bounded local cleanup
 attempt and, while the helper control channel is usable, requests remote
 cleanup. After transport loss, helper-side cleanup proceeds independently.
@@ -1844,11 +1854,11 @@ listeners. Startup readiness does not wait for remote service sockets to become
 connectable. Tcl and telnet are compatibility endpoints, and their remote
 socket connectability is not a startup condition. Their configured local
 forwarding processes still start as independent best-effort attempts during
-`RemoteSession.open()` when their runner port options are enabled. Only
-required-forward startup failure or failed startup rollback prevents the
-session from opening; best-effort unavailability with successful rollback
-produces a warning. The active RTT client must connect to establish
-end-to-end reachability.
+`RemoteSession.open()` when their runner port options are enabled.
+Required-forward startup failure, failed startup rollback, or an already-recorded
+fatal helper outcome prevents the session from opening; best-effort
+unavailability with successful rollback produces a warning. The active RTT
+client must connect to establish end-to-end reachability.
 
 Generic processes with no required output markers are ready immediately. The
 nominal readiness deadline for OpenOCD startup is 30 seconds. The deadline is
