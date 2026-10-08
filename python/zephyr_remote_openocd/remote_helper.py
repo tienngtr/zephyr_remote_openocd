@@ -1554,7 +1554,13 @@ class ControlSession:
 
     def _ready(self) -> None:
         assert self.child is not None
-        if self._pending_signum is not None:
+        # A guard may already know a fatal fact while its queue publication is
+        # blocked. Reconcile through the coordinator's existing failure path.
+        for failure in tuple(self._observation_failures.values()):
+            self._observation_failed(failure)
+            if self.ending:
+                return
+        if self.ending or self._pending_signum is not None:
             return
         self.state = _State.ACTIVE
         if self._deadline_task is not None:

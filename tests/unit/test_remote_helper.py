@@ -1328,6 +1328,92 @@ def test_control_session_signal_during_spawn_preserves_spawn_failure(
     assert lock.closed
 
 
+@pytest.mark.parametrize("readiness", ("markers", "immediate"))
+def test_readiness_reconciles_control_failure_waiting_for_publication(
+    tmp_path, monkeypatch, control_pipe, readiness
+):
+    _reader, writer = control_pipe
+    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
+    session = remote_helper.ControlSession.create()
+    recognized = asyncio.Event()
+    withheld = asyncio.Event()
+    spawned = asyncio.Event()
+    original_put = session._events.put
+    original_get = session._events.get
+    original_read = remote_helper._AsyncInput.read
+    original_spawn = remote_helper._spawn_child
+    children = []
+    failures = []
+    events = []
+
+    async def publish(observation):
+        if isinstance(observation, remote_helper._ObservationFailed):
+            assert observation.source == "control"
+            failures.append(observation.exception)
+            recognized.set()
+            await withheld.wait()
+        await original_put(observation)
+
+    async def receive():
+        observation = await original_get()
+        if readiness == "immediate" and isinstance(observation, remote_helper._ControlFrame):
+            # The control reader can recognize the next frame's EOF failure
+            # while dispatch of a valid START is still pending.
+            await recognized.wait()
+        return observation
+
+    async def read(reader):
+        if reader.descriptor == _reader.fileno():
+            chunk = await original_read(reader)
+            if not chunk and readiness == "markers":
+                await spawned.wait()
+            return chunk
+        await recognized.wait()
+        return await original_read(reader)
+
+    def spawn(*args, **kwargs):
+        child = original_spawn(*args, **kwargs)
+        children.append(child)
+        spawned.set()
+        return child
+
+    def emit(kind, **values):
+        events.append((kind, values))
+        if kind == "PROCESS_READY":
+            # Let the pre-fix implementation shut down without a timeout.
+            session.handle_signal()
+
+    monkeypatch.setattr(session._events, "put", publish)
+    monkeypatch.setattr(session._events, "get", receive)
+    monkeypatch.setattr(remote_helper._AsyncInput, "read", read)
+    monkeypatch.setattr(remote_helper, "_spawn_child", spawn)
+    monkeypatch.setattr(remote_helper, "emit", emit)
+    writer.write(
+        _start_session_command(
+            [sys.executable, "-c", "import signal;print('ready',flush=True);signal.pause()"],
+            ("ready",) if readiness == "markers" else (),
+        )
+        + b"{"
+    )
+    writer.close()
+
+    async def run():
+        tasks_before = asyncio.all_tasks()
+        with suppress(ValueError):
+            await session.run_async()
+        assert asyncio.all_tasks() == tasks_before
+
+    asyncio.run(run())
+    assert failures and isinstance(failures[0], ValueError)
+    assert not any(kind == "PROCESS_READY" for kind, _values in events)
+    assert events[-1][0] == "ERROR"
+    assert events[-1][1]["code"] == "PROTOCOL_ERROR"
+    assert session.protocol_error is failures[0] and not session.cleanup_errors
+    assert len(children) == 1 and children[0].process.returncode is not None
+    assert children[0].process.stdout.closed and children[0].process.stderr.closed
+    assert session.workspace_lock.closed and not any(tmp_path.iterdir())
+
+
 def test_output_observer_failure_ends_session_and_cancels_tasks(
     tmp_path, monkeypatch, control_pipe
 ):
