@@ -1367,3 +1367,63 @@ def test_active_operation_interrupt_closes_session_and_forwards(
         process = harness.ssh.process(service)
         assert process.returncode is not None
         assert process.managed.stdin.closed
+
+
+@pytest.mark.parametrize("reference", ("board.cfg", "./board.cfg", "absolute"))
+@pytest.mark.parametrize("command", ("flash", "debug", "attach", "debugserver", "rtt"))
+def test_existing_cwd_config_reaches_real_initialization_and_recording(
+    runner_api, tmp_path, monkeypatch, capsys, forbid_external_io, reference, command
+):
+    core, _, remote = runner_api
+    board = tmp_path / "board"
+    support = board / "support"
+    support.mkdir(parents=True)
+    (support / "board.cfg").write_text("# search-directory alternative\n")
+    invocation = tmp_path / "invocation"
+    invocation.mkdir()
+    selected = invocation / "board.cfg"
+    selected.write_text("# cwd selection\n")
+    build = tmp_path / "build"
+    (build / "zephyr").mkdir(parents=True)
+    (build / "zephyr" / ".config").write_text("# CONFIG_DEBUG_THREAD_INFO is not set\n")
+    image = build / "zephyr" / "zephyr.elf"
+    image.write_bytes(b"test image")
+    configuration = tmp_path / "config.yaml"
+    configuration.write_text(
+        "default_remote: chosen\n"
+        "remotes:\n"
+        "  chosen:\n"
+        "    openocd_command: [openocd]\n"
+        "    path_mappings: {'/': '/mapped'}\n"
+    )
+    monkeypatch.chdir(invocation)
+    monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", str(configuration))
+    monkeypatch.setenv("ZRO_RECORD", "1")
+    cfg = core.RunnerConfig(
+        build_dir=str(build),
+        board_dir=str(board),
+        elf_file=str(image),
+        exe_file=None,
+        hex_file=None,
+        bin_file=str(image),
+        uf2_file=None,
+        mot_file=None,
+        file=None,
+        file_type=core.FileType.BIN,
+        gdb="gdb",
+        openocd="openocd",
+        openocd_search=[str(support)],
+        rtt_address=0x20000000,
+    )
+    argument = str(selected) if reference == "absolute" else reference
+    runner = remote.create(
+        cfg,
+        parser_for(remote).parse_args(
+            [f"--config={argument}", "--cmd-load=flash write_image", "--flash-address=0x20000000"]
+        ),
+    )
+    runner.run(command)
+    request = json.loads(capsys.readouterr().out)["remote_session_request"]
+    argv = request["process"]["argv"]
+    assert argv[argv.index("-f") + 1] == f"/mapped{selected}"
+    assert f"/mapped{support}" in argv

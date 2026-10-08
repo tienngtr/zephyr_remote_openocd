@@ -10,7 +10,7 @@ import secrets
 import shlex
 import sys
 from dataclasses import replace
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from runners.core import FileType  # pylint: disable=no-name-in-module
 from runners.openocd import OpenOcdBinaryRunner  # pylint: disable=no-name-in-module
@@ -49,6 +49,17 @@ class RemoteOpenOcdBinaryRunner(OpenOcdBinaryRunner):
             image_type = {"elf": FileType.ELF, "hex": FileType.HEX, "bin": FileType.BIN}[
                 parsed_args.use_image_type
             ]
+        # Upstream inspects each existing config's parent during initialization.
+        # A bare cwd filename has an empty dirname there; normalize existing
+        # local selections while leaving search-relative references intact.
+        config = (
+            [
+                str(Path(item).absolute()) if Path(item).exists() else item
+                for item in parsed_args.config
+            ]
+            if parsed_args.config
+            else parsed_args.config
+        )
         super().__init__(
             cfg,
             pre_init=parsed_args.cmd_pre_init,
@@ -62,7 +73,7 @@ class RemoteOpenOcdBinaryRunner(OpenOcdBinaryRunner):
             do_verify_only=parsed_args.verify_only,
             do_erase=parsed_args.erase,
             tui=parsed_args.tui,
-            config=parsed_args.config,
+            config=config,
             serial=parsed_args.serial,
             image_type=image_type,
             flash_address=parsed_args.flash_address,
