@@ -10,6 +10,8 @@ import shutil
 import socket
 import tempfile
 import time
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack, contextmanager
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -118,6 +120,26 @@ def stop_and_close(process, timeout: float = 20):
             stream.close()
 
 
+@contextmanager
+def cleanup_on_exit(cleanup: Callable[[], None]) -> Iterator[None]:
+    """Attempt owned cleanup without replacing an active test failure."""
+    primary = None
+    try:
+        yield
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        try:
+            cleanup()
+        except BaseException as error:
+            if primary is None:
+                raise
+            primary.add_note(f"SSH test cleanup also failed: {error}")
+            for note in getattr(error, "__notes__", ()):
+                primary.add_note(f"SSH test cleanup detail: {note}")
+
+
 class TestConfiguredSshIntegration:
     @pytest.fixture(autouse=True)
     def inventory_setup(self, ssh_host, ssh_settings):
@@ -182,9 +204,9 @@ class TestSshTransportIntegration:
     def test_forwarding_and_session_lifecycle_use_configured_client(self):
         encoded = base64.b64encode(REMOTE_ECHO).decode("ascii")
         command = f"python3 -c \"import base64;exec(base64.b64decode('{encoded}'))\""
-        helper_process = self.ssh.popen(self.host, command)
-        tunnel = None
-        try:
+        with ExitStack() as resources:
+            helper_process = self.ssh.popen(self.host, command)
+            resources.enter_context(cleanup_on_exit(lambda: stop_and_close(helper_process)))
             assert helper_process.stdout is not None
             line = read_line(helper_process.stdout)
             if not line:
@@ -197,6 +219,7 @@ class TestSshTransportIntegration:
                 _ForwardManager._ready_command(sentinel),
                 local_forward=SshLocalForward(local_port, "127.0.0.1", remote_port),
             )
+            resources.enter_context(cleanup_on_exit(lambda: stop_and_close(tunnel)))
             assert _ForwardManager._await_ready(tunnel, sentinel, time.monotonic() + 20)
             wait_for_echo(local_port, b"zro_forwarding", 20)
 
@@ -209,9 +232,6 @@ class TestSshTransportIntegration:
             assert tunnel.stdin is not None
             tunnel.stdin.close()
             assert tunnel.wait(timeout=20) == 0
-        finally:
-            stop_and_close(helper_process)
-            stop_and_close(tunnel)
 
     def test_streaming_preserves_content_and_reports_remote_failure(self):
         payloads = (
@@ -301,32 +321,31 @@ class TestSshTransportIntegration:
         second_port = free_loopback_port()
         while second_port == first_port:
             second_port = free_loopback_port()
-        first = RemoteSession.open(
-            RemoteSessionRequest(
-                self.host,
-                self.ssh,
-                session_echo_process(),
-                services=(Service("gdb", first_port, 3333),),
+        with ExitStack() as resources:
+            first = RemoteSession.open(
+                RemoteSessionRequest(
+                    self.host,
+                    self.ssh,
+                    session_echo_process(),
+                    services=(Service("gdb", first_port, 3333),),
+                )
             )
-        )
-        second = RemoteSession.open(
-            RemoteSessionRequest(
-                self.host,
-                self.ssh,
-                session_echo_process(),
-                services=(Service("gdb", second_port, 3333),),
+            resources.enter_context(cleanup_on_exit(first.close))
+            second = RemoteSession.open(
+                RemoteSessionRequest(
+                    self.host,
+                    self.ssh,
+                    session_echo_process(),
+                    services=(Service("gdb", second_port, 3333),),
+                )
             )
-        )
-        assert first.descriptor is not None
-        first_descriptor = first.descriptor
-        second_descriptor = second.descriptor
-        assert second_descriptor is not None
-        try:
+            resources.enter_context(cleanup_on_exit(second.close))
+            assert first.descriptor is not None
+            first_descriptor = first.descriptor
+            second_descriptor = second.descriptor
+            assert second_descriptor is not None
             assert first_descriptor.remote_address != second_descriptor.remote_address
             assert first_descriptor.session_id != second_descriptor.session_id
-        finally:
-            second.close()
-            first.close()
         for descriptor in (first_descriptor, second_descriptor):
             result = self.ssh.run(
                 self.host,
