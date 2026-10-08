@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import shlex
+import signal
 import subprocess
 import time
 from collections.abc import Callable, Iterable
@@ -343,30 +344,37 @@ class RemoteSession:
     def close(self) -> None:
         if self.closed:
             return
-        forward_errors: list[BaseException] = []
+        errors: list[BaseException] = []
+        # Protect subsystem entry as well as each owner's cleanup sequence.
+        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
         try:
-            self._forwards.close()
-        except BaseException as error:
-            forward_errors.append(error)
-
-        helper_error: BaseException | None = None
-        helper_cleanup_errors: tuple[BaseException, ...] = ()
-        if self._helper is not None:
             try:
-                helper_result = self._helper.close()
-                helper_error = helper_result.error
-                helper_cleanup_errors = helper_result.cleanup_errors
+                self._forwards.close()
             except BaseException as error:
-                helper_error = error
+                errors.append(error)
 
-        errors = forward_errors
-        if helper_error is not None:
-            errors.append(helper_error)
-        elif helper_cleanup_errors:
-            errors.extend(helper_cleanup_errors)
-        self.closed = True
-        if errors:
-            _raise_cleanup_errors(errors)
+            helper_error: BaseException | None = None
+            helper_cleanup_errors: tuple[BaseException, ...] = ()
+            if self._helper is not None:
+                try:
+                    helper_result = self._helper.close()
+                    helper_error = helper_result.error
+                    helper_cleanup_errors = helper_result.cleanup_errors
+                except BaseException as error:
+                    helper_error = error
+
+            if helper_error is not None:
+                errors.append(helper_error)
+            elif helper_cleanup_errors:
+                errors.extend(helper_cleanup_errors)
+            self.closed = True
+        finally:
+            try:
+                signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+            except BaseException as error:
+                # Report pending SIGINT only after cleanup, behind earlier errors.
+                errors.append(error)
+        _raise_cleanup_errors(errors)
 
     def _helper_or_error(self) -> _SessionHelper:
         if self._helper is None:

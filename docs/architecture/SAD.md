@@ -1321,6 +1321,15 @@ being attempted. Each owner cleans up the resources it acquired; no owner
 transfers an active resource to another owner merely because cleanup encountered
 an error.
 
+`RemoteSession.close()` blocks SIGINT before entering forwarding or helper
+cleanup and keeps it blocked through every applicable bounded cleanup attempt
+and marking the session closed. It then restores the caller's exact previous
+signal mask. Subsystem entry and the transitions between cleanup owners are
+protected along with each owner's cleanup sequence.
+Any interruption delivered by mask restoration is reported after these
+attempts; an earlier cleanup failure remains primary and retains the
+interruption as a diagnostic.
+
 ### 38.1 Local SSH subprocess ownership
 
 `SshCommand.popen()` starts each long-lived control or forwarding transport with

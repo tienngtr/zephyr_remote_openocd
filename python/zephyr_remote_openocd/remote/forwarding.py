@@ -228,7 +228,7 @@ class _ForwardManager:
         self._processes = []
         self._services = []
         self._reported.clear()
-        errors = []
+        errors: list[BaseException] = []
         for process in pending:
             try:
                 _stop_process(process)

@@ -10,6 +10,7 @@ import ipaddress
 import json
 import os
 import select
+import shlex
 import shutil
 import signal
 import socket
@@ -23,6 +24,7 @@ import time
 from collections.abc import Iterable, Iterator
 from contextlib import suppress
 from pathlib import Path, PurePosixPath
+from types import FrameType
 from typing import Any, BinaryIO, override
 from unittest.mock import patch
 
@@ -54,7 +56,12 @@ from zephyr_remote_openocd.remote.services import (
     LOOPBACK_RANGE,
 )
 from zephyr_remote_openocd.remote.session import SessionError
-from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand, SshLocalForward
+from zephyr_remote_openocd.remote.ssh import (
+    ManagedSshProcess,
+    SshCommand,
+    SshLocalForward,
+    _stop_process,
+)
 from zephyr_remote_openocd.remote.staging import build_archive
 
 from tests.process_support import read_line, read_lines
@@ -659,6 +666,163 @@ class TestForwardingLifecycle:
                 for stream in (process.stdin, process.stdout):
                     if stream is not None and not stream.closed:
                         stream.close()
+
+
+@pytest.mark.parametrize(
+    ("phase", "cleanup_fails", "sigint_blocked"),
+    (
+        ("forward-entry", False, False),
+        ("forward-entry", True, False),
+        ("helper-entry", False, False),
+        ("helper-entry", True, False),
+        ("ownership-release", False, False),
+        ("between-forwards", False, False),
+        ("ownership-release", True, False),
+        ("between-forwards", True, False),
+        ("ownership-release", False, True),
+    ),
+)
+def test_sigint_during_session_close_cleans_owned_transports(
+    tmp_path, monkeypatch, phase, cleanup_fails, sigint_blocked
+):
+    processes: list[ManagedSshProcess] = []
+    control_processes: list[ManagedSshProcess] = []
+    helper_path = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+    environment = {**os.environ, "XDG_RUNTIME_DIR": str(tmp_path)}
+    popen = subprocess.Popen
+    sigmask = signal.pthread_sigmask
+    previous_handler = signal.getsignal(signal.SIGINT)
+    caller_mask = {signal.SIGUSR1, signal.SIGINT} if sigint_blocked else {signal.SIGUSR1}
+    previous_mask = sigmask(signal.SIG_BLOCK, caller_mask)
+    expected_mask = sigmask(signal.SIG_BLOCK, set())
+    previous_trace = sys.gettrace()
+    interruption = KeyboardInterrupt("session cleanup interrupted")
+    cleanup_error = RuntimeError("transport stream cleanup failed")
+    requested = False
+    closed_at_delivery = False
+
+    class LocalCommand(_BlockedSshCommand):
+        @override
+        def popen(self, host, remote_command, *, local_forward=None):
+            process = SshCommand.popen(self, host, remote_command, local_forward=local_forward)
+            owned = control_processes if local_forward is None else processes
+            owned.append(process)
+            return process
+
+        @override
+        def run_stream(self, host, remote_command, stream, *, timeout=60):
+            return SshCommand.run_stream(self, host, remote_command, stream, timeout=timeout)
+
+    def launch(argv, **kwargs):
+        # Replace only SSH execution with local Python; the session, helper,
+        # staging, readiness, and all transport cleanup use production code.
+        remote_argv = shlex.split(argv[-1])
+        assert remote_argv[0] == "python3"
+        return popen([sys.executable, "-u", *remote_argv[1:]], env=environment, **kwargs)
+
+    session = RemoteSession(
+        RemoteSessionRequest(
+            "target",
+            LocalCommand(),
+            RemoteProcess(
+                (
+                    sys.executable,
+                    "-c",
+                    "import signal; print('child-ready', flush=True); signal.pause()",
+                ),
+                required_output_sentinels=("child-ready",),
+            ),
+            services=(Service("gdb", 32155, 3333), Service("tcl", 32156, 6666)),
+        ),
+        DeploymentResult(str(helper_path), "digest", False),
+    )
+    manager = session._forwards
+
+    def interrupt_at_cleanup_boundary(frame: FrameType, event: str, _arg: object):
+        nonlocal requested
+        # Schedule a real SIGINT at an ownership boundary without replacing
+        # lifecycle collaborators or depending on thread scheduling/line numbers.
+        cleanup = _HelperClient.close if phase == "helper-entry" else _ForwardManager.close
+        if event == "line" and frame.f_code is cleanup.__code__ and not requested:
+            first = processes[0]
+            second = processes[1]
+            if phase in {"forward-entry", "helper-entry"}:
+                at_boundary = True
+            elif phase == "ownership-release":
+                at_boundary = not manager.has_forwards and first.poll() is None
+            else:
+                at_boundary = (
+                    first.stdin is not None
+                    and first.stdin.closed
+                    and first.stdout is not None
+                    and first.stdout.closed
+                    and second.poll() is None
+                )
+            if at_boundary:
+                requested = True
+                signal.raise_signal(signal.SIGINT)
+        return interrupt_at_cleanup_boundary
+
+    def handle_interrupt(_signum, _frame):
+        nonlocal closed_at_delivery
+        closed_at_delivery = session.closed
+        raise interruption
+
+    monkeypatch.setattr(subprocess, "Popen", launch)
+    monkeypatch.setattr(_ForwardManager, "_preflight", staticmethod(lambda _service: None))
+    signal.signal(signal.SIGINT, handle_interrupt)
+    try:
+        session.acquire()
+        assert session.descriptor is not None
+        workspace = Path(session.descriptor.allocation.remote_workspace)
+        if cleanup_fails:
+            failing_process = control_processes[0] if phase == "helper-entry" else processes[0]
+            close_stderr = failing_process.close_stderr
+
+            def fail_close_stderr():
+                close_stderr()
+                raise cleanup_error
+
+            monkeypatch.setattr(failing_process, "close_stderr", fail_close_stderr)
+
+        sys.settrace(interrupt_at_cleanup_boundary)
+        try:
+            if sigint_blocked:
+                session.close()
+            else:
+                with pytest.raises((RuntimeError, KeyboardInterrupt)) as raised:
+                    session.close()
+        finally:
+            sys.settrace(previous_trace)
+
+        assert requested
+        if not sigint_blocked:
+            assert raised.value is (cleanup_error if cleanup_fails else interruption)
+        if cleanup_fails:
+            assert any(str(interruption) in note for note in raised.value.__notes__)
+        assert sigmask(signal.SIG_BLOCK, set()) == expected_mask
+        for process in (*processes, *control_processes):
+            assert process.poll() is not None
+            assert process.stdin is not None and process.stdin.closed
+            assert process.stdout is not None and process.stdout.closed
+        assert session.closed
+        assert not workspace.exists()
+        assert not manager.has_forwards
+        assert manager.services == ()
+        assert closed_at_delivery == (not sigint_blocked)
+        session.close()
+    finally:
+        sys.settrace(previous_trace)
+        with suppress(KeyboardInterrupt):
+            sigmask(signal.SIG_SETMASK, expected_mask - {signal.SIGINT})
+        signal.signal(signal.SIGINT, previous_handler)
+        sigmask(signal.SIG_SETMASK, previous_mask)
+        if not session.closed:
+            with suppress(RuntimeError):
+                session.close()
+        for process in (*processes, *control_processes):
+            with suppress(RuntimeError):
+                _stop_process(process)
 
 
 class TestRttClient:
