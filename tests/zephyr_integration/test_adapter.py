@@ -38,6 +38,7 @@ from zephyr_remote_openocd.remote.paths import PathPlanner
 from zephyr_remote_openocd.remote.session import SessionError
 from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand
 
+from tests.concurrency_support import ConcurrentSessions
 from tests.forwarding_support import GDB, RTT, TCL, TELNET, ForwardingHarness
 from tests.support import ROOT, env_path
 
@@ -179,7 +180,7 @@ def test_runner_logs_effective_remote_argv(
     assert harness.helper.close_calls == 1
 
 
-@pytest.mark.parametrize("failure", ("spawn", "readiness"))
+@pytest.mark.parametrize("failure", ("spawn", "probe-busy"))
 def test_runner_logs_effective_argv_when_remote_startup_fails(
     runner_api, monkeypatch, tmp_path, caplog, failure
 ):
@@ -227,7 +228,11 @@ def test_runner_logs_effective_argv_when_remote_startup_fails(
     fixed = (
         (str(tmp_path / "missing-openocd"), "-c", "init")
         if failure == "spawn"
-        else (sys.executable, "-c", "raise SystemExit(7)")
+        else (
+            sys.executable,
+            "-c",
+            "import sys; print('requested probe is busy', file=sys.stderr); sys.exit(7)",
+        )
     )
     request = RemoteSessionRequest(
         "local",
@@ -1045,6 +1050,7 @@ def test_recording_runs_real_runner_integration_without_external_io(
     tmp_path,
     monkeypatch,
     capsys,
+    caplog,
     forbid_external_io,
     command,
     thread_info,
@@ -1070,12 +1076,13 @@ def test_recording_runs_real_runner_integration_without_external_io(
         "  unused: {openocd_command: [openocd]}\n"
         "  chosen:\n    ssh_host: selected_host\n"
         "    openocd_command: ['~/tools/openocd', '--debug']\n"
-        "    forward_env: [ZRO_CONTROLLED_ENV]\n"
+        "    forward_env: [ZRO_CONTROLLED_ENV, ZRO_ABSENT_ENV]\n"
         "    path_mappings: {'/': '~/mapped'}\n"
     )
     monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", str(config))
     monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_REMOTE", "unused")
     monkeypatch.setenv("ZRO_CONTROLLED_ENV", "secret-value")
+    monkeypatch.delenv("ZRO_ABSENT_ENV", raising=False)
     monkeypatch.setenv("ZRO_RECORD", "1")
     if thread_info:
         monkeypatch.setenv("ZRO_RECORD_OPENOCD_VERSION", "Open On-Chip Debugger 0.12.0")
@@ -1135,6 +1142,10 @@ def test_recording_runs_real_runner_integration_without_external_io(
     assert "secret-value" not in output
     assert planned_requests[0] is not None
     assert dict(planned_requests[0].process.environment) == {"ZRO_CONTROLLED_ENV": "secret-value"}
+    assert any(
+        record.levelno == logging.WARNING and "ZRO_ABSENT_ENV" in record.getMessage()
+        for record in caplog.records
+    )
     if command == "flash":
         assert request["services"] == []
     else:
@@ -1179,3 +1190,103 @@ def test_recording_runs_real_runner_integration_without_external_io(
             assert "rtt server start 19021 0" in argv
     if command == "rtt":
         assert result["rtt"]["port"] == 19021
+
+
+def test_adapter_allows_same_probe_session_to_finish_while_another_is_active(
+    runner_api, tmp_path, monkeypatch
+):
+    core, _, remote = runner_api
+    concurrent = ConcurrentSessions(tmp_path)
+    opened = (threading.Event(), threading.Event())
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "default_remote": "chosen",
+                "remotes": {
+                    "chosen": {
+                        "ssh_host": "test-host",
+                        "ssh_command": list(concurrent.ssh_argv),
+                        "openocd_command": list(concurrent.child_argv),
+                    }
+                },
+            }
+        )
+    )
+    monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", str(config))
+    build = tmp_path / "build"
+    (build / "zephyr").mkdir(parents=True)
+    (build / "zephyr" / ".config").write_text("# CONFIG_DEBUG_THREAD_INFO is not set\n")
+    cfg = core.RunnerConfig(
+        build_dir=str(build),
+        board_dir=str(tmp_path),
+        elf_file=None,
+        exe_file=None,
+        hex_file=str(concurrent.image),
+        bin_file=None,
+        uf2_file=None,
+        mot_file=None,
+        file=None,
+        openocd_search=[],
+    )
+    runners = tuple(
+        remote.create(
+            cfg,
+            parser_for(remote).parse_args(
+                [
+                    "--serial=test-probe",
+                    f"--cmd-pre-init=test_channel {channel}",
+                    "--cmd-load=program",
+                    "--cmd-verify=verify_image",
+                ]
+            ),
+        )
+        for channel in (0, 1)
+    )
+    original_acquire = RemoteSession.acquire
+
+    def acquire(session, **kwargs):
+        original_acquire(session, **kwargs)
+        channel = next(
+            int(argument.removeprefix("test_channel "))
+            for argument in session.request.process.argv
+            if argument.startswith("test_channel ")
+        )
+        opened[channel].set()
+
+    monkeypatch.setattr(RemoteSession, "acquire", acquire)
+    concurrent.check_progress(lambda channel: runners[channel].run("flash"), opened=opened)
+
+
+@pytest.mark.parametrize(
+    ("command", "phase"),
+    (("debug", "gdb"), ("attach", "gdb"), ("rtt", "gdb"), ("rtt", "rtt"), ("debugserver", "wait")),
+)
+def test_active_operation_interrupt_closes_session_and_forwards(
+    runner_api, monkeypatch, tmp_path, command, phase
+):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
+    harness = ForwardingHarness(monkeypatch)
+    runner, request, plan = _forwarding_operation(
+        runner_api, monkeypatch, tmp_path, command, harness
+    )
+    interruption = KeyboardInterrupt()
+
+    def interrupt(*_args):
+        raise interruption
+
+    if phase == "gdb":
+        runner.run_client.side_effect = interrupt
+    elif phase == "rtt":
+        monkeypatch.setattr(runner_module, "run_rtt_client", interrupt)
+    else:
+        harness.helper.on_wait = interrupt
+    with pytest.raises(KeyboardInterrupt) as raised:
+        runner_module._execute_operation(runner, command, request, plan)
+    assert raised.value is interruption
+    assert harness.helper.close_calls == 1
+    for service in (*plan.services, *((plan.rtt_service,) if phase == "rtt" else ())):
+        process = harness.ssh.process(service)
+        assert process.returncode is not None
+        assert process.managed.stdin.closed
