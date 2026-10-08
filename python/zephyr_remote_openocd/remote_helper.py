@@ -1355,6 +1355,7 @@ class ControlSession:
         self._pending_signum: int | None = None
         self._tasks: asyncio.TaskGroup | None = None
         self._session_tasks: list[asyncio.Task[_ObservationFailed | None]] = []
+        self._observation_failures: dict[asyncio.Task[Any], _ObservationFailed] = {}
         self._resources_released = False
         self._output_available = True
         self._control_reader: _AsyncInput | None = None
@@ -1461,9 +1462,13 @@ class ControlSession:
         except Exception as exc:
             failure = _ObservationFailed(source, exc, child)
             task = asyncio.current_task()
-            if task is not None and task.cancelling():
-                # Cancellation must not block cleanup on a full event queue.
-                return failure
+            if task is not None:
+                # Recognition precedes publication, which may block or be
+                # cancelled before the coordinator can dispatch the failure.
+                self._observation_failures[task] = failure
+                if task.cancelling():
+                    # Cancellation must not block cleanup on a full event queue.
+                    return failure
             await self._events.put(failure)
         return None
 
@@ -1632,6 +1637,13 @@ class ControlSession:
                 self._select_failure(RuntimeError("process readiness timed out"), protocol=True)
 
     def _observation_failed(self, observation: _ObservationFailed) -> None:
+        for task, failure in self._observation_failures.items():
+            if failure is observation:
+                del self._observation_failures[task]
+                break
+        else:
+            # Joining the owner may already have accounted for this queued fact.
+            return
         if observation.child is not None and observation.child is not self.child:
             return
         if observation.child is not None and observation.source in ("stdout", "stderr"):
@@ -1711,9 +1723,10 @@ class ControlSession:
             task.cancel()
         for task in tasks:
             with suppress(asyncio.CancelledError):
-                failure = await task
-                if failure is not None:
-                    self.cleanup_errors.append(failure.exception)
+                await task
+            failure = self._observation_failures.pop(task, None)
+            if failure is not None:
+                self.cleanup_errors.append(failure.exception)
 
     async def _finish_attempt(self) -> None:
         assert self.child is not None

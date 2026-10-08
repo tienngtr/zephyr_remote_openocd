@@ -1032,6 +1032,130 @@ def test_retry_does_not_spawn_after_terminal_control_observed_during_cleanup(
             assert events[-1] == ("SESSION_CLOSED", {"reason": "requested", "returncode": None})
 
 
+@pytest.mark.parametrize("publication", ("queued", "pending"))
+@pytest.mark.parametrize("cleanup_fails", (False, True))
+@pytest.mark.timeout(60)
+def test_natural_close_preserves_control_failure_consumed_before_dispatch(
+    tmp_path, monkeypatch, control_pipe, capsys, publication, cleanup_fails
+):
+    _reader, writer = control_pipe
+    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
+    session = remote_helper.ControlSession.create()
+    release = tmp_path / "child-release"
+    os.mkfifo(release)
+    children = []
+    failures = []
+    grouped = asyncio.Event()
+    stdout_finished = asyncio.Event()
+    failure_consumed = asyncio.Event()
+    final_eof_published = asyncio.Event()
+    blocked_publication = asyncio.Event()
+    cleanup_error = OSError("process-group cleanup failed")
+    original_spawn = remote_helper._spawn_child
+    original_read = remote_helper._AsyncInput.read
+    original_put = session._events.put
+    original_emit = remote_helper.emit
+
+    def spawn(*args, **kwargs):
+        child = original_spawn(*args, **kwargs)
+        children.append(child)
+        terminate = child.terminate
+
+        async def terminate_then_fail():
+            await terminate()
+            if cleanup_fails:
+                raise cleanup_error
+
+        monkeypatch.setattr(child, "terminate", terminate_then_fail)
+        return child
+
+    async def read(source):
+        chunk = await original_read(source)
+        if children and not chunk and source.descriptor == children[0].process.stderr.fileno():
+            # Deliver the final child EOF only after the real control reader
+            # has recognized its framing failure during group cleanup.
+            await grouped.wait()
+            await stdout_finished.wait()
+            await failure_consumed.wait()
+        return chunk
+
+    async def publish(observation):
+        if isinstance(observation, remote_helper._GroupCleaned):
+            writer.write(b"{")
+            writer.close()
+            await failure_consumed.wait()
+        if (
+            isinstance(observation, remote_helper._ObservationFailed)
+            and observation.source == "control"
+        ):
+            failures.append(observation.exception)
+            failure_consumed.set()
+            await final_eof_published.wait()
+            if publication == "pending":
+                # Model a put suspended by bounded-queue backpressure. The
+                # real guard must retain the failure when shutdown cancels it.
+                await blocked_publication.wait()
+        await original_put(observation)
+        if isinstance(observation, remote_helper._GroupCleaned):
+            grouped.set()
+        elif isinstance(observation, remote_helper._ChildOutput) and not observation.chunk:
+            if observation.stream == "stdout":
+                stdout_finished.set()
+            else:
+                final_eof_published.set()
+
+    def emit(kind, **values):
+        original_emit(kind, **values)
+        if kind == "PROCESS_READY":
+            # FIFO open/EOF handshakes release a ready child to exit naturally.
+            descriptor = os.open(release, os.O_WRONLY)
+            os.close(descriptor)
+
+    monkeypatch.setattr(remote_helper, "_spawn_child", spawn)
+    monkeypatch.setattr(remote_helper._AsyncInput, "read", read)
+    monkeypatch.setattr(session._events, "put", publish)
+    monkeypatch.setattr(remote_helper, "emit", emit)
+    writer.write(
+        _start_session_command(
+            [
+                sys.executable,
+                "-c",
+                "import os,sys; print('ready',flush=True); "
+                "fd=os.open(sys.argv[1],os.O_RDONLY); os.read(fd,1); os.close(fd)",
+                str(release),
+            ],
+            ("ready",),
+        )
+    )
+
+    async def run():
+        tasks_before = asyncio.all_tasks()
+        with pytest.raises(OSError if cleanup_fails else ValueError) as raised:
+            await session.run_async()
+        assert raised.value is (cleanup_error if cleanup_fails else failures[0])
+        assert asyncio.all_tasks() == tasks_before
+
+    try:
+        asyncio.run(run())
+    finally:
+        for child in children:
+            if child.process.returncode is None:
+                asyncio.run(child.terminate())
+            child.close_streams()
+        session.workspace_lock.close()
+
+    assert isinstance(failures[0], ValueError)
+    assert session.cleanup_errors == ([cleanup_error] if cleanup_fails else []) + failures
+    assert children[0].process.returncode == 0
+    assert children[0].process.stdout.closed and children[0].process.stderr.closed
+    assert not session.work.exists()
+    assert session.workspace_lock.closed
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert events[-1]["type"] == "ERROR"
+    assert sum(event["type"] == "ERROR" for event in events) == 1
+    assert not any(event["type"] == "SESSION_CLOSED" for event in events)
+
+
 def test_control_session_cleanup_attempts_all_resources_once(tmp_path, monkeypatch, control_pipe):
     _reader, writer = control_pipe
     workspace = tmp_path / "workspace"

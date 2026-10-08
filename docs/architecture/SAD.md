@@ -1509,6 +1509,15 @@ queued failures belonging to that attempt cannot be mistaken for obsolete
 replacement events. No additional control reader or observer-side lifecycle
 policy is introduced. The fence does not wait for future control input.
 
+Guarded observers retain recognized failures against their owned tasks before
+attempting queue publication. The coordinator accounts for each failure once,
+either during dispatch or when joining a cancelled or completed observer.
+Thus a control-protocol failure already recognized by the observer but not yet
+dispatched by the coordinator survives terminal cleanup, even if publication
+was blocked. Such failures prevent orderly session closure; an earlier failure
+remains primary under the existing outcome rules. No additional control read
+or wait for future input is required at terminal close.
+
 A `SupervisedChild` owns the configured OpenOCD process-group resources and
 per-stream decoding state, which only the coordinator consumes. Process
 creation retains `Popen(start_new_session=True)` and explicit reaping: using
