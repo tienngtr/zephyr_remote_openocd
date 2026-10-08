@@ -1366,7 +1366,20 @@ class ControlSession:
 
     @classmethod
     def create(cls) -> ControlSession:
-        return cls(*new_workspace())
+        session_id, work, workspace_lock = new_workspace()
+        try:
+            return cls(session_id, work, workspace_lock)
+        except BaseException as failure:
+            # Allocation owns these resources until construction succeeds.
+            # A failed directory removal must not prevent lock release.
+            for cleanup in (lambda: remove_workspace(work), workspace_lock.close):
+                try:
+                    cleanup()
+                except BaseException as exc:
+                    failure.add_note(f"workspace adoption cleanup also failed: {exc}")
+                    for note in getattr(exc, "__notes__", ()):
+                        failure.add_note(f"workspace adoption cleanup detail: {note}")
+            raise
 
     def announce(self) -> None:
         emit(
@@ -1808,6 +1821,9 @@ class ControlSession:
 
     async def _coordinate(self) -> None:
         while self.state != _State.CLOSED:
+            # This also accounts for a signal observed before the loop exists.
+            if self._pending_signum is not None:
+                self.ending = True
             if self.ending:
                 if self.child is None:
                     self.state = _State.CLOSED
@@ -1922,17 +1938,62 @@ class ControlSession:
             emit("SESSION_CLOSED", reason=self.close_reason, returncode=self.natural_returncode)
 
     def run(self) -> None:
-        asyncio.run(self.run_async())
+        # Set up the loop before creating its coroutine; failed loop setup
+        # leaves only the workspace for the control entry point to release.
+        with asyncio.Runner() as runner:
+            runner.run(self.run_async())
 
 
-def control():
-    session = ControlSession.create()
+def control() -> None:
+    session: ControlSession | None = None
+    pending_signum: int | None = None
+    previous_handlers = {}
+    failure: BaseException | None = None
+    cleanup_errors: list[BaseException] = []
+
+    def handle_signal(signum: int, frame: FrameType | None) -> None:
+        nonlocal pending_signum
+        if pending_signum is None:
+            pending_signum = signum
+        if session is not None:
+            session.handle_signal(signum, frame)
+
     try:
+        # Signals report facts throughout allocation and adoption. They cannot
+        # interrupt rollback or leave a successfully allocated tuple unowned.
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            previous_handlers[signum] = signal.getsignal(signum)
+            signal.signal(signum, handle_signal)
+        session = ControlSession.create()
+        if pending_signum is not None:
+            session.handle_signal(pending_signum)
         session.run()
-    except Exception as exc:
+    except BaseException as exc:
+        failure = exc
+    finally:
+        if session is not None:
+            # run_async normally releases these resources. This also covers
+            # failure before its cleanup scope is entered (e.g. loop setup).
+            session._release_workspace()
+            cleanup_errors.extend(session.cleanup_errors)
+        for signum, handler in previous_handlers.items():
+            try:
+                signal.signal(signum, handler)
+            except BaseException as exc:
+                cleanup_errors.append(exc)
+    if failure is None and cleanup_errors:
+        failure = cleanup_errors.pop(0)
+    if failure is not None:
+        for cleanup_error in cleanup_errors:
+            if cleanup_error is not failure:
+                note = f"session cleanup also failed: {cleanup_error}"
+                if note not in getattr(failure, "__notes__", ()):
+                    failure.add_note(note)
         # The session owns ERROR delivery and bounded output cleanup; never
         # retry a blocking stdout write after the structured scope has closed.
-        raise SystemExit(1) from exc
+        if session is not None and isinstance(failure, Exception):
+            raise SystemExit(1) from failure
+        raise failure
 
 
 def main():

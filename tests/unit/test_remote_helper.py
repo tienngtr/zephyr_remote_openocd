@@ -839,6 +839,55 @@ def test_new_workspace_removes_partial_directory_on_initialization_failure(tmp_p
     assert tuple(tmp_path.iterdir()) == ()
 
 
+@pytest.mark.parametrize("boundary", ("constructor", "loop"))
+def test_coordinator_adoption_failure_attempts_lock_cleanup_after_workspace_failure(
+    tmp_path, monkeypatch, boundary
+):
+    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
+    allocate = remote_helper.new_workspace
+    remove = remote_helper.remove_workspace
+    acquired = []
+    failure = RuntimeError("coordinator construction failed")
+    cleanup_failure = OSError("workspace cleanup failed")
+
+    def new_workspace():
+        resources = allocate()
+        acquired.append(resources)
+        return resources
+
+    def fail_remove(_workspace):
+        raise cleanup_failure
+
+    monkeypatch.setattr(remote_helper, "new_workspace", new_workspace)
+    monkeypatch.setattr(remote_helper, "remove_workspace", fail_remove)
+    if boundary == "constructor":
+        monkeypatch.setattr(
+            remote_helper.asyncio, "Queue", create_autospec(asyncio.Queue, side_effect=failure)
+        )
+    else:
+        monkeypatch.setattr(
+            remote_helper.asyncio.events,
+            "new_event_loop",
+            create_autospec(asyncio.events.new_event_loop, side_effect=failure),
+        )
+    previous_handlers = {
+        signum: signal.getsignal(signum) for signum in (signal.SIGINT, signal.SIGTERM)
+    }
+    try:
+        with pytest.raises(RuntimeError if boundary == "constructor" else SystemExit) as raised:
+            remote_helper.control()
+        assert (raised.value.__cause__ or raised.value) is failure
+        assert acquired[0][2].closed
+        assert any(str(cleanup_failure) in note for note in failure.__notes__)
+        assert all(
+            signal.getsignal(signum) == handler for signum, handler in previous_handlers.items()
+        )
+    finally:
+        if acquired:
+            acquired[0][2].close()
+            remove(acquired[0][1])
+
+
 @pytest.mark.parametrize("output_cleanup_fails", [False, True])
 def test_control_session_cleans_up_when_announcement_fails(
     tmp_path, monkeypatch, output_cleanup_fails

@@ -1473,6 +1473,17 @@ serializes protocol output. The coordinator alone dispatches commands, changes
 lifecycle state, interprets output/readiness, selects the logical outcome, and
 initiates cleanup.
 
+The control entry point observes termination signals before allocating a
+workspace. Until coordinator construction succeeds, allocation retains rollback
+responsibility for the workspace, lease metadata, and session lock. Failed
+construction attempts workspace removal and lock release independently,
+preserving the construction failure. The entry point retains a fallback cleanup
+scope through event-loop setup, before the asynchronous session takes over.
+Signals latch facts throughout this handoff and rollback; the coordinator
+accounts for a signal received before its event loop exists. Previous signal
+handlers are restored after the cleanup attempt. No OpenOCD child exists during
+workspace adoption or event-loop setup.
+
 Internal states are CREATED, STARTING, ACTIVE, TERMINATING, and CLOSED.
 STARTING is a state in the event loop, not a nested readiness wait: control,
 output, exit, signals, and timeout remain observable concurrently. TERMINATING
