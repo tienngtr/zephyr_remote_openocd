@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 import signal
 import socket
@@ -19,8 +18,8 @@ from tests.hardware_support import (
     ThreadInfoFixture,
     elf_memory_witness,
     free_loopback_ports,
+    hardware_operation_environment,
 )
-from tests.support import ROOT
 
 pytestmark = [pytest.mark.hardware, pytest.mark.destructive]
 
@@ -28,19 +27,6 @@ DebugHardwareFixture = DebugFixture | AttachFixture | DebugServerFixture | Threa
 
 
 class TestRealOpenOcdDebug:
-    def _environment(self, fixture: DebugHardwareFixture) -> dict[str, str]:
-        target = fixture.target
-        environment = os.environ.copy()
-        environment.pop("ZRO_RECORD", None)
-        environment.update(
-            {
-                "EXTRA_ZEPHYR_MODULES": str(ROOT),
-                "ZEPHYR_REMOTE_OPENOCD_CONFIG": str(target.config_path),
-            }
-        )
-        environment.update(dict(target.environment))
-        return environment
-
     def _west_command(
         self,
         fixture: DebugHardwareFixture,
@@ -92,7 +78,7 @@ class TestRealOpenOcdDebug:
         result = subprocess.run(
             command,
             cwd=fixture.target.workspace,
-            env=self._environment(fixture),
+            env=hardware_operation_environment(fixture.target),
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -112,7 +98,7 @@ class TestRealOpenOcdDebug:
         prepared = subprocess.run(
             self._west_command(fixture, "flash", fixture.precondition_build_dir),
             cwd=fixture.target.workspace,
-            env=self._environment(fixture),
+            env=hardware_operation_environment(fixture.target),
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -143,7 +129,7 @@ class TestRealOpenOcdDebug:
         result = subprocess.run(
             command,
             cwd=fixture.target.workspace,
-            env=self._environment(fixture),
+            env=hardware_operation_environment(fixture.target),
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -178,7 +164,7 @@ class TestRealOpenOcdDebug:
             process = subprocess.Popen(
                 self._west_command(fixture, "debugserver", extra_args=extra_args),
                 cwd=fixture.target.workspace,
-                env=self._environment(fixture),
+                env=hardware_operation_environment(fixture.target),
                 text=True,
                 stdout=output,
                 stderr=subprocess.STDOUT,
@@ -227,6 +213,7 @@ class TestRealOpenOcdDebug:
                         "-ex",
                         "quit",
                     ],
+                    env=hardware_operation_environment(fixture.target),
                     text=True,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
@@ -258,7 +245,7 @@ class TestRealOpenOcdDebug:
         prepared = subprocess.run(
             prepare,
             cwd=fixture.target.workspace,
-            env=self._environment(fixture),
+            env=hardware_operation_environment(fixture.target),
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -275,7 +262,7 @@ class TestRealOpenOcdDebug:
         result = subprocess.run(
             command,
             cwd=fixture.target.workspace,
-            env=self._environment(fixture),
+            env=hardware_operation_environment(fixture.target),
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

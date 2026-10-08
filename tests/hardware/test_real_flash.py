@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import ipaddress
-import os
 import re
 import subprocess
 from pathlib import Path
@@ -12,11 +11,10 @@ from pathlib import Path
 import pytest
 from zephyr_remote_openocd.remote.ssh import SshCommand
 
-from tests.hardware_support import FlashFixture
+from tests.hardware_support import FlashFixture, hardware_operation_environment
 from tests.serial_reader import read_event as _read_event
 from tests.serial_reader import remote_serial_reader_command
 from tests.serial_reader import stop_reader as _stop
-from tests.support import ROOT
 
 pytestmark = [pytest.mark.hardware, pytest.mark.destructive]
 
@@ -88,17 +86,10 @@ class TestRealOpenOcdFlash:
         ]
         if target.runner_args:
             command.extend(("--", *target.runner_args))
-        environment = os.environ.copy()
-        environment.pop("ZRO_RECORD", None)
-        environment.update(
-            EXTRA_ZEPHYR_MODULES=str(ROOT),
-            ZEPHYR_REMOTE_OPENOCD_CONFIG=str(target.config_path),
-        )
-        environment.update(dict(target.environment))
         return subprocess.run(
             command,
             cwd=target.workspace,
-            env=environment,
+            env=hardware_operation_environment(target),
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

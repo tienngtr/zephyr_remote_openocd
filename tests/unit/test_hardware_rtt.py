@@ -58,7 +58,13 @@ def test_simultaneous_gdb_rtt_acceptance_does_not_require_runner_prose(tmp_path,
         client.communicate.return_value = (b"", None)
         client.returncode = 0
         processes = iter((server, client))
-        monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: next(processes))
+        launch_environments = []
+
+        def launch(*args, **kwargs):
+            launch_environments.append(kwargs.get("env", {}))
+            return next(processes)
+
+        monkeypatch.setattr(subprocess, "Popen", launch)
         monkeypatch.setattr(
             "tests.hardware.test_real_rtt.free_loopback_ports", lambda count: [gdb_port]
         )
@@ -79,6 +85,9 @@ def test_simultaneous_gdb_rtt_acceptance_does_not_require_runner_prose(tmp_path,
         monkeypatch.setattr(socket, "create_connection", connect)
         RttAcceptance().test_debugserver_serves_gdb_and_rtt_concurrently(fixture, tmp_path)
 
+        for environment in launch_environments:
+            assert environment["ZEPHYR_BASE"] == str(target.build_environment.zephyr_base)
+            assert environment["ZEPHYR_REMOTE_OPENOCD_CONFIG"] == str(target.config_path)
         assert gdb_connection.fileno() == -1
         assert rtt_peer.recv(4096) == b"ping"
         assert client.stdout.closed and server.stdout.closed

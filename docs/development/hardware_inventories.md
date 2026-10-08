@@ -77,7 +77,15 @@ Declare build-affecting variables such as `ZEPHYR_TOOLCHAIN_VARIANT` and
 `ZEPHYR_SDK_INSTALL_DIR` in the build environment's `environment` mapping.
 The harness passes a small host baseline (`HOME`, locale, `PATH`, platform
 command lookup, and temporary-directory variables) plus those explicit values;
-other ambient variables do not reach west. Both sets participate in persistent
+other ambient variables do not reach west. `ZEPHYR_BASE` is set to the selected
+`zephyr_base`. Hardware operations and independent GDB clients use the same
+restricted baseline and declared build environment, with profile environment
+values and the harness-generated runner configuration applied for the operation.
+Operations additionally retain SSH agent, askpass/desktop-session, and sshpass
+inputs needed by the configured SSH command. These authentication inputs are
+excluded from build preparation and cache identity unless explicitly declared.
+Ambient product configuration, remote selection, and recording controls are
+excluded. Both sets participate in persistent
 build and shared-cache identity, so changing toolchain selection cannot reuse
 stale CMake state.
 

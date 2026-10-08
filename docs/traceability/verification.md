@@ -19,6 +19,13 @@ real-hardware test requiring a configured hardware test environment; **Both**
 has both forms. Availability of a configured hardware environment does not
 imply that the hardware test has been executed.
 
+Hardware evidence also depends on the harness using the selected execution
+environment. [`test_hardware_launch_uses_selected_environment`](../../tests/unit/test_hardware_environment.py)
+captures actual operation launches across flash, debug, RTT, and semihosting;
+[`test_preparation_uses_only_configured_build_environment`](../../tests/unit/test_hardware_support.py)
+protects build preparation, and the [simultaneous GDB/RTT regression](../../tests/unit/test_hardware_rtt.py)
+checks both the west and independent GDB launch environments.
+
 | Requirements | Status | Evidence |
 | --- | --- | --- |
 | `REQ-FUNC-INTEG-001`, `REQ-FUNC-INTEG-003`, `REQ-FUNC-INTEG-006`, `REQ-FUNC-INTEG-007`, `REQ-FUNC-SCOPE-001` | Automated | [`TestZephyrIntegration.test_module_discovery_and_in_tree_application_configuration`](../../tests/zephyr_integration/test_zephyr_integration.py); clean-install verification |

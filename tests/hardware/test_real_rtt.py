@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import os
 import shlex
 import signal
 import socket
@@ -13,27 +12,14 @@ import time
 
 import pytest
 
-from tests.hardware_support import RttFixture, free_loopback_ports
+from tests.hardware_support import RttFixture, free_loopback_ports, hardware_operation_environment
 from tests.process_support import ProcessOutputMonitor, read_until
-from tests.support import ROOT
 
 pytestmark = [pytest.mark.hardware, pytest.mark.destructive]
 
 
 class TestRealRtt:
     """Validate channel-0 RTT and the two RTT server variants."""
-
-    def _environment(self, fixture: RttFixture) -> dict[str, str]:
-        environment = os.environ.copy()
-        environment.pop("ZRO_RECORD", None)
-        environment.update(
-            {
-                "EXTRA_ZEPHYR_MODULES": str(ROOT),
-                "ZEPHYR_REMOTE_OPENOCD_CONFIG": str(fixture.target.config_path),
-            }
-        )
-        environment.update(dict(fixture.target.environment))
-        return environment
 
     @staticmethod
     def _west_command(fixture: RttFixture, command: str, *runner_args: str) -> list[str]:
@@ -60,7 +46,7 @@ class TestRealRtt:
         return subprocess.Popen(
             self._west_command(fixture, command, *runner_args),
             cwd=fixture.target.workspace,
-            env=self._environment(fixture),
+            env=hardware_operation_environment(fixture.target),
             stdin=subprocess.PIPE,
             stdout=stdout,
             stderr=subprocess.STDOUT,
@@ -87,7 +73,7 @@ class TestRealRtt:
         result = subprocess.run(
             self._west_command(fixture, "flash"),
             cwd=fixture.target.workspace,
-            env=self._environment(fixture),
+            env=hardware_operation_environment(fixture.target),
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -251,6 +237,7 @@ class TestRealRtt:
                     "-ex",
                     "quit",
                 ],
+                env=hardware_operation_environment(fixture.target),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
             )

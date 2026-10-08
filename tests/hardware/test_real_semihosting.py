@@ -10,27 +10,14 @@ import subprocess
 
 import pytest
 
-from tests.hardware_support import SemihostingFixture
+from tests.hardware_support import SemihostingFixture, hardware_operation_environment
 from tests.process_support import assert_semihosting_acceptance
-from tests.support import ROOT
 
 pytestmark = [pytest.mark.hardware, pytest.mark.destructive]
 
 
 class TestRealSemihosting:
     """Validate direct semihosting through the normal OpenOCD output relay."""
-
-    @staticmethod
-    def _environment(fixture: SemihostingFixture) -> dict[str, str]:
-        target = fixture.target
-        environment = os.environ.copy()
-        environment.pop("ZRO_RECORD", None)
-        environment.update(
-            EXTRA_ZEPHYR_MODULES=str(ROOT),
-            ZEPHYR_REMOTE_OPENOCD_CONFIG=str(target.config_path),
-        )
-        environment.update(dict(target.environment))
-        return environment
 
     @staticmethod
     def _west(
@@ -62,7 +49,7 @@ class TestRealSemihosting:
         process = subprocess.Popen(
             command,
             cwd=fixture.target.workspace,
-            env=self._environment(fixture),
+            env=hardware_operation_environment(fixture.target),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             start_new_session=True,

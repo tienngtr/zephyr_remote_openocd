@@ -220,6 +220,8 @@ def test_preparation_uses_only_configured_build_environment(
     inventory_path.write_text(yaml.safe_dump(document, sort_keys=False))
     inventory = load_inventory(inventory_path)
 
+    monkeypatch.setenv("SSH_ASKPASS", "/host/askpass")
+    monkeypatch.setenv("ZEPHYR_BASE", "/ambient/zephyr")
     monkeypatch.setenv("ZEPHYR_TOOLCHAIN_VARIANT", "ambient")
     monkeypatch.setenv("CMAKE_PREFIX_PATH", "/ambient/cmake-prefix")
     preparation = HardwarePreparation(
@@ -233,9 +235,11 @@ def test_preparation_uses_only_configured_build_environment(
         preparation.prepare("target:profile", "debug")
 
     environment = run.call_args.kwargs["env"]
+    assert environment["ZEPHYR_BASE"] == str(tmp_path)
     assert environment["ZEPHYR_TOOLCHAIN_VARIANT"] == "zephyr"
     assert environment["ZEPHYR_SDK_INSTALL_DIR"] == "/opt/zephyr-sdk-a"
     assert "CMAKE_PREFIX_PATH" not in environment
+    assert "SSH_ASKPASS" not in environment
 
 
 def test_shared_hardware_cache_uses_build_environment_and_checkout(tmp_path: Path) -> None:

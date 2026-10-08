@@ -51,11 +51,27 @@ _BUILD_ENVIRONMENT_PASSTHROUGH = (
 )
 
 
+_OPERATION_AUTHENTICATION_PASSTHROUGH = (
+    "SSH_AUTH_SOCK",
+    "SSH_ASKPASS",
+    "SSH_ASKPASS_REQUIRE",
+    "DISPLAY",
+    "XAUTHORITY",
+    "WAYLAND_DISPLAY",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "XDG_RUNTIME_DIR",
+    "XDG_SESSION_TYPE",
+    "ICEAUTHORITY",
+    "SSHPASS",
+)
+
+
 def _build_process_environment(environment: BuildEnvironment) -> dict[str, str]:
     result = {
         name: os.environ[name] for name in _BUILD_ENVIRONMENT_PASSTHROUGH if name in os.environ
     }
     result.update(environment.environment)
+    result["ZEPHYR_BASE"] = str(environment.zephyr_base)
     return result
 
 
@@ -226,6 +242,23 @@ class PreparedTarget:
         if self.toolchain is None:
             raise ValueError(f"prepared target {self.id} has no toolchain")
         return self.toolchain.gdb
+
+
+def hardware_operation_environment(target: PreparedTarget) -> dict[str, str]:
+    """Use the selected build environment and profile for a hardware operation."""
+    environment = {
+        name: os.environ[name]
+        for name in _OPERATION_AUTHENTICATION_PASSTHROUGH
+        if name in os.environ
+    }
+    environment.update(_build_process_environment(target.build_environment))
+    environment.update(target.environment)
+    environment.update(
+        ZEPHYR_BASE=str(target.build_environment.zephyr_base),
+        EXTRA_ZEPHYR_MODULES=str(ROOT),
+        ZEPHYR_REMOTE_OPENOCD_CONFIG=str(target.config_path),
+    )
+    return environment
 
 
 @dataclass(frozen=True)
