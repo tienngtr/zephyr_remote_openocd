@@ -15,6 +15,10 @@ import pytest
 from tests.hardware_support import RttFixture, free_loopback_ports, hardware_operation_environment
 from tests.process_support import managed_process, run_process
 
+WEST_SHUTDOWN_TIMEOUT = 20
+GDB_CLIENT_TIMEOUT = 30
+SERVER_READY_TIMEOUT = 90
+
 pytestmark = [pytest.mark.hardware, pytest.mark.destructive]
 
 
@@ -117,7 +121,7 @@ class TestRealRtt:
             process.stdin.flush()
             output.wait_for(fixture.operation.response, fixture.operation.timeout)
             process.send_signal(signal.SIGINT)
-            process.wait(timeout=20)
+            process.wait(timeout=WEST_SHUTDOWN_TIMEOUT)
 
     def test_debug_rtt_server_keeps_gdb_active(self, rtt_fixture: RttFixture, tmp_path) -> None:
         fixture = rtt_fixture
@@ -137,12 +141,12 @@ class TestRealRtt:
             process = owner.process
             output = owner.capture_output()
             try:
-                output.wait_for("ZRO_GDB_RTT_READY", timeout=90)
+                output.wait_for("ZRO_GDB_RTT_READY", timeout=SERVER_READY_TIMEOUT)
                 assert process.poll() is None
                 self._rtt_round_trip(fixture, port)
             finally:
                 release.touch()
-            process.wait(timeout=20)
+            process.wait(timeout=WEST_SHUTDOWN_TIMEOUT)
         assert process.returncode == 0, output.text
 
     def test_debugserver_serves_gdb_and_rtt_concurrently(
@@ -163,7 +167,9 @@ class TestRealRtt:
             output = server_owner.capture_output()
             try:
                 try:
-                    with self._connect_endpoint(gdb_client_port, timeout=90, process=process):
+                    with self._connect_endpoint(
+                        gdb_client_port, timeout=SERVER_READY_TIMEOUT, process=process
+                    ):
                         pass
                 except AssertionError as error:
                     raise AssertionError(f"{error}\n{output.text}") from error
@@ -196,14 +202,14 @@ class TestRealRtt:
                     client = client_owner.process
                     client_output = client_owner.capture_output()
                     try:
-                        client_output.wait_for("ZRO_GDB_RTT_READY", timeout=30)
+                        client_output.wait_for("ZRO_GDB_RTT_READY", timeout=GDB_CLIENT_TIMEOUT)
                         assert client.poll() is None
                         self._rtt_round_trip(fixture, port)
                     finally:
                         release.touch()
-                    client.wait(timeout=30)
+                    client.wait(timeout=GDB_CLIENT_TIMEOUT)
                 assert client.returncode == 0, f"{client_output.text}\n{output.text}"
                 process.send_signal(signal.SIGINT)
-                process.wait(timeout=20)
+                process.wait(timeout=WEST_SHUTDOWN_TIMEOUT)
             finally:
                 release.touch()

@@ -18,6 +18,10 @@ from tests.hardware.test_real_rtt import TestRealRtt as RttAcceptance
 from tests.hardware_support import PreparedTarget, RttFixture
 from tests.inventory import BuildEnvironment, InventoryHost, RttOperation, Toolchain
 
+# Placeholder identities; killpg is controlled at the subprocess boundary.
+TEST_SERVER_PID = 900001
+TEST_CLIENT_PID = 900002
+
 
 @pytest.mark.timeout(60)
 def test_simultaneous_gdb_rtt_acceptance_does_not_require_runner_prose(tmp_path, monkeypatch):
@@ -47,14 +51,14 @@ def test_simultaneous_gdb_rtt_acceptance_does_not_require_runner_prose(tmp_path,
 
         server = create_autospec(subprocess.Popen, instance=True)
         server.stdout = output_pipe(b"arbitrary noncontractual startup diagnostic\n")
-        server.pid = 900001
+        server.pid = TEST_SERVER_PID
         server.stdin = None
         server.stderr = None
         server.poll.return_value = None
         server.wait.return_value = 0
         client = create_autospec(subprocess.Popen, instance=True)
         client.stdout = output_pipe(b"ZRO_GDB_RTT_READY\n")
-        client.pid = 900002
+        client.pid = TEST_CLIENT_PID
         client.wait.return_value = 0
         client.stdin = None
         client.stderr = None

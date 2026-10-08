@@ -17,11 +17,18 @@ from queue import Queue
 
 import pytest
 
+from tests.forwarding_support import RTT
 from tests.hardware.test_real_rtt import TestRealRtt as RttAcceptance
 from tests.hardware.test_real_semihosting import TestRealSemihosting as SemihostingAcceptance
 from tests.hardware_support import PreparedTarget, RttFixture, SemihostingFixture
 from tests.inventory import BuildEnvironment, InventoryHost, RttOperation, SemihostingOperation
 from tests.process_support import managed_process, read_line
+
+# Linux UAPI constants from linux/prctl.h.
+PR_SET_CHILD_SUBREAPER = 36
+PR_GET_CHILD_SUBREAPER = 37
+SYNC_TIMEOUT = 30
+TEST_BACKSTOP_TIMEOUT = 60
 
 _CHILD_TREE = """
 import os,signal
@@ -36,7 +43,7 @@ if child==0:
     signal.pause()
 else:
     os.close(writer)
-    os.read(reader,5)
+    os.read(reader,len(b'ready'))
     os.close(reader)
     print(child,flush=True)
     print('ZRO_GDB_RTT_READY',flush=True)
@@ -44,7 +51,7 @@ else:
 
 
 @pytest.mark.parametrize("operation", ("semihosting", "rtt-abort", "blocking-flash"))
-@pytest.mark.timeout(60)
+@pytest.mark.timeout(TEST_BACKSTOP_TIMEOUT)
 def test_hardware_cleanup_stops_descendant_after_leader_exit(tmp_path, monkeypatch, operation):
     target = PreparedTarget(
         "target:profile",
@@ -60,22 +67,22 @@ def test_hardware_cleanup_stops_descendant_after_leader_exit(tmp_path, monkeypat
     )
     libc = ctypes.CDLL(None, use_errno=True)
     previous = ctypes.c_int()
-    assert libc.prctl(37, ctypes.byref(previous), 0, 0, 0) == 0
-    assert libc.prctl(36, 1, 0, 0, 0) == 0
+    assert libc.prctl(PR_GET_CHILD_SUBREAPER, ctypes.byref(previous), 0, 0, 0) == 0
+    assert libc.prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) == 0
     original_popen = subprocess.Popen
     processes = []
     child_pid = None
     child_pidfd = None
-    timeout = subprocess.TimeoutExpired("hardware-command", 30)
+    timeout = subprocess.TimeoutExpired("hardware-command", SYNC_TIMEOUT)
 
     def popen(*args, **kwargs):
         nonlocal child_pid, child_pidfd
         assert kwargs.get("start_new_session") is True
         process = original_popen([sys.executable, "-c", _CHILD_TREE], **kwargs)
         processes.append(process)
-        child_pid = int(read_line(process.stdout, timeout=30))
+        child_pid = int(read_line(process.stdout, timeout=SYNC_TIMEOUT))
         child_pidfd = os.pidfd_open(child_pid)
-        assert process.wait(timeout=30) == 0
+        assert process.wait(timeout=SYNC_TIMEOUT) == 0
 
         def communicate(*args, **kwargs):
             raise timeout
@@ -91,10 +98,12 @@ def test_hardware_cleanup_stops_descendant_after_leader_exit(tmp_path, monkeypat
         ) as raised:
             if operation == "semihosting":
                 SemihostingAcceptance().test_direct_semihosting_console_normal_completion(
-                    SemihostingFixture(target, SemihostingOperation((), (), "ready", 30))
+                    SemihostingFixture(target, SemihostingOperation((), (), "ready", SYNC_TIMEOUT))
                 )
             else:
-                fixture = RttFixture(target, RttOperation(12345, "pong", "ping", 30, True, "main"))
+                fixture = RttFixture(
+                    target, RttOperation(RTT.local_port, "pong", "ping", SYNC_TIMEOUT, True, "main")
+                )
                 if operation == "rtt-abort":
                     RttAcceptance().test_debug_rtt_server_keeps_gdb_active(fixture, tmp_path)
                 else:
@@ -104,7 +113,7 @@ def test_hardware_cleanup_stops_descendant_after_leader_exit(tmp_path, monkeypat
         assert child_pid is not None and child_pidfd is not None
         poller = select.poll()
         poller.register(child_pidfd, select.POLLIN)
-        assert poller.poll(30000), "harness left its descendant alive"
+        assert poller.poll(SYNC_TIMEOUT * 1000), "harness left its descendant alive"
         assert os.waitpid(child_pid, 0)[0] == child_pid
         child_pid = None
         assert processes[0].stdout is not None and processes[0].stdout.closed
@@ -118,15 +127,15 @@ def test_hardware_cleanup_stops_descendant_after_leader_exit(tmp_path, monkeypat
         for process in processes:
             if process.poll() is None:
                 process.kill()
-            process.wait(timeout=30)
+            process.wait(timeout=SYNC_TIMEOUT)
             for stream in (process.stdin, process.stdout, process.stderr):
                 if stream is not None:
                     stream.close()
-        assert libc.prctl(36, previous.value, 0, 0, 0) == 0
+        assert libc.prctl(PR_SET_CHILD_SUBREAPER, previous.value, 0, 0, 0) == 0
 
 
 @pytest.mark.parametrize("operation_fails", (False, True))
-@pytest.mark.timeout(60)
+@pytest.mark.timeout(TEST_BACKSTOP_TIMEOUT)
 def test_process_scope_preserves_failure_and_finishes_cleanup(
     tmp_path, monkeypatch, operation_fails
 ):
@@ -154,7 +163,7 @@ def test_process_scope_preserves_failure_and_finishes_cleanup(
             ) as owner,
         ):
             process = owner.process
-            assert read_line(process.stdout, timeout=30) == b"ready\n"
+            assert read_line(process.stdout, timeout=SYNC_TIMEOUT) == b"ready\n"
             if operation_fails:
                 raise primary
         assert raised.value is (primary if operation_fails else cleanup_error)
@@ -172,10 +181,10 @@ def test_process_scope_preserves_failure_and_finishes_cleanup(
         if process is not None:
             with suppress(ProcessLookupError):
                 original_killpg(process.pid, signal.SIGKILL)
-            process.wait(timeout=30)
+            process.wait(timeout=SYNC_TIMEOUT)
 
 
-@pytest.mark.timeout(60)
+@pytest.mark.timeout(TEST_BACKSTOP_TIMEOUT)
 def test_owned_output_reader_defers_sigint_to_process_owner(monkeypatch):
     masks: Queue[set[int | signal.Signals]] = Queue()
     original_read = os.read
@@ -193,15 +202,15 @@ def test_owned_output_reader_defers_sigint_to_process_owner(monkeypatch):
         stderr=subprocess.PIPE,
     ) as owner:
         output = owner.capture_output()
-        worker_mask = masks.get(timeout=30)
-        output.wait_for("ready", timeout=30)
+        worker_mask = masks.get(timeout=SYNC_TIMEOUT)
+        output.wait_for("ready", timeout=SYNC_TIMEOUT)
         assert signal.SIGINT in worker_mask
         assert signal.pthread_sigmask(signal.SIG_BLOCK, set()) == original_mask
     assert owner.process.returncode is not None
     assert owner.process.stdout is not None and owner.process.stdout.closed
 
 
-@pytest.mark.timeout(60)
+@pytest.mark.timeout(TEST_BACKSTOP_TIMEOUT)
 def test_process_acquisition_interrupt_reaps_created_group(monkeypatch):
     original_popen = subprocess.Popen
     processes = []
@@ -209,7 +218,7 @@ def test_process_acquisition_interrupt_reaps_created_group(monkeypatch):
     def launch(*args, **kwargs):
         process = original_popen(*args, **kwargs)
         processes.append(process)
-        assert read_line(process.stdout, timeout=30) == b"ready\n"
+        assert read_line(process.stdout, timeout=SYNC_TIMEOUT) == b"ready\n"
         signal.raise_signal(signal.SIGINT)
         return process
 
@@ -234,7 +243,7 @@ def test_process_acquisition_interrupt_reaps_created_group(monkeypatch):
         for process in processes:
             with suppress(ProcessLookupError):
                 os.killpg(process.pid, signal.SIGKILL)
-            process.wait(timeout=30)
+            process.wait(timeout=SYNC_TIMEOUT)
             for stream in (process.stdout, process.stderr):
                 if stream is not None:
                     stream.close()

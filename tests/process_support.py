@@ -15,6 +15,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import IO
 
+PROCESS_CLEANUP_TIMEOUT = 10
+
 
 class ProcessOutputMonitor:
     """Continuously capture a process pipe and signal observable output."""
@@ -117,7 +119,7 @@ class ProcessScope:
         try:
             if self.process.poll() is None:
                 self.process.send_signal(signal.SIGINT)
-                self.process.wait(timeout=10)
+                self.process.wait(timeout=PROCESS_CLEANUP_TIMEOUT)
         except subprocess.TimeoutExpired:
             pass
         except BaseException as error:
@@ -130,7 +132,7 @@ class ProcessScope:
         except BaseException as error:
             errors.append(error)
         try:
-            self.process.wait(timeout=10)
+            self.process.wait(timeout=PROCESS_CLEANUP_TIMEOUT)
         except BaseException as error:
             errors.append(error)
         _raise_process_cleanup_errors(errors)
@@ -146,7 +148,7 @@ class ProcessScope:
             errors.append(error)
         if self._output is not None:
             try:
-                self._output.join(timeout=10)
+                self._output.join(timeout=PROCESS_CLEANUP_TIMEOUT)
             except BaseException as error:
                 errors.append(error)
         for stream in (self.process.stdin, self.process.stdout, self.process.stderr):

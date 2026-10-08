@@ -231,7 +231,8 @@ def test_runner_logs_effective_argv_when_remote_startup_fails(
         else (
             sys.executable,
             "-c",
-            "import sys; print('requested probe is busy', file=sys.stderr); sys.exit(7)",
+            "import sys; print('requested probe is busy', file=sys.stderr); "
+            f"sys.exit({OPENOCD_FAILURE_RC})",
         )
     )
     request = RemoteSessionRequest(
