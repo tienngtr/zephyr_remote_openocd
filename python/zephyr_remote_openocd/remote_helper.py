@@ -1524,6 +1524,7 @@ class ControlSession:
             literal_prefix=request.literal_prefix,
             argv_templates=request.argv_templates,
         )
+        _validate_argv(list(argv))
         replacements = {"workspace": str(self.work), "address": self.address}
         _check_required_paths(request.required_paths, replacements)
         emit("PROCESS_STARTING", argv=list(argv))
