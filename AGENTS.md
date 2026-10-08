@@ -56,6 +56,25 @@ virtualization, or GDB File-I/O. Serial observation is test-only.
 Let invalid input fail naturally when that is sufficient; do not add redundant
 error checks.
 
+## Lifecycle Ownership and Publication
+
+For every resource-bearing change, identify the acquisition point, its cleanup
+owner during partial initialization, and the exception/interruption rollback
+path. Transfer ownership without an unowned interval; cleanup independent
+resources even when an earlier cleanup fails, preserving the primary failure.
+
+Give each lifecycle one transition authority. Signals, reader threads, and
+asynchronous observers report facts rather than independently deciding
+conflicting transitions. Do not publish success or launch dependent work before
+checking already-recorded failures that invalidate it. This does not promise
+continued process liveness after the check.
+
+Before adding retries, fences, state, or cleanup machinery, identify the
+requirement and race it protects. Prefer the least complex design that meets
+the existing contract; propose rather than silently strengthen or weaken
+requirements. Treat acquisition, adoption, and publication boundaries as
+first-class regression scenarios under `docs/development/test_design.md`.
+
 ## Testing and Validation
 
 Follow `docs/development/test_design.md` for the
