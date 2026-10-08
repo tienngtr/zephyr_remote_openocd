@@ -67,16 +67,20 @@ class TestRealRtt:
         )
 
     @staticmethod
-    def _connect_rtt(port: int, timeout: float) -> socket.socket:
+    def _connect_endpoint(
+        port: int, timeout: float, *, process: subprocess.Popen[bytes] | None = None
+    ) -> socket.socket:
         deadline = time.monotonic() + timeout
         last_error: OSError | None = None
         while (remaining := deadline - time.monotonic()) > 0:
+            if process is not None and process.poll() is not None:
+                raise AssertionError("west process exited before endpoint readiness")
             try:
                 return socket.create_connection(("127.0.0.1", port), timeout=min(1.0, remaining))
             except OSError as error:
                 last_error = error
                 time.sleep(min(0.1, remaining))
-        message = f"RTT endpoint 127.0.0.1:{port} did not become ready"
+        message = f"endpoint 127.0.0.1:{port} did not become ready"
         raise AssertionError(message) from last_error
 
     def _program(self, fixture: RttFixture) -> None:
@@ -148,7 +152,7 @@ class TestRealRtt:
         assert expected in received, received.decode("utf-8", "replace")
 
     def _rtt_round_trip(self, fixture: RttFixture, port: int) -> None:
-        with self._connect_rtt(port, fixture.operation.timeout) as connection:
+        with self._connect_endpoint(port, fixture.operation.timeout) as connection:
             self._exchange_rtt(connection, fixture)
 
     def test_standalone_rtt(self, rtt_fixture: RttFixture) -> None:
@@ -220,10 +224,11 @@ class TestRealRtt:
         assert process.stdout is not None
         output = ProcessOutputMonitor(process.stdout)
         try:
-            output.wait_for(
-                f"Remote OpenOCD GDB server available at 127.0.0.1:{gdb_client_port}",
-                timeout=90,
-            )
+            try:
+                with self._connect_endpoint(gdb_client_port, timeout=90, process=process):
+                    pass
+            except AssertionError as error:
+                raise AssertionError(f"{error}\n{output.text}") from error
             assert process.poll() is None, output.text
             client = subprocess.Popen(
                 [
