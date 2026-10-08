@@ -109,7 +109,7 @@ def test_runner_logs_effective_remote_argv(
     core, _, remote = runner_api
     harness = ForwardingHarness(monkeypatch)
     harness.helper.allocation = SessionAllocation("session", "/workspace with spaces")
-    harness.helper.openocd_returncode = 0
+    harness.helper.on_wait = lambda: setattr(harness.helper, "openocd_returncode", 0)
     for service in (GDB, TCL, TELNET):
         harness.ssh.process(service)
     harness.ssh.process(GDB).ready = forward_ready
@@ -352,16 +352,92 @@ def test_gdb_execution_reports_session_status(runner_api):
 
     runner = Mock()
     session = Mock()
-    session.check_openocd_exit.return_value = OPENOCD_FAILURE_RC
+    session.check_openocd_exit.side_effect = [None, OPENOCD_FAILURE_RC]
     plan = _debug_plan(gdb_argv=("gdb", "zephyr.elf"))
 
     returncode = runner_module._execute_gdb_client(runner, plan, session)
 
     runner.require.assert_called_once_with("gdb")
     runner.run_client.assert_called_once_with(["gdb", "zephyr.elf"])
-    session.check_openocd_exit.assert_called_once_with()
+    assert session.check_openocd_exit.call_count == 2
     session.close.assert_not_called()
     assert returncode == OPENOCD_FAILURE_RC
+
+
+@pytest.mark.parametrize("command", ("debug", "attach", "rtt"))
+@pytest.mark.parametrize("ending", (0, OPENOCD_FAILURE_RC, "error"))
+def test_recorded_termination_before_gdb_dispatch_prevents_client_launch(
+    runner_api, monkeypatch, command, ending
+):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
+    harness = ForwardingHarness(monkeypatch)
+    session = harness.open()
+    runner = Mock()
+    plan = _debug_plan(gdb_argv=("gdb", "firmware.elf"), rtt_service=RTT)
+    failure = SessionError("helper failed before client dispatch")
+
+    def terminate_before_dispatch(_executable):
+        if ending == "error":
+            monkeypatch.setattr(harness.helper, "recorded_openocd_exit", Mock(side_effect=failure))
+        else:
+            harness.helper.openocd_returncode = ending
+
+    runner.require.side_effect = terminate_before_dispatch
+    rtt_client = Mock()
+    monkeypatch.setattr(runner_module, "run_rtt_client", rtt_client)
+    try:
+        with pytest.raises((RuntimeError, SessionError)):
+            runner_module._execute_started_operation(runner, command, plan, session, Mock())
+        runner.run_client.assert_not_called()
+        rtt_client.assert_not_called()
+    finally:
+        session.close()
+
+
+@pytest.mark.parametrize("ending", (0, OPENOCD_FAILURE_RC, "error"))
+def test_recorded_termination_during_rtt_forward_prevents_rtt_client_launch(
+    runner_api, monkeypatch, ending
+):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
+    harness = ForwardingHarness(monkeypatch)
+    request = harness.request()
+    rtt_forward = harness.ssh.process(RTT)
+    runner = Mock()
+    plan = _debug_plan(gdb_argv=("gdb", "--batch"), services=(GDB,), rtt_service=RTT)
+    ready = harness.await_ready
+    failure = SessionError("helper failed during RTT forwarding")
+
+    def terminate_during_forward(process, sentinel, deadline):
+        if process is rtt_forward.managed:
+            if ending == "error":
+                monkeypatch.setattr(
+                    harness.helper, "recorded_openocd_exit", Mock(side_effect=failure)
+                )
+            else:
+                harness.helper.openocd_returncode = ending
+        return ready(process, sentinel, deadline)
+
+    monkeypatch.setattr(
+        "zephyr_remote_openocd.remote.forwarding._ForwardManager._await_ready",
+        staticmethod(terminate_during_forward),
+    )
+    client = Mock()
+    monkeypatch.setattr(runner_module, "run_rtt_client", client)
+    with pytest.raises(RuntimeError) as raised:
+        runner_module._execute_operation(runner, "rtt", request, plan)
+    if ending == "error":
+        assert raised.value is failure
+    elif ending == OPENOCD_FAILURE_RC:
+        assert str(OPENOCD_FAILURE_RC) in str(raised.value)
+        # The observed nonzero result remains primary, retaining the premature
+        # RTT-startup failure as a diagnostic through normal finalization.
+        assert any("RTT" in note for note in raised.value.__notes__)
+    runner.run_client.assert_called_once()
+    client.assert_not_called()
+    assert harness.helper.close_calls == 1
+    assert all(process.returncode is not None for process in harness.ssh.processes.values())
 
 
 def test_operation_build_queries_version_without_session(runner_api, monkeypatch, tmp_path):
@@ -839,13 +915,14 @@ def test_rtt_cleanup_failure_does_not_replace_observed_openocd_failure(runner_ap
     session = Mock(spec=RemoteSession)
     session.descriptor = SessionDescriptor(SessionAllocation("session", "/workspace"), "127.0.0.1")
     session.openocd_returncode = OPENOCD_FAILURE_RC
-    session.check_openocd_exit.return_value = OPENOCD_FAILURE_RC
+    session.check_openocd_exit.return_value = None
     rtt_service = Service("rtt", 19021, 19021)
     session.forwarded_services = (rtt_service,)
     plan = _debug_plan(gdb_argv=("gdb", "--batch"), services=(GDB,), rtt_service=rtt_service)
     rtt_cleanup_error = RuntimeError("RTT connection cleanup failed")
 
     def run_rtt(_port, poll):
+        session.check_openocd_exit.return_value = OPENOCD_FAILURE_RC
         try:
             return poll()
         finally:
@@ -864,7 +941,6 @@ def test_rtt_cleanup_failure_does_not_replace_observed_openocd_failure(runner_ap
 
     assert raised.value is not rtt_cleanup_error
     assert any("RTT connection cleanup failed" in note for note in raised.value.__notes__)
-    session.check_openocd_exit.assert_called_once_with()
     session.close.assert_called_once_with()
 
 

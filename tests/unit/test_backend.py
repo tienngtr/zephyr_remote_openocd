@@ -189,6 +189,10 @@ def test_start_process_validates_reserved_services_without_forwarding_them():
             return "127.64.1.1"
 
         @override
+        def recorded_openocd_exit(self) -> int | None:
+            return None
+
+        @override
         def close(self) -> _HelperCloseResult:
             return _HelperCloseResult(None, ())
 

@@ -264,6 +264,9 @@ class RemoteSession:
         auxiliary = set(self.request.auxiliary_services)
         self.forward(tuple(service for service in service_list if service not in auxiliary))
         self.forward(self.request.auxiliary_services, required=False)
+        returncode = helper.recorded_openocd_exit()
+        if service_list and returncode is not None:
+            raise SessionError(f"remote OpenOCD exited during startup with status {returncode}")
         return self.descriptor
 
     def forward(self, services: Iterable[Service], *, required: bool = True) -> None:
