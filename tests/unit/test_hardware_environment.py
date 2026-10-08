@@ -110,7 +110,8 @@ def test_hardware_launch_uses_selected_environment(tmp_path: Path, monkeypatch, 
         elif operation in ("rtt", "rtt-flash"):
             rtt = RttFixture(target, RttOperation(12345, "pong", "ping", 30, True, "main"))
             if operation == "rtt":
-                RttAcceptance()._start(rtt, "debugserver")
+                with RttAcceptance()._start(rtt, "debugserver"):
+                    pass
             else:
                 RttAcceptance()._program(rtt)
         else:

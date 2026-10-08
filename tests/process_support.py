@@ -7,15 +7,19 @@ from __future__ import annotations
 import os
 import re
 import selectors
+import signal
+import subprocess
 import threading
 import time
-from typing import BinaryIO
+from collections.abc import Iterator
+from contextlib import contextmanager
+from typing import IO
 
 
 class ProcessOutputMonitor:
     """Continuously capture a process pipe and signal observable output."""
 
-    def __init__(self, stream: BinaryIO):
+    def __init__(self, stream: IO[bytes] | IO[str]):
         self._stream = stream
         self._fd = stream.fileno()
         self._output = bytearray()
@@ -73,6 +77,149 @@ class ProcessOutputMonitor:
                 raise AssertionError(f"process output read failed: {self._error}") from self._error
         finally:
             self._stream.close()
+
+
+def _raise_process_cleanup_errors(errors: list[BaseException]) -> None:
+    if errors:
+        first, *later = errors
+        for error in later:
+            first.add_note(f"additional process cleanup failure: {error}")
+        raise first
+
+
+class ProcessScope:
+    """Own an isolated command group, its pipes, and an optional output reader."""
+
+    def __init__(self, process: subprocess.Popen):
+        self.process = process
+        self._output: ProcessOutputMonitor | None = None
+        self._stopped = False
+        self._closed = False
+
+    def capture_output(self) -> ProcessOutputMonitor:
+        assert self._output is None and self.process.stdout is not None
+        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
+        try:
+            self._output = ProcessOutputMonitor(self.process.stdout)
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+        return self._output
+
+    @property
+    def output_text(self) -> str:
+        return self._output.text if self._output is not None else ""
+
+    def stop(self) -> None:
+        if self._stopped:
+            return
+        self._stopped = True
+        errors: list[BaseException] = []
+        try:
+            if self.process.poll() is None:
+                self.process.send_signal(signal.SIGINT)
+                self.process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+        except BaseException as error:
+            errors.append(error)
+        # An exited leader does not prove that its group or pipe writers exited.
+        try:
+            os.killpg(self.process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except BaseException as error:
+            errors.append(error)
+        try:
+            self.process.wait(timeout=10)
+        except BaseException as error:
+            errors.append(error)
+        _raise_process_cleanup_errors(errors)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        errors: list[BaseException] = []
+        try:
+            self.stop()
+        except BaseException as error:
+            errors.append(error)
+        if self._output is not None:
+            try:
+                self._output.join(timeout=10)
+            except BaseException as error:
+                errors.append(error)
+        for stream in (self.process.stdin, self.process.stdout, self.process.stderr):
+            if stream is not None and not stream.closed:
+                try:
+                    stream.close()
+                except BaseException as error:
+                    errors.append(error)
+        _raise_process_cleanup_errors(errors)
+
+
+@contextmanager
+def managed_process(args, **kwargs) -> Iterator[ProcessScope]:
+    """Acquire and clean up a command without replacing an existing failure."""
+    owner = None
+    primary = None
+    try:
+        # Defer the parent's handler rather than masking: exec restores caught
+        # handlers, while an inherited blocked SIGINT would prevent graceful stop.
+        interrupted = False
+
+        def defer_interrupt(signum, frame):
+            nonlocal interrupted
+            interrupted = True
+
+        previous_handler = signal.signal(signal.SIGINT, defer_interrupt)
+        try:
+            owner = ProcessScope(subprocess.Popen(args, start_new_session=True, **kwargs))
+        except BaseException as error:
+            if interrupted:
+                error.add_note("SIGINT also received during hardware process acquisition")
+            raise
+        finally:
+            signal.signal(signal.SIGINT, previous_handler)
+        if interrupted:
+            signal.raise_signal(signal.SIGINT)
+        yield owner
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        if owner is not None:
+            cleanup_errors: list[BaseException] = []
+            previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
+            try:
+                try:
+                    owner.close()
+                except BaseException as error:
+                    cleanup_errors.append(error)
+            finally:
+                try:
+                    signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+                except BaseException as error:
+                    cleanup_errors.append(error)
+            if primary is not None:
+                if owner.output_text:
+                    primary.add_note("hardware process output:\n" + owner.output_text)
+                for cleanup_error in cleanup_errors:
+                    primary.add_note(f"hardware process cleanup also failed: {cleanup_error}")
+                    for note in getattr(cleanup_error, "__notes__", ()):
+                        primary.add_note(note)
+            else:
+                _raise_process_cleanup_errors(cleanup_errors)
+
+
+def run_process(args, *, timeout: float, check: bool = False, **kwargs):
+    """Blocking hardware command with bounded group and pipe cleanup."""
+    with managed_process(args, **kwargs) as owner:
+        stdout, stderr = owner.process.communicate(timeout=timeout)
+        result = subprocess.CompletedProcess(args, owner.process.returncode, stdout, stderr)
+        if check:
+            result.check_returncode()
+        return result
 
 
 def assert_semihosting_acceptance(returncode: int | None, output: str, pattern: str) -> None:

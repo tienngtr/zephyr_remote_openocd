@@ -12,6 +12,7 @@ import pytest
 from zephyr_remote_openocd.remote.ssh import SshCommand
 
 from tests.hardware_support import FlashFixture, hardware_operation_environment
+from tests.process_support import run_process
 from tests.serial_reader import read_event as _read_event
 from tests.serial_reader import remote_serial_reader_command
 from tests.serial_reader import stop_reader as _stop
@@ -86,7 +87,7 @@ class TestRealOpenOcdFlash:
         ]
         if target.runner_args:
             command.extend(("--", *target.runner_args))
-        return subprocess.run(
+        return run_process(
             command,
             cwd=target.workspace,
             env=hardware_operation_environment(target),

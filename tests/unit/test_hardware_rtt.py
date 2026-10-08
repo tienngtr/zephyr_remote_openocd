@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import socket
 import subprocess
 from contextlib import ExitStack
@@ -46,12 +47,15 @@ def test_simultaneous_gdb_rtt_acceptance_does_not_require_runner_prose(tmp_path,
 
         server = create_autospec(subprocess.Popen, instance=True)
         server.stdout = output_pipe(b"arbitrary noncontractual startup diagnostic\n")
+        server.pid = 900001
         server.stdin = None
         server.stderr = None
         server.poll.return_value = None
         server.wait.return_value = 0
         client = create_autospec(subprocess.Popen, instance=True)
         client.stdout = output_pipe(b"ZRO_GDB_RTT_READY\n")
+        client.pid = 900002
+        client.wait.return_value = 0
         client.stdin = None
         client.stderr = None
         client.poll.return_value = None
@@ -65,6 +69,12 @@ def test_simultaneous_gdb_rtt_acceptance_does_not_require_runner_prose(tmp_path,
             return next(processes)
 
         monkeypatch.setattr(subprocess, "Popen", launch)
+
+        def killpg(pid, signum):
+            assert pid in (server.pid, client.pid)
+            assert signum == signal.SIGKILL
+
+        monkeypatch.setattr(os, "killpg", killpg)
         monkeypatch.setattr(
             "tests.hardware.test_real_rtt.free_loopback_ports", lambda count: [gdb_port]
         )

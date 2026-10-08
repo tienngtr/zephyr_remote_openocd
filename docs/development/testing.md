@@ -75,6 +75,14 @@ The timing option does not change test selection or execution.
 Test-owned pipe reads have deadlines, including partial-line and EOF waits.
 The developer dependency `pytest-timeout` supplies a generous 30-minute
 per-test backstop; operation-specific timeouts remain the primary diagnostics.
+Hardware west and independent GDB commands run in isolated process groups
+owned by scoped cleanup. Launch and adoption defer the parent's SIGINT handler
+without blocking SIGINT in the child; a deferred interrupt rolls back the
+acquired process before publication. Cleanup interrupts a live leader with a bounded wait,
+kills remaining members even when the leader already exited, reaps the leader,
+joins any owned output reader under a deadline, and closes captured pipes.
+An existing operation failure remains primary if cleanup also fails.
+
 Tests clear product configuration/recording environment variables and set
 their own values, independently of the developer's shell configuration.
 

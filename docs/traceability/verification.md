@@ -25,6 +25,13 @@ captures actual operation launches across flash, debug, RTT, and semihosting;
 [`test_preparation_uses_only_configured_build_environment`](../../tests/unit/test_hardware_support.py)
 protects build preparation, and the [simultaneous GDB/RTT regression](../../tests/unit/test_hardware_rtt.py)
 checks both the west and independent GDB launch environments.
+[`test_hardware_cleanup_stops_descendant_after_leader_exit`](../../tests/unit/test_hardware_process.py)
+protects hardware abort and timeout cleanup with real descendants retaining
+stdout; [`test_process_scope_preserves_failure_and_finishes_cleanup`](../../tests/unit/test_hardware_process.py)
+checks cleanup completion and failure precedence when group signaling fails.
+[`test_process_acquisition_interrupt_reaps_created_group`](../../tests/unit/test_hardware_process.py)
+injects real SIGINT after launch and verifies rollback before publication,
+including graceful child SIGINT delivery and caller handler restoration.
 
 | Requirements | Status | Evidence |
 | --- | --- | --- |

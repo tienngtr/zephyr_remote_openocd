@@ -13,7 +13,7 @@ import time
 import pytest
 
 from tests.hardware_support import RttFixture, free_loopback_ports, hardware_operation_environment
-from tests.process_support import ProcessOutputMonitor, read_until
+from tests.process_support import managed_process, run_process
 
 pytestmark = [pytest.mark.hardware, pytest.mark.destructive]
 
@@ -43,7 +43,7 @@ class TestRealRtt:
         *runner_args: str,
         stdout=subprocess.PIPE,
     ):
-        return subprocess.Popen(
+        return managed_process(
             self._west_command(fixture, command, *runner_args),
             cwd=fixture.target.workspace,
             env=hardware_operation_environment(fixture.target),
@@ -70,7 +70,7 @@ class TestRealRtt:
         raise AssertionError(message) from last_error
 
     def _program(self, fixture: RttFixture) -> None:
-        result = subprocess.run(
+        result = run_process(
             self._west_command(fixture, "flash"),
             cwd=fixture.target.workspace,
             env=hardware_operation_environment(fixture.target),
@@ -81,43 +81,6 @@ class TestRealRtt:
             timeout=180,
         )
         assert result.returncode == 0, result.stdout
-
-    def _finish(self, fixture: RttFixture, process, output, *, interrupt=False):
-        if process.poll() is None and interrupt:
-            process.send_signal(signal.SIGINT)
-        try:
-            remainder, _ = process.communicate(timeout=20)
-            if remainder:
-                output.extend(remainder)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            remainder = process.communicate()[0]
-            if remainder:
-                output.extend(remainder)
-            pytest.fail("RTT west process did not terminate")
-        text = bytes(output).decode("utf-8", "replace")
-        return text
-
-    @staticmethod
-    def _terminate(process):
-        if process.poll() is None:
-            process.send_signal(signal.SIGINT)
-            try:
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
-
-    @staticmethod
-    def _close_streams(process):
-        for stream in (process.stdin, process.stdout, process.stderr):
-            if stream is not None and not stream.closed:
-                stream.close()
-
-    @classmethod
-    def _abort(cls, process):
-        cls._terminate(process)
-        cls._close_streams(process)
 
     @staticmethod
     def _exchange_rtt(connection: socket.socket, fixture: RttFixture) -> None:
@@ -145,27 +108,22 @@ class TestRealRtt:
         fixture = rtt_fixture
         self._program(fixture)
         port = fixture.operation.port
-        process = self._start(fixture, "rtt", f"--rtt-port={port}")
-        output = bytearray()
-        try:
+        with self._start(fixture, "rtt", f"--rtt-port={port}") as owner:
+            process = owner.process
+            output = owner.capture_output()
             assert process.poll() is None
             assert process.stdin is not None
             process.stdin.write(fixture.operation.input.encode())
             process.stdin.flush()
-            read_until(
-                process,
-                fixture.operation.response,
-                fixture.operation.timeout,
-                output,
-            )
-        finally:
-            self._finish(fixture, process, output, interrupt=True)
+            output.wait_for(fixture.operation.response, fixture.operation.timeout)
+            process.send_signal(signal.SIGINT)
+            process.wait(timeout=20)
 
     def test_debug_rtt_server_keeps_gdb_active(self, rtt_fixture: RttFixture, tmp_path) -> None:
         fixture = rtt_fixture
         port = fixture.operation.port
         release = tmp_path / "release-gdb"
-        process = self._start(
+        with self._start(
             fixture,
             "debug",
             "--rtt-server",
@@ -175,23 +133,17 @@ class TestRealRtt:
             f"--gdb-init=shell while test ! -e {shlex.quote(str(release))}; do sleep 0.1; done",
             "--gdb-init=detach",
             "--gdb-init=quit",
-        )
-        output = bytearray()
-        try:
-            read_until(process, "ZRO_GDB_RTT_READY", timeout=90, output=output)
-            assert process.poll() is None
+        ) as owner:
+            process = owner.process
+            output = owner.capture_output()
             try:
+                output.wait_for("ZRO_GDB_RTT_READY", timeout=90)
+                assert process.poll() is None
                 self._rtt_round_trip(fixture, port)
-            except (AssertionError, OSError) as error:
+            finally:
                 release.touch()
-                text = self._finish(fixture, process, output)
-                pytest.fail(f"{error}\n{text}")
-            release.touch()
-            text = self._finish(fixture, process, output)
-        finally:
-            release.touch()
-            self._abort(process)
-        assert process.returncode == 0, text
+            process.wait(timeout=20)
+        assert process.returncode == 0, output.text
 
     def test_debugserver_serves_gdb_and_rtt_concurrently(
         self, rtt_fixture: RttFixture, tmp_path
@@ -200,79 +152,58 @@ class TestRealRtt:
         port = fixture.operation.port
         gdb_client_port = free_loopback_ports(1)[0]
         release = tmp_path / "release-debugserver-gdb"
-        process = self._start(
+        with self._start(
             fixture,
             "debugserver",
             "--rtt-server",
             f"--rtt-port={port}",
             f"--gdb-client-port={gdb_client_port}",
-        )
-        assert process.stdout is not None
-        output = ProcessOutputMonitor(process.stdout)
-        try:
+        ) as server_owner:
+            process = server_owner.process
+            output = server_owner.capture_output()
             try:
-                with self._connect_endpoint(gdb_client_port, timeout=90, process=process):
-                    pass
-            except AssertionError as error:
-                raise AssertionError(f"{error}\n{output.text}") from error
-            assert process.poll() is None, output.text
-            client = subprocess.Popen(
-                [
-                    str(fixture.target.gdb),
-                    "-q",
-                    "-batch",
-                    str(fixture.target.elf_file),
-                    "-ex",
-                    f"target extended-remote 127.0.0.1:{gdb_client_port}",
-                    "-ex",
-                    "load",
-                    "-ex",
-                    "monitor resume",
-                    "-ex",
-                    "echo ZRO_GDB_RTT_READY\\n",
-                    "-ex",
-                    f"shell while test ! -e {shlex.quote(str(release))}; do sleep 0.1; done",
-                    "-ex",
-                    "detach",
-                    "-ex",
-                    "quit",
-                ],
-                env=hardware_operation_environment(fixture.target),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-            )
-            client_output = bytearray()
-            try:
-                read_until(client, "ZRO_GDB_RTT_READY", timeout=30, output=client_output)
-                assert client.poll() is None
                 try:
-                    self._rtt_round_trip(fixture, port)
-                except (AssertionError, OSError) as error:
-                    release.touch()
-                    remainder = client.communicate(timeout=30)[0]
-                    if remainder:
-                        client_output.extend(remainder)
-                    client_text = bytes(client_output).decode("utf-8", "replace")
-                    pytest.fail(
-                        f"{error}\n{client_text}\n{output.text}",
-                        pytrace=False,
-                    )
-                release.touch()
-                remainder = client.communicate(timeout=30)[0]
-                if remainder:
-                    client_output.extend(remainder)
-                assert client.returncode == 0, (
-                    f"{bytes(client_output).decode('utf-8', 'replace')}\n{output.text}"
-                )
+                    with self._connect_endpoint(gdb_client_port, timeout=90, process=process):
+                        pass
+                except AssertionError as error:
+                    raise AssertionError(f"{error}\n{output.text}") from error
+                assert process.poll() is None, output.text
+                with managed_process(
+                    [
+                        str(fixture.target.gdb),
+                        "-q",
+                        "-batch",
+                        str(fixture.target.elf_file),
+                        "-ex",
+                        f"target extended-remote 127.0.0.1:{gdb_client_port}",
+                        "-ex",
+                        "load",
+                        "-ex",
+                        "monitor resume",
+                        "-ex",
+                        "echo ZRO_GDB_RTT_READY\\n",
+                        "-ex",
+                        f"shell while test ! -e {shlex.quote(str(release))}; do sleep 0.1; done",
+                        "-ex",
+                        "detach",
+                        "-ex",
+                        "quit",
+                    ],
+                    env=hardware_operation_environment(fixture.target),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                ) as client_owner:
+                    client = client_owner.process
+                    client_output = client_owner.capture_output()
+                    try:
+                        client_output.wait_for("ZRO_GDB_RTT_READY", timeout=30)
+                        assert client.poll() is None
+                        self._rtt_round_trip(fixture, port)
+                    finally:
+                        release.touch()
+                    client.wait(timeout=30)
+                assert client.returncode == 0, f"{client_output.text}\n{output.text}"
+                process.send_signal(signal.SIGINT)
+                process.wait(timeout=20)
             finally:
                 release.touch()
-                self._abort(client)
-            process.send_signal(signal.SIGINT)
-            process.wait(timeout=20)
-        finally:
-            release.touch()
-            self._terminate(process)
-            try:
-                output.join(timeout=10)
-            finally:
-                self._close_streams(process)
