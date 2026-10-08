@@ -7,13 +7,10 @@ from __future__ import annotations
 import base64
 import json
 import shlex
-import subprocess
 
-from zephyr_remote_openocd.remote.ssh import ManagedSshProcess
+from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, _stop_process
 
 from tests.process_support import read_line
-
-type ReaderProcess = subprocess.Popen[bytes] | ManagedSshProcess
 
 SERIAL_READER_SOURCE = r'''import base64,json,os,re,select,sys,termios,time
 MATCH_EXIT_CODE=0
@@ -70,39 +67,20 @@ finally:
 '''
 
 
-def read_event(process: ReaderProcess, timeout: float) -> dict[str, object]:
+def read_event(process: ManagedSshProcess, timeout: float) -> dict[str, object]:
     """Read one JSON event from the remote reader."""
     if process.stdout is None:
         raise AssertionError("remote serial reader has no stdout")
     line = read_line(process.stdout, timeout)
     if not line:
-        if isinstance(process, ManagedSshProcess):
-            diagnostic = process.stderr_tail()
-        else:
-            _, diagnostic = process.communicate(timeout=5)
-            diagnostic = diagnostic or b""
+        diagnostic = process.stderr_tail()
         raise AssertionError("remote serial reader exited: " + diagnostic.decode(errors="replace"))
     return json.loads(line)
 
 
-def stop_reader(process: ReaderProcess) -> None:
+def stop_reader(process: ManagedSshProcess) -> None:
     """Terminate a reader and close all of its pipes."""
-    if process.poll() is None:
-        process.terminate()
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait()
-    if isinstance(process, ManagedSshProcess):
-        process.close_stderr()
-        for stream in (process.stdin, process.stdout):
-            if stream is not None and not stream.closed:
-                stream.close()
-    else:
-        for stream in (process.stdin, process.stdout, process.stderr):
-            if stream is not None and not stream.closed:
-                stream.close()
+    _stop_process(process)
 
 
 def remote_serial_reader_command(

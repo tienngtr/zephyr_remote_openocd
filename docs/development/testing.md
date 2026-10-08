@@ -83,6 +83,12 @@ kills remaining members even when the leader already exited, reaps the leader,
 joins any owned output reader under a deadline, and closes captured pipes.
 An existing operation failure remains primary if cleanup also fails.
 
+Serial readers and SSH test processes use the managed transport cleanup path,
+including finite termination/escalation waits and independent attempts to close
+their diagnostic drains and data pipes. Test cleanup scopes retain an existing
+assertion or operation failure and attach secondary cleanup diagnostics. Local
+serial-reader tests use the same managed-process ownership as external readers.
+
 Tests clear product configuration/recording environment variables and set
 their own values, independently of the developer's shell configuration.
 

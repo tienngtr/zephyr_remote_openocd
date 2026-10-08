@@ -10,8 +10,7 @@ import shutil
 import socket
 import tempfile
 import time
-from collections.abc import Callable, Iterator
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -26,9 +25,14 @@ from zephyr_remote_openocd.remote import (
 from zephyr_remote_openocd.remote.arguments import ArgumentTemplate, SessionValue
 from zephyr_remote_openocd.remote.deploy import deploy_helper
 from zephyr_remote_openocd.remote.forwarding import _ForwardManager
-from zephyr_remote_openocd.remote.ssh import SshCommand, SshLocalForward
+from zephyr_remote_openocd.remote.ssh import (
+    ManagedSshProcess,
+    SshCommand,
+    SshLocalForward,
+    _stop_process,
+)
 
-from tests.process_support import read_line
+from tests.process_support import cleanup_on_exit, read_line
 
 pytestmark = pytest.mark.ssh
 REMOTE_FAILURE_EXIT_CODE = 7
@@ -108,36 +112,9 @@ def wait_for_echo(port: int, payload: bytes, timeout: float):
     raise AssertionError(f"forwarded endpoint was not ready: {last_error}")
 
 
-def stop_and_close(process, timeout: float = 20):
-    if process is None:
-        return
-    if process.poll() is None:
-        process.terminate()
-        process.wait(timeout=timeout)
-    process.close_stderr()
-    for stream in (process.stdin, process.stdout):
-        if stream is not None and not stream.closed:
-            stream.close()
-
-
-@contextmanager
-def cleanup_on_exit(cleanup: Callable[[], None]) -> Iterator[None]:
-    """Attempt owned cleanup without replacing an active test failure."""
-    primary = None
-    try:
-        yield
-    except BaseException as error:
-        primary = error
-        raise
-    finally:
-        try:
-            cleanup()
-        except BaseException as error:
-            if primary is None:
-                raise
-            primary.add_note(f"SSH test cleanup also failed: {error}")
-            for note in getattr(error, "__notes__", ()):
-                primary.add_note(f"SSH test cleanup detail: {note}")
+def stop_and_close(process: ManagedSshProcess | None) -> None:
+    if process is not None:
+        _stop_process(process)
 
 
 class TestConfiguredSshIntegration:
@@ -376,31 +353,25 @@ class TestSshTransportIntegration:
             services=(Service("gdb", local_port, 3333),),
         )
         master = ssh.popen(self.host, "printf 'ZRO_MASTER_READY\\n'; cat >/dev/null")
-        try:
+        with cleanup_on_exit(lambda: stop_and_close(master)):
             assert master.stdout is not None
             assert read_line(master.stdout).strip() == b"ZRO_MASTER_READY", master.stderr_tail()
             first = RemoteSession.open(request)
-            try:
+            with cleanup_on_exit(first.close):
                 assert first.descriptor is not None
                 address = first.descriptor.remote_address
                 wait_for_echo(local_port, b"first_session", 20)
-            finally:
-                first.close()
             assert master.poll() is None
             with socket.create_connection(("127.0.0.1", local_port), timeout=20):
                 pass
             second = RemoteSession.open(request)
-            try:
+            with cleanup_on_exit(second.close):
                 assert second.descriptor is not None
                 assert second.descriptor.remote_address == address
                 wait_for_echo(local_port, b"reused_session", 20)
-            finally:
-                second.close()
             assert master.poll() is None
-        finally:
             if master.stdin is not None:
                 master.stdin.close()
-            stop_and_close(master)
         with socket.socket() as after_cleanup:
             after_cleanup.bind(("127.0.0.1", local_port))
 

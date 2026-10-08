@@ -11,9 +11,11 @@ import signal
 import subprocess
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import IO
+
+from zephyr_remote_openocd.remote.cleanup import _add_failure_note
 
 PROCESS_CLEANUP_TIMEOUT = 10
 
@@ -228,6 +230,24 @@ def assert_semihosting_acceptance(returncode: int | None, output: str, pattern: 
     """Require natural command success and the configured semihosting output."""
     assert returncode == 0, output
     assert re.search(pattern, output), output
+
+
+@contextmanager
+def cleanup_on_exit(cleanup: Callable[[], None]) -> Iterator[None]:
+    """Attempt owned test cleanup without replacing an active failure."""
+    primary = None
+    try:
+        yield
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        try:
+            cleanup()
+        except BaseException as error:
+            if primary is None:
+                raise
+            _add_failure_note(primary, "test cleanup also failed", error)
 
 
 def read_line(stream, timeout=30):

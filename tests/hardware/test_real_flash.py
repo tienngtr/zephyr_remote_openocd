@@ -12,7 +12,7 @@ import pytest
 from zephyr_remote_openocd.remote.ssh import SshCommand
 
 from tests.hardware_support import FlashFixture, hardware_operation_environment
-from tests.process_support import run_process
+from tests.process_support import cleanup_on_exit, run_process
 from tests.serial_reader import read_event as _read_event
 from tests.serial_reader import remote_serial_reader_command
 from tests.serial_reader import stop_reader as _stop
@@ -32,7 +32,7 @@ class TestRealOpenOcdFlash:
         observation = fixture.operation.serial
         remote_command = self._reader_command(fixture, observation.timeout + 180)
         reader = ssh.popen(fixture.target.host.ssh_host, remote_command)
-        try:
+        with cleanup_on_exit(lambda: _stop(reader)):
             assert _read_event(reader, 15)["type"] == "READY"
             assert reader.stdin is not None
             reader.stdin.write(b"ARM\n")
@@ -50,8 +50,6 @@ class TestRealOpenOcdFlash:
             for pattern in fixture.operation.output_patterns:
                 assert re.search(pattern, flash.stdout)
             assert reader.wait(timeout=5) == 0
-        finally:
-            _stop(reader)
 
     @staticmethod
     def _reader_command(fixture: FlashFixture, timeout: float) -> str:

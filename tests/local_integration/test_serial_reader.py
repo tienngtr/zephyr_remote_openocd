@@ -13,7 +13,9 @@ import termios
 from contextlib import contextmanager
 
 import pytest
+from zephyr_remote_openocd.remote.ssh import ManagedSshProcess
 
+from tests.process_support import cleanup_on_exit
 from tests.serial_reader import read_event, remote_serial_reader_command, stop_reader
 
 
@@ -27,17 +29,17 @@ def reader_session(*, timeout=1, flow_control="none"):
         command = remote_serial_reader_command(
             os.ttyname(slave), 115200, "fresh marker", timeout, flow_control=flow_control
         )
-        process = subprocess.Popen(
-            [sys.executable, *shlex.split(command)[1:]],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+        process = ManagedSshProcess.from_popen(
+            subprocess.Popen(
+                [sys.executable, *shlex.split(command)[1:]],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
         )
-        try:
+        with cleanup_on_exit(lambda: stop_reader(process)):
             assert read_event(process, 5)["type"] == "READY"
             yield process, master, slave
-        finally:
-            stop_reader(process)
     finally:
         os.close(master)
         os.close(slave)

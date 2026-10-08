@@ -124,3 +124,37 @@ def test_configured_ssh_harness_preserves_failure_and_closes_transports(monkeypa
         assert raised.value is primary
     if failure in {"both-close", "assertion-and-close"}:
         assert any(str(cleanup_error) in note for note in raised.value.__notes__)
+    acquired = (helper,) if failure == "tunnel-open" else (helper, tunnel)
+    assert all(process.stdin.closed and process.stdout.closed for process in acquired)
+
+
+def test_external_master_input_close_failure_does_not_skip_process_cleanup(monkeypatch, tmp_path):
+    primary = AssertionError("master readiness failed")
+    cleanup_failure = OSError("master input close failed")
+
+    class FailingInput(io.BytesIO):
+        def close(self) -> None:
+            super().close()
+            raise cleanup_failure
+
+    master = create_autospec(ManagedSshProcess, instance=True)
+    master.stdin = FailingInput()
+    master.stdout = io.BytesIO()
+    master.poll.return_value = None
+    master.wait.return_value = 0
+    monkeypatch.setattr(SshCommand, "popen", lambda *_args, **_kwargs: master)
+    monkeypatch.setattr(harness_module, "free_loopback_port", lambda: 12345)
+
+    def read(_stream):
+        raise primary
+
+    monkeypatch.setattr(harness_module, "read_line", read)
+    test = harness_module.TestSshTransportIntegration()
+    test.host = "controlled-host"
+    test.ssh = SshCommand(("controlled-ssh",))
+    with pytest.raises(AssertionError) as raised:
+        test.test_preferred_address_reuses_forward_retained_by_external_master(tmp_path)
+    assert raised.value is primary
+    assert master.terminate.called and master.close_stderr.called
+    assert master.stdin.closed and master.stdout.closed
+    assert any(str(cleanup_failure) in note for note in raised.value.__notes__)
