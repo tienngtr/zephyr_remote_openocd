@@ -100,8 +100,10 @@ class _ControlProcess:
     def poll(self) -> int | None:
         return self.returncode
 
-    def wait(self, timeout: float | None = None) -> int | None:
+    def wait(self, timeout: float | None = None) -> int:
         del timeout
+        if self.returncode is None:
+            self.returncode = 0
         return self.returncode
 
     def terminate(self) -> None:
@@ -413,12 +415,10 @@ def test_close_waits_when_process_exit_wins_stop_race(monkeypatch, helper_client
     class Process(_ControlProcess):
         @override
         def wait(self, timeout: float | None = None) -> int:
-            del timeout
             if self.returncode is None:
                 # Forced termination must not stand in for reaping the natural exit.
                 natural_exit_reaped.set()
-                self.returncode = 0
-            return self.returncode
+            return super().wait(timeout)
 
     class Reader(threading.Thread):
         @override
@@ -749,10 +749,10 @@ def test_close_forces_cleanup_after_helper_wait_failure(
             self.stdout = os.fdopen(read_fd, "rb", buffering=0)
 
         @override
-        def wait(self, timeout: float | None = None) -> int | None:
+        def wait(self, timeout: float | None = None) -> int:
             if timeout is not None and self.returncode is None:
                 raise wait_error
-            return self.returncode
+            return super().wait(timeout)
 
     process = Process()
     helper_client._process = cast(ManagedSshProcess, process)
@@ -792,14 +792,10 @@ def test_helper_close_keeps_reader_owned_stdout_open_until_reader_stops(helper_c
             self.stdout = ReaderOwnedStream()
 
         @override
-        def terminate(self) -> None:
+        def wait(self, timeout: float | None = None) -> int:
+            returncode = super().wait(timeout)
             reader_stopped.set()
-            super().terminate()
-
-        @override
-        def kill(self) -> None:
-            reader_stopped.set()
-            super().kill()
+            return returncode
 
     helper = helper_client
     process = Process()
