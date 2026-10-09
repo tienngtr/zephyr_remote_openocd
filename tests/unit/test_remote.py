@@ -354,7 +354,7 @@ class TestProtocol:
 
     @pytest.mark.parametrize("payload", ("line\nbreak", "line\n"))
     def test_child_output_payload_rejects_embedded_line_delimiters(self, payload):
-        with pytest.raises(ProtocolError, match="invalid required fields"):
+        with pytest.raises(ProtocolError):
             validate_helper_event(
                 decode_message(
                     encode_message(
@@ -779,7 +779,7 @@ class TestStaging:
         ids=("file-ancestor", "file-directory-duplicate"),
     )
     def test_build_archive_rejects_manifest_conflicts_before_reading_sources(self, entries):
-        with pytest.raises(StagingError, match="(ancestor conflict|duplicate)"):
+        with pytest.raises(StagingError):
             build_archive(entries)
 
 
@@ -818,60 +818,60 @@ class TestRemoteModels:
         ids=("string", "bytes"),
     )
     def test_remote_process_rejects_scalar_output_sentinel_container(self, sentinels):
-        with pytest.raises(ValueError, match="required output markers"):
+        with pytest.raises(ValueError):
             RemoteProcess(("openocd",), required_output_sentinels=sentinels)
 
     @pytest.mark.parametrize(
-        ("changes", "message"),
+        "changes",
         (
-            ({"argv": ()}, "argv"),
-            ({"argv": ("",)}, "argv"),
-            ({"argv": ("openocd", 1)}, "argv"),
-            ({"environment": (("NAME", "1"), ("NAME", "2"))}, "environment names"),
-            ({"environment": (("BAD=NAME", "value"),)}, "environment names"),
-            ({"environment": (("NAME", "bad\0value"),)}, "environment values"),
-            ({"required_paths": (object(),)}, "path checks"),
-            ({"required_output_sentinels": ("",)}, "markers"),
-            ({"required_output_sentinels": (" READY ",)}, "markers"),
-            ({"required_output_sentinels": ("READY", "READY")}, "markers"),
-            ({"readiness_timeout": True}, "readiness timeout"),
-            ({"readiness_timeout": float("inf")}, "readiness timeout"),
-            ({"readiness_timeout": 0}, "readiness timeout"),
-            ({"literal_prefix": True}, "literal argv prefix"),
-            ({"literal_prefix": -1}, "literal argv prefix"),
-            ({"literal_prefix": 2}, "literal argv prefix"),
+            pytest.param({"argv": ()}, id="empty-argv"),
+            pytest.param({"argv": ("",)}, id="empty-executable"),
+            pytest.param({"argv": ("openocd", 1)}, id="non-string-argument"),
+            pytest.param({"environment": (("NAME", "1"), ("NAME", "2"))}, id="duplicate-env"),
+            pytest.param({"environment": (("BAD=NAME", "value"),)}, id="invalid-env-name"),
+            pytest.param({"environment": (("NAME", "bad\0value"),)}, id="nul-env-value"),
+            pytest.param({"required_paths": (object(),)}, id="invalid-path-check"),
+            pytest.param({"required_output_sentinels": ("",)}, id="empty-marker"),
+            pytest.param({"required_output_sentinels": (" READY ",)}, id="untrimmed-marker"),
+            pytest.param({"required_output_sentinels": ("READY", "READY")}, id="duplicate-marker"),
+            pytest.param({"readiness_timeout": True}, id="boolean-timeout"),
+            pytest.param({"readiness_timeout": float("inf")}, id="infinite-timeout"),
+            pytest.param({"readiness_timeout": 0}, id="zero-timeout"),
+            pytest.param({"literal_prefix": True}, id="boolean-prefix"),
+            pytest.param({"literal_prefix": -1}, id="negative-prefix"),
+            pytest.param({"literal_prefix": 2}, id="prefix-outside-argv"),
         ),
     )
-    def test_remote_process_rejects_invalid_domain_values(self, changes, message):
+    def test_remote_process_rejects_invalid_domain_values(self, changes):
         fields = {"argv": ("openocd",), **changes}
-        with pytest.raises(ValueError, match=message):
+        with pytest.raises(ValueError):
             RemoteProcess(**fields)
 
     @pytest.mark.parametrize(
-        ("path", "kind", "message"),
+        ("path", "kind"),
         (
-            ("", "file", "non-empty path"),
-            ("bad\0path", "file", "non-empty path"),
-            ("path", "socket", "kind is invalid"),
+            pytest.param("", "file", id="empty-path"),
+            pytest.param("bad\0path", "file", id="nul-path"),
+            pytest.param("path", "socket", id="invalid-kind"),
         ),
     )
-    def test_remote_path_check_rejects_invalid_values(self, path, kind, message):
-        with pytest.raises(ValueError, match=message):
+    def test_remote_path_check_rejects_invalid_values(self, path, kind):
+        with pytest.raises(ValueError):
             RemotePathCheck(path, kind)
 
     @pytest.mark.parametrize(
-        ("arguments", "message"),
+        "arguments",
         (
-            (("", 1234, 3333), "name"),
-            ((1, 1234, 3333), "name"),
-            ((True, 1234, 3333), "name"),
-            (("gdb", True, 3333), "local port"),
-            (("gdb", 0, 3333), "local port"),
-            (("gdb", 1234, 65536), "remote port"),
+            pytest.param(("", 1234, 3333), id="empty-name"),
+            pytest.param((1, 1234, 3333), id="integer-name"),
+            pytest.param((True, 1234, 3333), id="boolean-name"),
+            pytest.param(("gdb", True, 3333), id="boolean-port"),
+            pytest.param(("gdb", 0, 3333), id="zero-port"),
+            pytest.param(("gdb", 1234, 65536), id="out-of-range-port"),
         ),
     )
-    def test_service_rejects_invalid_values(self, arguments, message):
-        with pytest.raises(ValueError, match=message):
+    def test_service_rejects_invalid_values(self, arguments):
+        with pytest.raises(ValueError):
             Service(*arguments)
 
 

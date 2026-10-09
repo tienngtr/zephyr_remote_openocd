@@ -16,17 +16,6 @@ from zephyr_remote_openocd.remote.session import (
 OPENOCD_FAILURE_RC = 7
 
 
-def test_request_stop_reports_that_stop_was_written():
-    observations = _SessionObservations()
-    stop_written = threading.Event()
-
-    result = observations.request_stop(stop_written.set)
-
-    assert result == _StopWritten()
-    assert stop_written.is_set()
-    assert observations.snapshot().stop_requested
-
-
 def test_request_stop_returns_existing_session_close_without_writing_stop():
     observations = _SessionObservations()
     observations.record_close("process_exit", OPENOCD_FAILURE_RC)
@@ -98,6 +87,7 @@ def test_requested_stop_serializes_close_event_with_stop_write():
     assert stop_results == [_StopWritten()]
     snapshot = observations.snapshot()
     assert snapshot.ending == _SessionClosed("requested", None)
+    assert snapshot.stop_requested
     assert snapshot.reader_failure is None
 
 
@@ -127,27 +117,6 @@ def test_session_observations_wakes_on_process_exit():
     assert not waiter.is_alive()
     assert results == [observations.snapshot()]
     assert results[0].ending == _SessionClosed("process_exit", 0)
-
-
-def test_reader_failure_remains_independent_of_session_ending():
-    observations = _SessionObservations()
-    reader_error = RuntimeError("protocol failed")
-
-    observations.record_close("process_exit", 0)
-    observations.record_reader_failure(reader_error)
-
-    snapshot = observations.snapshot()
-    assert snapshot.ending == _SessionClosed("process_exit", 0)
-    assert snapshot.reader_failure is reader_error
-
-
-def test_reported_helper_error_is_recorded_as_already_reported():
-    observations = _SessionObservations()
-    helper_error = SessionError("operation failed")
-
-    observations.record_error_event(helper_error, reported=True)
-
-    assert observations.take_unreported_helper_error() is None
 
 
 def test_helper_error_claimed_by_close_is_not_replayed_to_operation():

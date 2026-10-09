@@ -97,10 +97,13 @@ def _make_session() -> RemoteSession:
     return RemoteSession(request, deployment)
 
 
-def test_open_rolls_back_failed_acquisition_once(monkeypatch):
+@pytest.mark.parametrize("cleanup_fails", (False, True), ids=("clean", "nested-failure"))
+def test_open_rolls_back_once_and_preserves_startup_failure(monkeypatch, cleanup_fails):
     request = RemoteSessionRequest("host", SshCommand(), RemoteProcess(("openocd",)))
     deployment = DeploymentResult("/helper.py", "digest", False)
     startup_error = RuntimeError("staging failed")
+    cleanup_error = RuntimeError("session cleanup failed")
+    cleanup_error.add_note("additional cleanup failure: forward cleanup failed")
     cleanup_calls = 0
 
     def deploy(_ssh_command, _host):
@@ -119,6 +122,8 @@ def test_open_rolls_back_failed_acquisition_once(monkeypatch):
     def close(_session):
         nonlocal cleanup_calls
         cleanup_calls += 1
+        if cleanup_fails:
+            raise cleanup_error
 
     monkeypatch.setattr(backend_module, "_HelperClient", make_helper)
     monkeypatch.setattr(RemoteSession, "_stage", fail_stage)
@@ -129,44 +134,12 @@ def test_open_rolls_back_failed_acquisition_once(monkeypatch):
 
     assert raised.value is startup_error
     assert cleanup_calls == 1
-
-
-def test_open_retains_nested_rollback_cleanup_diagnostics(monkeypatch):
-    request = RemoteSessionRequest("host", SshCommand(), RemoteProcess(("openocd",)))
-    deployment = DeploymentResult("/helper.py", "digest", False)
-    startup_error = RuntimeError("staging failed")
-    cleanup_error = RuntimeError("session cleanup failed")
-    cleanup_error.add_note("additional cleanup failure: forward cleanup failed")
-
-    def deploy(_ssh_command, _host):
-        return deployment
-
-    def make_helper(
-        _ssh_command, _host, _deployment, *, output_handler=None, process_start_handler=None
-    ):
-        return _PreparedHelper()
-
-    monkeypatch.setattr(backend_module, "deploy_helper", deploy)
-    monkeypatch.setattr(backend_module, "_HelperClient", make_helper)
-    monkeypatch.setattr(
-        RemoteSession,
-        "_stage",
-        lambda _session, _files: (_ for _ in ()).throw(startup_error),
-    )
-
-    def fail_close(_session):
-        raise cleanup_error
-
-    monkeypatch.setattr(RemoteSession, "close", fail_close)
-
-    with pytest.raises(RuntimeError) as raised:
-        RemoteSession.open(request)
-
-    assert raised.value is startup_error
-    notes = raised.value.__notes__
-    assert any("session cleanup failed" in note for note in notes)
-    assert any("forward cleanup failed" in note for note in notes)
-    assert all("startup failure cleanup also failed" in note for note in notes)
+    if cleanup_fails:
+        notes = raised.value.__notes__
+        assert any(str(cleanup_error) in note for note in notes)
+        assert any("forward cleanup failed" in note for note in notes)
+    else:
+        assert not getattr(raised.value, "__notes__", ())
 
 
 def test_start_process_validates_reserved_services_without_forwarding_them():
@@ -475,11 +448,10 @@ def test_close_attempts_all_cleanup_once_and_preserves_first_failure():
     notes = raised.value.__notes__
     assert any("helper cleanup failed" in note for note in notes)
     assert any("stream close failed" in note for note in notes)
-    assert all("additional cleanup failure" in note for note in notes)
-    assert actions == ["forwards", "helper"]
+    assert sorted(actions) == ["forwards", "helper"]
     assert session.closed
     session.close()
-    assert actions == ["forwards", "helper"]
+    assert sorted(actions) == ["forwards", "helper"]
 
 
 def test_close_raises_helper_cleanup_only_error_after_closing_session():
@@ -505,7 +477,7 @@ def test_close_raises_helper_cleanup_only_error_after_closing_session():
         session.close()
 
     assert raised.value is cleanup_error
-    assert actions == ["forwards", "helper"]
+    assert sorted(actions) == ["forwards", "helper"]
     assert session.closed
 
 

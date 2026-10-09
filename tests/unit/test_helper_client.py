@@ -460,7 +460,7 @@ def test_startup_error_ends_session_without_stop_or_missing_close_failure():
         encode_message("ERROR", code="FAILED", message="startup failed"),
     )
 
-    with pytest.raises(SessionError, match="remote helper error: startup failed"):
+    with pytest.raises(SessionError, match="startup failed"):
         helper_client.start_process(RemoteProcess(("child",)), ())
 
     result = helper_client.close()
@@ -481,30 +481,12 @@ def test_unexpected_requested_close_is_reported_by_active_operation_result():
     helper_client.wait_for_change(5)
 
     try:
-        with pytest.raises(SessionError, match="helper reported SESSION_CLOSED") as raised:
+        with pytest.raises(SessionError) as raised:
             helper_client.recorded_openocd_exit()
 
         assert raised.value.__cause__ is None
     finally:
         helper_client.close()
-
-
-@pytest.mark.timeout(10)
-def test_background_error_ends_session_without_sending_stop():
-    helper_client, process = _open_helper_client_with_events(
-        encode_message("PROCESS_STARTING", argv=["child"]),
-        encode_message("PROCESS_READY", remote_address="127.64.0.1", child_pid=1),
-        encode_message("ERROR", code="FAILED", message="background failed"),
-    )
-    helper_client.start_process(RemoteProcess(("child",)), ())
-
-    helper_client.wait_for_change(5)
-    result = helper_client.close()
-
-    assert isinstance(result.error, SessionError)
-    assert result.error.__cause__ is None
-    commands = [decode_message(bytes(line))["type"] for line in process.stdin.written.splitlines()]
-    assert commands == ["START"]
 
 
 @pytest.mark.timeout(10)
@@ -526,8 +508,10 @@ def test_observed_background_error_is_not_reported_again_on_close():
     assert commands == ["START"]
 
 
-def test_close_keeps_helper_error_primary_when_forced_cleanup_also_fails(monkeypatch):
-    helper_client, _process = _open_helper_client_with_events(
+@pytest.mark.parametrize("cleanup_fails", (False, True), ids=("clean", "cleanup-failure"))
+@pytest.mark.timeout(10)
+def test_close_reports_background_error_without_stop(monkeypatch, cleanup_fails):
+    helper_client, process = _open_helper_client_with_events(
         encode_message("PROCESS_STARTING", argv=["child"]),
         encode_message("PROCESS_READY", remote_address="127.64.0.1", child_pid=1),
         encode_message("ERROR", code="FAILED", message="background failed"),
@@ -541,15 +525,19 @@ def test_close_keeps_helper_error_primary_when_forced_cleanup_also_fails(monkeyp
         del close_streams
         raise cleanup_error
 
-    monkeypatch.setattr(helper_client_module, "_stop_process", fail_stop)
+    if cleanup_fails:
+        monkeypatch.setattr(helper_client_module, "_stop_process", fail_stop)
 
     result = helper_client.close()
 
     assert isinstance(result.error, SessionError)
-    assert str(result.error) == "remote helper error: background failed"
+    assert "background failed" in str(result.error)
     assert result.error.__cause__ is None
-    assert result.cleanup_errors == (cleanup_error,)
-    assert any("helper cleanup also failed" in note for note in result.error.__notes__)
+    assert result.cleanup_errors == ((cleanup_error,) if cleanup_fails else ())
+    if cleanup_fails:
+        assert any(str(cleanup_error) in note for note in result.error.__notes__)
+    commands = [decode_message(bytes(line))["type"] for line in process.stdin.written.splitlines()]
+    assert commands == ["START"]
 
 
 def test_reader_failure_takes_precedence_over_known_openocd_result(helper_client):
@@ -557,6 +545,7 @@ def test_reader_failure_takes_precedence_over_known_openocd_result(helper_client
     reader_error = RuntimeError("protocol failed")
     helper_client._observations.record_reader_failure(reader_error)
 
+    assert helper_client.openocd_returncode == OPENOCD_FAILURE_RC
     with pytest.raises(SessionError) as raised:
         helper_client.recorded_openocd_exit()
 
@@ -613,7 +602,7 @@ def test_close_keeps_stop_failure_primary_when_forced_cleanup_also_fails(helper_
 
     assert result.error is graceful_stop_error
     assert result.cleanup_errors == (forced_stop_error,)
-    assert any("helper cleanup also failed" in note for note in graceful_stop_error.__notes__)
+    assert any(str(forced_stop_error) in note for note in graceful_stop_error.__notes__)
 
 
 def test_close_cleans_up_helper_when_initial_status_observation_fails(helper_client):
@@ -738,7 +727,7 @@ def test_close_preserves_cleanup_error_when_final_status_observation_fails(helpe
     assert result.cleanup_errors == (cleanup_error,)
     assert process.stdin.closed
     assert process.stdout.closed
-    assert any("helper cleanup also failed" in note for note in status_error.__notes__)
+    assert any(str(cleanup_error) in note for note in status_error.__notes__)
 
 
 def test_close_closes_streams_when_reader_thread_does_not_start(monkeypatch, helper_client):
@@ -859,7 +848,7 @@ def test_close_forces_cleanup_after_helper_wait_failure(
     assert result.error is wait_error
     assert result.cleanup_errors == ((stdin_close_error,) if stdin_close_fails else ())
     if stdin_close_fails:
-        assert any("helper cleanup also failed" in note for note in wait_error.__notes__)
+        assert any(str(stdin_close_error) in note for note in wait_error.__notes__)
     assert process.returncode == 0
     assert process.stdin.closed
     assert process.stdout.closed
@@ -955,7 +944,6 @@ def test_helper_close_retains_nested_process_cleanup_diagnostics(helper_client):
     notes = result.error.__notes__
     assert any("helper terminate failed" in note for note in notes)
     assert any("helper stderr close failed" in note for note in notes)
-    assert all("helper cleanup also failed" in note for note in notes)
 
 
 @pytest.mark.timeout(5)

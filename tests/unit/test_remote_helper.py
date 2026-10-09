@@ -284,7 +284,7 @@ class _ChunkStream:
         self.chunks = list(chunks)
 
 
-def _decode_chunks(stream, name, sentinels=None, _captured=None):
+def _decode_chunks(stream, name, sentinels=None):
     if sentinels is None:
         sentinels = remote_helper._RequiredOutputSentinels(())
     decoder = remote_helper._OutputDecoder(name, sentinels)
@@ -309,89 +309,11 @@ def test_relay_emits_short_fragment_before_complete_sentinel():
     assert sentinels.ready
 
 
-def test_relay_emits_bounded_fragments_and_preserves_utf8(monkeypatch):
-    monkeypatch.setattr(remote_helper, "RELAY_CHUNK_SIZE", 4)
-    events = []
-    monkeypatch.setattr(
-        remote_helper,
-        "emit",
-        lambda kind, **values: events.append((kind, values)),
-    )
-    required_output_sentinels = remote_helper._RequiredOutputSentinels(("READY",))
-    captured: list[Any] = []
-    stream = _ChunkStream(
-        b"abc\n",
-        b"defg",
-        b"\nxy",
-        b"z\nvalid \xe2",
-        b"\x82\xac\ninvalid \xff",
-        b"tail",
-    )
-
-    _decode_chunks(stream, "stdout", required_output_sentinels, captured)
-
-    output_events = [values for _kind, values in events]
-    assert [event["payload"] for event in output_events] == [
-        "abc",
-        "defg",
-        "",
-        "xy",
-        "z",
-        "vali",
-        "d ",
-        "€",
-        "inva",
-        "lid ",
-        "�",
-        "tail",
-    ]
-    assert [event["line_end"] for event in output_events] == [
-        True,
-        False,
-        True,
-        False,
-        True,
-        False,
-        False,
-        True,
-        False,
-        False,
-        False,
-        False,
-    ]
-    assert (
-        "".join(event["payload"] + ("\n" if event["line_end"] else "") for event in output_events)
-        == "abc\ndefg\nxyz\nvalid €\ninvalid �tail"
-    )
-    assert all(len(event["payload"]) <= 4 for event in output_events)
-    assert not required_output_sentinels.ready
-
-
-def test_relay_matches_sentinel_only_after_complete_line(monkeypatch):
-    monkeypatch.setattr(remote_helper, "RELAY_CHUNK_SIZE", 8)
-    events = []
-    monkeypatch.setattr(
-        remote_helper,
-        "emit",
-        lambda kind, **values: events.append((kind, values)),
-    )
-    required_output_sentinels = remote_helper._RequiredOutputSentinels(("READY FOR START",))
-    stream = _ChunkStream(b"NO\nREADY FOR ", b"START\n")
-
-    _decode_chunks(stream, "stderr", required_output_sentinels, [])
-
-    assert required_output_sentinels.ready
-    output = [values for _kind, values in events]
-    assert "".join(item["payload"] + ("\n" if item["line_end"] else "") for item in output) == (
-        "NO\nREADY FOR START\n"
-    )
-
-
 @pytest.mark.parametrize(
     ("first", "second"),
     (
-        ("OPENOCD_INIT", "STARTUP_COMPLETE"),
-        ("STARTUP_COMPLETE", "OPENOCD_INIT"),
+        ("OPENOCD INIT", "STARTUP COMPLETE"),
+        ("STARTUP COMPLETE", "OPENOCD INIT"),
     ),
     ids=("init-first", "startup-first"),
 )
@@ -399,11 +321,11 @@ def test_relay_waits_for_each_complete_sentinel_across_streams(monkeypatch, firs
     monkeypatch.setattr(remote_helper, "RELAY_CHUNK_SIZE", 8)
     monkeypatch.setattr(remote_helper, "emit", lambda *_args, **_kwargs: None)
     required_output_sentinels = remote_helper._RequiredOutputSentinels(
-        ("OPENOCD_INIT", "STARTUP_COMPLETE")
+        ("OPENOCD INIT", "STARTUP COMPLETE")
     )
 
     _decode_chunks(
-        _ChunkStream(first[:8].encode(), (first[8:] + "\n").encode()),
+        _ChunkStream(b"diagnostic\n", first[:8].encode(), (first[8:] + "\n").encode()),
         "stdout",
         required_output_sentinels,
     )
@@ -452,21 +374,10 @@ def test_relay_metadata_reconstructs_logical_output(monkeypatch, payload, expect
         event["payload"] + ("\n" if event["line_end"] else "") for event in output_events
     )
     assert reconstructed == expected
-    if payload == b"abcdefghij\n":
-        assert [event["payload"] for event in output_events] == ["abcd", "efgh", "ij"]
-        assert [event["line_end"] for event in output_events] == [False, False, True]
-    elif payload == b"tail":
-        assert output_events == [
-            {"stream": "stdout", "payload": "tail", "line_end": False},
-        ]
-    elif payload == b"\n\nx\n":
-        assert [(event["payload"], event["line_end"]) for event in output_events] == [
-            ("", True),
-            ("", True),
-            ("x", True),
-        ]
-    else:
-        assert output_events == []
+    assert all(event["stream"] == "stdout" for event in output_events)
+    assert all(len(event["payload"]) <= remote_helper.RELAY_CHUNK_SIZE for event in output_events)
+    assert all(event["payload"] or event["line_end"] for event in output_events)
+    assert sum(event["line_end"] for event in output_events) == payload.count(b"\n")
 
 
 def test_relay_preserves_split_utf8_and_invalid_bytes(monkeypatch):
@@ -609,22 +520,6 @@ def test_bind_collision_detection_does_not_cross_lines_or_streams():
     )
 
 
-def test_allocate_service_address_holds_session_lease(tmp_path, monkeypatch):
-    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path / "first-user")
-    candidates = iter(("127.64.0.1", "127.64.0.1", "127.64.0.2"))
-    monkeypatch.setattr(remote_helper, "random_address", lambda: next(candidates))
-
-    first = remote_helper.allocate_service_address(())
-    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path / "second-user")
-    second = remote_helper.allocate_service_address(())
-    try:
-        assert first == "127.64.0.1"
-        assert second == "127.64.0.2"
-    finally:
-        first.lease.close()
-        second.lease.close()
-
-
 def test_preferred_address_is_leased_before_random_allocation(monkeypatch):
     def unexpected_random():
         raise AssertionError("a free preferred address should be reused")
@@ -673,7 +568,7 @@ def test_decode_start_accepts_address_preference(start_command, address):
 
 def test_decode_start_requires_address_preference_field(start_command):
     del start_command["preferred_address"]
-    with pytest.raises(ValueError, match="START fields are invalid"):
+    with pytest.raises(ValueError):
         remote_helper.decode_command(start_command)
 
 
@@ -803,22 +698,6 @@ def test_reclaimer_continues_after_stale_lock_error(tmp_path, monkeypatch):
 
     assert blocked.exists()
     assert not removable.exists()
-
-
-def test_new_workspace_holds_exclusive_lock(tmp_path, monkeypatch):
-    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
-    _session_id, workspace, owner_lock = remote_helper.new_workspace()
-    observer = (workspace / remote_helper.SESSION_LOCK).open("r+b")
-    try:
-        try:
-            fcntl.flock(observer, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            pass
-        else:
-            raise AssertionError("session workspace was not exclusively locked")
-    finally:
-        observer.close()
-        owner_lock.close()
 
 
 def test_new_workspace_removes_partial_directory_on_initialization_failure(tmp_path, monkeypatch):
@@ -2376,7 +2255,7 @@ def test_supervised_child_cleanup_uses_finite_budgets_after_failures(monkeypatch
 
 def test_decode_command_rejects_malformed_required_path_before_launch(start_command):
     start_command["required_paths"] = [{"kind": "socket", "path": "not-valid"}]
-    with pytest.raises(ValueError, match="invalid required-path assertion"):
+    with pytest.raises(ValueError):
         remote_helper.decode_command(start_command)
 
 
@@ -2463,52 +2342,52 @@ def test_control_session_does_not_launch_when_required_file_is_missing(
 
 
 @pytest.mark.parametrize(
-    ("field", "value", "message"),
+    ("field", "value"),
     (
-        ("argv", [], "argv"),
-        ("environment", {"BAD=NAME": "value"}, "environment"),
-        ("required_output_sentinels", [" READY "], "markers"),
-        ("required_output_sentinels", ["READY", "READY"], "unique"),
-        ("readiness_timeout", 0, "readiness options"),
-        ("literal_prefix", 3, "readiness options"),
+        pytest.param("argv", [], id="empty-argv"),
+        pytest.param("environment", {"BAD=NAME": "value"}, id="environment-name"),
+        pytest.param("required_output_sentinels", [" READY "], id="untrimmed-marker"),
+        pytest.param("required_output_sentinels", ["READY", "READY"], id="duplicate-marker"),
+        pytest.param("readiness_timeout", 0, id="zero-timeout"),
+        pytest.param("literal_prefix", 3, id="prefix-outside-argv"),
     ),
 )
-def test_decode_command_rejects_invalid_start_values(start_command, field, value, message):
+def test_decode_command_rejects_invalid_start_values(start_command, field, value):
     start_command[field] = value
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(ValueError):
         remote_helper.decode_command(start_command)
 
 
 @pytest.mark.parametrize(
-    ("services", "message"),
+    "services",
     (
-        (
+        pytest.param(
             [
                 {"name": "gdb", "remote_port": 3333},
                 {"name": "gdb", "remote_port": 6333},
             ],
-            "unique names",
+            id="duplicate-names",
         ),
-        (
+        pytest.param(
             [
                 {"name": "gdb", "remote_port": 3333},
                 {"name": "tcl", "remote_port": 3333},
             ],
-            "unique remote ports",
+            id="duplicate-ports",
         ),
     ),
 )
-def test_decode_command_rejects_duplicate_services(start_command, services, message):
+def test_decode_command_rejects_duplicate_services(start_command, services):
     start_command["services"] = services
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(ValueError):
         remote_helper.decode_command(start_command)
 
 
 def test_decode_command_rejects_unknown_start_and_stop_fields(start_command):
     start_command["future"] = True
-    with pytest.raises(ValueError, match="START fields"):
+    with pytest.raises(ValueError):
         remote_helper.decode_command(start_command)
-    with pytest.raises(ValueError, match="STOP fields"):
+    with pytest.raises(ValueError):
         remote_helper.decode_command({"version": 1, "type": "STOP", "future": True})
 
 

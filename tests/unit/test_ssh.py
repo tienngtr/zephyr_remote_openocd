@@ -245,8 +245,9 @@ def test_stderr_tail_is_best_effort_when_drain_has_not_reached_eof(monkeypatch):
         def read(self, _size=-1):
             self.reads += 1
             if self.reads == 1:
-                first_chunk_read.set()
                 return b"prefix"
+            # The previous read has been appended before the drain reads again.
+            first_chunk_read.set()
             assert release_eof.wait(5)
             return b""
 
@@ -293,7 +294,6 @@ def test_stderr_tail_waits_for_delayed_eof_with_a_bounded_timeout(monkeypatch):
         def close(self):
             release_suffix.set()
 
-    monkeypatch.setattr(ssh_module, "_SSH_STDERR_JOIN_TIMEOUT", 1.0)
     drain = ssh_module._StderrDrain(cast(BinaryIO, Stream()))
     wait_timeouts = []
     original_wait = drain._finished.wait

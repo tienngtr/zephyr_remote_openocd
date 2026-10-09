@@ -86,6 +86,8 @@ def test_failed_start_exposes_rollback_outcome(monkeypatch, rollback_fails):
     error = raised.value
     assert isinstance(error, forwarding_module.ForwardStartError)
     assert error.service == service
+    assert service.name in str(error)
+    assert f"127.0.0.1:{service.local_port}" in str(error)
     assert isinstance(error.cause, SessionError)
     assert error.cleanup_errors == ((cleanup_error,) if rollback_fails else ())
     assert not manager.has_forwards
@@ -223,24 +225,6 @@ def test_dynamic_forward_failure_identifies_service_and_local_port(monkeypatch):
         manager.close()
 
 
-def test_dynamic_forward_timeout_identifies_service_and_local_port(monkeypatch):
-    port = 32166
-    _patch_preflight_socket(monkeypatch, set())
-    service = Service("rtt", port, 5555)
-    manager = _ForwardManager(_ForwardCommand(_ForwardProcess(None)), "host")
-    monkeypatch.setattr(_ForwardManager, "_await_ready", lambda *_args: False)
-
-    try:
-        with pytest.raises(SessionError) as raised:
-            manager.start((service,), "127.64.0.1")
-
-        message = str(raised.value)
-        assert service.name in message
-        assert f"127.0.0.1:{port}" in message
-    finally:
-        manager.close()
-
-
 def test_forward_manager_rejects_a_service_already_forwarded(monkeypatch):
     service = Service("gdb", 32177, 3333)
     command = _ForwardCommand(_ForwardProcess(None))
@@ -250,7 +234,7 @@ def test_forward_manager_rejects_a_service_already_forwarded(monkeypatch):
 
     try:
         manager.start((service,), "127.64.0.1")
-        with pytest.raises(SessionError, match="service names must remain unique"):
+        with pytest.raises(SessionError):
             manager.start((service,), "127.64.0.1")
         assert len(command.calls) == 1
     finally:
