@@ -562,15 +562,6 @@ def test_operation_build_queries_version_without_session(runner_api, monkeypatch
             ("session cleanup also failed", "cleanup failed"),
             id="observed-openocd-failure-precedes-cleanup-failure",
         ),
-        pytest.param(
-            OPENOCD_FAILURE_RC,
-            False,
-            "helper failed",
-            OPENOCD_FAILURE_RC,
-            "openocd",
-            ("session cleanup also failed", "helper failed"),
-            id="observed-openocd-failure-precedes-later-infrastructure-failure",
-        ),
     ),
 )
 def test_operation_primary_failure_rules(

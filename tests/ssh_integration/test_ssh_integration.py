@@ -151,6 +151,8 @@ class TestSshTransportIntegration:
     def test_forwarding_conflicts_cannot_report_an_unbound_forward_ready(self, occupied):
         conflicts = ("-o", "ExitOnForwardFailure=no", "-o", "ClearAllForwardings=yes")
         ssh = SshCommand((*self.ssh.argv_prefix, *conflicts))
+        if occupied:
+            assert_remote_marker(ssh, self.host)
         manager = _ForwardManager(ssh, self.host)
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
