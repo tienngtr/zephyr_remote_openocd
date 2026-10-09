@@ -995,6 +995,13 @@ def _start_session_command(argv, sentinels=()):
         pytest.param(None, None, "queued", id="queued-eof"),
         pytest.param(b"not-json\n", json.JSONDecodeError, "queued", id="queued-malformed"),
         pytest.param(b"START", ValueError, "queued", id="queued-duplicate-start"),
+        pytest.param(
+            b'{"version":1,"type":"STOP"}\n', None, "queued-signal", id="stop-before-signal"
+        ),
+        pytest.param(
+            b"not-json\n", json.JSONDecodeError, "queued-signal", id="malformed-before-signal"
+        ),
+        pytest.param(b"START", ValueError, "queued-signal", id="duplicate-start-before-signal"),
         pytest.param(b'{"version":1,"type":"STOP"}\n', None, "pending", id="pending-stop"),
         pytest.param(None, None, "pending", id="pending-eof"),
         pytest.param(b"not-json\n", json.JSONDecodeError, "pending", id="pending-malformed"),
@@ -1040,7 +1047,7 @@ def test_retry_does_not_spawn_after_terminal_control_observed_during_cleanup(
             pending.append(observation)
             consumed.set()
             await publish.wait()
-            if publication == "queued":
+            if publication in ("queued", "queued-signal"):
                 return
         await original_put(observation)
 
@@ -1070,8 +1077,10 @@ def test_retry_does_not_spawn_after_terminal_control_observed_during_cleanup(
             close_streams()
             if interruption == b"SIGNAL":
                 session.handle_signal()
-            elif publication == "queued":
+            elif publication in ("queued", "queued-signal"):
                 session._events.put_nowait(pending[0])
+                if publication == "queued-signal":
+                    session.handle_signal()
             elif publication == "full":
                 for _ in range(session._events.maxsize):
                     session._events.put_nowait(remote_helper._ChildOutput(child, "stdout", b""))
@@ -1108,6 +1117,84 @@ def test_retry_does_not_spawn_after_terminal_control_observed_during_cleanup(
         assert session.protocol_error is None
         if interruption == b'{"version":1,"type":"STOP"}\n':
             assert events[-1] == ("SESSION_CLOSED", {"reason": "requested", "returncode": None})
+
+
+@pytest.mark.parametrize("with_start", (False, True), ids=("without-child", "with-child"))
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    ("command", "expected_error"),
+    (
+        pytest.param(b'{"version":1,"type":"STOP"}\n', None, id="stop"),
+        pytest.param(b"not-json\n", json.JSONDecodeError, id="malformed-json"),
+        pytest.param(b'{"version":1,"type":"UNKNOWN"}\n', ValueError, id="unexpected-command"),
+        pytest.param(b"{", ValueError, id="incomplete-eof"),
+    ),
+)
+def test_control_fact_published_before_signal_keeps_its_outcome(
+    tmp_path, monkeypatch, control_pipe, capsys, with_start, command, expected_error
+):
+    _reader, writer = control_pipe
+    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
+    session = remote_helper.ControlSession.create()
+    published = asyncio.Event()
+    original_put = session._events.put
+    original_coordinate = session._coordinate
+    original_spawn = remote_helper._spawn_child
+    children = []
+
+    async def publish(observation):
+        await original_put(observation)
+        if (
+            isinstance(observation, remote_helper._ControlFrame) and observation.frame == command
+        ) or (
+            isinstance(observation, remote_helper._ObservationFailed)
+            and observation.source == "control"
+        ):
+            session.handle_signal(signal.SIGTERM)
+            published.set()
+
+    async def coordinate_after_publication():
+        # Hold dispatch until the real control observer has queued the fact
+        # and the later signal is latched; no scheduler timing is required.
+        await published.wait()
+        await original_coordinate()
+
+    def spawn(*args, **kwargs):
+        child = original_spawn(*args, **kwargs)
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(session._events, "put", publish)
+    monkeypatch.setattr(session, "_coordinate", coordinate_after_publication)
+    monkeypatch.setattr(remote_helper, "_spawn_child", spawn)
+    if with_start:
+        writer.write(
+            _start_session_command(
+                [sys.executable, "-c", "import signal;signal.pause()"], ("not-ready",)
+            )
+        )
+    writer.write(command)
+    if not command.endswith(b"\n"):
+        writer.close()
+
+    session.run()
+
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    if expected_error is None:
+        assert session.protocol_error is None
+        assert events[-1]["type"] == "SESSION_CLOSED"
+        assert events[-1]["reason"] == "requested"
+    else:
+        assert isinstance(session.protocol_error, expected_error)
+        assert events[-1]["type"] == "ERROR"
+        assert events[-1]["code"] == "PROTOCOL_ERROR"
+    assert not session.cleanup_errors
+    assert not any(event["type"] == "PROCESS_READY" for event in events)
+    assert len(children) == int(with_start)
+    for child in children:
+        assert child.process.returncode is not None
+        assert child.process.stdout.closed and child.process.stderr.closed
+    assert session.workspace_lock.closed and not any(tmp_path.iterdir())
 
 
 @pytest.mark.parametrize("publication", ("queued", "pending"))

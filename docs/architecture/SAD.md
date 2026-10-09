@@ -1620,8 +1620,11 @@ its TaskGroup ends.
 Workspace removal and lock release are attempted once even if child cleanup
 fails. Unix signal callbacks record a pending signal in plain state and schedule
 its observation with `call_soon_threadsafe()`. An event-loop callback updates
-the signal queue. A pending signal prevents readiness during synchronous
-spawn; cleanup begins after child ownership is installed. Subsequent signals
+the signal queue. A signal latched before loop setup enters that same observation
+path once the loop exists. The coordinator dispatches queued facts in order,
+including control facts published before a signal. A pending signal prevents
+readiness during synchronous spawn and prevents committing a retry after its
+control fence; cleanup begins after child ownership is installed. Subsequent signals
 do not interrupt cleanup. The coordinator keeps logical outcome and cleanup
 failures separate and applies the documented primary-failure rule before
 emitting any terminal event. It does not continuously monitor

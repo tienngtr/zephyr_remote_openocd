@@ -1844,9 +1844,6 @@ class ControlSession:
         self._observe("retry control fence", self._observe_control_fence(fence))
         try:
             while not self.ending and not self.cleanup_errors:
-                if self._pending_signum is not None:
-                    self.ending = True
-                    break
                 observation = await self._events.get()
                 if observation is fence:
                     break
@@ -1883,9 +1880,6 @@ class ControlSession:
 
     async def _coordinate(self) -> None:
         while self.state != _State.CLOSED:
-            # This also accounts for a signal observed before the loop exists.
-            if self._pending_signum is not None:
-                self.ending = True
             if self.ending:
                 if self.child is None:
                     self.state = _State.CLOSED
@@ -1951,6 +1945,10 @@ class ControlSession:
     async def run_async(self) -> None:
         """Own output and signal scopes around the structured session tasks."""
         self._loop = asyncio.get_running_loop()
+        if self._pending_signum is not None:
+            # Publish a pre-loop signal through the same observation path as
+            # later signals, without overtaking already-published control facts.
+            self._loop.call_soon(self._enqueue_signal, self._pending_signum)
         signals = _SessionSignals()
         output = None
         output_token = None
