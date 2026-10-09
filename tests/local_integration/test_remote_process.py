@@ -1557,22 +1557,23 @@ helper['stage'](sys.argv[2])
             encode_message(
                 "STAGED",
                 byte_count=999,
-                sha256="0" * 64,
+                sha256=hashlib.sha256(b"firmware").hexdigest(),
                 files=["firmware.bin"],
                 directories=[],
             ),
             json.dumps(
                 {
                     "version": 1,
-                    "byte_count": 7,
-                    "sha256": "0" * 64,
+                    "byte_count": len(b"firmware"),
+                    "sha256": hashlib.sha256(b"firmware").hexdigest(),
                     "files": ["firmware.bin"],
                     "directories": [],
                 }
-            ).encode("utf-8"),
+            ).encode("utf-8")
+            + b"\n",
             b"\xff",
         ),
-        ids=("mismatched-manifest", "missing-type", "invalid-utf8"),
+        ids=("wrong-byte-count", "missing-type", "invalid-utf8"),
     )
     def test_backend_rejects_invalid_staging_confirmation(self, response):
         class LocalCommand(_BlockedSshCommand):

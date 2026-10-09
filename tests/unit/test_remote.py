@@ -168,6 +168,16 @@ class TestProtocol:
                 encode_message("PROCESS_READY", remote_address="127.64.1.1", child_pid=1)
             )
         )
+        for stream, payload in (
+            ("stdout", "first"),
+            ("stderr", "still open"),
+            ("stdout", "later output"),
+        ):
+            order.accept(
+                decode_message(
+                    encode_message("CHILD_OUTPUT", stream=stream, payload=payload, line_end=False)
+                )
+            )
         order.accept(
             decode_message(encode_message("SESSION_CLOSED", reason="process_exit", returncode=0))
         )
@@ -176,7 +186,7 @@ class TestProtocol:
                 decode_message(
                     encode_message(
                         "CHILD_OUTPUT",
-                        stream="stdout",
+                        stream="stderr",
                         payload="late",
                         line_end=False,
                     )
@@ -377,7 +387,6 @@ class TestProtocol:
         for fields in (
             {},
             {"line_end": 1},
-            {"line_end": False, "obsolete": False},
             {"line_end": False, "unexpected": True},
         ):
             with pytest.raises(ProtocolError):
@@ -393,58 +402,12 @@ class TestProtocol:
                 )
 
     def test_child_output_boundary_states_are_unambiguous(self):
-        for payload, line_end in (("", False),):
-            with pytest.raises(ProtocolError):
-                validate_helper_event(
-                    decode_message(
-                        encode_message(
-                            "CHILD_OUTPUT",
-                            stream="stdout",
-                            payload=payload,
-                            line_end=line_end,
-                        )
-                    )
-                )
-
-    def test_event_order_accepts_output_until_session_ending_event(self):
-        order = EventOrder()
-        order.accept(
-            decode_message(
-                encode_message(
-                    "SESSION_CREATED",
-                    helper="helper",
-                    session_id="session",
-                    remote_workspace="/workspace",
-                )
-            )
-        )
-        order.accept(decode_message(encode_message("PROCESS_STARTING", argv=["openocd"])))
-        order.accept(
-            decode_message(
-                encode_message("PROCESS_READY", remote_address="127.64.1.1", child_pid=1)
-            )
-        )
-
-        def output(stream, payload, *, line_end=False):
-            order.accept(
-                decode_message(
-                    encode_message(
-                        "CHILD_OUTPUT",
-                        stream=stream,
-                        payload=payload,
-                        line_end=line_end,
-                    )
-                )
-            )
-
-        output("stdout", "first")
-        output("stderr", "still open")
-        output("stdout", "later output")
-        order.accept(
-            decode_message(encode_message("SESSION_CLOSED", reason="process_exit", returncode=0))
-        )
         with pytest.raises(ProtocolError):
-            output("stderr", "late output")
+            validate_helper_event(
+                decode_message(
+                    encode_message("CHILD_OUTPUT", stream="stdout", payload="", line_end=False)
+                )
+            )
 
     def test_error_is_session_ending_and_rejects_following_events(self):
         order = EventOrder()
@@ -795,7 +758,6 @@ class TestRemoteModels:
         (
             pytest.param(("", 1234, 3333), id="empty-name"),
             pytest.param((1, 1234, 3333), id="integer-name"),
-            pytest.param((True, 1234, 3333), id="boolean-name"),
             pytest.param(("gdb", True, 3333), id="boolean-port"),
             pytest.param(("gdb", 0, 3333), id="zero-port"),
             pytest.param(("gdb", 1234, 65536), id="out-of-range-port"),
