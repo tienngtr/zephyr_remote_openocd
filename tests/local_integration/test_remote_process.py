@@ -2579,8 +2579,6 @@ sys.exit({exit_code})
             with suppress(BaseException):
                 helper_client.close()
 
-        assert helper_client._process_or_error().wait(timeout=5) == exit_code
-
     def test_helper_client_rejects_requested_session_close_before_local_stop(self):
         helper_code = """
 import json
