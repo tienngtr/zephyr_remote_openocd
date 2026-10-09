@@ -70,6 +70,7 @@ class _ForwardManager:
         self._ssh_command = ssh_command
         self._host = host
         self._processes: list[ManagedSshProcess] = []
+        self._pending_processes: list[ManagedSshProcess] = []
         self._services: list[Service] = []
         self._reported: set[Service] = set()
 
@@ -133,13 +134,17 @@ class _ForwardManager:
 
     def start(self, services: Iterable[Service], remote_address: str) -> None:
         """Create and verify local forwards for remote services."""
+        if self._pending_processes:
+            raise SessionError("forward startup rollback is incomplete; close before restarting")
         service_list = tuple(services)
         try:
             validated_services((*self._services, *service_list))
         except DuplicateServiceError as error:
             raise SessionError(f"{error.subject} must remain unique") from error
 
-        pending_processes: list[ManagedSshProcess] = []
+        # Manager ownership survives an interruption before rollback can enter
+        # its protected scope. Pending transports are not published as services.
+        pending_processes = self._pending_processes
         advisories = [message for service in service_list if (message := self._preflight(service))]
         active_service = None
         try:
@@ -191,14 +196,15 @@ class _ForwardManager:
             finally:
                 signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
         except BaseException as error:
-            # Pending rollback belongs here, before RemoteSession.close() can
-            # protect committed resources. Defer SIGINT through the whole batch.
+            # Defer SIGINT through the batch. If entry is interrupted, close()
+            # can still reach every transport in the manager-owned pending set.
             previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
             cleanup_errors = (
                 list(error.cleanup_errors) if isinstance(error, SshProcessStartError) else []
             )
             try:
-                for process in pending_processes:
+                while pending_processes:
+                    process = pending_processes[0]
                     try:
                         _stop_process(process)
                     except BaseException as cleanup_error:
@@ -208,6 +214,9 @@ class _ForwardManager:
                             "forward startup cleanup also failed",
                             cleanup_error,
                         )
+                    # Retire ownership only after the cleanup attempt and its
+                    # diagnostics have completed, including a failed attempt.
+                    pending_processes.pop(0)
             finally:
                 try:
                     signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
@@ -238,8 +247,13 @@ class _ForwardManager:
 
     def close(self) -> None:
         """Attempt to clean up every owned forward once."""
-        pending = self._processes
+        # Commit can temporarily record a process in both ownership sets.
+        pending = [
+            *self._processes,
+            *(process for process in self._pending_processes if process not in self._processes),
+        ]
         self._processes = []
+        self._pending_processes = []
         self._services = []
         self._reported.clear()
         errors: list[BaseException] = []

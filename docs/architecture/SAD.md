@@ -1004,6 +1004,13 @@ that call's pending processes and preserves previously active forwards.
 rollback cleanup errors. The session warns only when a best-effort attempt
 rolled back successfully. Failed rollback remains fatal; pending processes
 receive one bounded cleanup attempt and need not be adopted for a retry.
+The manager owns the pending batch from transport registration through commit
+or completion of each rollback attempt. Pending transports remain reachable by
+`close()` if startup escapes before rollback's SIGINT mask is established.
+They are not published as active services, and another startup cannot begin
+until a stranded pending batch has been cleaned. Close covers committed and
+pending ownership, attempting a transport once if an interrupted commit has
+temporarily recorded it in both sets.
 
 Forward startup blocks SIGINT only while registering each returned transport in
 the pending rollback set and while committing both the process and service

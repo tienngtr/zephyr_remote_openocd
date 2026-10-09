@@ -15,8 +15,10 @@ from typing import IO, Any, cast, override
 
 import pytest
 from zephyr_remote_openocd.remote import forwarding as forwarding_module
+from zephyr_remote_openocd.remote.backend import RemoteSession
+from zephyr_remote_openocd.remote.deploy import DeploymentResult
 from zephyr_remote_openocd.remote.forwarding import _ForwardManager
-from zephyr_remote_openocd.remote.model import Service
+from zephyr_remote_openocd.remote.model import RemoteProcess, RemoteSessionRequest, Service
 from zephyr_remote_openocd.remote.session import SessionError
 from zephyr_remote_openocd.remote.ssh import (
     SSH_STDERR_TAIL_BYTES,
@@ -549,6 +551,129 @@ def test_sigint_between_pending_forward_rollbacks_reaps_and_closes_both(monkeypa
         signal.signal(signal.SIGINT, previous_handler)
         sigmask(signal.SIG_SETMASK, previous_mask)
         manager.close()
+        for process in processes:
+            with suppress(OSError):
+                _stop_process(process)
+
+
+@pytest.mark.parametrize("cleanup_fails", (False, True))
+def test_sigint_at_forward_rollback_entry_keeps_both_transports_owned(monkeypatch, cleanup_fails):
+    popen = subprocess.Popen
+    await_ready = _ForwardManager._await_ready
+    sigmask = signal.pthread_sigmask
+    previous_mask = sigmask(signal.SIG_BLOCK, {signal.SIGUSR1})
+    expected_mask = sigmask(signal.SIG_BLOCK, set())
+    previous_handler = signal.getsignal(signal.SIGINT)
+    previous_trace = sys.gettrace()
+    processes: list[ManagedSshProcess] = []
+    stderr_streams: list[IO[bytes]] = []
+    startup_error = SessionError("second forward readiness failed")
+    cleanup_error = OSError("first pending forward stream cleanup failed")
+    interruption = KeyboardInterrupt("rollback entry interrupted")
+    requested = False
+    both_live_at_delivery = False
+
+    class Command(SshCommand):
+        @override
+        def popen(self, host, remote_command, *, local_forward=None):
+            process = super().popen(host, remote_command, local_forward=local_forward)
+            processes.append(process)
+            if cleanup_fails and len(processes) == 1:
+                close_stderr = process.close_stderr
+
+                def fail_close_stderr():
+                    close_stderr()
+                    raise cleanup_error
+
+                monkeypatch.setattr(process, "close_stderr", fail_close_stderr)
+            return process
+
+    session = RemoteSession(
+        RemoteSessionRequest("target", Command(), RemoteProcess(("unused",))),
+        DeploymentResult("/helper.py", "digest", False),
+    )
+    manager = session._forwards
+
+    def launch(argv, **kwargs):
+        code = shlex.split(argv[-1])[2]
+        process = popen([sys.executable, "-u", "-c", code], **kwargs)
+        assert process.stderr is not None
+        stderr_streams.append(process.stderr)
+        return process
+
+    def observe_readiness(process, sentinel, deadline):
+        assert await_ready(process, sentinel, deadline)
+        if len(processes) == 2:
+            raise startup_error
+        return True
+
+    def interrupt_at_rollback_entry(frame: FrameType, event: str, _arg: object):
+        nonlocal requested
+        # The exception is bound, but the handler's first instruction has not
+        # run. No line number or scheduler timing selects this entry boundary.
+        if (
+            event == "line"
+            and frame.f_code is _ForwardManager.start.__code__
+            and frame.f_locals.get("error") is startup_error
+            and not requested
+        ):
+            requested = True
+            signal.raise_signal(signal.SIGINT)
+        return interrupt_at_rollback_entry
+
+    def handle_interrupt(_signum, _frame):
+        nonlocal both_live_at_delivery
+        both_live_at_delivery = len(processes) == 2 and all(
+            process.poll() is None for process in processes
+        )
+        raise interruption
+
+    monkeypatch.setattr(subprocess, "Popen", launch)
+    monkeypatch.setattr(_ForwardManager, "_preflight", staticmethod(lambda _service: None))
+    monkeypatch.setattr(_ForwardManager, "_await_ready", staticmethod(observe_readiness))
+    signal.signal(signal.SIGINT, handle_interrupt)
+    try:
+        sys.settrace(interrupt_at_rollback_entry)
+        try:
+            with pytest.raises(KeyboardInterrupt) as raised:
+                manager.start(
+                    (Service("gdb", 32268, 3333), Service("rtt", 32269, 5555)), "127.64.0.1"
+                )
+        finally:
+            sys.settrace(previous_trace)
+        assert raised.value is interruption
+        assert requested and both_live_at_delivery
+        assert manager.services == ()
+
+        restart_failure = None
+        try:
+            manager.start((), "127.64.0.1")
+        except SessionError as error:
+            restart_failure = error
+
+        close_failure = None
+        try:
+            session.close()
+        except OSError as error:
+            close_failure = error
+
+        # Only production session/manager cleanup has run at this point.
+        assert all(process.returncode is not None for process in processes)
+        assert all(process.stdin is not None and process.stdin.closed for process in processes)
+        assert all(process.stdout is not None and process.stdout.closed for process in processes)
+        assert all(stream.closed for stream in stderr_streams)
+        assert restart_failure is not None
+        assert close_failure is (cleanup_error if cleanup_fails else None)
+        assert sigmask(signal.SIG_BLOCK, set()) == expected_mask
+        assert session.closed
+        assert not manager.has_forwards
+        session.close()
+    finally:
+        sys.settrace(previous_trace)
+        signal.signal(signal.SIGINT, previous_handler)
+        sigmask(signal.SIG_SETMASK, previous_mask)
+        with suppress(BaseException):
+            session.close()
         for process in processes:
             with suppress(OSError):
                 _stop_process(process)
