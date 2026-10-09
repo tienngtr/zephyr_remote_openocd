@@ -86,6 +86,38 @@ class _RecordingInput:
         self.closed = True
 
 
+class _ControlProcess:
+    """Memory-backed shutdown transport; fault tests override the failing operation."""
+
+    args = ("fake-helper",)
+
+    def __init__(self) -> None:
+        self.stdin: BinaryIO = io.BytesIO()
+        self.stdout: BinaryIO = io.BytesIO()
+        self.stderr = io.BytesIO()
+        self.returncode: int | None = None
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def wait(self, timeout: float | None = None) -> int | None:
+        del timeout
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.returncode = 0
+
+    def kill(self) -> None:
+        self.returncode = -signal.SIGKILL
+
+    @staticmethod
+    def stderr_tail() -> bytes:
+        return b""
+
+    def close_stderr(self) -> None:
+        self.stderr.close()
+
+
 class _EventProcess:
     def __init__(self, events: tuple[bytes, ...]) -> None:
         self.args = ("fake-helper",)
@@ -376,38 +408,17 @@ def test_recorded_openocd_exit_is_available_while_reader_remains_alive(helper_cl
 
 
 def test_close_waits_when_process_exit_wins_stop_race(monkeypatch, helper_client):
-    wait_called = threading.Event()
+    natural_exit_reaped = threading.Event()
 
-    class Process:
-        args = ("fake-helper",)
-
-        def __init__(self):
-            self.stdin = io.BytesIO()
-            self.stdout = io.BytesIO()
-            self.stderr = io.BytesIO()
-            self.returncode = None
-
-        def poll(self):
-            return self.returncode
-
-        def wait(self, timeout=None):
+    class Process(_ControlProcess):
+        @override
+        def wait(self, timeout: float | None = None) -> int:
             del timeout
-            wait_called.set()
-            self.returncode = 0
+            if self.returncode is None:
+                # Forced termination must not stand in for reaping the natural exit.
+                natural_exit_reaped.set()
+                self.returncode = 0
             return self.returncode
-
-        def terminate(self):
-            self.returncode = 0
-
-        def kill(self):
-            self.returncode = -signal.SIGKILL
-
-        @staticmethod
-        def stderr_tail():
-            return b""
-
-        def close_stderr(self):
-            self.stderr.close()
 
     class Reader(threading.Thread):
         @override
@@ -433,7 +444,7 @@ def test_close_waits_when_process_exit_wins_stop_race(monkeypatch, helper_client
     result = helper_client.close()
 
     assert result.error is None
-    assert wait_called.is_set()
+    assert natural_exit_reaped.is_set()
     assert process.returncode == 0
     assert process.stdin.closed
     assert process.stdout.closed
@@ -556,45 +567,18 @@ def test_close_keeps_stop_failure_primary_when_forced_cleanup_also_fails(helper_
     graceful_stop_error = RuntimeError("graceful stop failed")
     forced_stop_error = RuntimeError("forced stop failed")
 
-    class FailingStdin:
-        closed = False
-
+    class FailingStdin(io.BytesIO):
         def write(self, _payload):
             raise graceful_stop_error
 
-        @staticmethod
-        def flush():
-            pass
-
-        def close(self):
-            self.closed = True
-
-    class Process:
-        def __init__(self):
-            self.args = ("fake-helper",)
+    class Process(_ControlProcess):
+        def __init__(self) -> None:
+            super().__init__()
             self.stdin = FailingStdin()
-            self.stdout = io.BytesIO()
-            self.returncode = None
 
-        def poll(self):
-            return self.returncode
-
-        def wait(self, timeout=None):
-            return self.returncode
-
-        def terminate(self):
+        @override
+        def terminate(self) -> None:
             raise forced_stop_error
-
-        def kill(self):
-            self.returncode = -signal.SIGKILL
-
-        @staticmethod
-        def stderr_tail():
-            return b""
-
-        @staticmethod
-        def close_stderr():
-            pass
 
     helper_client._process = cast(ManagedSshProcess, Process())
 
@@ -608,33 +592,17 @@ def test_close_keeps_stop_failure_primary_when_forced_cleanup_also_fails(helper_
 def test_close_cleans_up_helper_when_initial_status_observation_fails(helper_client):
     observation_error = RuntimeError("helper status failed")
 
-    class Process:
-        def __init__(self):
-            self.args = ("fake-helper",)
-            self.stdin = io.BytesIO()
-            self.stdout = io.BytesIO()
-            self.stderr = io.BytesIO()
-            self.returncode = None
+    class Process(_ControlProcess):
+        def __init__(self) -> None:
+            super().__init__()
             self.initial_status_failure_pending = True
 
-        def poll(self):
+        @override
+        def poll(self) -> int | None:
             if self.initial_status_failure_pending:
                 self.initial_status_failure_pending = False
                 raise observation_error
             return self.returncode
-
-        def terminate(self):
-            self.returncode = 0
-
-        def kill(self):
-            self.returncode = -signal.SIGKILL
-
-        def wait(self, timeout=None):
-            del timeout
-            return self.returncode
-
-        def close_stderr(self):
-            self.stderr.close()
 
     process = Process()
     helper_client._process = cast(ManagedSshProcess, process)
@@ -652,20 +620,6 @@ def test_close_cleans_up_helper_when_initial_status_observation_fails(helper_cli
 def test_close_cleans_up_helper_when_reader_join_fails(helper_client):
     join_error = RuntimeError("helper reader join failed")
 
-    class Process:
-        def __init__(self):
-            self.args = ("fake-helper",)
-            self.stdin = io.BytesIO()
-            self.stdout = io.BytesIO()
-            self.stderr = io.BytesIO()
-            self.returncode = 0
-
-        def poll(self):
-            return self.returncode
-
-        def close_stderr(self):
-            self.stderr.close()
-
     class Reader(threading.Thread):
         def __init__(self):
             super().__init__()
@@ -682,7 +636,8 @@ def test_close_cleans_up_helper_when_reader_join_fails(helper_client):
         def is_alive(self):
             return False
 
-    process = Process()
+    process = _ControlProcess()
+    process.returncode = 0
     helper_client._process = cast(ManagedSshProcess, process)
     helper_client._reader_thread = Reader()
     helper_client._observations.record_close("process_exit", 0)
@@ -700,20 +655,20 @@ def test_close_preserves_cleanup_error_when_final_status_observation_fails(helpe
     status_error = RuntimeError("helper final status failed")
     cleanup_error = RuntimeError("helper stderr cleanup failed")
 
-    class Process:
-        def __init__(self):
-            self.args = ("fake-helper",)
-            self.stdin = io.BytesIO()
-            self.stdout = io.BytesIO()
+    class Process(_ControlProcess):
+        def __init__(self) -> None:
+            super().__init__()
             self.returncode = 0
             self.cleanup_attempted = False
 
-        def poll(self):
+        @override
+        def poll(self) -> int | None:
             if self.cleanup_attempted:
                 raise status_error
             return self.returncode
 
-        def close_stderr(self):
+        @override
+        def close_stderr(self) -> None:
             self.cleanup_attempted = True
             raise cleanup_error
 
@@ -733,34 +688,10 @@ def test_close_preserves_cleanup_error_when_final_status_observation_fails(helpe
 def test_close_closes_streams_when_reader_thread_does_not_start(monkeypatch, helper_client):
     reader_start_error = RuntimeError("helper reader did not start")
 
-    class Process:
-        def __init__(self):
-            self.args = ("fake-helper",)
-            self.stdin = io.BytesIO()
-            self.stdout = io.BytesIO()
-            self.stderr = io.BytesIO()
-            self.returncode = None
-
-        def poll(self):
-            return self.returncode
-
-        def terminate(self):
-            self.returncode = 0
-
-        def kill(self):
-            self.returncode = -signal.SIGKILL
-
-        def wait(self, timeout=None):
-            del timeout
-            return self.returncode
-
-        def close_stderr(self):
-            self.stderr.close()
-
     def fail_start(_thread):
         raise reader_start_error
 
-    process = Process()
+    process = _ControlProcess()
     helper_client._process = cast(ManagedSshProcess, process)
     monkeypatch.setattr(threading.Thread, "start", fail_start)
 
@@ -809,36 +740,19 @@ def test_close_forces_cleanup_after_helper_wait_failure(
             if stdin_close_fails:
                 raise stdin_close_error
 
-    class Process:
-        def __init__(self):
-            self.args = ("fake-helper",)
+    class Process(_ControlProcess):
+        def __init__(self) -> None:
+            super().__init__()
             read_fd, write_fd = os.pipe()
             self.event_writer = os.fdopen(write_fd, "wb", buffering=0)
             self.stdin = StopInput(self.event_writer)
             self.stdout = os.fdopen(read_fd, "rb", buffering=0)
-            self.stderr = io.BytesIO()
-            self.returncode = None
 
-        def poll(self):
-            return self.returncode
-
-        def wait(self, timeout=None):
+        @override
+        def wait(self, timeout: float | None = None) -> int | None:
             if timeout is not None and self.returncode is None:
                 raise wait_error
             return self.returncode
-
-        def terminate(self):
-            self.returncode = 0
-
-        def kill(self):
-            self.returncode = -signal.SIGKILL
-
-        @staticmethod
-        def stderr_tail():
-            return b""
-
-        def close_stderr(self):
-            self.stderr.close()
 
     process = Process()
     helper_client._process = cast(ManagedSshProcess, process)
@@ -872,30 +786,20 @@ def test_helper_close_keeps_reader_owned_stdout_open_until_reader_stops(helper_c
         def is_alive(self):
             return not reader_stopped.is_set()
 
-    class Process:
-        def __init__(self):
-            self.args = ("fake-helper",)
-            self.returncode = None
-            self.stdin = io.BytesIO()
+    class Process(_ControlProcess):
+        def __init__(self) -> None:
+            super().__init__()
             self.stdout = ReaderOwnedStream()
-            self.stderr = io.BytesIO()
 
-        def poll(self):
-            return self.returncode
-
-        def terminate(self):
+        @override
+        def terminate(self) -> None:
             reader_stopped.set()
-            self.returncode = 0
+            super().terminate()
 
-        def kill(self):
+        @override
+        def kill(self) -> None:
             reader_stopped.set()
-            self.returncode = -signal.SIGKILL
-
-        def wait(self, timeout=None):
-            return self.returncode
-
-        def close_stderr(self):
-            self.stderr.close()
+            super().kill()
 
     helper = helper_client
     process = Process()
@@ -904,7 +808,10 @@ def test_helper_close_keeps_reader_owned_stdout_open_until_reader_stops(helper_c
     helper._observations.record_close("process_exit", 0)
     helper._reader_thread = reader
 
-    assert helper.close().error is None
+    result = helper.close()
+
+    assert result.error is None
+    assert result.cleanup_errors == ()
 
     assert reader_stopped.is_set()
     assert not reader.is_alive()
@@ -917,20 +824,14 @@ def test_helper_close_retains_nested_process_cleanup_diagnostics(helper_client):
     terminate_error = RuntimeError("helper terminate failed")
     stderr_error = RuntimeError("helper stderr close failed")
 
-    class Process:
-        def __init__(self):
-            self.stdin = io.BytesIO()
-            self.stdout = io.BytesIO()
-            self.returncode = None
-
-        def poll(self):
-            return self.returncode
-
-        def terminate(self):
-            self.returncode = 0
+    class Process(_ControlProcess):
+        @override
+        def terminate(self) -> None:
+            super().terminate()
             raise terminate_error
 
-        def close_stderr(self):
+        @override
+        def close_stderr(self) -> None:
             raise stderr_error
 
     helper = helper_client

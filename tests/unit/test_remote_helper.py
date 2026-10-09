@@ -271,16 +271,11 @@ def start_command():
     }
 
 
-class _ChunkStream:
-    def __init__(self, *chunks):
-        self.chunks = list(chunks)
-
-
-def _decode_chunks(stream, name, sentinels=None):
+def _decode_chunks(chunks: tuple[bytes, ...], name: str, sentinels=None) -> None:
     if sentinels is None:
         sentinels = remote_helper._RequiredOutputSentinels(())
     decoder = remote_helper._OutputDecoder(name, sentinels)
-    for chunk in (*stream.chunks, b""):
+    for chunk in (*chunks, b""):
         for fragment in decoder.feed(chunk):
             remote_helper.emit(
                 "CHILD_OUTPUT",
@@ -317,7 +312,7 @@ def test_relay_waits_for_each_complete_sentinel_across_streams(monkeypatch, firs
     )
 
     _decode_chunks(
-        _ChunkStream(b"diagnostic\n", first[:8].encode(), (first[8:] + "\n").encode()),
+        (b"diagnostic\n", first[:8].encode(), (first[8:] + "\n").encode()),
         "stdout",
         required_output_sentinels,
     )
@@ -325,7 +320,7 @@ def test_relay_waits_for_each_complete_sentinel_across_streams(monkeypatch, firs
     assert not required_output_sentinels.ready
 
     _decode_chunks(
-        _ChunkStream(("  " + second + "  \n").encode()),
+        (("  " + second + "  \n").encode(),),
         "stderr",
         required_output_sentinels,
     )
@@ -359,7 +354,7 @@ def test_relay_metadata_reconstructs_logical_output(monkeypatch, payload, expect
         lambda kind, **values: events.append((kind, values)),
     )
 
-    _decode_chunks(_ChunkStream(payload), "stdout")
+    _decode_chunks((payload,), "stdout")
 
     output_events = [values for _kind, values in events]
     reconstructed = "".join(
@@ -381,7 +376,7 @@ def test_relay_preserves_split_utf8_and_invalid_bytes(monkeypatch):
         lambda kind, **values: events.append((kind, values)),
     )
 
-    _decode_chunks(_ChunkStream(b"utf \xe2", b"\x82", b"\xac\ninvalid \xff"), "stderr")
+    _decode_chunks((b"utf \xe2", b"\x82", b"\xac\ninvalid \xff"), "stderr")
 
     output_events = [values for _kind, values in events]
     assert (
