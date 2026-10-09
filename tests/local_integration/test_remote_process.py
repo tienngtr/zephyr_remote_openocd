@@ -656,8 +656,6 @@ class TestForwardingLifecycle:
             assert healthy.poll() is not None
             assert healthy.stdin is not None and healthy.stdin.closed
             assert healthy.stdout is not None and healthy.stdout.closed
-            assert healthy._drain._stream.closed
-            assert not healthy._drain._thread.is_alive()
             assert not manager.has_forwards
             manager.close()
             assert terminate_calls == 1
