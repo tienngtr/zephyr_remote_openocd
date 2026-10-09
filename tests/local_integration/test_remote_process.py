@@ -1339,13 +1339,16 @@ helper['stage'](sys.argv[2])
                     if stream is not None and not stream.closed:
                         stream.close()
 
-    def test_helper_normalizes_restricted_directory_for_cleanup(self, helper_workspace):
+    @pytest.mark.parametrize("file_mode, expected_mode", ((0o7777, 0o700), (0o044, 0o600)))
+    def test_helper_normalizes_permissions_for_cleanup(
+        self, helper_workspace, file_mode, expected_mode
+    ):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
         archive_stream = io.BytesIO()
         with tarfile.open(fileobj=archive_stream, mode="w", format=tarfile.PAX_FORMAT) as archive:
             payload = tarfile.TarInfo("restricted/payload")
+            payload.mode = file_mode
             payload.size = 1
-            payload.mode = 0o600
             archive.addfile(payload, io.BytesIO(b"x"))
             restricted = tarfile.TarInfo("restricted")
             restricted.type = tarfile.DIRTYPE
@@ -1363,7 +1366,9 @@ helper['stage'](sys.argv[2])
         )
 
         assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
-        assert (workspace / "staged" / "restricted").stat().st_mode & 0o777 == 0o700
+        staged_directory = workspace / "staged" / "restricted"
+        assert staged_directory.stat().st_mode & 0o777 == 0o700
+        assert (staged_directory / "payload").stat().st_mode & 0o7777 == expected_mode
         shutil.rmtree(workspace)
 
     def test_helper_stages_large_archive_through_spooled_stdin(self, tmp_path, helper_workspace):
@@ -1542,7 +1547,7 @@ helper['stage'](sys.argv[2])
         result = subprocess.run(
             [sys.executable, str(helper), "stage", str(workspace)],
             env=environment,
-            input=archive_bytes(members),
+            input=archive_bytes((("valid/payload", tarfile.REGTYPE, None), *members)),
             capture_output=True,
             check=False,
         )
