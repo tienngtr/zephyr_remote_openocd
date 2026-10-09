@@ -29,7 +29,6 @@ def _connect(port: int, timeout: float) -> tuple[socket.socket, bytes]:
     deadline = time.monotonic() + timeout
     last_error: OSError | None = None
     while time.monotonic() < deadline:
-        channel_failed = False
         connection = None
         try:
             connection = socket.create_connection(("127.0.0.1", port), timeout=0.5)
@@ -38,19 +37,23 @@ def _connect(port: int, timeout: float) -> tuple[socket.socket, bytes]:
             if readable:
                 initial = connection.recv(4096)
                 if not initial:
-                    connection.close()
-                    channel_failed = True
+                    raise RttClientError("RTT forward could not open the remote channel")
             else:
                 initial = b""
-        except OSError as error:
+            return connection, initial
+        except BaseException as error:
+            cleanup_failed = False
             if connection is not None:
-                connection.close()
+                try:
+                    connection.close()
+                except BaseException as cleanup_error:
+                    _add_failure_note(error, "RTT socket cleanup failed", cleanup_error)
+                    cleanup_failed = True
+            if cleanup_failed or not isinstance(error, OSError):
+                raise
             last_error = error
             time.sleep(0.05)
             continue
-        if channel_failed:
-            raise RttClientError("RTT forward could not open the remote channel")
-        return connection, initial
     raise RttClientError(f"cannot connect to local RTT port 127.0.0.1:{port}") from last_error
 
 
@@ -165,9 +168,10 @@ def run_rtt_client(
     """Own the RTT socket and terminal scope until the relay or session exits."""
     input_stream = stdin or sys.stdin.buffer
     output_stream = stdout or sys.stdout.buffer
-    connection, initial = _connect(port, startup_timeout)
+    connection: socket.socket | None = None
     primary_failure: BaseException | None = None
     try:
+        connection, initial = _connect(port, startup_timeout)
         input_fd = input_stream.fileno()
         if initial:
             output_stream.write(initial)
@@ -178,9 +182,10 @@ def run_rtt_client(
         primary_failure = error
         raise
     finally:
-        try:
-            connection.close()
-        except BaseException as error:
-            if primary_failure is None:
-                raise
-            _add_failure_note(primary_failure, "RTT socket cleanup failed", error)
+        if connection is not None:
+            try:
+                connection.close()
+            except BaseException as error:
+                if primary_failure is None:
+                    raise
+                _add_failure_note(primary_failure, "RTT socket cleanup failed", error)

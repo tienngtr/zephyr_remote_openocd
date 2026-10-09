@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import io
+import signal
 import socket
+import sys
 import tempfile
 from collections.abc import Iterator
+from types import FrameType
+from typing import override
 from unittest.mock import MagicMock, create_autospec
 
 import pytest
@@ -95,6 +99,76 @@ def test_connection_closes_when_stdin_has_no_descriptor(connection_boundary: Mag
     ):
         rtt_module.run_rtt_client(5566, lambda: None, stdin=stdin, stdout=stdout)
     connection_boundary.close.assert_called_once()
+
+
+@pytest.mark.parametrize("phase", ("initial-readiness", "client-adoption"))
+@pytest.mark.parametrize("cleanup_fails", (False, True))
+def test_sigint_closes_socket_during_connection_adoption(monkeypatch, phase, cleanup_fails):
+    cleanup_error = OSError("RTT adoption socket cleanup failed")
+    interruption = KeyboardInterrupt("RTT connection adoption interrupted")
+
+    class Connection(socket.socket):
+        @override
+        def close(self):
+            super().close()
+            if cleanup_fails:
+                raise cleanup_error
+
+    local, peer = socket.socketpair()
+    connection = Connection(fileno=local.detach())
+    previous_handler = signal.getsignal(signal.SIGINT)
+    previous_trace = sys.gettrace()
+    interrupted = False
+
+    def interrupt():
+        nonlocal interrupted
+        interrupted = True
+        signal.raise_signal(signal.SIGINT)
+
+    def handle_interrupt(_signum, _frame):
+        raise interruption
+
+    def readiness(*_args):
+        if phase == "initial-readiness":
+            interrupt()
+        return [], [], []
+
+    def interrupt_after_adoption(frame: FrameType, event: str, _arg: object):
+        if (
+            event == "line"
+            and frame.f_code is rtt_module.run_rtt_client.__code__
+            and frame.f_locals.get("connection") is connection
+            and "input_fd" not in frame.f_locals
+            and not interrupted
+        ):
+            interrupt()
+        return interrupt_after_adoption
+
+    monkeypatch.setattr(
+        rtt_module.socket, "create_connection", lambda *_args, **_kwargs: connection
+    )
+    monkeypatch.setattr(rtt_module.select, "select", readiness)
+    signal.signal(signal.SIGINT, handle_interrupt)
+    try:
+        with io.BytesIO() as stdin, io.BytesIO() as stdout:
+            if phase == "client-adoption":
+                sys.settrace(interrupt_after_adoption)
+            try:
+                with pytest.raises(KeyboardInterrupt) as raised:
+                    rtt_module.run_rtt_client(5566, lambda: None, stdin=stdin, stdout=stdout)
+            finally:
+                sys.settrace(previous_trace)
+        assert interrupted
+        assert raised.value is interruption
+        # Keep a reference and check closure before fallback cleanup can hide a leak.
+        assert connection.fileno() == -1
+        if cleanup_fails:
+            assert any(str(cleanup_error) in note for note in raised.value.__notes__)
+    finally:
+        sys.settrace(previous_trace)
+        signal.signal(signal.SIGINT, previous_handler)
+        socket.socket.close(connection)
+        peer.close()
 
 
 def test_pending_input_survives_would_block_and_partial_send(

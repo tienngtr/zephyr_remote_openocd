@@ -825,7 +825,9 @@ bidirectional channel-0 bytes, uses noncanonical/no-echo TTY input without
 disabling normal signal handling, and restores the complete terminal state on
 every exit path. Non-TTY input is supported without terminal operations.
 
-The client owns the connected socket before accessing stdin or delivering initial
+Connection setup owns each acquired socket through its initial readiness check
+and closes it on failure or interruption. The client's cleanup scope is active
+before adopting the connected socket, accessing stdin, or delivering initial
 output. A terminal-mode scope restores prior attributes before the socket is
 closed. The relay owns the bounded pending-input queue and interprets readiness,
 retaining unsent bytes across partial writes and transient backpressure. It polls
