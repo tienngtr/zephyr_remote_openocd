@@ -105,32 +105,16 @@ protects the external sharing-master caller's primary failure and cleanup.
 | `REQ-FUNC-OPT-007` | Reviewed | This is an explicit non-goal. [Literal/template design](../architecture/SAD.md) and [`plan_openocd_base()`](../../python/zephyr_remote_openocd/remote/openocd_plan.py) retain user-written Tcl as literal arguments, applying path translation only to structured runner-owned paths. [`test_runner_logs_effective_remote_argv`](../../tests/zephyr_integration/test_adapter.py) supplies user Tcl containing workspace/address token text and verifies it remains unchanged through planning and helper materialization. No arbitrary-Tcl path translation acceptance test is required. |
 | `REQ-FUNC-SCOPE-007` | Reviewed | [Zephyr compatibility boundary](../architecture/SAD.md#17-zephyr-compatibility-boundary) and production review of [`remote/`](../../python/zephyr_remote_openocd/remote/) and [`zephyr44/runner.py`](../../python/zephyr_remote_openocd/zephyr44/runner.py) confirm generic command, path, service, and lifecycle behavior with Zephyr coupling confined to its adapter. Board recipes and serial observation reside in the external test inventory/harness. This absence-of-board-specific-policy constraint is design-review evidence, not a claim of exhaustive automated detection. |
 
-The historical validation run on October 9, 2026 covers revision `f97c66fe`
-and passed 674 ordinary tests, 112 Zephyr 4.4.0 integration tests, 12 configured
-SSH tests, and 14 configured hardware nodes. External nodes were collected
-first and ran with `--require-external-tests`, with no skips. Hardware nodes ran
-serially across debug, attach, debugserver, thread information, flash/serial,
-standalone RTT, both GDB/RTT server modes, and direct semihosting. Cleanup
-inspections after SSH and every hardware node found no temporary workspaces,
-helper/OpenOCD/serial reader processes, or local west/GDB/test-forward processes.
-These results apply to the selected environments and capabilities; the
-acceptance limits below remain.
+The current implementation has passed 687 ordinary tests, all 12 configured
+SSH nodes, and repository static checks. SSH nodes were collected first and
+ran with `--require-external-tests`, with no skips. SSH cleanup inspection
+found no session workspaces or control helpers. These results apply to the
+selected environments and capabilities.
 
-That run predates the RTT refactor (`bc08a7ad`), helper task/signal refactor
-(`ea95dfbe`), helper shutdown refactor (`9e2920f6`), and staging refactor
-(`61c46280`). Their commit records report ordinary tests and static checks,
-with targeted Zephyr adapter or SSH checks for the affected boundaries. They
-do not establish a full acceptance run of the later branch state. Physical RTT
-validation after the RTT refactor remains pending.
-
-The helper signal-ordering fix at `8f652d5` passed 687 ordinary tests, all 12
-configured SSH nodes after collection with `--require-external-tests`, and
-repository static checks. SSH cleanup inspection found no session workspaces
-or control helpers. Its 11 new regression cases fail against the pre-fix helper.
-This validation did not rerun the Zephyr or hardware suites.
-
-This table records maintained verification coverage; execution results apply
-only to the revisions and environments identified above.
+Full Zephyr integration and hardware acceptance of the current implementation
+remain pending, including physical RTT validation. The table records maintained
+verification coverage; the presence of a test does not establish a current
+acceptance result.
 
 Remaining acceptance limits are distinct from missing traceability: stock
 OpenOCD support across every operation, actual same-probe independent channel
