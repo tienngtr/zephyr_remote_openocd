@@ -1546,9 +1546,12 @@ policy is introduced. The fence does not wait for future control input.
 Guarded observers retain recognized failures against their owned tasks before
 attempting queue publication. The coordinator accounts for each failure once,
 either during dispatch or when joining a cancelled or completed observer.
-Before committing readiness, it also reconciles already-retained fatal facts
-through its existing failure-selection path, even when their queue publication
-is blocked. This applies to immediate readiness and marker-based readiness;
+Before committing readiness, the coordinator dispatches the bounded queue and
+any control fact already consumed but blocked at publication. Output dispatched
+during this reconciliation may satisfy readiness, but only the outer readiness
+check publishes success. It also reconciles already-retained fatal facts through
+its existing failure-selection path, even when their queue publication is
+blocked. This applies to immediate readiness and marker-based readiness;
 it neither waits for future input nor guarantees liveness after the check.
 Thus a control-protocol failure already recognized by the observer but not yet
 dispatched by the coordinator survives terminal cleanup, even if publication

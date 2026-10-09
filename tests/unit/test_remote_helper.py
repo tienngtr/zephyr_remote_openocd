@@ -47,17 +47,26 @@ def control_pipe(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("interruption", "expected_error", "batch"),
+    ("interruption", "expected_error", "batch", "sentinels"),
     (
-        pytest.param(b'{"version":1,"type":"STOP"}\n', None, True, id="batched-stop"),
-        pytest.param(b"not-json\n", json.JSONDecodeError, False, id="malformed-json"),
-        pytest.param(b'{"version":1,"type":"STOP"}', ValueError, False, id="incomplete-eof"),
-        pytest.param(b'{"version":1,"type":"UNKNOWN"}\n', ValueError, False, id="unexpected"),
-        pytest.param(b"START", ValueError, False, id="duplicate-start"),
+        pytest.param(
+            b'{"version":1,"type":"STOP"}\n', None, True, ["not-ready"], id="batched-stop"
+        ),
+        pytest.param(b'{"version":1,"type":"STOP"}\n', None, True, [], id="immediate-batched-stop"),
+        pytest.param(
+            b"not-json\n", json.JSONDecodeError, False, ["not-ready"], id="malformed-json"
+        ),
+        pytest.param(
+            b'{"version":1,"type":"STOP"}', ValueError, False, ["not-ready"], id="incomplete-eof"
+        ),
+        pytest.param(
+            b'{"version":1,"type":"UNKNOWN"}\n', ValueError, False, ["not-ready"], id="unexpected"
+        ),
+        pytest.param(b"START", ValueError, False, ["not-ready"], id="duplicate-start"),
     ),
 )
 def test_control_session_services_input_during_readiness(
-    tmp_path, monkeypatch, control_pipe, interruption, expected_error, batch
+    tmp_path, monkeypatch, control_pipe, interruption, expected_error, batch, sentinels
 ):
     _reader, writer = control_pipe
     workspace = tmp_path / "workspace"
@@ -72,7 +81,7 @@ def test_control_session_services_input_during_readiness(
                 "environment": {},
                 "required_paths": [],
                 "services": [],
-                "required_output_sentinels": ["not-ready"],
+                "required_output_sentinels": sentinels,
                 "readiness_timeout": 30,
                 "literal_prefix": 1,
                 "argv_templates": [],
@@ -123,6 +132,78 @@ def test_control_session_services_input_during_readiness(
     else:
         assert session.protocol_error is None
         assert events[-1] == ("SESSION_CLOSED", {"reason": "requested", "returncode": None})
+
+
+@pytest.mark.parametrize("termination", ("stop", "eof", "invalid-command"))
+def test_readiness_honors_control_fact_blocked_at_publication(
+    tmp_path, monkeypatch, control_pipe, capsys, termination
+):
+    reader, writer = control_pipe
+    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
+    session = remote_helper.ControlSession.create()
+    recognized = asyncio.Event()
+    publish = asyncio.Event()
+    children = []
+    original_put = session._events.put
+    original_read = remote_helper._AsyncInput.read
+    original_spawn = remote_helper._spawn_child
+    original_emit = remote_helper.emit
+
+    async def put(observation):
+        if session.request is not None and isinstance(
+            observation, (remote_helper._ControlFrame, remote_helper._ControlEOF)
+        ):
+            recognized.set()
+            await publish.wait()
+        await original_put(observation)
+
+    async def read(source):
+        if source.descriptor != reader.fileno():
+            await recognized.wait()
+        return await original_read(source)
+
+    def spawn(*args, **kwargs):
+        child = original_spawn(*args, **kwargs)
+        children.append(child)
+        if termination == "eof":
+            writer.close()
+        else:
+            writer.write(
+                b'{"version":1,"type":"STOP"}\n' if termination == "stop" else b'not-json\n'
+            )
+        return child
+
+    def emit(kind, **values):
+        original_emit(kind, **values)
+        if kind == "PROCESS_READY":
+            # Release a buggy implementation so its assertion fails after cleanup.
+            publish.set()
+
+    monkeypatch.setattr(session._events, "put", put)
+    monkeypatch.setattr(remote_helper._AsyncInput, "read", read)
+    monkeypatch.setattr(remote_helper, "_spawn_child", spawn)
+    monkeypatch.setattr(remote_helper, "emit", emit)
+    writer.write(
+        _start_session_command(
+            [sys.executable, "-c", "import signal;print('ready',flush=True);signal.pause()"],
+            ("ready",),
+        )
+    )
+
+    session.run()
+
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert recognized.is_set()
+    assert not any(event["type"] == "PROCESS_READY" for event in events)
+    if termination == "stop":
+        assert events[-1]["type"] == "SESSION_CLOSED"
+        assert events[-1]["reason"] == "requested"
+    elif termination == "invalid-command":
+        assert events[-1]["type"] == "ERROR"
+        assert events[-1]["code"] == "PROTOCOL_ERROR"
+    assert children[0].process.returncode is not None
+    assert children[0].process.stdout.closed and children[0].process.stderr.closed
+    assert session.workspace_lock.closed and not any(tmp_path.iterdir())
 
 
 def test_helper_accepts_json_whitespace_inside_command_frame(tmp_path, control_pipe, capsys):

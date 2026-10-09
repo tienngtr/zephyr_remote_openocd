@@ -1417,6 +1417,8 @@ class ControlSession:
         self._control_reader: _AsyncInput | None = None
         self._control_task: asyncio.Task[_ObservationFailed | None] | None = None
         self._control_fence: _ControlFence | None = None
+        self._pending_control: _ControlFrame | _ControlEOF | None = None
+        self._reconciling_readiness = False
         self._loop: asyncio.AbstractEventLoop | None = None
 
     @classmethod
@@ -1471,11 +1473,15 @@ class ControlSession:
                 chunk = await reader.read()
                 if not chunk:
                     frames.finish()
-                    await self._events.put(_ControlEOF())
+                    self._pending_control = _ControlEOF()
+                    await self._events.put(self._pending_control)
+                    self._pending_control = None
                     return
                 frames.feed(chunk)
                 while (frame := frames.pop_frame()) is not None:
-                    await self._events.put(_ControlFrame(frame))
+                    self._pending_control = _ControlFrame(frame)
+                    await self._events.put(self._pending_control)
+                    self._pending_control = None
                 await self._acknowledge_control_fence()
         finally:
             reader.close()
@@ -1609,13 +1615,32 @@ class ControlSession:
 
     def _ready(self) -> None:
         assert self.child is not None
+        if self._reconciling_readiness:
+            return
+        # Dispatch the bounded queue before success. Output dispatch may request
+        # readiness again; the outer call alone owns this publication decision.
+        self._reconciling_readiness = True
+        try:
+            while not self._events.empty():
+                self._handle(self._events.get_nowait())
+                if self.ending:
+                    return
+            # A control observer may have consumed a fact but be blocked at put.
+            # It remains owned here until normal publication; terminal dispatch
+            # makes any later duplicate harmless through the existing guards.
+            if self._pending_control is not None:
+                self._handle(self._pending_control)
+                if self.ending:
+                    return
+        finally:
+            self._reconciling_readiness = False
         # A guard may already know a fatal fact while its queue publication is
         # blocked. Reconcile through the coordinator's existing failure path.
         for failure in tuple(self._observation_failures.values()):
             self._observation_failed(failure)
             if self.ending:
                 return
-        if self.ending or self._pending_signum is not None:
+        if self.ending or self.state != _State.STARTING or self._pending_signum is not None:
             return
         self.state = _State.ACTIVE
         if self._deadline_task is not None:
