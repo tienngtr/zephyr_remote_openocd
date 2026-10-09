@@ -10,8 +10,11 @@ import socket
 import sys
 import termios
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import BinaryIO
+
+from .cleanup import _add_failure_note
 
 
 class RttClientError(RuntimeError):
@@ -51,6 +54,106 @@ def _connect(port: int, timeout: float) -> tuple[socket.socket, bytes]:
     raise RttClientError(f"cannot connect to local RTT port 127.0.0.1:{port}") from last_error
 
 
+@contextmanager
+def _terminal_mode(input_fd: int) -> Iterator[None]:
+    """Own noncanonical/no-echo input and restore it even if setup fails."""
+    original_terminal = None
+    primary_failure: BaseException | None = None
+    try:
+        if os.isatty(input_fd):
+            original_terminal = termios.tcgetattr(input_fd)
+            client_terminal = termios.tcgetattr(input_fd)
+            client_terminal[3] &= ~(termios.ICANON | termios.ECHO)
+            termios.tcsetattr(input_fd, termios.TCSAFLUSH, client_terminal)
+        yield
+    except BaseException as error:
+        primary_failure = error
+        raise
+    finally:
+        if original_terminal is not None:
+            try:
+                termios.tcsetattr(input_fd, termios.TCSAFLUSH, original_terminal)
+            except BaseException as error:
+                if primary_failure is None:
+                    raise
+                _add_failure_note(primary_failure, "RTT terminal restoration failed", error)
+
+
+class _RttRelay:
+    """Own pending input and interpret readiness for an already-owned socket."""
+
+    def __init__(
+        self,
+        connection: socket.socket,
+        input_fd: int,
+        output_stream: BinaryIO,
+        poll_session: Callable[[], int | None],
+    ) -> None:
+        self.connection = connection
+        self.input_fd = input_fd
+        self.output_stream = output_stream
+        self.poll_session = poll_session
+        self.input_open = True
+        self.pending_input = bytearray()
+
+    def run(self) -> int:
+        """Poll session liveness while relaying only ready, nonblocking I/O."""
+        while True:
+            returncode = self.poll_session()
+            if returncode is not None:
+                return returncode
+            input_readable = self.input_open and len(self.pending_input) < _MAX_PENDING_INPUT
+            inputs: tuple[int | socket.socket, ...] = (
+                (self.input_fd, self.connection) if input_readable else (self.connection,)
+            )
+            writable_inputs = (self.connection,) if self.pending_input else ()
+            readable, writable, _ = select.select(inputs, writable_inputs, (), 0.1)
+            if input_readable and self.input_fd in readable:
+                self._read_input()
+            if self.connection in writable and self.pending_input:
+                self._send_pending_input()
+            if self.connection in readable:
+                returncode = self._receive_output()
+                if returncode is not None:
+                    return returncode
+
+    def _read_input(self) -> None:
+        """Stop selecting stdin on EOF or while the bounded queue is full."""
+        payload = os.read(
+            self.input_fd,
+            min(_INPUT_CHUNK_SIZE, _MAX_PENDING_INPUT - len(self.pending_input)),
+        )
+        if not payload:
+            self.input_open = False
+        else:
+            self.pending_input.extend(payload)
+
+    def _send_pending_input(self) -> None:
+        """Retain unsent bytes across partial writes and transient backpressure."""
+        try:
+            sent = self.connection.send(self.pending_input)
+        except BlockingIOError:
+            return
+        if sent <= 0:
+            raise RttClientError("RTT channel closed while sending input")
+        del self.pending_input[:sent]
+
+    def _receive_output(self) -> int | None:
+        """Give a recorded session exit precedence over receive-side channel EOF."""
+        try:
+            payload = self.connection.recv(_INPUT_CHUNK_SIZE)
+        except BlockingIOError:
+            return None
+        if not payload:
+            returncode = self.poll_session()
+            if returncode is not None:
+                return returncode
+            raise RttClientError("RTT channel closed while remote session is still running")
+        self.output_stream.write(payload)
+        self.output_stream.flush()
+        return None
+
+
 def run_rtt_client(
     port: int,
     poll_session: Callable[[], int | None],
@@ -59,63 +162,25 @@ def run_rtt_client(
     stdout: BinaryIO | None = None,
     startup_timeout: float = 5.0,
 ) -> int | None:
-    """Relay channel 0 until either endpoint or the remote session exits."""
+    """Own the RTT socket and terminal scope until the relay or session exits."""
     input_stream = stdin or sys.stdin.buffer
     output_stream = stdout or sys.stdout.buffer
     connection, initial = _connect(port, startup_timeout)
-    input_fd = input_stream.fileno()
-    original_terminal = None
+    primary_failure: BaseException | None = None
     try:
+        input_fd = input_stream.fileno()
         if initial:
             output_stream.write(initial)
             output_stream.flush()
-        if os.isatty(input_fd):
-            original_terminal = termios.tcgetattr(input_fd)
-            client_terminal = termios.tcgetattr(input_fd)
-            client_terminal[3] &= ~(termios.ICANON | termios.ECHO)
-            termios.tcsetattr(input_fd, termios.TCSAFLUSH, client_terminal)
-
-        input_open = True
-        pending_input = bytearray()
-        while True:
-            returncode = poll_session()
-            if returncode is not None:
-                return returncode
-            input_readable = input_open and len(pending_input) < _MAX_PENDING_INPUT
-            inputs = (input_fd, connection) if input_readable else (connection,)
-            writable_inputs = (connection,) if pending_input else ()
-            readable, writable, _ = select.select(inputs, writable_inputs, (), 0.1)
-            if input_readable and input_fd in readable:
-                payload = os.read(
-                    input_fd,
-                    min(_INPUT_CHUNK_SIZE, _MAX_PENDING_INPUT - len(pending_input)),
-                )
-                if not payload:
-                    input_open = False
-                else:
-                    pending_input.extend(payload)
-            if connection in writable and pending_input:
-                try:
-                    sent = connection.send(pending_input)
-                except BlockingIOError:
-                    pass
-                else:
-                    if sent <= 0:
-                        raise RttClientError("RTT channel closed while sending input")
-                    del pending_input[:sent]
-            if connection in readable:
-                try:
-                    payload = connection.recv(_INPUT_CHUNK_SIZE)
-                except BlockingIOError:
-                    continue
-                if not payload:
-                    returncode = poll_session()
-                    if returncode is not None:
-                        return returncode
-                    raise RttClientError("RTT channel closed while remote session is still running")
-                output_stream.write(payload)
-                output_stream.flush()
+        with _terminal_mode(input_fd):
+            return _RttRelay(connection, input_fd, output_stream, poll_session).run()
+    except BaseException as error:
+        primary_failure = error
+        raise
     finally:
-        connection.close()
-        if original_terminal is not None:
-            termios.tcsetattr(input_fd, termios.TCSAFLUSH, original_terminal)
+        try:
+            connection.close()
+        except BaseException as error:
+            if primary_failure is None:
+                raise
+            _add_failure_note(primary_failure, "RTT socket cleanup failed", error)

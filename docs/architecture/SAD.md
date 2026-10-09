@@ -825,6 +825,15 @@ bidirectional channel-0 bytes, uses noncanonical/no-echo TTY input without
 disabling normal signal handling, and restores the complete terminal state on
 every exit path. Non-TTY input is supported without terminal operations.
 
+The client owns the connected socket before accessing stdin or delivering initial
+output. A terminal-mode scope restores prior attributes before the socket is
+closed. The relay owns the bounded pending-input queue and interprets readiness,
+retaining unsent bytes across partial writes and transient backpressure. It polls
+session state before each readiness wait and again at receive-side channel EOF,
+so a recorded session exit takes precedence over that channel closure. Terminal
+and socket cleanup are attempted independently; an existing failure remains
+primary, with secondary cleanup failures attached as notes.
+
 For `debug --rtt-server`, `attach --rtt-server`, and `debugserver --rtt-server`,
 RTT setup is included in OpenOCD's startup command sequence before its
 startup-complete marker.
