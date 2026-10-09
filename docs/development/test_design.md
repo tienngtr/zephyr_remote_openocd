@@ -79,6 +79,19 @@ real-time deadlines, call-count-driven fake clocks, retries, or scheduling
 assumptions. Advance fake clocks at meaningful events and use events, barriers,
 pipes, socket readiness, controlled selectors, or equivalent synchronization.
 
+* Derive lifecycle and concurrency regressions from an explicit interleaving.
+Distinguish an effect succeeding from ownership adoption, and distinguish a
+fact occurring, being recognized, blocking during publication, entering a
+queue, and being dispatched. Synchronize the test at the boundary relevant to
+the contract instead of assuming those stages happen atomically.
+
+* For resource-ownership regressions, interrupt immediately before or after the
+meaningful handoff and assert the externally relevant cleanup result. For
+ordering or precedence regressions, arrange the competing facts
+deterministically and assert which outcome becomes primary and which
+diagnostics remain visible. A race test should be explainable as a concrete
+event sequence before it is encoded as test machinery.
+
 * Keep each test focused on one contractual behavior. Setup may involve several
 real production objects, but assertions should have a clear behavioral purpose
 rather than forming a broad snapshot of incidental implementation state.

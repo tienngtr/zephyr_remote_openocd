@@ -69,6 +69,30 @@ conflicting transitions. Do not publish success or launch dependent work before
 checking already-recorded failures that invalidate it. This does not promise
 continued process liveness after the check.
 
+For lifecycle, concurrency, signal, or cleanup changes, explicitly check these
+boundaries:
+
+1. For every acquired resource, identify who owns it immediately after the
+   effect succeeds, including before normal adoption completes.
+2. At every ownership handoff, consider interruption or `BaseException`
+   immediately before and after the handoff; no acquired resource may pass
+   through an unowned cleanup interval.
+3. For asynchronous facts, distinguish occurrence, recognition, blocked
+   publication, queueing, and coordinator dispatch. Do not assume those stages
+   are equivalent for ordering or precedence.
+4. Before publishing success, committing a retry, or launching dependent work,
+   account for earlier terminal facts that may already be recognized or queued
+   but not yet dispatched.
+5. During cleanup, interruption or one cleanup failure must not abandon other
+   independently owned resources that still require a cleanup attempt.
+6. When failures compose, preserve the established primary outcome and retain
+   required secondary diagnostics, including diagnostics already attached to a
+   secondary exception.
+
+Concurrency regressions should demonstrate the relevant interleaving with
+deterministic synchronization. A suspected race is not established until the
+reachable event ordering and violated invariant can be stated explicitly.
+
 Before adding retries, fences, state, or cleanup machinery, identify the
 requirement and race it protects. Prefer the least complex design that meets
 the existing contract; propose rather than silently strengthen or weaken
