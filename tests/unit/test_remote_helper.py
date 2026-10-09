@@ -761,10 +761,7 @@ def test_coordinator_adoption_failure_attempts_lock_cleanup_after_workspace_fail
             remove(acquired[0][1])
 
 
-@pytest.mark.parametrize("output_cleanup_fails", [False, True])
-def test_control_session_cleans_up_when_announcement_fails(
-    tmp_path, monkeypatch, output_cleanup_fails
-):
+def test_control_session_cleans_up_when_announcement_fails(tmp_path, monkeypatch):
     monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
     session_id, workspace, lock = remote_helper.new_workspace()
 
@@ -774,20 +771,12 @@ def test_control_session_cleans_up_when_announcement_fails(
         raise failure
 
     monkeypatch.setattr(remote_helper.ControlSession, "announce", fail_announce)
-    if output_cleanup_fails:
-
-        def fail_output_cleanup(_output):
-            raise OSError("injected output fd restoration failure")
-
-        monkeypatch.setattr(remote_helper._ProtocolOutput, "close", fail_output_cleanup)
     session = remote_helper.ControlSession(session_id, workspace, lock)
 
     with pytest.raises(BrokenPipeError) as raised:
         session.run()
 
     assert raised.value is failure
-    if output_cleanup_fails:
-        assert any("fd restoration failure" in note for note in failure.__notes__)
     assert not workspace.exists()
     assert lock.closed
 

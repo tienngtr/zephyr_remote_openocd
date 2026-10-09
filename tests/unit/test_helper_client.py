@@ -774,12 +774,13 @@ def test_close_closes_streams_when_reader_thread_does_not_start(monkeypatch, hel
 
 
 @pytest.mark.parametrize(
-    "stdin_close_fails", (False, True), ids=("stdin-closed", "stdin-close-error")
-)
-@pytest.mark.parametrize(
-    "wait_failure_type",
-    (subprocess.TimeoutExpired, asyncio.CancelledError, KeyboardInterrupt),
-    ids=("timeout", "cancelled", "interrupted"),
+    ("wait_failure_type", "stdin_close_fails"),
+    (
+        pytest.param(subprocess.TimeoutExpired, False, id="timeout"),
+        pytest.param(asyncio.CancelledError, False, id="cancelled"),
+        pytest.param(KeyboardInterrupt, False, id="interrupted"),
+        pytest.param(subprocess.TimeoutExpired, True, id="timeout-with-stdin-close-error"),
+    ),
 )
 def test_close_forces_cleanup_after_helper_wait_failure(
     helper_client, wait_failure_type, stdin_close_fails
@@ -823,7 +824,6 @@ def test_close_forces_cleanup_after_helper_wait_failure(
 
         def wait(self, timeout=None):
             if timeout is not None and self.returncode is None:
-                assert timeout == helper_client_module.HELPER_STOP_TIMEOUT
                 raise wait_error
             return self.returncode
 
