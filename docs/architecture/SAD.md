@@ -1482,6 +1482,15 @@ serializes protocol output. The coordinator alone dispatches commands, changes
 lifecycle state, interprets output/readiness, selects the logical outcome, and
 initiates cleanup.
 
+`run_async()` owns protocol-output activation, descriptor restoration, and the
+outer workspace cleanup fallback. Its `_run_session_tasks()` scope owns the
+TaskGroup and keeps the protocol writer alive after other session observers are
+cancelled, through workspace release, outcome reporting, and bounded output
+drain. The outer scope restores signal handlers after output cleanup and applies
+the final primary-versus-secondary failure rule. `_SessionSignals` records each
+prior handler before installation and reports restoration failures individually,
+so partial setup remains owned and one failed restoration cannot skip another.
+
 The control entry point observes termination signals before allocating a
 workspace. Until coordinator construction succeeds, allocation retains rollback
 responsibility for the workspace, lease metadata, and session lock. Failed

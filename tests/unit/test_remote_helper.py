@@ -15,10 +15,11 @@ import socket
 import subprocess
 import sys
 import time
+from collections.abc import Buffer, Callable
 from contextlib import suppress
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any
+from types import FrameType, SimpleNamespace
+from typing import IO, Any
 from unittest.mock import create_autospec
 
 import pytest
@@ -34,6 +35,7 @@ remote_helper = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(remote_helper)
 
 SAMPLE_CHILD_EXIT_CODE = 7
+SignalHandler = Callable[[int, FrameType | None], object] | int | None
 
 
 @pytest.fixture
@@ -937,6 +939,177 @@ def test_control_session_cleans_up_when_protocol_output_setup_fails(tmp_path, mo
     assert raised.value is failure
     assert not workspace.exists()
     assert lock.closed
+
+
+@pytest.mark.parametrize("failure_type", (OSError, asyncio.CancelledError))
+@pytest.mark.parametrize("restoration_fails", (False, True))
+def test_partial_signal_installation_restores_handlers_and_preserves_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_type: type[BaseException],
+    restoration_fails: bool,
+) -> None:
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    session = remote_helper.ControlSession.create()
+    failure = failure_type("injected signal installation failure")
+    restoration_failure = OSError("injected signal restoration failure")
+    previous = {signum: signal.getsignal(signum) for signum in (signal.SIGTERM, signal.SIGINT)}
+    original_signal = signal.signal
+    installed: set[int] = set()
+    restored: list[int] = []
+
+    def install_then_fail(signum: int, handler: SignalHandler) -> SignalHandler:
+        result = original_signal(signum, handler)
+        if handler == session.handle_signal:
+            installed.add(signum)
+            if signum == signal.SIGINT:
+                raise failure
+        elif signum in installed:
+            restored.append(signum)
+            installed.remove(signum)
+            if restoration_fails:
+                raise restoration_failure
+        return result
+
+    monkeypatch.setattr(remote_helper.signal, "signal", install_then_fail)
+
+    async def run() -> None:
+        tasks_before = asyncio.all_tasks()
+        output_before = remote_helper._protocol_output.get()
+        with pytest.raises(failure_type) as raised:
+            await session.run_async()
+        assert raised.value is failure
+        assert asyncio.all_tasks() == tasks_before
+        assert remote_helper._protocol_output.get() is output_before
+
+    try:
+        asyncio.run(run())
+        assert set(restored) == set(previous)
+        assert all(signal.getsignal(signum) == handler for signum, handler in previous.items())
+        if restoration_fails:
+            assert any(str(restoration_failure) in note for note in failure.__notes__)
+        assert session.workspace_lock.closed
+        assert not session.work.exists()
+    finally:
+        for signum, handler in previous.items():
+            original_signal(signum, handler)
+        session._release_workspace()
+
+
+def test_signal_restoration_attempts_both_handlers_after_normal_exit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    control_pipe: tuple[IO[bytes], IO[bytes]],
+) -> None:
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    session = remote_helper.ControlSession.create()
+    _reader, writer = control_pipe
+    writer.write(b'{"version":1,"type":"STOP"}\n')
+    previous = {signum: signal.getsignal(signum) for signum in (signal.SIGTERM, signal.SIGINT)}
+    original_signal = signal.signal
+    failures: dict[int, OSError] = {
+        signum: OSError(f"restoration failed for {signum}") for signum in previous
+    }
+    installed: set[int] = set()
+    restored: list[int] = []
+
+    def restore_then_fail(signum: int, handler: SignalHandler) -> SignalHandler:
+        result = original_signal(signum, handler)
+        if handler == session.handle_signal:
+            installed.add(signum)
+        elif signum in installed:
+            restored.append(signum)
+            installed.remove(signum)
+            raise failures[signum]
+        return result
+
+    monkeypatch.setattr(remote_helper.signal, "signal", restore_then_fail)
+    try:
+        with pytest.raises(OSError) as raised:
+            session.run()
+        assert set(restored) == set(previous)
+        assert raised.value is failures[signal.SIGTERM]
+        assert any(str(failures[signal.SIGINT]) in note for note in raised.value.__notes__)
+        assert all(signal.getsignal(signum) == handler for signum, handler in previous.items())
+        assert session.workspace_lock.closed
+        assert not session.work.exists()
+    finally:
+        for signum, handler in previous.items():
+            original_signal(signum, handler)
+        session._release_workspace()
+
+
+@pytest.mark.parametrize("primary_type", (None, OSError, asyncio.CancelledError))
+def test_protocol_writer_and_close_failures_preserve_primary_exception(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    control_pipe: tuple[IO[bytes], IO[bytes]],
+    primary_type: type[BaseException] | None,
+) -> None:
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    session = remote_helper.ControlSession.create()
+    _control_reader, control_writer = control_pipe
+    control_writer.write(b'{"version":1,"type":"STOP"}\n')
+    primary = primary_type("injected session setup failure") if primary_type is not None else None
+    writer_failure = BrokenPipeError("injected protocol write failure")
+    close_failure = OSError("injected protocol descriptor restoration failure")
+    original_signal = signal.signal
+    original_write = os.write
+    original_set_blocking = os.set_blocking
+    previous = {signum: signal.getsignal(signum) for signum in (signal.SIGTERM, signal.SIGINT)}
+    output_read, output_write = os.pipe()
+    close_attempts: list[int] = []
+
+    def install_then_fail(signum: int, handler: SignalHandler) -> SignalHandler:
+        result = original_signal(signum, handler)
+        if signum == signal.SIGINT and handler == session.handle_signal and primary is not None:
+            raise primary
+        return result
+
+    def fail_write(descriptor: int, payload: Buffer) -> int:
+        if descriptor == output_write:
+            raise writer_failure
+        return original_write(descriptor, payload)
+
+    def restore_then_fail(descriptor: int, blocking: bool) -> None:
+        original_set_blocking(descriptor, blocking)
+        if descriptor == output_write and blocking:
+            close_attempts.append(descriptor)
+            raise close_failure
+
+    async def run() -> None:
+        tasks_before = asyncio.all_tasks()
+        output_before = remote_helper._protocol_output.get()
+        expected = primary if primary is not None else writer_failure
+        with pytest.raises(type(expected)) as raised:
+            await session.run_async()
+        assert raised.value is expected
+        assert any(str(close_failure) in note for note in expected.__notes__)
+        if primary is not None:
+            assert any(str(writer_failure) in note for note in expected.__notes__)
+        assert asyncio.all_tasks() == tasks_before
+        assert remote_helper._protocol_output.get() is output_before
+
+    try:
+        with (
+            os.fdopen(output_read, "rb"),
+            os.fdopen(output_write, "w", encoding="utf-8") as stdout,
+            monkeypatch.context() as patch,
+        ):
+            patch.setattr(remote_helper.sys, "stdout", stdout)
+            patch.setattr(remote_helper.signal, "signal", install_then_fail)
+            patch.setattr(remote_helper.os, "write", fail_write)
+            patch.setattr(remote_helper.os, "set_blocking", restore_then_fail)
+            asyncio.run(run())
+            assert os.get_blocking(output_write)
+        assert close_attempts == [output_write]
+        assert all(signal.getsignal(signum) == handler for signum, handler in previous.items())
+        assert session.workspace_lock.closed
+        assert not session.work.exists()
+    finally:
+        for signum, handler in previous.items():
+            original_signal(signum, handler)
+        session._release_workspace()
 
 
 def _start_session_command(argv, sentinels=()):

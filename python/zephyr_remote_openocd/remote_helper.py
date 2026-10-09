@@ -1329,6 +1329,28 @@ _Observation = (
 )
 
 
+class _SessionSignals:
+    """Own installed session handlers, including partially completed setup."""
+
+    def __init__(self) -> None:
+        self.previous_handlers: dict[
+            int, Callable[[int, FrameType | None], object] | int | None
+        ] = {}
+
+    def install(self, handler: Callable[[int, FrameType | None], None]) -> None:
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            self.previous_handlers[signum] = signal.getsignal(signum)
+            signal.signal(signum, handler)
+
+    def restore(self) -> Iterator[Exception]:
+        """Report each failed restoration before attempting the next handler."""
+        for signum, handler in self.previous_handlers.items():
+            try:
+                signal.signal(signum, handler)
+            except Exception as exc:
+                yield exc
+
+
 class ControlSession:
     """Sole lifecycle owner of one structured remote-helper session."""
 
@@ -1848,55 +1870,62 @@ class ControlSession:
             # Let owned observers and the nonblocking protocol writer progress.
             await asyncio.sleep(0)
 
+    async def _run_session_tasks(
+        self, output: _ProtocolOutput, signals: _SessionSignals
+    ) -> BaseException | None:
+        """Keep the writer owned until observers stop and terminal output drains."""
+        final_exception: BaseException | None = None
+        writer_task = None
+        async with asyncio.TaskGroup() as tasks:
+            self._tasks = tasks
+            try:
+                if output.descriptor is not None:
+                    writer_task = self._observe("protocol output", output.run())
+                self.announce()
+                signals.install(self.handle_signal)
+                self._control_task = self._observe("control", self._observe_control())
+                self._observe("signal", self._observe_signals())
+                await self._coordinate()
+            except BaseException as exc:
+                self._select_failure(exc)
+                await self._coordinate()
+            finally:
+                await self._cancel(
+                    [task for task in self._session_tasks if task is not writer_task]
+                )
+                self._release_workspace()
+            try:
+                self._report_outcome()
+            except BaseException as exc:
+                final_exception = exc
+                if isinstance(exc, Exception):
+                    try:
+                        error(exc)
+                    except Exception as output_error:
+                        exc.add_note(f"terminal output also failed: {output_error}")
+            try:
+                await output.drain()
+            except Exception as exc:
+                if final_exception is None:
+                    final_exception = exc
+                else:
+                    final_exception.add_note(f"protocol output cleanup also failed: {exc}")
+            finally:
+                if writer_task is not None:
+                    await self._cancel([writer_task])
+        return final_exception
+
     async def run_async(self) -> None:
+        """Own output and signal scopes around the structured session tasks."""
         self._loop = asyncio.get_running_loop()
-        previous_handlers = {}
+        signals = _SessionSignals()
         output = None
         output_token = None
         final_exception: BaseException | None = None
-        writer_task = None
         try:
             output = _ProtocolOutput()
             output_token = _protocol_output.set(output)
-            async with asyncio.TaskGroup() as tasks:
-                self._tasks = tasks
-                try:
-                    if output.descriptor is not None:
-                        writer_task = self._observe("protocol output", output.run())
-                    self.announce()
-                    for signum in (signal.SIGTERM, signal.SIGINT):
-                        previous_handlers[signum] = signal.getsignal(signum)
-                        signal.signal(signum, self.handle_signal)
-                    self._control_task = self._observe("control", self._observe_control())
-                    self._observe("signal", self._observe_signals())
-                    await self._coordinate()
-                except BaseException as exc:
-                    self._select_failure(exc)
-                    await self._coordinate()
-                finally:
-                    await self._cancel(
-                        [task for task in self._session_tasks if task is not writer_task]
-                    )
-                    self._release_workspace()
-                try:
-                    self._report_outcome()
-                except BaseException as exc:
-                    final_exception = exc
-                    if isinstance(exc, Exception):
-                        try:
-                            error(exc)
-                        except Exception as output_error:
-                            exc.add_note(f"terminal output also failed: {output_error}")
-                try:
-                    await output.drain()
-                except Exception as exc:
-                    if final_exception is None:
-                        final_exception = exc
-                    else:
-                        final_exception.add_note(f"protocol output cleanup also failed: {exc}")
-                finally:
-                    if writer_task is not None:
-                        await self._cancel([writer_task])
+            final_exception = await self._run_session_tasks(output, signals)
         except BaseException as exc:
             final_exception = exc
         finally:
@@ -1913,13 +1942,10 @@ class ControlSession:
                         final_exception = exc
                     else:
                         final_exception.add_note(f"protocol output cleanup also failed: {exc}")
-            for signum, handler in previous_handlers.items():
-                try:
-                    signal.signal(signum, handler)
-                except Exception as exc:
-                    self.cleanup_errors.append(exc)
-                    if final_exception is None:
-                        final_exception = exc
+            for restoration_error in signals.restore():
+                self.cleanup_errors.append(restoration_error)
+                if final_exception is None:
+                    final_exception = restoration_error
             if final_exception is not None:
                 for cleanup_error in self.cleanup_errors:
                     if cleanup_error is not final_exception:
