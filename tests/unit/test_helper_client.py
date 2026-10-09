@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import os
 import shutil
@@ -783,8 +784,24 @@ def test_close_closes_streams_when_reader_thread_does_not_start(monkeypatch, hel
     assert process.stderr.closed
 
 
-def test_close_forces_cleanup_after_helper_stop_timeout(helper_client):
+@pytest.mark.parametrize(
+    "stdin_close_fails", (False, True), ids=("stdin-closed", "stdin-close-error")
+)
+@pytest.mark.parametrize(
+    "wait_failure_type",
+    (subprocess.TimeoutExpired, asyncio.CancelledError, KeyboardInterrupt),
+    ids=("timeout", "cancelled", "interrupted"),
+)
+def test_close_forces_cleanup_after_helper_wait_failure(
+    helper_client, wait_failure_type, stdin_close_fails
+):
     close_event = encode_message("SESSION_CLOSED", reason="requested", returncode=None)
+    stdin_close_error = OSError("helper stdin close failed")
+    wait_error = (
+        subprocess.TimeoutExpired(("fake-helper",), helper_client_module.HELPER_STOP_TIMEOUT)
+        if wait_failure_type is subprocess.TimeoutExpired
+        else wait_failure_type()
+    )
 
     class StopInput(io.BytesIO):
         def __init__(self, event_writer: BinaryIO):
@@ -796,6 +813,11 @@ def test_close_forces_cleanup_after_helper_stop_timeout(helper_client):
             self.event_writer.write(close_event)
             self.event_writer.close()
             return written
+
+        def close(self):
+            super().close()
+            if stdin_close_fails:
+                raise stdin_close_error
 
     class Process:
         def __init__(self):
@@ -812,7 +834,8 @@ def test_close_forces_cleanup_after_helper_stop_timeout(helper_client):
 
         def wait(self, timeout=None):
             if timeout is not None and self.returncode is None:
-                raise subprocess.TimeoutExpired(self.args, timeout)
+                assert timeout == helper_client_module.HELPER_STOP_TIMEOUT
+                raise wait_error
             return self.returncode
 
         def terminate(self):
@@ -833,7 +856,10 @@ def test_close_forces_cleanup_after_helper_stop_timeout(helper_client):
 
     result = helper_client.close()
 
-    assert isinstance(result.error, subprocess.TimeoutExpired)
+    assert result.error is wait_error
+    assert result.cleanup_errors == ((stdin_close_error,) if stdin_close_fails else ())
+    if stdin_close_fails:
+        assert any("helper cleanup also failed" in note for note in wait_error.__notes__)
     assert process.returncode == 0
     assert process.stdin.closed
     assert process.stdout.closed
