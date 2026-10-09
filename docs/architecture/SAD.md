@@ -1968,6 +1968,10 @@ is retained as diagnostic information when it cannot replace the primary
 failure. The helper includes retained exception notes in the existing Protocol v1
 `ERROR.message` string so remote callers receive secondary cleanup diagnostics
 without changing the primary failure or adding protocol fields.
+Combining failures retains notes already attached to each secondary exception,
+including diagnostics from nested cleanup batches. Later cleanup composition
+preserves those details even when the secondary exception's summary was already
+attached to the primary failure.
 The following table defines the required outcomes:
 
 | Active operation state | Later status check | Primary outcome |

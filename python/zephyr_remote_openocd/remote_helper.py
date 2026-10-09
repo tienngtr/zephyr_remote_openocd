@@ -68,6 +68,8 @@ def _raise_cleanup_errors(errors):
     first, *additional = errors
     for error in additional:
         first.add_note(f"additional cleanup failure: {error}")
+        for note in tuple(getattr(error, "__notes__", ())):
+            first.add_note(f"additional cleanup failure detail: {note}")
     raise first
 
 
@@ -1239,6 +1241,8 @@ def _spawn_child(argv, *, cwd=None, environment=None, required_output_sentinels=
             _rollback_spawned_process(process)
         except BaseException as cleanup_error:
             error.add_note(f"child ownership rollback also failed: {cleanup_error}")
+            for note in tuple(getattr(cleanup_error, "__notes__", ())):
+                error.add_note(f"child ownership rollback detail: {note}")
         raise
 
 
@@ -1955,6 +1959,8 @@ class ControlSession:
                         error(exc)
                     except Exception as output_error:
                         exc.add_note(f"terminal output also failed: {output_error}")
+                        for note in tuple(getattr(output_error, "__notes__", ())):
+                            exc.add_note(f"terminal output failure detail: {note}")
             try:
                 await output.drain()
             except Exception as exc:
@@ -1962,6 +1968,8 @@ class ControlSession:
                     final_exception = exc
                 else:
                     final_exception.add_note(f"protocol output cleanup also failed: {exc}")
+                    for note in tuple(getattr(exc, "__notes__", ())):
+                        final_exception.add_note(f"protocol output cleanup detail: {note}")
             finally:
                 if writer_task is not None:
                     await self._cancel([writer_task])
@@ -1998,6 +2006,8 @@ class ControlSession:
                         final_exception = exc
                     else:
                         final_exception.add_note(f"protocol output cleanup also failed: {exc}")
+                        for note in tuple(getattr(exc, "__notes__", ())):
+                            final_exception.add_note(f"protocol output cleanup detail: {note}")
             for restoration_error in signals.restore():
                 self.cleanup_errors.append(restoration_error)
                 if final_exception is None:
@@ -2008,6 +2018,10 @@ class ControlSession:
                         note = f"session cleanup also failed: {cleanup_error}"
                         if note not in getattr(final_exception, "__notes__", ()):
                             final_exception.add_note(note)
+                        for detail in tuple(getattr(cleanup_error, "__notes__", ())):
+                            note = f"session cleanup failure detail: {detail}"
+                            if note not in getattr(final_exception, "__notes__", ()):
+                                final_exception.add_note(note)
         if final_exception is not None:
             raise final_exception
 
@@ -2016,6 +2030,8 @@ class ControlSession:
         if failure is not None:
             for exc in self.cleanup_errors:
                 failure.add_note(f"session cleanup also failed: {exc}")
+                for note in tuple(getattr(exc, "__notes__", ())):
+                    failure.add_note(f"session cleanup failure detail: {note}")
             if self.protocol_error is not None:
                 error(failure, "PROTOCOL_ERROR")
                 if self.cleanup_errors:
@@ -2078,6 +2094,10 @@ def control() -> None:
                 note = f"session cleanup also failed: {cleanup_error}"
                 if note not in getattr(failure, "__notes__", ()):
                     failure.add_note(note)
+                for detail in tuple(getattr(cleanup_error, "__notes__", ())):
+                    note = f"session cleanup failure detail: {detail}"
+                    if note not in getattr(failure, "__notes__", ()):
+                        failure.add_note(note)
         # The session owns ERROR delivery and bounded output cleanup; never
         # retry a blocking stdout write after the structured scope has closed.
         if session is not None and isinstance(failure, Exception):

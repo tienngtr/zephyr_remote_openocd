@@ -522,16 +522,32 @@ def test_relay_real_child_flushes_newline_free_output_before_exit(
     assert events[-1][0] == "SESSION_CLOSED"
 
 
-def test_spawn_child_rolls_back_process_when_ownership_wrapper_fails(monkeypatch):
+@pytest.mark.parametrize("cleanup_fails", (False, True))
+def test_spawn_child_rolls_back_process_when_ownership_wrapper_fails(monkeypatch, cleanup_fails):
     original_popen = remote_helper.subprocess.Popen
     processes = []
     process_pidfds = []
     failure = RuntimeError("injected child ownership failure")
+    cleanup_errors = [OSError(f"child {stream} closure failed") for stream in ("stdout", "stderr")]
+
+    def fail_close(stream, cleanup_error):
+        close = stream.close
+
+        def close_then_fail():
+            close()
+            raise cleanup_error
+
+        monkeypatch.setattr(stream, "close", close_then_fail)
 
     def capture_popen(*args, **kwargs):
         process = original_popen(*args, **kwargs)
         processes.append(process)
         process_pidfds.append(os.pidfd_open(process.pid))
+        if cleanup_fails:
+            for stream, cleanup_error in zip(
+                (process.stdout, process.stderr), cleanup_errors, strict=True
+            ):
+                fail_close(stream, cleanup_error)
         return process
 
     def fail_child_ownership(*_args, **_kwargs):
@@ -549,6 +565,9 @@ def test_spawn_child_rolls_back_process_when_ownership_wrapper_fails(monkeypatch
         assert processes[0].returncode is not None
         assert processes[0].stdout is not None and processes[0].stdout.closed
         assert processes[0].stderr is not None and processes[0].stderr.closed
+        if cleanup_fails:
+            for cleanup_error in cleanup_errors:
+                assert any(str(cleanup_error) in note for note in failure.__notes__)
     finally:
         for process in processes:
             if process.poll() is None:
@@ -798,6 +817,8 @@ def test_coordinator_adoption_failure_attempts_lock_cleanup_after_workspace_fail
     acquired = []
     failure = RuntimeError("coordinator construction failed")
     cleanup_failure = OSError("workspace cleanup failed")
+    cleanup_detail = "workspace lease cleanup also failed"
+    cleanup_failure.add_note(cleanup_detail)
 
     def new_workspace():
         resources = allocate()
@@ -828,6 +849,7 @@ def test_coordinator_adoption_failure_attempts_lock_cleanup_after_workspace_fail
         assert (raised.value.__cause__ or raised.value) is failure
         assert acquired[0][2].closed
         assert any(str(cleanup_failure) in note for note in failure.__notes__)
+        assert any(cleanup_detail in note for note in failure.__notes__)
         assert all(
             signal.getsignal(signum) == handler for signum, handler in previous_handlers.items()
         )
@@ -889,6 +911,8 @@ def test_partial_signal_installation_restores_handlers_and_preserves_failure(
     session = remote_helper.ControlSession.create()
     failure = failure_type("injected signal installation failure")
     restoration_failure = OSError("injected signal restoration failure")
+    restoration_detail = "signal restoration retained detail"
+    restoration_failure.add_note(restoration_detail)
     previous = {signum: signal.getsignal(signum) for signum in (signal.SIGTERM, signal.SIGINT)}
     original_signal = signal.signal
     installed: set[int] = set()
@@ -924,6 +948,7 @@ def test_partial_signal_installation_restores_handlers_and_preserves_failure(
         assert all(signal.getsignal(signum) == handler for signum, handler in previous.items())
         if restoration_fails:
             assert any(str(restoration_failure) in note for note in failure.__notes__)
+            assert any(restoration_detail in note for note in failure.__notes__)
         assert session.workspace_lock.closed
         assert not session.work.exists()
     finally:
@@ -989,6 +1014,8 @@ def test_protocol_writer_and_close_failures_preserve_primary_exception(
     primary = primary_type("injected session setup failure") if primary_type is not None else None
     writer_failure = BrokenPipeError("injected protocol write failure")
     close_failure = OSError("injected protocol descriptor restoration failure")
+    close_detail = "protocol descriptor cleanup retained detail"
+    close_failure.add_note(close_detail)
     original_signal = signal.signal
     original_write = os.write
     original_set_blocking = os.set_blocking
@@ -1021,6 +1048,7 @@ def test_protocol_writer_and_close_failures_preserve_primary_exception(
             await session.run_async()
         assert raised.value is expected
         assert any(str(close_failure) in note for note in expected.__notes__)
+        assert any(close_detail in note for note in expected.__notes__)
         if primary is not None:
             assert any(str(writer_failure) in note for note in expected.__notes__)
         assert asyncio.all_tasks() == tasks_before
@@ -2016,6 +2044,8 @@ def test_remote_cleanup_diagnostics_survive_error_serialization(
     original_close = session.workspace_lock.close
     workspace_failure = OSError("injected workspace removal failure")
     lock_failure = OSError("injected workspace lock closure failure")
+    lock_detail = "workspace lock cleanup retained detail"
+    lock_failure.add_note(lock_detail)
 
     def fail_workspace_removal(path):
         if path == session.work:
@@ -2045,11 +2075,55 @@ def test_remote_cleanup_diagnostics_survive_error_serialization(
         assert events[-1]["message"].startswith(str(primary))
         assert str(workspace_failure) in events[-1]["message"]
         assert str(lock_failure) in events[-1]["message"]
+        assert lock_detail in events[-1]["message"]
         assert session.work.exists()
         assert session.workspace_lock.closed
     finally:
         original_rmtree(session.work)
         original_close()
+
+
+def test_protocol_error_retains_both_workspace_metadata_cleanup_failures(
+    tmp_path, monkeypatch, control_pipe, capsys
+):
+    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
+    session = remote_helper.ControlSession.create()
+    closure = remote_helper._closure_path(session.work)
+    lease = remote_helper._lease_path(session.work)
+    closure_failure = OSError("workspace closure removal failed")
+    lease_failure = OSError("workspace lease removal failed")
+    unlink = Path.unlink
+    attempts = []
+
+    def fail_metadata_removal(path, *args, **kwargs):
+        if path in (closure, lease):
+            attempts.append(path)
+            raise closure_failure if path == closure else lease_failure
+        return unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_metadata_removal)
+    monkeypatch.setattr(remote_helper.ControlSession, "create", lambda: session)
+    _reader, writer = control_pipe
+    writer.write(b"not-json\n")
+    try:
+        with pytest.raises(SystemExit) as raised:
+            remote_helper.control()
+
+        assert raised.value.code == 1
+        events = [decode_message(line) for line in capsys.readouterr().out.splitlines()]
+        assert [event["type"] for event in events] == ["SESSION_CREATED", "ERROR"]
+        assert events[-1]["code"] == "PROTOCOL_ERROR"
+        assert events[-1]["message"].startswith(str(session.protocol_error))
+        assert str(closure_failure) in events[-1]["message"]
+        assert str(lease_failure) in events[-1]["message"]
+        assert attempts == [closure, lease]
+        assert session.workspace_lock.closed
+        assert not session.work.exists()
+        assert closure.exists() and lease.exists()
+    finally:
+        session._release_workspace()
+        unlink(closure, missing_ok=True)
+        unlink(lease, missing_ok=True)
 
 
 def test_supervised_child_terminates_descendant_after_leader_term(tmp_path):
