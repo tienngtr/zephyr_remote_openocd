@@ -191,12 +191,26 @@ class _ForwardManager:
             finally:
                 signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
         except BaseException as error:
+            # Pending rollback belongs here, before RemoteSession.close() can
+            # protect committed resources. Defer SIGINT through the whole batch.
+            previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
             cleanup_errors = (
                 list(error.cleanup_errors) if isinstance(error, SshProcessStartError) else []
             )
-            for process in pending_processes:
+            try:
+                for process in pending_processes:
+                    try:
+                        _stop_process(process)
+                    except BaseException as cleanup_error:
+                        cleanup_errors.append(cleanup_error)
+                        _add_failure_note(
+                            error,
+                            "forward startup cleanup also failed",
+                            cleanup_error,
+                        )
+            finally:
                 try:
-                    _stop_process(process)
+                    signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
                 except BaseException as cleanup_error:
                     cleanup_errors.append(cleanup_error)
                     _add_failure_note(

@@ -1011,6 +1011,11 @@ each acquired forwarding process belongs to either the startup rollback set or
 the manager's committed ownership set. Readiness waits retain the caller's
 previous mask, so startup remains interruptible.
 
+Failed startup defers SIGINT through the complete pending rollback batch,
+including the intervals between process cleanup attempts. It then restores the
+caller's exact prior mask. A pending interruption is retained behind the startup
+failure only after all pending transports have received their cleanup attempt.
+
 The manager reports newly observed exits with service identity and transport
 diagnostics. The session retains those facts, classifies them as required or
 best-effort, and emits each best-effort runtime warning once. Required failures
