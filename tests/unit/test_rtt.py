@@ -31,47 +31,34 @@ def connection_boundary(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     return connection
 
 
-def test_run_rtt_client_receives_after_transient_would_block(monkeypatch):
-    class Connection:
-        def __init__(self):
-            self.received = False
-            self.output_delivered = False
-            self.closed = False
+def test_run_rtt_client_receives_after_transient_would_block(
+    monkeypatch: pytest.MonkeyPatch, connection_boundary: MagicMock
+) -> None:
+    payloads = iter((BlockingIOError(), b"RTT output"))
 
-        def recv(self, _size):
-            if not self.received:
-                self.received = True
-                raise BlockingIOError
-            self.output_delivered = True
-            return b"RTT output"
+    def receive(_size: int) -> bytes:
+        payload = next(payloads)
+        if isinstance(payload, BlockingIOError):
+            raise payload
+        return payload
 
-        def close(self):
-            self.closed = True
-
-    connection = Connection()
-
-    def poll_session():
-        return 0 if connection.output_delivered else None
-
-    def select(readers, writers, errors, timeout):
-        return [connection], [], []
-
-    output = io.BytesIO()
-    monkeypatch.setattr(rtt_module, "_connect", lambda _port, _timeout: (connection, b""))
-    monkeypatch.setattr(rtt_module.select, "select", select)
-    monkeypatch.setattr(rtt_module.os, "isatty", lambda _fd: False)
-
-    with tempfile.TemporaryFile("w+b") as input_stream:
-        result = rtt_module.run_rtt_client(
-            5566,
-            poll_session,
-            stdin=input_stream,
-            stdout=output,
+    connection_boundary.recv.side_effect = receive
+    readiness: Iterator[tuple[list[MagicMock], list[object], list[object]]] = iter(
+        (([], [], []), ([connection_boundary], [], []), ([connection_boundary], [], []))
+    )
+    monkeypatch.setattr(rtt_module.select, "select", lambda *_args: next(readiness))
+    with tempfile.TemporaryFile("w+b") as stdin, io.BytesIO() as stdout:
+        assert (
+            rtt_module.run_rtt_client(
+                5566,
+                lambda: 0 if stdout.getvalue() == b"RTT output" else None,
+                stdin=stdin,
+                stdout=stdout,
+            )
+            == 0
         )
-
-    assert result == 0
-    assert output.getvalue() == b"RTT output"
-    assert connection.closed
+        assert stdout.getvalue() == b"RTT output"
+    connection_boundary.close.assert_called_once()
 
 
 def test_connect_retries_refusal_until_startup_error(monkeypatch):

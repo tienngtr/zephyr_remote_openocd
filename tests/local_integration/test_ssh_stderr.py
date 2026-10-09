@@ -11,7 +11,7 @@ from zephyr_remote_openocd.remote.backend import RemoteSession
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
 from zephyr_remote_openocd.remote.helper_client import _HelperClient
 from zephyr_remote_openocd.remote.model import RemoteProcess, RemoteSessionRequest, Service
-from zephyr_remote_openocd.remote.ssh import SshCommand
+from zephyr_remote_openocd.remote.ssh import SSH_STDERR_TAIL_BYTES, SshCommand
 
 pytestmark = pytest.mark.local
 
@@ -96,9 +96,14 @@ def test_control_progresses_when_configured_ssh_stderr_exceeds_pipe_capacity(tmp
         backend._helper_or_error().acquire()
         descriptor = backend._start_process(())
         assert descriptor.remote_address == "127.64.0.1"
+        control = backend._helper_or_error()._process_or_error()
     finally:
         backend.close()
     assert backend.closed
+    assert control.poll() == 0
+    tail = control.stderr_tail()
+    assert len(tail) <= SSH_STDERR_TAIL_BYTES
+    assert tail.endswith(b"control-tail\n")
 
 
 def test_forward_progresses_when_configured_ssh_stderr_exceeds_pipe_capacity(tmp_path):

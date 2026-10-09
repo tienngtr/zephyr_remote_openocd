@@ -654,6 +654,10 @@ class TestForwardingLifecycle:
 
             assert raised.value is cleanup_error
             assert healthy.poll() is not None
+            assert healthy.stdin is not None and healthy.stdin.closed
+            assert healthy.stdout is not None and healthy.stdout.closed
+            assert healthy._drain._stream.closed
+            assert not healthy._drain._thread.is_alive()
             assert not manager.has_forwards
             manager.close()
             assert terminate_calls == 1
@@ -1037,70 +1041,52 @@ class TestRttClient:
             run_rtt_client(port, lambda: None, startup_timeout=1)
         thread.join(2)
 
-    def test_tty_preserves_signals_and_restores_complete_state(self):
-        input_closed = False
-        channel_closed = False
+    def test_tty_preserves_signals_and_restores_complete_state(self, requires_loopback_listener):
+        request = b"tty input"
+        received = bytearray()
+        input_received = threading.Event()
+        input_sent = False
 
-        class Connection:
-            def recv(self, _size):
-                nonlocal channel_closed
-                channel_closed = True
-                return b""
+        def server(listener):
+            with listener, listener.accept()[0] as connection:
+                connection.sendall(b"connected")
+                while len(received) < len(request):
+                    payload = connection.recv(64)
+                    if not payload:
+                        return
+                    received.extend(payload)
+                input_received.set()
 
-            def close(self):
-                pass
+        master_fd, slave_fd = os.openpty()
+        try:
+            with os.fdopen(slave_fd, "rb", buffering=0) as stdin, io.BytesIO() as stdout:
+                original = termios.tcgetattr(stdin.fileno())
+                original[3] |= termios.ICANON | termios.ECHO | termios.ISIG
+                termios.tcsetattr(stdin.fileno(), termios.TCSANOW, original)
+                port, thread = self._listener(server)
 
-        def read_input(_fd, _size):
-            nonlocal input_closed
-            input_closed = True
-            return b""
+                def poll_session():
+                    nonlocal input_sent
+                    if not input_sent:
+                        configured = termios.tcgetattr(stdin.fileno())
+                        assert not configured[3] & termios.ICANON
+                        assert not configured[3] & termios.ECHO
+                        assert configured[3] & termios.ISIG
+                        # Write after terminal setup (which flushes pending input).
+                        # No newline: successful relay requires noncanonical mode.
+                        os.write(master_fd, request)
+                        input_sent = True
+                    return 0 if input_received.is_set() else None
 
-        def select_io(_readable, _writable, _exceptional, _timeout):
-            if input_closed:
-                return [connection], [], []
-            return [stream.fileno()], [], []
-
-        original = [
-            1,
-            2,
-            3,
-            rtt_module.termios.ICANON | rtt_module.termios.ECHO | rtt_module.termios.ISIG,
-            5,
-            6,
-            [7],
-        ]
-        connection = Connection()
-        with (
-            tempfile.TemporaryFile("w+b") as stream,
-            patch.object(rtt_module, "_connect", return_value=(connection, b"")),
-            patch.object(rtt_module.os, "isatty", return_value=True),
-            patch.object(rtt_module.os, "read", side_effect=read_input),
-            patch.object(
-                rtt_module.select,
-                "select",
-                side_effect=select_io,
-            ),
-            patch.object(
-                rtt_module.termios,
-                "tcgetattr",
-                side_effect=[list(original), list(original)],
-            ),
-            patch.object(rtt_module.termios, "tcsetattr") as set_attributes,
-        ):
-            assert (
-                run_rtt_client(
-                    5555,
-                    lambda: 0 if channel_closed else None,
-                    stdin=stream,
-                    stdout=stream,
-                )
-                == 0
-            )
-        configured = set_attributes.call_args_list[0].args[2]
-        assert not configured[3] & rtt_module.termios.ICANON
-        assert not configured[3] & rtt_module.termios.ECHO
-        assert configured[3] & rtt_module.termios.ISIG
-        assert set_attributes.call_args_list[-1].args[2] == original
+                try:
+                    assert run_rtt_client(port, poll_session, stdin=stdin, stdout=stdout) == 0
+                    assert termios.tcgetattr(stdin.fileno()) == original
+                finally:
+                    thread.join(5)
+                assert not thread.is_alive()
+                assert received == request
+        finally:
+            os.close(master_fd)
 
 
 @pytest.fixture
@@ -1436,7 +1422,8 @@ helper['stage'](sys.argv[2])
         (local_root / "nested" / "also-empty").mkdir(parents=True)
         (local_root / "nested" / "payload.cfg").write_text("payload")
         planner = PathPlanner(())
-        planner.plan_directory(local_root, "search_0")
+        planned = planner.plan_directory(local_root, "search_0")
+        assert planned.remote == "{workspace}/staged/trees/search_0"
         archive = build_archive(planner.staged_files)
 
         workspace = helper_workspace
@@ -1454,6 +1441,8 @@ helper['stage'](sys.argv[2])
 
         assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
         response = json.loads(result.stdout)
+        assert response["byte_count"] == archive.byte_count == len(b"payload")
+        assert response["sha256"] == archive.sha256 == hashlib.sha256(b"payload").hexdigest()
         assert response["files"] == ["trees/search_0/nested/payload.cfg"]
         assert response["directories"] == [
             "trees/search_0",
@@ -1470,24 +1459,25 @@ helper['stage'](sys.argv[2])
             "trees/search_0/nested/also-empty",
             "trees/search_0/nested/payload.cfg",
         }
+        assert (staged / "trees/search_0/nested/payload.cfg").read_bytes() == b"payload"
 
     def test_helper_stages_multiple_files_with_interspersed_directories(
         self, tmp_path, helper_workspace
     ):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
         tree = tmp_path / "tree"
-        nested = tree / "nested"
+        nested = tree / "nested directory"
         nested.mkdir(parents=True)
-        first = tree / "first.bin"
-        second = nested / "second.bin"
+        first = tree / "z first.bin"
+        second = nested / "a second.bin"
         first.write_bytes(b"first")
         second.write_bytes(b"second")
         archive = build_archive(
             (
                 StagedDirectory(tree, PurePosixPath("trees/root")),
-                StagedFile(first, PurePosixPath("trees/root/first.bin")),
-                StagedDirectory(nested, PurePosixPath("trees/root/nested")),
-                StagedFile(second, PurePosixPath("trees/root/nested/second.bin")),
+                StagedFile(first, PurePosixPath("trees/root/z first.bin")),
+                StagedDirectory(nested, PurePosixPath("trees/root/nested directory")),
+                StagedFile(second, PurePosixPath("trees/root/nested directory/a second.bin")),
             )
         )
 
@@ -1505,17 +1495,22 @@ helper['stage'](sys.argv[2])
             archive.stream.close()
 
         assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
-        assert json.loads(result.stdout) == {
+        response = json.loads(result.stdout)
+        assert response == {
             "version": 1,
             "type": "STAGED",
-            "byte_count": archive.byte_count,
-            "sha256": archive.sha256,
-            "files": list(archive.files),
-            "directories": list(archive.directories),
+            "byte_count": len(b"firstsecond"),
+            "sha256": hashlib.sha256(b"firstsecond").hexdigest(),
+            "files": ["trees/root/z first.bin", "trees/root/nested directory/a second.bin"],
+            "directories": ["trees/root", "trees/root/nested directory"],
         }
+        assert archive.byte_count == response["byte_count"]
+        assert archive.sha256 == response["sha256"]
+        assert list(archive.files) == response["files"]
+        assert list(archive.directories) == response["directories"]
         staged = workspace / "staged"
-        assert (staged / "trees/root/first.bin").read_bytes() == b"first"
-        assert (staged / "trees/root/nested/second.bin").read_bytes() == b"second"
+        assert (staged / "trees/root/z first.bin").read_bytes() == b"first"
+        assert (staged / "trees/root/nested directory/a second.bin").read_bytes() == b"second"
 
     @pytest.mark.parametrize(
         "members",
@@ -2191,9 +2186,15 @@ helper['stage'](sys.argv[2])
 
             assert process.wait(timeout=10) == 0
             assert not any(event["type"] in ("PROCESS_READY", "ERROR") for event in events)
-            if not close_input:
-                assert events[-1]["type"] == "SESSION_CLOSED"
-                assert events[-1]["reason"] == "requested"
+            if close_input:
+                assert not any(event["type"] == "SESSION_CLOSED" for event in events)
+            else:
+                assert events[-1] == {
+                    "version": 1,
+                    "type": "SESSION_CLOSED",
+                    "reason": "requested",
+                    "returncode": None,
+                }
             assert not workspace.exists()
             _assert_pidfd_exited(child_pidfd)
         finally:
@@ -2577,6 +2578,8 @@ sys.exit({exit_code})
         finally:
             with suppress(BaseException):
                 helper_client.close()
+
+        assert helper_client._process_or_error().wait(timeout=5) == exit_code
 
     def test_helper_client_rejects_requested_session_close_before_local_stop(self):
         helper_code = """

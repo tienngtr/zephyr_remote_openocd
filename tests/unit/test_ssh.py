@@ -30,13 +30,11 @@ from zephyr_remote_openocd.remote.model import (
 from zephyr_remote_openocd.remote.protocol import encode_message
 from zephyr_remote_openocd.remote.session import SessionError
 from zephyr_remote_openocd.remote.ssh import (
-    SSH_STDERR_TAIL_BYTES,
     SshCommand,
     SshLocalForward,
     _stop_process,
 )
 
-LONG_LIVED_CHILD_EXIT_CODE = 7
 STREAM_CHILD_EXIT_CODE = 4
 SAMPLE_OPENOCD_EXIT_CODE = 6
 
@@ -186,35 +184,6 @@ def test_sigint_during_launch_reaps_acquired_transport(monkeypatch, interrupt_bo
                     stream.close()
 
 
-def test_long_lived_process_drains_noisy_stderr_and_keeps_bounded_tail():
-    code = (
-        "import sys;"
-        "sys.stderr.buffer.write(b'prefix\\n' + b'x' * 200000 + b'tail-marker\\n');"
-        "sys.stderr.flush();"
-        "print('READY', flush=True);"
-        "sys.stdin.buffer.read();"
-        f"raise SystemExit({LONG_LIVED_CHILD_EXIT_CODE})"
-    )
-    process = SshCommand((sys.executable, "-c", code)).popen("host", "ignored")
-    try:
-        assert process.stdout is not None
-        assert process.stdout.readline() == b"READY\n"
-        assert process.stdin is not None
-        process.stdin.close()
-        assert process.wait(timeout=5) == LONG_LIVED_CHILD_EXIT_CODE
-        tail = process.stderr_tail()
-        assert len(tail) <= SSH_STDERR_TAIL_BYTES
-        assert tail.endswith(b"tail-marker\n")
-    finally:
-        if process.poll() is None:
-            process.kill()
-            process.wait(timeout=5)
-        process.close_stderr()
-        for stream in (process.stdin, process.stdout):
-            if stream is not None and not stream.closed:
-                stream.close()
-
-
 def test_run_stream_passes_file_as_stdin_and_captures_output(tmp_path):
     code = (
         "import sys;"
@@ -320,18 +289,6 @@ def test_stderr_tail_waits_for_delayed_eof_with_a_bounded_timeout(monkeypatch):
         release_suffix.set()
         drain._thread.join(timeout=5)
         assert not drain._thread.is_alive()
-
-
-def test_process_cleanup_closes_an_active_stderr_drain():
-    code = "import sys,time;sys.stderr.write('x' * 8192);sys.stderr.flush();time.sleep(30)"
-    process = SshCommand((sys.executable, "-c", code)).popen("host", "ignored")
-    try:
-        _stop_process(process)
-        assert process.poll() is not None
-    finally:
-        if process.poll() is None:
-            process.kill()
-            process.wait(timeout=5)
 
 
 def test_process_cleanup_kills_after_graceful_termination_times_out():

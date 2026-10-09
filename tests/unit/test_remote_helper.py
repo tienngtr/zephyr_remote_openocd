@@ -49,8 +49,6 @@ def control_pipe(monkeypatch):
 @pytest.mark.parametrize(
     ("interruption", "expected_error", "batch"),
     (
-        pytest.param(None, None, False, id="eof"),
-        pytest.param(b'{"version":1,"type":"STOP"}\n', None, False, id="stop"),
         pytest.param(b'{"version":1,"type":"STOP"}\n', None, True, id="batched-stop"),
         pytest.param(b"not-json\n", json.JSONDecodeError, False, id="malformed-json"),
         pytest.param(b'{"version":1,"type":"STOP"}', ValueError, False, id="incomplete-eof"),
@@ -92,12 +90,9 @@ def test_control_session_services_input_during_readiness(
         child = original_spawn(*args, **kwargs)
         children.append(child)
         if not batch:
-            if interruption is None:
+            writer.write(start if interruption == b"START" else interruption)
+            if not interruption.endswith(b"\n") and interruption != b"START":
                 writer.close()
-            else:
-                writer.write(start if interruption == b"START" else interruption)
-                if not interruption.endswith(b"\n") and interruption != b"START":
-                    writer.close()
         return child
 
     def record_event(kind, **values):
@@ -127,10 +122,7 @@ def test_control_session_services_input_during_readiness(
         assert events[-1][1]["code"] == "PROTOCOL_ERROR"
     else:
         assert session.protocol_error is None
-        if interruption is None:
-            assert [kind for kind, _values in events] == ["SESSION_CREATED", "PROCESS_STARTING"]
-        else:
-            assert events[-1] == ("SESSION_CLOSED", {"reason": "requested", "returncode": None})
+        assert events[-1] == ("SESSION_CLOSED", {"reason": "requested", "returncode": None})
 
 
 def test_helper_accepts_json_whitespace_inside_command_frame(tmp_path, control_pipe, capsys):

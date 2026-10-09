@@ -671,24 +671,6 @@ def test_packaged_remote_helper_is_available_and_valid_python():
 
 
 class TestStaging:
-    def test_build_archive_hashes_files_in_archive_order(self, tmp_path: Path):
-        first = tmp_path / "first.bin"
-        second = tmp_path / "second.bin"
-        first.write_bytes(b"first")
-        second.write_bytes(b"second")
-
-        archive = build_archive(
-            (
-                StagedFile(second, PurePosixPath("second.bin")),
-                StagedFile(first, PurePosixPath("first.bin")),
-            )
-        )
-
-        assert archive.files == ("second.bin", "first.bin")
-        assert archive.byte_count == len(b"secondfirst")
-        assert archive.sha256 == hashlib.sha256(b"secondfirst").hexdigest()
-        archive.stream.close()
-
     def test_build_archive_preserves_binary_and_empty_files(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -712,57 +694,6 @@ class TestStaging:
                 assert empty.read() == b""
                 assert binary.read() == bytes(range(256)) + b"\0"
             archive.stream.close()
-
-    def test_build_archive_preserves_path_components_with_spaces(self, tmp_path: Path):
-        source = tmp_path / "source file.bin"
-        source.write_bytes(b"payload")
-        archive = build_archive(
-            (StagedFile(source, PurePosixPath("directory with spaces/file name.bin")),)
-        )
-        with tarfile.open(fileobj=archive.stream, mode="r:*") as packaged:
-            assert packaged.getnames() == ["directory with spaces/file name.bin"]
-            content = packaged.extractfile(packaged.getmember(packaged.getnames()[0]))
-            assert content is not None
-            assert content.read() == b"payload"
-        archive.stream.close()
-
-    def test_build_archive_preserves_empty_directories_and_file_digest(self, tmp_path: Path):
-        root = tmp_path / "search"
-        (root / "empty").mkdir(parents=True)
-        (root / "nested" / "also-empty").mkdir(parents=True)
-        payload = root / "nested" / "payload.bin"
-        payload.write_bytes(b"payload")
-        archive = build_archive(
-            (
-                StagedDirectory(root, PurePosixPath("trees/search_0")),
-                StagedDirectory(root / "empty", PurePosixPath("trees/search_0/empty")),
-                StagedDirectory(root / "nested", PurePosixPath("trees/search_0/nested")),
-                StagedDirectory(
-                    root / "nested" / "also-empty",
-                    PurePosixPath("trees/search_0/nested/also-empty"),
-                ),
-                StagedFile(payload, PurePosixPath("trees/search_0/nested/payload.bin")),
-            )
-        )
-        assert archive.files == ("trees/search_0/nested/payload.bin",)
-        assert archive.directories == (
-            "trees/search_0",
-            "trees/search_0/empty",
-            "trees/search_0/nested",
-            "trees/search_0/nested/also-empty",
-        )
-        assert archive.byte_count == len(b"payload")
-        assert archive.sha256 == hashlib.sha256(b"payload").hexdigest()
-        with tarfile.open(fileobj=archive.stream, mode="r:*") as packaged:
-            assert packaged.getnames() == [
-                "trees/search_0",
-                "trees/search_0/empty",
-                "trees/search_0/nested",
-                "trees/search_0/nested/also-empty",
-                "trees/search_0/nested/payload.bin",
-            ]
-            assert packaged.getmember("trees/search_0").isdir()
-        archive.stream.close()
 
     @pytest.mark.parametrize(
         "entries",
@@ -956,23 +887,6 @@ class TestFlashPlanning:
         assert "no erase command" in message
         assert not planner.staged_files
         assert not planner.remote_checks
-
-    def test_plan_directory_records_empty_root_and_nested_directories(self, tmp_path: Path):
-        root = tmp_path / "search"
-        (root / "empty").mkdir(parents=True)
-        (root / "nested" / "also-empty").mkdir(parents=True)
-        planner = PathPlanner(())
-
-        planned = planner.plan_directory(root, "search_0")
-
-        assert planned.remote == "{workspace}/staged/trees/search_0"
-        assert [str(item.destination) for item in planner.staged_files] == [
-            "trees/search_0",
-            "trees/search_0/empty",
-            "trees/search_0/nested",
-            "trees/search_0/nested/also-empty",
-        ]
-        assert all(isinstance(item, StagedDirectory) for item in planner.staged_files)
 
     def test_plan_directory_rejects_ancestor_symlink_cycle(self, tmp_path: Path):
         root = tmp_path / "search"
