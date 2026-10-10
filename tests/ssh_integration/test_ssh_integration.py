@@ -4,16 +4,21 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import ipaddress
+import json
 import shlex
 import shutil
 import socket
 import tempfile
 import time
+import uuid
+import zipfile
 from contextlib import ExitStack
 from pathlib import Path, PurePosixPath
 
 import pytest
+from zephyr_remote_openocd.config import PathMapping
 from zephyr_remote_openocd.remote import (
     RemoteProcess,
     RemoteSession,
@@ -23,8 +28,14 @@ from zephyr_remote_openocd.remote import (
     StagedFile,
 )
 from zephyr_remote_openocd.remote.arguments import ArgumentTemplate, SessionValue
-from zephyr_remote_openocd.remote.deploy import deploy_helper
+from zephyr_remote_openocd.remote.deploy import _helper_source, deploy_helper
 from zephyr_remote_openocd.remote.forwarding import _ForwardManager
+from zephyr_remote_openocd.remote.outcome import CompletionPolicy
+from zephyr_remote_openocd.remote.paths import PathPlanner
+from zephyr_remote_openocd.remote.protocol import (
+    decode_single_frame,
+    validate_openocd_version_response,
+)
 from zephyr_remote_openocd.remote.ssh import (
     ManagedSshProcess,
     SshCommand,
@@ -72,6 +83,45 @@ while True:
             if not data:
                 break
             connection.sendall(data)
+"""
+
+REMOTE_WORKSPACE_RECLAMATION = """
+import json, os, pathlib, runpy, sys, tempfile
+from contextlib import ExitStack
+
+helper = runpy.run_path(sys.argv[1], run_name='qualification')
+with tempfile.TemporaryDirectory(prefix='zro qualification ') as directory:
+    os.environ['XDG_RUNTIME_DIR'] = directory
+    with ExitStack() as owners:
+        workspaces = {}
+        for name in ('active', 'inactive', 'unconfirmed'):
+            _, work, lock = helper['new_workspace']()
+            owners.enter_context(lock)
+            (work / 'staged' / 'input.bin').write_bytes(b'required input')
+            workspaces[name] = work
+            if name == 'unconfirmed':
+                (work / helper['UNCONFIRMED_CHILD']).touch()
+            if name != 'active':
+                lock.close()
+        legacy_root = pathlib.Path(directory) / 'zephyr_remote_openocd'
+        legacy = legacy_root / 'old-session'
+        legacy.mkdir(parents=True)
+        (legacy / 'input.bin').write_bytes(b'legacy input')
+        for work in (*workspaces.values(), legacy):
+            os.utime(work, (1, 1))
+        _, current, lock = helper['new_workspace']()
+        owners.enter_context(lock)
+        inactive = workspaces['inactive']
+        active_input = workspaces['active'] / 'staged' / 'input.bin'
+        unconfirmed_input = workspaces['unconfirmed'] / 'staged' / 'input.bin'
+        inactive_metadata = (helper['_lease_path'](inactive), helper['_closure_path'](inactive))
+        print(json.dumps({
+            'active_retained': active_input.read_bytes() == b'required input',
+            'unconfirmed_retained': unconfirmed_input.read_bytes() == b'required input',
+            'inactive_removed': not any(p.exists() for p in (inactive, *inactive_metadata)),
+            'legacy_retained': (legacy / 'input.bin').read_bytes() == b'legacy input',
+            'separate_root': current.parent != legacy_root and legacy_root not in current.parents,
+        }))
 """
 
 
@@ -333,6 +383,131 @@ class TestSshTransportIntegration:
             )
             assert result.returncode == 0, result.stderr.decode(errors="replace")
 
+    def test_bind_collision_retries_before_establishing_forward(self):
+        """A real post-spawn EADDRINUSE exit retries through the deployed helper."""
+        child = (
+            """
+import pathlib, socket, sys
+
+state = pathlib.Path(sys.argv[3])
+if not state.exists():
+    state.write_text(sys.argv[1])
+if state.read_text() == sys.argv[1]:
+    collision = socket.socket()
+    collision.bind((sys.argv[1], int(sys.argv[2])))
+    collision.listen()
+"""
+            + REMOTE_SESSION_ECHO
+        )
+        process = RemoteProcess(
+            ("python3", "-c", child, "{address}", "3333", "{workspace}/first-address"),
+            required_output_sentinels=("ZRO_TEST_READY",),
+            literal_prefix=3,
+            argv_templates=(
+                (3, ArgumentTemplate((SessionValue.ADDRESS,))),
+                (5, ArgumentTemplate((SessionValue.WORKSPACE, "/first-address"))),
+            ),
+        )
+        service = Service("gdb", free_loopback_port(), 3333)
+        attempts: list[tuple[str, ...]] = []
+        output: list[str] = []
+        session = RemoteSession.open(
+            RemoteSessionRequest(self.host, self.ssh, process, services=(service,)),
+            process_start_handler=attempts.append,
+            output_handler=lambda _stream, text, _line_end: output.append(text),
+        )
+        with cleanup_on_exit(session.close):
+            assert len(attempts) == 2
+            assert attempts[0][3] != attempts[1][3]
+            assert session.descriptor is not None
+            assert session.descriptor.remote_address == attempts[1][3]
+            assert "address already in use" in "".join(output).casefold()
+            wait_for_echo(service.local_port, b"retry_forward_round_trip", 20)
+
+    def test_helper_revision_repair_preserves_active_session(self):
+        """Deploy and repair a distinct bundle while the current revision is live."""
+        request = RemoteSessionRequest(
+            self.host,
+            self.ssh,
+            session_echo_process(),
+            services=(Service("gdb", free_loopback_port(), 3333),),
+        )
+        session = RemoteSession.open(request)
+        with cleanup_on_exit(session.close), ExitStack() as resources:
+            bundle = io.BytesIO(_helper_source())
+            with zipfile.ZipFile(bundle, "a") as archive:
+                archive.comment = uuid.uuid4().hex.encode("ascii")
+            source = bundle.getvalue()
+            digest = hashlib.sha256(source).hexdigest()
+            revision_path = str(
+                PurePosixPath(session.deployment.path).with_name(f"helper-{digest}.py")
+            )
+
+            def remove_revision() -> None:
+                result = self.ssh.run(self.host, "rm -f " + shlex.quote(revision_path), timeout=20)
+                assert result.returncode == 0, result.stderr.decode(errors="replace")
+
+            # Own the unique test revision before deployment, including a lost reply.
+            resources.enter_context(cleanup_on_exit(remove_revision))
+            deployed = deploy_helper(self.ssh, self.host, source=source)
+            assert deployed.path == revision_path
+            assert deployed.path != session.deployment.path
+            assert not deployed.reused
+            assert deploy_helper(self.ssh, self.host, source=source).reused
+            damaged = self.ssh.run(
+                self.host,
+                "python3 -c "
+                + shlex.quote(
+                    "import pathlib,sys; "
+                    "pathlib.Path(sys.argv[1]).write_bytes(sys.stdin.buffer.read())"
+                )
+                + " "
+                + shlex.quote(revision_path),
+                input_data=b"incomplete cached revision",
+                timeout=20,
+            )
+            assert damaged.returncode == 0, damaged.stderr.decode(errors="replace")
+            repaired = deploy_helper(self.ssh, self.host, source=source)
+            assert repaired.path == deployed.path and not repaired.reused
+            response = self.ssh.run(
+                self.host,
+                shlex.join(
+                    (
+                        "python3",
+                        repaired.path,
+                        "openocd-version",
+                        "--",
+                        *self.ssh_settings.openocd_command,
+                    )
+                ),
+                timeout=20,
+            )
+            assert response.returncode == 0, response.stderr.decode(errors="replace")
+            event = decode_single_frame(response.stdout)
+            validate_openocd_version_response(event)
+            assert event["type"] == "OPENOCD_VERSION"
+            wait_for_echo(request.services[0].local_port, b"active_revision_survived", 20)
+
+    def test_deployed_helper_reclaims_only_inactive_workspace_storage(self):
+        """Use the deployed bundle and real locks in a test-owned remote root."""
+        deployed = deploy_helper(self.ssh, self.host)
+        result = self.ssh.run(
+            self.host,
+            shlex.join(("python3", "-I", "-c", REMOTE_WORKSPACE_RECLAMATION, deployed.path)),
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr.decode(errors="replace")
+        assert json.loads(result.stdout) == dict.fromkeys(
+            (
+                "active_retained",
+                "unconfirmed_retained",
+                "inactive_removed",
+                "legacy_retained",
+                "separate_root",
+            ),
+            True,
+        )
+
     def test_preferred_address_reuses_forward_retained_by_external_master(self, tmp_path):
         """The test owns the master; production sessions own only their slaves."""
         ssh = SshCommand(
@@ -472,7 +647,8 @@ class TestSshTransportIntegration:
         )
         assert result.returncode == 0, result.stderr.decode(errors="replace")
 
-    def test_remote_openocd_config_consumes_forwarded_environment(self):
+    @pytest.mark.parametrize("mapped", (False, True), ids=("staged", "mapped"))
+    def test_remote_openocd_config_consumes_forwarded_environment(self, mapped):
         """Verify allow-listed environment reaches remote OpenOCD Tcl config."""
         openocd_command = self.ssh_settings.openocd_command
         executable = openocd_command[0]
@@ -481,29 +657,61 @@ class TestSshTransportIntegration:
         )
         if executable_result.returncode:
             pytest.skip(f"remote OpenOCD is not executable: {executable}")
-        with tempfile.TemporaryDirectory() as directory:
-            config = Path(directory) / "environment.cfg"
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as resources:
+            config = Path(directory) / "environment config.cfg"
             config.write_text(
                 "set zro_forwarded_value $::env(ZRO_CONFIG_VALUE)\n"
                 "echo ZRO_CONFIG_VALUE=$zro_forwarded_value\n"
                 "shutdown\n"
             )
+            mappings: tuple[PathMapping, ...] = ()
+            if mapped:
+                remote_directory = PurePosixPath(deploy_helper(self.ssh, self.host).path).parent / (
+                    "qualification mapped " + uuid.uuid4().hex
+                )
+
+                def remove_mapping() -> None:
+                    result = self.ssh.run(
+                        self.host,
+                        "rm -rf " + shlex.quote(str(remote_directory)),
+                        timeout=20,
+                    )
+                    assert result.returncode == 0, result.stderr.decode(errors="replace")
+
+                resources.enter_context(cleanup_on_exit(remove_mapping))
+                allocated = self.ssh.run(
+                    self.host,
+                    "mkdir -m 700 " + shlex.quote(str(remote_directory)),
+                    timeout=20,
+                )
+                assert allocated.returncode == 0, allocated.stderr.decode(errors="replace")
+                copied = self.ssh.run(
+                    self.host,
+                    "cat > " + shlex.quote(str(remote_directory / config.name)),
+                    input_data=config.read_bytes(),
+                    timeout=20,
+                )
+                assert copied.returncode == 0, copied.stderr.decode(errors="replace")
+                mappings = (PathMapping(Path(directory), remote_directory),)
+            planner = PathPlanner(mappings)
+            planned = planner.plan_file(config, "environment")
             output = []
             process = RemoteProcess(
-                (*openocd_command, "-f", "{workspace}/staged/environment.cfg"),
+                (*openocd_command, "-f", planned.remote),
                 (("ZRO_CONFIG_VALUE", "channel_1"),),
+                required_paths=tuple(planner.remote_checks),
                 argv_templates=(
-                    (
-                        len(openocd_command) + 1,
-                        ArgumentTemplate((SessionValue.WORKSPACE, "/staged/environment.cfg")),
-                    ),
+                    ((len(openocd_command) + 1, planned.template),)
+                    if planned.template is not None
+                    else ()
                 ),
+                completion_policy=CompletionPolicy.PROCESS_EXIT,
             )
             request = RemoteSessionRequest(
                 self.host,
                 self.ssh,
                 process,
-                (StagedFile(config, PurePosixPath("environment.cfg")),),
+                tuple(planner.staged_files),
                 (),
             )
             session = RemoteSession.open(
