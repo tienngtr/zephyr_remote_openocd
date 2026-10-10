@@ -1751,6 +1751,22 @@ After the authority commits termination, subsequent signals cannot abandon
 independent cleanup actions. Signal restoration attempts each prior handler
 even when another restoration fails.
 
+When the authority accounts native SIGINT/SIGTERM delivered to the helper,
+it records helper/session failure for both completion policies. A signal that
+initiates shutdown selects the signal trigger and establishes primary failure;
+an existing primary is preserved with signal detail secondary. A signal during
+EOF-initiated cleanup still records failure without replacing the trigger or
+interrupting independent disposal. Confirmed cleanup and genuine child status
+zero do not make this failure successful. If the wire snapshot is already frozen,
+the signal remains a local diagnostic and forces nonzero helper status rather
+than changing or replaying that snapshot. Client helper-status validation retains
+that late failure independently of the received outcome.
+
+Intentional local shutdown closes the controller input lease. The helper's
+SIGTERM/SIGKILL of its owned child group is ordinary child disposal, not a native
+signal delivered to the helper. Interactive local GDB Ctrl-C retains its separate
+stock behavior; it does not justify treating remote helper signals as success.
+
 Cleanup composition preserves the established primary and nested secondary
 diagnostics. A failed owner cannot skip another independent owner's attempt.
 An expired task wait leaves residual ownership or a supervised obligation;

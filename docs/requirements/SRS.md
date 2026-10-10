@@ -1328,6 +1328,17 @@ usable. Transport loss MAY prevent delivery. Remote SSH/operating-system
 detection latency is outside the cleanup bound. Local detection SHALL NOT be
 treated as remote observation, and the interval between them is not bounded.
 
+A native SIGINT or SIGTERM received by the remote helper SHALL be a
+helper/session failure under either completion policy, even if disposal succeeds
+or the child result is zero. It SHALL establish a failure if none exists or be
+retained as a secondary diagnostic under REQ-FUNC-HELP-011. A signal observed
+during already-initiated shutdown SHALL remain a failure without replacing its
+initiating cause; successful disposal SHALL NOT mask that failure. If the terminal outcome is already frozen, the
+signal failure SHALL remain visible through nonzero helper status without
+replacing that outcome. Intentional local closure uses controller-input EOF;
+helper-issued child-disposal signals SHALL NOT by themselves constitute this
+helper failure.
+
 The helper SHALL continue observing controller termination while readiness is
 pending. Bulk output backpressure SHALL NOT prevent controller or signal
 observation, child exit accounting, or cleanup progress. Readiness or a safe

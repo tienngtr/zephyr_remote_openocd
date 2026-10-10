@@ -268,12 +268,31 @@ Cleanup is exactly:
 | `workspace_disposal` | `not_created`, `confirmed`, or `unconfirmed`. `confirmed` requires safe removal of workspace and per-session coordination artifacts. |
 | `residual_resources` | List of unique names drawn from `child_producer`, `child_group`, `child_relays`, `address_lease`, `workspace`, `workspace_metadata`, identifying outstanding disposal obligations. |
 
-A failure trigger (`startup_failure`, `protocol_failure`, `output_failure`, or
-`helper_failure`) requires a non-null primary failure. Controller EOF, signal,
-or child exit can also coexist with a primary failure established earlier or
-during cleanup. A `child_exit` trigger requires a non-null genuine child result.
+A failure trigger (`signal`, `startup_failure`, `protocol_failure`,
+`output_failure`, or `helper_failure`) requires a non-null primary failure.
+Controller EOF or child exit can also coexist with a primary failure established
+earlier or during cleanup. A `child_exit` trigger requires a non-null genuine
+child result.
 `not_acquired`/`not_created` exclude corresponding residuals,
 and a non-null child result is incompatible with `child_disposal: not_acquired`.
+
+A native SIGINT/SIGTERM received by the helper is a helper/session failure,
+under either completion policy. When the authority accounts it, the signal
+failure becomes primary if none exists; otherwise its diagnostic remains
+secondary and the established primary is preserved. If it initiates termination,
+`trigger: signal` therefore cannot accompany `primary_failure: null`, even when
+disposal is confirmed, the child result is zero, and helper/SSH exits zero.
+The client rejects that invalid snapshot; a valid signal-triggered snapshot
+fails the operation through its non-null primary failure.
+
+If controller EOF or another cause already initiated termination, the signal
+still records failure without changing that trigger or abandoning cleanup.
+If the snapshot has already frozen, retain the signal failure in local
+diagnostics and return nonzero helper status; do not mutate or replace the
+snapshot. Independent helper-status validation makes that late failure visible.
+Intentional local closure uses controller EOF. Signals sent by the helper to its
+owned child group for disposal are child cleanup, not native signals received
+by the helper, and do not by themselves establish this helper/session failure.
 
 Unconfirmed disposal requires a corresponding residual resource and a primary
 or secondary cleanup-failure diagnostic. Confirmed child disposal excludes child
@@ -308,7 +327,8 @@ child, including observation during requested termination. EOF-triggered closure
 can therefore include a genuine child result. Helper, SSH, forwarding, timeout,
 and cleanup statuses cannot be synthesized into it. No child observation means
 null, even with zero helper/SSH status. A failed spawn can have an ATTEMPT and
-still have null child result. Signal-trigger detail may be retained as a Diagnostic.
+still have null child result. Signal failure is retained as a primary or
+secondary Diagnostic; it never substitutes a signal number for child status.
 
 Freeze at most one immutable snapshot after cleanup attempts and retained-output
 accounting. SESSION_ENDED is admitted after the output retained for delivery.
