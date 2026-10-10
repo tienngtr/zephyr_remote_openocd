@@ -23,7 +23,7 @@ pytestmark = [pytest.mark.hardware, pytest.mark.destructive]
 
 
 class TestRealRtt:
-    """Validate channel-0 RTT and the two RTT server variants."""
+    """Validate channel-0 RTT and simultaneous GDB/RTT services."""
 
     @staticmethod
     def _west_command(fixture: RttFixture, command: str, *runner_args: str) -> list[str]:
@@ -123,13 +123,18 @@ class TestRealRtt:
             process.send_signal(signal.SIGINT)
             process.wait(timeout=WEST_SHUTDOWN_TIMEOUT)
 
-    def test_debug_rtt_server_keeps_gdb_active(self, rtt_fixture: RttFixture, tmp_path) -> None:
+    @pytest.mark.parametrize("command", ("debug", "attach"))
+    def test_gdb_rtt_server_keeps_gdb_active(
+        self, rtt_fixture: RttFixture, tmp_path, command: str
+    ) -> None:
         fixture = rtt_fixture
+        if command == "attach":
+            self._program(fixture)
         port = fixture.operation.port
         release = tmp_path / "release-gdb"
         with self._start(
             fixture,
-            "debug",
+            command,
             "--rtt-server",
             f"--rtt-port={port}",
             "--gdb-init=monitor resume",

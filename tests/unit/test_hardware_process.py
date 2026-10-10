@@ -105,7 +105,7 @@ def test_hardware_cleanup_stops_descendant_after_leader_exit(tmp_path, monkeypat
                     target, RttOperation(RTT.local_port, "pong", "ping", SYNC_TIMEOUT, True, "main")
                 )
                 if operation == "rtt-abort":
-                    RttAcceptance().test_debug_rtt_server_keeps_gdb_active(fixture, tmp_path)
+                    RttAcceptance().test_gdb_rtt_server_keeps_gdb_active(fixture, tmp_path, "debug")
                 else:
                     RttAcceptance()._program(fixture)
         if operation != "rtt-abort":
