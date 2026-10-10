@@ -1980,6 +1980,11 @@ trailing protocol corruption is recorded later. A reader failure established
 first stays primary when a later terminal failure arrives. Boundary rendering
 retains the later fact as secondary detail without changing the remote snapshot.
 New secondary detail can reopen error delivery while retaining that primary.
+Before requesting helper shutdown, close captures any already-established,
+unreported operation failure. Later half-close, wait, and cleanup failures remain
+secondary to it. If no failure was established at shutdown entry, a shutdown
+failure can become primary, with terminal failure received during shutdown
+retained as secondary detail.
 
 GDB/RTT entry checks helper and forwarding health, then commits eligibility under
 that shared authority before its immediate synchronous launch callback. It uses

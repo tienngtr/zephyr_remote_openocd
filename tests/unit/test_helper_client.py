@@ -622,6 +622,55 @@ def test_terminal_failure_stays_primary_after_trailing_protocol_failure(
         client.close()
 
 
+@pytest.mark.parametrize("terminal_failure", ("startup", "child"))
+@pytest.mark.parametrize("shutdown_failure", ("stdin", "wait"))
+def test_close_preserves_terminal_failure_before_shutdown(
+    helper_client, terminal_failure, shutdown_failure
+):
+    shutdown_error = OSError(f"helper {shutdown_failure} failed")
+    shutdown_error.add_note("shutdown failure detail")
+    helper_client._observations.record_terminal(
+        terminal_snapshot(Trigger.STARTUP_FAILURE, code="STARTUP_FAILURE", message="startup failed")
+        if terminal_failure == "startup"
+        else terminal_snapshot(Trigger.CHILD_EXIT, returncode=OPENOCD_FAILURE_RC)
+    )
+
+    class FailingInput(io.BytesIO):
+        def close(self) -> None:
+            was_closed = self.closed
+            super().close()
+            if shutdown_failure == "stdin" and not was_closed:
+                raise shutdown_error
+
+    class Process(_ControlProcess):
+        def __init__(self) -> None:
+            super().__init__()
+            self.stdin = FailingInput()
+
+        @override
+        def wait(self, timeout: float | None = None) -> int:
+            if shutdown_failure == "wait" and timeout == helper_client_module.HELPER_STOP_TIMEOUT:
+                raise shutdown_error
+            return super().wait(timeout)
+
+    process = Process()
+    helper_client._process = cast(ManagedSshProcess, process)
+
+    result = helper_client.close()
+
+    assert isinstance(result.error, SessionError)
+    assert ("startup failed" if terminal_failure == "startup" else "remote process failed") in str(
+        result.error
+    )
+    assert any(str(shutdown_error) in note for note in result.error.__notes__)
+    assert any("shutdown failure detail" in note for note in result.error.__notes__)
+    assert result.cleanup_errors == ()
+    assert process.returncode == 0
+    assert process.stdin.closed
+    assert process.stdout.closed
+    assert process.stderr.closed
+
+
 def test_close_keeps_stop_failure_primary_when_forced_cleanup_also_fails(helper_client):
     graceful_stop_error = RuntimeError("graceful stop failed")
     forced_stop_error = RuntimeError("forced stop failed")
@@ -781,10 +830,15 @@ def test_close_closes_streams_when_reader_thread_does_not_start(monkeypatch, hel
         pytest.param(subprocess.TimeoutExpired, True, id="timeout-with-stdin-close-error"),
     ),
 )
+@pytest.mark.parametrize("terminal_fails", (False, True))
 def test_close_forces_cleanup_after_helper_wait_failure(
-    helper_client, wait_failure_type, stdin_close_fails
+    helper_client, wait_failure_type, stdin_close_fails, terminal_fails
 ):
-    close_event = terminal_message(Trigger.CONTROLLER_EOF, returncode=None)
+    close_event = (
+        terminal_message(Trigger.STARTUP_FAILURE, code="STARTUP_FAILURE", message="startup failed")
+        if terminal_fails
+        else terminal_message(Trigger.CONTROLLER_EOF, returncode=None)
+    )
     stdin_close_error = OSError("helper stdin close failed")
     wait_error = (
         subprocess.TimeoutExpired(("fake-helper",), helper_client_module.HELPER_STOP_TIMEOUT)
@@ -828,6 +882,9 @@ def test_close_forces_cleanup_after_helper_wait_failure(
     assert result.cleanup_errors == ((wait_error,) if stdin_close_fails else ())
     if stdin_close_fails:
         assert any(str(wait_error) in note for note in stdin_close_error.__notes__)
+    if terminal_fails:
+        assert result.error is not None
+        assert any("startup failed" in note for note in result.error.__notes__)
     assert process.returncode == 0
     assert process.stdin.closed
     assert process.stdout.closed

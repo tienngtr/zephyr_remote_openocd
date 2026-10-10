@@ -136,15 +136,26 @@ class _HelperClient:
         if self._process is None:
             return _HelperCloseResult(None, ())
         helper = self._process_or_error()
+        logical_error: BaseException | None
+        try:
+            logical_error = self._observations.take_unreported_helper_error()
+        except BaseException as error:
+            logical_error = error
         shutdown = self._request_shutdown(helper)
+        if shutdown.error is not None:
+            if logical_error is None:
+                logical_error = shutdown.error
+            else:
+                _add_failure_note(logical_error, "helper shutdown also failed", shutdown.error)
         cleanup_errors = list(shutdown.cleanup_errors)
         cleanup_errors.extend(self._cleanup_control_process(helper))
         self._emit_diagnostic()
         try:
-            logical_error = self._resolve_shutdown_result(helper, shutdown.error)
+            logical_error = self._resolve_shutdown_result(helper, logical_error)
         except BaseException as error:
-            logical_error = shutdown.error or error
-            if logical_error is not error:
+            if logical_error is None:
+                logical_error = error
+            else:
                 _add_failure_note(logical_error, "helper status also failed", error)
 
         if logical_error is not None:
