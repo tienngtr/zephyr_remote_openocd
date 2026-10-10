@@ -7,7 +7,9 @@ from __future__ import annotations
 import threading
 from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Literal
 
+from .cleanup import _add_failure_note
 from .launch import LaunchGate
 from .model import Service
 from .outcome import CompletionPolicy, Diagnostic, TerminalSnapshot
@@ -48,6 +50,7 @@ class _SessionObservations:
     def __init__(self) -> None:
         self._ending: TerminalSnapshot | None = None
         self._reader_failure: BaseException | None = None
+        self._primary_failure: Literal["terminal", "reader"] | None = None
         self._closing = False
         self._error_reported = False
         self._policy = CompletionPolicy.LIVE_SERVER
@@ -70,6 +73,10 @@ class _SessionObservations:
     def record_terminal(self, snapshot: TerminalSnapshot) -> None:
         with self._changed:
             self._ending = snapshot
+            if snapshot.operation_failed(self._policy):
+                if self._primary_failure is None:
+                    self._primary_failure = "terminal"
+                self._error_reported = False
             self._gate.end()
             self._changed.notify_all()
 
@@ -83,6 +90,9 @@ class _SessionObservations:
         with self._changed:
             if self._reader_failure is None:
                 self._reader_failure = error
+                if self._primary_failure is None:
+                    self._primary_failure = "reader"
+                self._error_reported = False
             self._gate.fail(Diagnostic.from_exception("READER_FAILURE", error))
             self._changed.notify_all()
 
@@ -115,28 +125,50 @@ class _SessionObservations:
         )
         return SessionError(message)
 
+    def _operation_error(self, *, include_child_status: bool = True) -> SessionError | None:
+        # A child status can be returned directly until stream corruption needs
+        # an exception. Once it does, an earlier failing status stays primary.
+        terminal = self._terminal_error(
+            include_child_status=include_child_status or self._reader_failure is not None
+        )
+        reader = None
+        if self._reader_failure is not None:
+            reader = SessionError(
+                "helper event stream failed: "
+                + _render_diagnostic(
+                    Diagnostic.from_exception("READER_FAILURE", self._reader_failure)
+                )
+            )
+            reader.__cause__ = self._reader_failure
+        primary, secondary = (
+            (terminal, reader) if self._primary_failure == "terminal" else (reader, terminal)
+        )
+        if primary is None:
+            return secondary
+        if secondary is not None:
+            _add_failure_note(primary, "later session failure", secondary)
+        return primary
+
     def helper_error_for_operation(self) -> SessionError | None:
         with self._changed:
-            error = self._terminal_error(include_child_status=False)
+            error = self._operation_error(include_child_status=False)
             if error is not None:
                 self._error_reported = True
             return error
 
     def take_unreported_helper_error(self) -> SessionError | None:
         with self._changed:
-            if self._error_reported:
+            # Without a terminal, close must still compose disposal uncertainty
+            # behind the established reader failure instead of replacing it.
+            if self._error_reported and self._ending is not None:
                 return None
-            error = self._terminal_error()
+            error = self._operation_error()
             self._error_reported = error is not None
             return error
 
     def enter(self, required: Iterable[Service], forwarded: Iterable[Service]) -> None:
         with self._changed:
-            if self._reader_failure is not None:
-                raise SessionError(
-                    f"helper event reader failed: {self._reader_failure}"
-                ) from self._reader_failure
-            error = self._terminal_error()
+            error = self._operation_error()
             if error is not None:
                 self._error_reported = True
                 raise error

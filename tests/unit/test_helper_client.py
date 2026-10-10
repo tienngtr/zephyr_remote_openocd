@@ -22,7 +22,7 @@ from zephyr_remote_openocd.remote.deploy import DeploymentResult
 from zephyr_remote_openocd.remote.flash import FlashInputs, build_flash_plan
 from zephyr_remote_openocd.remote.helper_client import _HelperClient
 from zephyr_remote_openocd.remote.model import RemoteProcess
-from zephyr_remote_openocd.remote.outcome import Trigger
+from zephyr_remote_openocd.remote.outcome import CompletionPolicy, Trigger
 from zephyr_remote_openocd.remote.paths import PathPlanner
 from zephyr_remote_openocd.remote.protocol import (
     ProtocolError,
@@ -563,17 +563,63 @@ def test_close_reports_background_error_without_stop(monkeypatch, cleanup_fails)
 
 
 def test_reader_failure_takes_precedence_over_known_openocd_result(helper_client):
+    reader_error = RuntimeError("protocol failed")
+    helper_client._observations.record_reader_failure(reader_error)
     helper_client._observations.record_terminal(
         terminal_snapshot(Trigger.CHILD_EXIT, returncode=OPENOCD_FAILURE_RC)
     )
-    reader_error = RuntimeError("protocol failed")
-    helper_client._observations.record_reader_failure(reader_error)
 
     assert helper_client.openocd_returncode == OPENOCD_FAILURE_RC
     with pytest.raises(SessionError) as raised:
         helper_client.recorded_openocd_exit()
 
     assert raised.value.__cause__ is reader_error
+    assert any("remote process failed" in note for note in raised.value.__notes__)
+
+
+@pytest.mark.parametrize("terminal_failure", ("startup", "child"))
+@pytest.mark.parametrize("boundary", ("status", "close"))
+@pytest.mark.parametrize("trailing", ("malformed", "illegal_frame"))
+def test_terminal_failure_stays_primary_after_trailing_protocol_failure(
+    terminal_failure, boundary, trailing
+):
+    terminal = (
+        terminal_message(Trigger.STARTUP_FAILURE, code="STARTUP_FAILURE", message="startup failed")
+        if terminal_failure == "startup"
+        else terminal_message(Trigger.CHILD_EXIT, returncode=OPENOCD_FAILURE_RC)
+    )
+    corruption = (
+        b"not-json\n"
+        if trailing == "malformed"
+        else encode_message("ATTEMPT", generation=2, argv=["unadmitted"])
+    )
+    client, _process = _open_helper_client_with_events(
+        encode_message("ATTEMPT", generation=1, argv=["child"]), terminal, corruption
+    )
+    try:
+        client.start_process(
+            RemoteProcess(("child",), completion_policy=CompletionPolicy.PROCESS_EXIT), ()
+        )
+        assert client._join_reader(5)  # Both facts are recorded before the first check.
+        error: BaseException | None
+        if boundary == "status":
+            with pytest.raises(SessionError) as raised:
+                client.recorded_openocd_exit()
+            error = raised.value
+            assert client.close().error is None
+        else:
+            error = client.close().error
+        assert isinstance(error, SessionError)
+        assert (
+            "startup failed" if terminal_failure == "startup" else "remote process failed"
+        ) in str(error)
+        assert error.__cause__ is None
+        assert any("helper event stream failed" in note for note in error.__notes__)
+        assert client.openocd_returncode == (
+            None if terminal_failure == "startup" else OPENOCD_FAILURE_RC
+        )
+    finally:
+        client.close()
 
 
 def test_close_keeps_stop_failure_primary_when_forced_cleanup_also_fails(helper_client):

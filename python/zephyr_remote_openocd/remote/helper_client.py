@@ -115,9 +115,6 @@ class _HelperClient:
         return address
 
     def recorded_openocd_exit(self) -> int | None:
-        snapshot = self._observations.snapshot()
-        if snapshot.reader_failure is not None:
-            raise self._reader_failure(snapshot.reader_failure)
         helper_error = self._observations.helper_error_for_operation()
         if helper_error is not None:
             raise helper_error
@@ -224,13 +221,11 @@ class _HelperClient:
         logical_error: BaseException | None,
     ) -> BaseException | None:
         """Reconcile final helper observations into one logical failure."""
-        snapshot = self._observations.snapshot()
         errors = []
-        if snapshot.reader_failure is not None:
-            errors.append(self._reader_failure(snapshot.reader_failure))
         terminal_error = self._observations.take_unreported_helper_error()
         if terminal_error is not None:
             errors.append(terminal_error)
+        snapshot = self._observations.snapshot()
         if snapshot.ending is None:
             errors.append(SessionError("helper shutdown did not produce SESSION_ENDED"))
         helper_status = helper.poll()
@@ -374,12 +369,6 @@ class _HelperClient:
                     self._output_handler("stderr", fragment, line_end)
         except BaseException:
             return
-
-    @staticmethod
-    def _reader_failure(error: BaseException) -> SessionError:
-        failure = SessionError(f"helper event stream failed: {error}")
-        failure.__cause__ = error
-        return failure
 
     def _process_or_error(self) -> ManagedSshProcess:
         if self._process is None:

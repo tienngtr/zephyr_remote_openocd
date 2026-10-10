@@ -1974,6 +1974,13 @@ before committing execution entry. A test that
 synchronously closes the session during observation only tests direct gate
 cancellation; it does not qualify that concurrent reader boundary.
 
+The same authority records which local failure was established first. A failing
+terminal snapshot, including a genuine nonzero child result, stays primary when
+trailing protocol corruption is recorded later. A reader failure established
+first stays primary when a later terminal failure arrives. Boundary rendering
+retains the later fact as secondary detail without changing the remote snapshot.
+New secondary detail can reopen error delivery while retaining that primary.
+
 GDB/RTT entry checks helper and forwarding health, then commits eligibility under
 that shared authority before its immediate synchronous launch callback. It uses
 Zephyr's `run_client`, including native interactive SIGINT handling. Cleanup

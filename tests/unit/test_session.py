@@ -70,6 +70,22 @@ def test_reported_terminal_failure_is_not_replayed_during_close():
     assert observations.take_unreported_helper_error() is None
 
 
+def test_later_reader_detail_reopens_delivery_with_established_terminal_primary():
+    observations = _SessionObservations()
+    observations.record_terminal(terminal_snapshot(Trigger.STARTUP_FAILURE, code="STARTUP_FAILURE"))
+    first = observations.helper_error_for_operation()
+    assert first is not None
+    reader = RuntimeError("trailing protocol corruption")
+    reader.add_note("retained reader detail")
+    observations.record_reader_failure(reader)
+
+    combined = observations.take_unreported_helper_error()
+    assert combined is not None and str(combined) == str(first)
+    assert any("trailing protocol corruption" in note for note in combined.__notes__)
+    assert any("retained reader detail" in note for note in combined.__notes__)
+    assert observations.take_unreported_helper_error() is None
+
+
 @pytest.mark.timeout(10)
 def test_integrated_entry_accounts_reader_fatal_after_preceding_helper_check(monkeypatch):
     from zephyr_remote_openocd.remote.backend import RemoteSession
