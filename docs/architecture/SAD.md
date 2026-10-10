@@ -1684,6 +1684,16 @@ decoder. Normal decoding and the final startup scan share that ownership;
 there are no competing readiness readers. Their facts reach the authority
 independently of bulk-output delivery.
 
+Phase 3 extends the owned raw reader's checkpoint from one read to a finite
+available-byte scan. The same reader consumes until EOF, a would-block result,
+or a one-MiB byte budget; continuous arrivals cannot prolong determination
+indefinitely. This budget matches the maximum control frame and is an internal
+observation bound, not a timeout or a new product setting. Decoding and ordered
+publication remain on the normal observation path. The coordinator continues
+dispatching while checkpoint facts are published, then performs its existing
+child-status and retained-evidence decision. Reader cancellation or close still
+settles the checkpoint. The Protocol v1 control fence remains in place.
+
 ### 38.5 Output and outcome ownership
 
 One nonblocking ordered writer retains a maximum of 16 MiB of encoded pending

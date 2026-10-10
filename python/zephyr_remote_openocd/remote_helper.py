@@ -50,6 +50,9 @@ CHILD_RELAY_JOIN_TIMEOUT = 2
 RELAY_CHUNK_SIZE = 64 * 1024
 # Keep in sync with remote/protocol.py; this file is deployed standalone.
 MAX_CONTROL_FRAME_SIZE = 1024 * 1024
+# A startup cut can inspect one maximum control frame's worth per raw source.
+# Continuously arriving bytes cannot keep the final scan open indefinitely.
+MAX_FINAL_OBSERVATION_BYTES = MAX_CONTROL_FRAME_SIZE
 MAX_SESSION_ID_ATTEMPTS = 32
 MAX_ADDRESS_ALLOCATION_ATTEMPTS = 32
 # 18 random bytes provide 144 bits of entropy in a compact URL-safe ID.
@@ -969,11 +972,13 @@ class _AsyncInput:
         self.was_blocking = os.get_blocking(descriptor)
         self._wake: asyncio.Future[None] | None = None
         self._checkpoint: asyncio.Future[None] | None = None
+        self._scan_remaining = 0
         self._closed = False
         os.set_blocking(descriptor, False)
 
     def _observed(self) -> None:
         if self._checkpoint is not None and not self._checkpoint.done():
+            self._scan_remaining = 0
             self._checkpoint.set_result(None)
 
     def _wake_reader(self) -> None:
@@ -985,8 +990,9 @@ class _AsyncInput:
         self._wake_reader()
 
     def checkpoint(self) -> asyncio.Future[None]:
-        """Request one final raw observation by this reader, without a competitor."""
+        """Request a finite available-byte scan by the sole descriptor reader."""
         self._checkpoint = asyncio.get_running_loop().create_future()
+        self._scan_remaining = MAX_FINAL_OBSERVATION_BYTES
         if self._closed:
             self._observed()
         else:
@@ -996,7 +1002,8 @@ class _AsyncInput:
     async def read(self) -> bytes:
         while True:
             try:
-                chunk = os.read(self.descriptor, RELAY_CHUNK_SIZE)
+                size = min(RELAY_CHUNK_SIZE, self._scan_remaining or RELAY_CHUNK_SIZE)
+                chunk = os.read(self.descriptor, size)
             except BlockingIOError:
                 self._observed()
                 if self._on_idle is not None:
@@ -1010,7 +1017,12 @@ class _AsyncInput:
                     loop.remove_reader(self.descriptor)
                     self._wake = None
             else:
-                self._observed()
+                if not chunk:
+                    self._observed()
+                elif self._scan_remaining:
+                    self._scan_remaining -= len(chunk)
+                    if not self._scan_remaining:
+                        self._observed()
                 return chunk
 
     def close(self) -> None:

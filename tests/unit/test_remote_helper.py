@@ -1819,6 +1819,55 @@ def test_output_observer_failure_ends_session_and_cancels_tasks(
     assert not workspace.exists()
 
 
+@pytest.mark.parametrize("source", ("available-prefix", "continuous"))
+def test_final_reader_scan_consumes_available_prefix_with_finite_budget(monkeypatch, source):
+    read_fd, write_fd = os.pipe()
+    original_read = os.read
+    prefix = b"prefix before READY"
+
+    def read(descriptor, size):
+        if descriptor != read_fd:
+            return original_read(descriptor, size)
+        if source == "continuous":
+            return b"x" * size
+        return original_read(descriptor, min(size, 3))
+
+    monkeypatch.setattr(remote_helper.os, "read", read)
+
+    async def run():
+        reader = remote_helper._AsyncInput(read_fd)
+        next_read = None
+        try:
+            os.write(write_fd, prefix)
+            checkpoint = reader.checkpoint()
+            captured = bytearray(await reader.read())
+            assert not checkpoint.done()
+            if source == "continuous":
+                while not checkpoint.done():
+                    captured.extend(await reader.read())
+                assert len(captured) == remote_helper.MAX_FINAL_OBSERVATION_BYTES
+            else:
+                while len(captured) < len(prefix):
+                    captured.extend(await reader.read())
+                assert bytes(captured) == prefix
+                next_read = asyncio.create_task(reader.read())
+                await checkpoint
+                assert not next_read.done()
+        finally:
+            if next_read is not None:
+                next_read.cancel()
+                with suppress(asyncio.CancelledError):
+                    await next_read
+            reader.close()
+
+    try:
+        asyncio.run(run())
+        assert os.get_blocking(read_fd)
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+
 @pytest.mark.parametrize("final_observation", ("ready", "exit", "timeout"))
 def test_readiness_deadline_processes_final_visible_observation(
     tmp_path, monkeypatch, control_pipe, final_observation
