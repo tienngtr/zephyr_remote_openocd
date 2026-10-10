@@ -1542,6 +1542,14 @@ acquisition tickets, and cleanup-task completion are physical adapter state;
 they do not provide a second transition authority. `Closed` means the terminal
 snapshot is frozen, not that every physical disposal necessarily succeeded.
 
+The immutable request carries an explicit `completion_policy` selected by the
+Zephyr adapter: `live_server` for debug/attach/debugserver/RTT, `process_exit` for
+flash. Neither markers nor services select the policy. Starting covers process
+acquisition for both; an owned `process_exit` attempt becomes Active without
+READY or a readiness timer, while `live_server` remains Starting until READY
+admission. One-shot child exit drives its result even if it arrives before
+normal adoption completes; acquisition ownership and settlement still apply.
+
 An attempt progresses through authorization, production, ownership, and
 settlement. Each authorized replacement has a new monotonically increasing
 session-local generation. Facts identify their attempt; an obsolete generation
@@ -1559,12 +1567,15 @@ Native signal-safe acquisition remains necessary even in a section with no
 
 ### 38.3 Retry and readiness decisions
 
-Only a child exiting before readiness with a classified safely repeatable
-bind/address failure is eligible for retry. Preserve the current bounded
-startup-output classifier for the case-insensitive phrase `address already in
-use`; it is not a structured OpenOCD code or universal bind classifier. Other
-startup failures, probe contention, and exit after readiness do not retry.
-At most 32 child attempts, including the initial attempt, are permitted.
+Only a `live_server` child exiting before readiness with a classified safely
+repeatable bind/address failure is eligible for retry. A `process_exit`
+child's exit supplies the one-shot result and does not initiate child retry;
+pre-spawn address-candidate selection remains available for both policies.
+Preserve the current bounded startup-output classifier for the
+case-insensitive phrase `address already in use`; it is not a structured
+OpenOCD code or universal bind classifier. Other startup failures, probe
+contention, and exit after readiness do not retry. At most 32 child attempts,
+including the initial attempt, are permitted.
 
 Before replacement, the prior acquisition producer must actually finish and
 its process-group, observer, stream, and address ownership must settle enough
@@ -1597,10 +1608,11 @@ requires neither future controller input nor recognized-EOF precedence.
 Physical ownership, producer settlement, and stale-generation validation remain
 mandatory.
 
-READY admission requires Starting state, current generation, owned child,
-required evidence, and a final live-child check. Failed admission causes
-termination rather than activation. Local receipt independently feeds the local
-launch gate. The bounded final readiness observation policy is specified in §40.
+READY admission requires `live_server` policy, Starting state, current
+generation, owned child, required evidence, and a final live-child check.
+Failed admission causes termination rather than activation. Local receipt
+independently feeds the local launch gate. The bounded final readiness
+observation policy is specified in §40.
 
 ### 38.4 Child physical ownership
 
@@ -1849,11 +1861,12 @@ asynchronous scheduling boundary is insufficient. A late READY after local
 cancellation cannot reactivate the gate. This checks known facts, without
 promising continued process liveness after the check.
 
-Flash waits for its genuine one-shot child result and infrastructure outcome;
-it need not receive READY. Debugserver establishes its required forwarding and
-supervises the foreground server without a GDB launch. RTT keeps its existing
-setup/client phases, configured port, separate socket and terminal ownership,
-and required/best-effort forwarding transition. GDB Ctrl-C retains stock
+Flash explicitly selects `process_exit` and waits for its genuine one-shot
+child result and infrastructure outcome; no READY is admitted or expected.
+Debugserver establishes its required forwarding and supervises the foreground
+server without a GDB launch. RTT keeps its existing setup/client phases,
+configured port, separate socket and terminal ownership, and
+required/best-effort forwarding transition. GDB Ctrl-C retains stock
 interactive behavior rather than automatically committing local cancellation.
 
 Local closure first commits cancellation where applicable and prevents further
@@ -1959,10 +1972,12 @@ fatal helper outcome prevents the session from opening; best-effort
 unavailability with successful rollback produces a warning. The active RTT
 client must connect to establish end-to-end reachability.
 
-For a live process with no required markers, startup evidence is immediately
+For `live_server` with no required markers, startup evidence is immediately
 satisfied, but READY still requires current ownership, final live-child
-validation, and writer admission. A one-shot operation may complete without READY.
-The nominal OpenOCD readiness deadline remains 30 seconds.
+validation, and writer admission. Under `process_exit`, markers do not gate
+completion, no READY is admitted, and no readiness timer is started. The request's
+marker/timeout fields remain validated but unused for readiness under that policy.
+The nominal `live_server` OpenOCD readiness deadline remains 30 seconds.
 
 Deadline expiry initiates a finite local determination, not automatic timeout.
 First account retained decoder/marker evidence, then consume already-read but

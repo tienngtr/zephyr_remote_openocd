@@ -996,18 +996,23 @@ separates launch authorization from execution entry, eligibility SHALL be
 checked again at entry. A late readiness report SHALL NOT restore eligibility
 after cancellation. These checks do not promise continued process liveness.
 
-The runner SHALL apply a finite startup-readiness deadline. Expiration SHALL
-initiate a bounded final observation of startup sources owned by the helper,
-including retained decoded evidence, finitely available stream bytes, stream
-EOF, and current child exit state as applicable. The helper SHALL then choose
-readiness or startup failure. This is a finite local observation boundary, not
-a globally synchronized instant or an indefinitely extensible drain.
+For live-server operations, the runner SHALL apply a finite startup-readiness
+deadline. Expiration SHALL initiate a bounded final observation of startup
+sources owned by the helper, including retained decoded evidence, finitely
+available stream bytes, stream EOF, and current child exit state as
+applicable. The helper SHALL then choose readiness or startup failure. This is
+a finite local observation boundary, not a globally synchronized instant or an
+indefinitely extensible drain.
 
-For an operation requiring a live server, observed OpenOCD exit before readiness,
-unestablished readiness after final determination, or failed required forwarding
-SHALL fail startup without dependent client launch. A one-shot flash operation
-SHALL instead be evaluated from its genuine child result and infrastructure
-outcome; it does not require a live-server readiness report to succeed.
+For an operation requiring a live server, OpenOCD exit before readiness that
+is not eligible for safe startup retry under REQ-FUNC-HELP-014, unestablished
+readiness after final determination, or failed required forwarding SHALL fail
+startup without dependent client launch. A one-shot flash operation SHALL
+instead be evaluated from its genuine child result and infrastructure outcome.
+The process request SHALL explicitly distinguish these completion policies
+rather than infer them from markers or services. One-shot operations SHALL NOT
+publish or wait for live-server readiness, or apply its readiness deadline; a
+genuine child exit is their process result.
 
 ### REQ-FUNC-DEBUG-005
 
@@ -1333,11 +1338,12 @@ may be authorized. Local cancellation independently prevents dependent launch.
 ### REQ-FUNC-HELP-006
 
 The client and helper SHALL independently validate their session-contract
-boundaries before acting on input. The helper SHALL report readiness only for
-the current owned live child after required startup evidence and final
-live-child validation. The helper SHALL NOT declare the session active if it
-cannot accept the readiness report for delivery. Readiness does not itself
-authorize a local client launch.
+boundaries before acting on input. For a requested live-server operation, the
+helper SHALL report readiness only for the current owned live child after
+required startup evidence and final live-child validation. For that policy,
+the helper SHALL NOT declare the session active if it cannot accept the
+readiness report for delivery. Readiness does not itself authorize a local
+client launch.
 
 Remote OpenOCD stdout/stderr SHALL be relayed incrementally while the child is
 running, including long newline-free output, while transport remains usable.
@@ -1492,13 +1498,15 @@ handled under REQ-FUNC-HELP-011.
 
 ### REQ-FUNC-HELP-014
 
-A startup retry SHALL require a classified safely repeatable failure, actual
-quiescence of the previous acquisition producer, and settlement of previous
-attempt resources sufficient for safe reuse. It SHALL NOT begin after remote
-termination has been committed. Timeout or cancellation SHALL NOT substitute
-for settlement. A stale attempt result SHALL NOT change current ownership,
-readiness, child result, or retry eligibility. Retry does not roll back target
-side effects and SHALL NOT assume arbitrary user Tcl is idempotent.
+Child startup retry SHALL apply only to live-server startup; a one-shot child
+exit supplies the process result. A retry SHALL require a classified safely
+repeatable failure, actual quiescence of the previous acquisition producer,
+and settlement of previous attempt resources sufficient for safe reuse. It
+SHALL NOT begin after remote termination has been committed. Timeout or
+cancellation SHALL NOT substitute for settlement. A stale attempt result SHALL
+NOT change current ownership, readiness, child result, or retry eligibility.
+Retry does not roll back target side effects and SHALL NOT assume arbitrary
+user Tcl is idempotent.
 
 ---
 

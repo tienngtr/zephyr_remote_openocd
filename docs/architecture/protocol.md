@@ -85,15 +85,31 @@ START contains exactly the envelope and the following immutable request:
 
 | Field | Value |
 | --- | --- |
+| `completion_policy` | Exactly `live_server` or `process_exit`; required, with no default or inference from markers/services. |
 | `argv` | Non-empty list of strings without NUL; the first string is non-empty and later strings may be empty. |
 | `environment` | Object whose names are non-empty strings without `=` or NUL and whose values are strings without NUL. |
 | `required_paths` | List of exact `{kind, path}` objects. `kind` is `file` or `directory`; `path` is a non-empty literal string without NUL or an exact `{parts}` path template as defined below. |
 | `services` | List of exact `{name, remote_port}` objects. `name` is a non-empty string; `remote_port` is a non-Boolean integer in `1..65535`. Names and ports are unique within the request. |
 | `preferred_address` | Null, or a canonical dotted-decimal IPv4 string in `127.64.0.0/10`, excluding `127.64.0.0` and `127.127.255.255`. A hint, not an allocation or lease. |
 | `required_output_sentinels` | List of unique non-empty, trimmed startup output markers without `CR`, `LF`, or NUL; may be empty. |
-| `readiness_timeout` | Positive finite, non-Boolean number. |
+| `readiness_timeout` | Positive finite, non-Boolean number; used only for `live_server`. |
 | `literal_prefix` | Non-Boolean, non-negative integer no greater than the length of `argv`. Templates cannot target this many leading arguments. |
 | `argv_templates` | List of exact `{index, parts}` objects. Indices are unique non-Boolean integers at least `literal_prefix` and less than the length of `argv`. Each template replaces its indexed argv element. An empty list is valid and required when no templates are used. |
+
+The client selects `completion_policy` from the operation, explicitly:
+
+| Policy | Required behavior |
+| --- | --- |
+| `live_server` | Used for debug, attach, debugserver, and RTT. READY is required before successful server use or dependent local launch. Child exit before READY is startup failure unless eligible for a safely settled bind-collision retry. |
+| `process_exit` | Used for one-shot flash. The helper never admits READY, waits for markers, or starts a readiness timer. Genuine child exit supplies the operation result; zero may succeed only with no operation/infrastructure failure and confirmed required cleanup, and nonzero fails. |
+
+Both policies validate the entire START request. Marker and timeout fields retain
+their schema validation but have no readiness effect under `process_exit`.
+Empty marker/service lists do not select `process_exit`; non-empty lists do not
+select `live_server`. Controller EOF, protocol/output failure, cleanup, and child
+result provenance remain applicable to both. Failure to deliver actual required
+output is still an infrastructure failure, but `process_exit` cannot fail through
+admission of an unnecessary READY.
 
 All ordinary strings are literal, including `{workspace}` and `{address}`
 spellings in argv, required paths, mapping destinations, and inherited Tcl.
@@ -152,14 +168,17 @@ including failed Popen and bind retries. Required-path failure emits no ATTEMPT.
 Failed ATTEMPT admission prevents spawn. Admission means local bounded writer
 acceptance, not a completed pipe write or peer receipt; no receipt ACK is used.
 
-A replacement requires a classified safely repeatable pre-readiness startup
-failure, previous producer quiescence, safe settlement of old process/relay/lease
-resources, current startup state, and no committed remote termination.
-Cancellation, timeout, or task-cancellation request is not settlement. At most
-32 child attempts are permitted. Obsolete attempt facts cannot satisfy current
-readiness, adopt current ownership, provide current child result, or start retry.
-Retired-attempt results may be diagnostics but are not the terminal child result.
-See SAD §38 for classification and ownership policy.
+A replacement requires `live_server` policy and a classified safely repeatable
+pre-readiness startup failure, previous producer quiescence, safe settlement
+of old process/relay/lease resources, current startup state, and no committed
+remote termination. Cancellation, timeout, or task-cancellation request is not
+settlement. At most 32 child attempts are permitted. Obsolete attempt facts
+cannot satisfy current readiness, adopt current ownership, provide current
+child result, or start retry. Retired-attempt results may be diagnostics but
+are not the terminal child result. Under `process_exit`, a spawned child's
+exit ends the operation rather than initiating a child retry. Pre-spawn
+address-candidate selection still applies to both policies. See SAD §38 for
+classification and ownership policy.
 
 ## READY
 
@@ -171,28 +190,30 @@ READY contains exactly the envelope and:
 | `remote_address` | Canonical dotted-decimal IPv4 in `127.64.0.0/10`, excluding its first and last addresses. |
 | `child_pid` | Positive integer identifying the owned child leader. |
 
-READY requires current startup state/generation, an owned child, all requested
-startup evidence, a final live-child validation, and successful protocol admission.
-Only then can the remote authority activate the attempt. Admission failure
-terminates the session. At most one READY is admitted per session; no retries
-follow it. READY alone never authorizes GDB or RTT launch: the local operation
-also validates required forwarding, cancellation, and established failures at
+READY is permitted only for `live_server`. It requires current startup
+state/generation, an owned child, all requested startup evidence, a final
+live-child validation, and successful protocol admission. Only then can the
+remote authority activate the attempt. Admission failure terminates the
+session. At most one READY is admitted per session; no retries follow it.
+READY alone never authorizes GDB or RTT launch: the local operation also
+validates required forwarding, cancellation, and established failures at
 actual execution entry.
 
 Required markers are complete trimmed lines on either stream, matched exactly
 and in any order using incremental UTF-8 decoding with replacement. Prefix
-fragments do not count. An actual stream EOF finalizes the decoder and its last
-unterminated line, which can satisfy a complete marker. With no markers, startup
-evidence is immediately satisfied but ownership/live-child/admission checks
-still apply. A one-shot flash may end without READY; its result comes from
-SESSION_ENDED, not from receiving readiness.
+fragments do not count. An actual stream EOF finalizes the decoder and its
+last unterminated line, which can satisfy a complete marker. For `live_server`
+with no markers, startup evidence is immediately satisfied but
+ownership/live-child/admission checks still apply. `process_exit` never admits
+READY, regardless of its marker list; its result comes from SESSION_ENDED.
 
-The readiness deadline starts a bounded final observation of retained decoder
-evidence, finite available stream bytes, actual EOF, and child exit. SAD §40
-defines the finite scan policy. Then readiness or startup failure is chosen;
-continued output cannot indefinitely extend determination. A dead child cannot
-authorize live READY. Controller EOF and deadline handling may race without
-fabricating child status or restoring local launch eligibility.
+For `live_server`, the readiness deadline starts a bounded final observation
+of retained decoder evidence, finite available stream bytes, actual EOF, and
+child exit. SAD §40 defines the finite scan policy. Then readiness or startup
+failure is chosen; continued output cannot indefinitely extend determination.
+A dead child cannot authorize live READY. Controller EOF and deadline handling
+may race without fabricating child status or restoring local launch
+eligibility.
 
 ## CHILD_OUTPUT
 
@@ -317,11 +338,13 @@ The compact grammar is illustrative: generation-tagged retained output may
 interleave, and any setup/startup failure can end before ATTEMPT or READY.
 SESSION_ENDED may be the first and only frame if creation failed. The client
 rejects duplicate creation, READY before ATTEMPT, mismatched READY generation,
-ATTEMPT after READY, child output/result for an unadmitted generation,
-noncontiguous/duplicate ATTEMPT generation, a duplicate terminal event, and any
-event after terminal. READY cannot be required for an otherwise valid one-shot
-outcome. Failed spawn remains an admitted diagnostic attempt with no acquired
-process.
+ATTEMPT after READY, READY under `process_exit`, child output/result for an
+unadmitted generation, noncontiguous/duplicate ATTEMPT generation, a duplicate
+terminal event, and any event after terminal. A successful `live_server`
+startup requires READY; pre-readiness failure/cancellation may end without it.
+Under `process_exit`, READY is forbidden and genuine process completion
+requires no readiness event. Failed spawn remains an admitted diagnostic
+attempt with no acquired process.
 
 Malformed JSON/UTF-8, non-object input, invalid version/schema, oversize input,
 unexpected post-START bytes (including STOP), or invalid state becomes protocol
