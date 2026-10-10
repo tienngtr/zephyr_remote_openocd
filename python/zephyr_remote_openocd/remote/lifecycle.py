@@ -240,16 +240,22 @@ class RemoteLifecycle[RequestT: StartupRequest]:
         self, generation: int, failure: Diagnostic, *, safely_repeatable: bool
     ) -> bool:
         state = self._state
+        attempt = self._current_attempt(generation)
         if (
             not isinstance(state, Starting)
             or state.request.completion_policy != CompletionPolicy.LIVE_SERVER
-            or self._current_attempt(generation) is None
+            or attempt is None
             or state.provisional_failure is not None
         ):
             return False
         if not safely_repeatable:
             self.terminate(Trigger.STARTUP_FAILURE, failure)
             return True
+        if (
+            not isinstance(attempt, (ProducingAttempt, OwnedAttempt))
+            or attempt.child_result is None
+        ):
+            return False
         self._state = replace(state, provisional_failure=failure)
         return True
 

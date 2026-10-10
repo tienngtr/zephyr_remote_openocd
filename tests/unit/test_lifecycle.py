@@ -106,6 +106,36 @@ def test_one_shot_exit_is_result_without_readiness_or_retry(
 
 
 @pytest.mark.parametrize(
+    ("phase", "exited"),
+    (
+        ("authorized", False),
+        ("producing", False),
+        ("owned", False),
+        ("producing", True),
+        ("owned", True),
+    ),
+)
+def test_safe_retry_classification_requires_observed_child_exit(phase: str, exited: bool) -> None:
+    lifecycle, generation = _starting()
+    if phase != "authorized":
+        assert lifecycle.enter_attempt(generation, admitted=True)
+    if phase == "owned":
+        assert lifecycle.adopt_attempt(generation)
+    if exited:
+        assert lifecycle.observe_child_exit(generation, 1)
+    before_classification = lifecycle.state
+
+    assert (
+        lifecycle.classify_startup_failure(generation, BIND_COLLISION, safely_repeatable=True)
+        is exited
+    )
+    if not exited:
+        assert lifecycle.state == before_classification
+    assert lifecycle.settle_attempt(generation, producer_quiescent=True, resources_disposed=True)
+    assert lifecycle.retry(generation) == (generation + 1 if exited else None)
+
+
+@pytest.mark.parametrize(
     ("producer_quiescent", "resources_disposed"), ((False, True), (True, False), (False, False))
 )
 def test_retry_requires_both_producer_quiescence_and_resource_disposal(
