@@ -156,11 +156,13 @@ maintained regression coverage, not a claim about every possible external setup.
 | Real stream/process ownership | [`test_remote_process.py`](../../tests/local_integration/test_remote_process.py) and [`test_helper_startup.py`](../../tests/local_integration/test_helper_startup.py): directional EOF with reverse terminal delivery, native signals, blocked output, incremental fragments, group cleanup, staging exclusion, startup adoption, retries, and result provenance. |
 | Deployment and actual SSH | [`test_helper_bundle.py`](../../tests/unit/test_helper_bundle.py): isolated standard-library execution of the content-addressed bundle. [`test_ssh_integration.py`](../../tests/ssh_integration/test_ssh_integration.py): deployed v2 sessions, directional EOF, shared transport master retention, SSH loss, and owned forwarding failure. |
 
-The Phase 4 checkpoint passed 766 ordinary tests on both Python 3.14 and Python
-3.12, all 111 Zephyr 4.4 integration tests, all 12 configured SSH nodes, and all
-14 available hardware nodes. External nodes were collected first and required
-external execution, with no skips. Hardware nodes ran serially; inspection after
-every node confirmed no new owned processes, forwards, or workspace residue.
+The final Phase 4 checkpoint validation passed 787 ordinary tests on both Python
+3.14 and Python 3.12, and all 12 configured SSH nodes. Earlier cutover validation
+passed all 111 Zephyr 4.4 integration tests and all 14 available hardware nodes;
+these two suites were not repeated for the final local failure-composition
+correction. External nodes were collected first and required external execution,
+with no skips. Hardware nodes ran serially; inspection after every node confirmed
+no new owned processes, forwards, or workspace residue.
 Repository static checks passed. Mutations of the shared launch entry and
 non-reaping spawn rollback both failed their corresponding regressions.
 These results qualify the selected environments and profiles; the combined
