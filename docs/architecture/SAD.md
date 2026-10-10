@@ -15,9 +15,10 @@ This document describes the selected architecture for the Zephyr west runner
 for remote OpenOCD. The controller-lease lifecycle and Protocol v2 are the
 deployed client/helper behavior since the Phase 4 checkpoint. The Phase 5
 checkpoint removes the remaining unused Protocol v1 lifecycle definitions and
-hooks for control reconciliation. Structured remote and local lifecycle authorities
-consume the adapted physical owners. Existing physical ownership mechanisms
-described here are retained or adapted, not replaced by experimental
+hooks for control reconciliation. Phase 6 qualifies the configured integration
+and hardware profiles on the deployed path. Structured remote and local lifecycle
+authorities consume the adapted physical owners. Existing physical ownership
+mechanisms described here are retained or adapted, not replaced by experimental
 implementations. The implementation gaps are
 tracked in [verification.md](../traceability/verification.md#controller-lease-migration).
 
@@ -2461,5 +2462,10 @@ Already-recorded fatal observation accounting, native-signal commit boundaries,
 physical settlement evidence, and local primary-failure arbitration remain
 required. Tests whose old STOP ordering was intentionally removed were adapted
 or replaced at cutover; physical ownership, final observation, output, workspace,
-forwarding, and GDB interaction remain required regression evidence. Broader
-integration qualification remains the next checkpoint.
+forwarding, and GDB interaction remain required regression evidence. The Phase 6
+checkpoint qualifies the available Zephyr, SSH, and hardware profiles, including
+attach with RTT, revision repair during a live session, conservative reclamation,
+real bind-collision retry, and configured staged/mapped paths. Validation passes
+on Python 3.12 and 3.14. Selected-profile results and remaining hardware limits
+are recorded in [verification.md](../traceability/verification.md#integration-qualification).
+The following documentation and cleanup phase has not begun.

@@ -8,7 +8,8 @@ been executed recently.
 
 Every SRS requirement is listed in either the baseline coverage matrix or the
 [controller-lease migration](#controller-lease-migration) matrix. At this
-Phase 5 checkpoint, production implements Protocol v2. Migration
+Phase 6 checkpoint, production implements Protocol v2 and the selected external
+profiles have been qualified as recorded below. Migration
 coverage below identifies the actual v2 authority and wire boundaries; historical
 Protocol v1 counts are comparison evidence. Passing a foundation test alone does
 not qualify its physical integration. **Documented** records
@@ -93,7 +94,7 @@ protects the external sharing-master caller's primary failure and cleanup.
 | `REQ-FUNC-FLASH-001`, `REQ-FUNC-FLASH-004`, `REQ-FUNC-FLASH-005`, `REQ-FUNC-SCOPE-002`, `REQ-FUNC-SELECT-004` | Hardware | [`TestRealOpenOcdFlash.test_configured_target_flashes_and_emits_fresh_serial_output`](../../tests/hardware/test_real_flash.py) (quiet precondition image followed by selected-image output) |
 | `REQ-FUNC-DEBUG-001`, `REQ-FUNC-DEBUG-002`, `REQ-FUNC-DEBUG-003`, `REQ-FUNC-DEBUG-005`, `REQ-FUNC-DEBUG-006`, `REQ-FUNC-DEBUG-007`, `REQ-FUNC-SCOPE-002`, `REQ-FUNC-SELECT-004` | Both | [`TestDebugPlanning.test_command_semantics_and_client_ordering`](../../tests/unit/test_remote.py); [`TestDebugPlanning.test_local_and_remote_paths_with_spaces_remain_argv_elements`](../../tests/unit/test_remote.py); [`TestRealOpenOcdDebug`](../../tests/hardware/test_real_debug.py): `test_debug` (load, continue, configured breakpoint, PC/instruction inspection, detach), `test_attach` (no load, PC/instruction inspection), and `test_debugserver` (independent client halt/resume); [`test_acquisition_rejects_helper_termination_recorded_during_forwarding`](../../tests/local_integration/test_session_startup.py) exercises a real helper event reader and session with natural exits or helper ERROR recorded during required or auxiliary forwarding; [`test_recorded_termination_before_gdb_dispatch_prevents_client_launch`](../../tests/zephyr_integration/test_adapter.py) suppresses dependent GDB dispatch for recorded terminal outcomes |
 | `REQ-FUNC-OPT-004`, `REQ-FUNC-SVC-001`, `REQ-FUNC-SVC-002`, `REQ-FUNC-SVC-003`, `REQ-FUNC-SVC-004`, `REQ-FUNC-SVC-005`, `REQ-FUNC-SVC-006` | Both | [`test_recording_runs_real_runner_integration_without_external_io`](../../tests/zephyr_integration/test_adapter.py) (required/best-effort forwarding classification, deferred RTT, and no flash services); [`test_required_gdb_startup_failure_aborts_operation`](../../tests/zephyr_integration/test_adapter.py); [`test_requested_rtt_failure_aborts_operation`](../../tests/zephyr_integration/test_adapter.py); [Forwarding policy tests](../../tests/unit/test_forwarding_policy.py); [`TestDebugPlanning.test_disabled_services_and_distinct_gdb_ports`](../../tests/unit/test_remote.py); [`TestRealOpenOcdDebug.test_debugserver`](../../tests/hardware/test_real_debug.py) (configured Tcl/telnet listeners) |
-| `REQ-FUNC-RTT-001`, `REQ-FUNC-RTT-002`, `REQ-FUNC-RTT-003`, `REQ-FUNC-RTT-004`, `REQ-FUNC-RTT-005`, `REQ-FUNC-RTT-006`, `REQ-FUNC-RTT-007`, `REQ-FUNC-SCOPE-002`, `REQ-FUNC-SELECT-004` | Both | [`TestRttClient.test_bidirectional_non_tty_channel`](../../tests/local_integration/test_remote_process.py); [`TestDebugPlanning`](../../tests/unit/test_remote.py); [`test_recording_runs_real_runner_integration_without_external_io`](../../tests/zephyr_integration/test_adapter.py) (includes attach with RTT); [`test_attach_rtt_server_forwards_without_loading`](../../tests/zephyr_integration/test_adapter.py); [`test_requested_rtt_failure_aborts_operation`](../../tests/zephyr_integration/test_adapter.py) (includes attach startup/runtime failure); [`test_rtt_execution_defers_forward_until_after_gdb`](../../tests/zephyr_integration/test_adapter.py); [`test_standalone_rtt_setup_failure_never_launches_client`](../../tests/zephyr_integration/test_adapter.py); [`TestRealRtt`](../../tests/hardware/test_real_rtt.py) covers `rtt`, `debug --rtt-server`, and `debugserver --rtt-server`; [`test_simultaneous_gdb_rtt_acceptance_does_not_require_runner_prose`](../../tests/unit/test_hardware_rtt.py) protects the simultaneous hardware-test acceptance path using endpoint readiness and controlled process/socket boundaries, not physical hardware; attach RTT has automated coverage only; [`test_recorded_termination_during_rtt_forward_prevents_rtt_client_launch`](../../tests/zephyr_integration/test_adapter.py) prevents deferred RTT client startup on recorded clean exit, nonzero exit, or helper ERROR and preserves operation failure through normal finalization |
+| `REQ-FUNC-RTT-001`, `REQ-FUNC-RTT-002`, `REQ-FUNC-RTT-003`, `REQ-FUNC-RTT-004`, `REQ-FUNC-RTT-005`, `REQ-FUNC-RTT-006`, `REQ-FUNC-RTT-007`, `REQ-FUNC-SCOPE-002`, `REQ-FUNC-SELECT-004` | Both | [`TestRttClient.test_bidirectional_non_tty_channel`](../../tests/local_integration/test_remote_process.py); [`TestDebugPlanning`](../../tests/unit/test_remote.py); [`test_recording_runs_real_runner_integration_without_external_io`](../../tests/zephyr_integration/test_adapter.py) (includes attach with RTT); [`test_attach_rtt_server_forwards_without_loading`](../../tests/zephyr_integration/test_adapter.py); [`test_requested_rtt_failure_aborts_operation`](../../tests/zephyr_integration/test_adapter.py) (includes attach startup/runtime failure); [`test_rtt_execution_defers_forward_until_after_gdb`](../../tests/zephyr_integration/test_adapter.py); [`test_standalone_rtt_setup_failure_never_launches_client`](../../tests/zephyr_integration/test_adapter.py); [`TestRealRtt`](../../tests/hardware/test_real_rtt.py) covers `rtt`, `debug --rtt-server`, `attach --rtt-server`, and `debugserver --rtt-server`; [`test_simultaneous_gdb_rtt_acceptance_does_not_require_runner_prose`](../../tests/unit/test_hardware_rtt.py) protects the simultaneous hardware-test acceptance path using endpoint readiness and controlled process/socket boundaries, not physical hardware; [`test_recorded_termination_during_rtt_forward_prevents_rtt_client_launch`](../../tests/zephyr_integration/test_adapter.py) prevents deferred RTT client startup on recorded clean exit, nonzero exit, or helper ERROR and preserves operation failure through normal finalization |
 | `REQ-FUNC-OPT-006`, `REQ-FUNC-SEMI-001`, `REQ-FUNC-SEMI-002`, `REQ-FUNC-SEMI-003`, `REQ-FUNC-SEMI-004` | Both | Upstream option and runner-integration recording coverage; [`TestRealSemihosting.test_direct_semihosting_console_normal_completion`](../../tests/hardware/test_real_semihosting.py) |
 | `REQ-FUNC-SSH-001`, `REQ-FUNC-SSH-002`, `REQ-FUNC-SSH-003`, `REQ-FUNC-SSH-004`, `REQ-FUNC-SSH-005`, `REQ-FUNC-SSH-006`, `REQ-FUNC-SSH-009` | Automated | [SSH command tests](../../tests/unit/test_ssh.py); [`TestConfiguredSshIntegration`](../../tests/ssh_integration/test_ssh_integration.py); [`TestSshTransportIntegration.test_forwarding_and_session_lifecycle_use_configured_client`](../../tests/ssh_integration/test_ssh_integration.py) |
 | `REQ-FUNC-CONC-001` | Automated | [`TestSshTransportIntegration.test_concurrent_sessions_isolate_identical_remote_ports`](../../tests/ssh_integration/test_ssh_integration.py) |
@@ -119,18 +120,17 @@ ran with `--require-external-tests`, with no skips. SSH cleanup inspection
 found no session workspaces or control helpers. These results apply to the
 selected environments and capabilities.
 
-Full Zephyr integration and hardware acceptance of the baseline implementation
-remain pending, including physical RTT validation. The table records maintained
-verification coverage; the presence of a test does not establish a current
-acceptance result.
+That historical baseline did not establish full Zephyr or hardware acceptance.
+Current Protocol v2 external results, including physical RTT, are recorded in
+[Phase 6 integration qualification](#integration-qualification). A maintained
+test alone does not establish a current acceptance result.
 
 Remaining acceptance limits are distinct from missing traceability: stock
-OpenOCD support across every operation, actual same-probe independent channel
-acquisition and contention, interactive GDB Ctrl-C with continued use, and
-attach with RTT still need suitable SSH/hardware validation. Synthetic child
-failures verify the runner's response, not OpenOCD's hardware diagnosis. The
-maintained RTT hardware profiles cover standalone, debug, and debugserver;
-there is no maintained attach-RTT hardware profile yet.
+OpenOCD support across every board/operation combination, actual same-probe
+independent channel acquisition and contention, and interactive GDB Ctrl-C with
+continued use still need suitable hardware validation. Synthetic child failures
+verify the runner's response, not OpenOCD's hardware diagnosis. Maintained RTT
+hardware profiles now cover standalone, debug, attach, and debugserver.
 
 ## Controller-lease migration
 
@@ -141,13 +141,15 @@ the current runtime. Phase 3 adapts physical ownership and observation beneath
 the then-current Protocol v1 authority. Phase 4 integrates the canonical authority,
 shared local launch gate, directional EOF, and structured v2 terminal handling.
 Phase 5 removes the remaining unused migration definitions and control reader
-reconciliation hooks, retaining physical cleanup and final observation.
+reconciliation hooks, retaining physical cleanup and final observation. Phase 6
+qualifies the configured Zephyr, SSH, and hardware profiles, with ordinary-suite
+validation on Python 3.12 and 3.14.
 
 ### Cutover boundary evidence
 
-The following production tests now exercise Protocol v2. Broader qualification
-and documentation completion remain later checkpoints; these links record
-maintained regression coverage, not a claim about every possible external setup.
+The following production tests exercise Protocol v2. The Phase 6 qualification
+below records selected external execution; these links record maintained
+regression coverage, not a claim about every possible external setup.
 
 | Boundary | Maintained evidence |
 | --- | --- |
@@ -196,7 +198,57 @@ Phase 5 validation passed all 787 ordinary tests on both Python 3.14 and Python
 collected first and ran serially with required external execution and no skips;
 inspection after every node confirmed no new owned processes, forwards, or
 workspace residue. Zephyr and hardware suites were not repeated for this
-removal of unused machinery. Phase 6 integration qualification has not begun.
+removal of unused machinery. The next section records Phase 6 qualification.
+
+### Integration qualification
+
+The Phase 6 checkpoint validates the deployed Protocol v2 path through the
+configured external environments. It adds maintained coverage at these physical
+boundaries:
+
+| Boundary | Maintained qualification evidence |
+| --- | --- |
+| Post-spawn bind retry and forwarding | [`test_bind_collision_retries_before_establishing_forward`](../../tests/ssh_integration/test_ssh_integration.py) creates a real EADDRINUSE after address allocation. The failed child exits, a second admitted attempt uses a different address, and a real SSH forward reaches the successful child. Concurrent-session and preferred-address sharing profiles exercise allocation isolation and reuse. |
+| Helper revision coexistence and repair | [`test_helper_revision_repair_preserves_active_session`](../../tests/ssh_integration/test_ssh_integration.py) deploys, reuses, corrupts, and repairs a distinct content-addressed bundle, executes its standalone OpenOCD version query, and verifies that an existing session still serves its forward. Only the unique test revision is removed. |
+| Conservative workspace reclamation | [`test_deployed_helper_reclaims_only_inactive_workspace_storage`](../../tests/ssh_integration/test_ssh_integration.py) runs the actual deployed reclaimer in an isolated remote runtime root with real session locks. A later allocation removes inactive storage and metadata while retaining active inputs, marked unconfirmed inputs, and the separate legacy root. The test owns these synthetic workspaces; the marker does not represent an actual residual child. Existing physical-disposal regressions supply that boundary. |
+| Configured environment and path mapping | Both staged and mapped variants of [`test_remote_openocd_config_consumes_forwarded_environment`](../../tests/ssh_integration/test_ssh_integration.py) run configured OpenOCD against a Tcl configuration whose path contains spaces. It consumes an allow-listed variable, then exits under the explicit process-exit policy. `PathPlanner` supplies the real staging/template or mapped-path checks. |
+| Attach with simultaneous RTT | The debug and attach variants of [`test_gdb_rtt_server_keeps_gdb_active`](../../tests/hardware/test_real_rtt.py) retain a live GDB client while RTT completes a bidirectional round trip. Attach uses a separately programmed precondition image; the attach operation does not load firmware. The existing adapter regression checks that command distinction. |
+
+Final checkpoint validation passed:
+
+| Layer | Result |
+| --- | --- |
+| Ordinary unit and local-process suite, Python 3.14 | 787 passed |
+| Ordinary unit and local-process suite, Python 3.12 | 787 passed |
+| Zephyr 4.4 integration | 111 passed |
+| Configured SSH integration | 16 passed |
+| Available hardware profiles | 15 passed |
+| Repository static checks | Passed |
+
+External selections were collected first and executed with
+`--require-external-tests`, with no skips. SSH and destructive hardware nodes
+ran serially. Read-only local/remote process, forward, and workspace inspection
+after every node found no new owned residue before reuse. Test-owned revision
+and mapped-directory cleanup is also asserted by the maintained callers.
+Negative verification of the workspace profile rejected both removal despite
+the residual-child marker and reuse of the legacy workspace root.
+
+Hardware execution covers fresh-output flash, debug load/continue/breakpoint and
+instruction inspection, attach without load, debugserver with independent GDB
+and configured auxiliary services, standalone and simultaneous RTT, and direct
+semihosting stdout/stderr relay with normal completion. Zephyr coverage includes
+recording-mode command equivalence and installation/configuration boundaries.
+SSH coverage also retains directional EOF with reverse terminal delivery,
+connection-sharing master survival, controller-channel loss, and forwarding
+failure. Required fault histories remain covered at the smallest production
+boundary by the ordinary tests listed above.
+
+These results qualify the selected environments and available profiles. They
+do not establish every board/operation combination, actual same-probe physical
+channel acquisition/contention, or continued interactive hardware GDB use after
+Ctrl-C. Those limits remain explicit rather than inferred from synthetic
+children or controlled adapter clients. Phase 6 stops at this checkpoint;
+Phase 7 documentation and cleanup have not begun.
 
 ### Structured-foundation evidence
 
@@ -243,8 +295,10 @@ experiment branches are preserved; no experimental code is merged or copied.
 ### Revised-clause acceptance obligations
 
 The matrix below records the complete acceptance obligations selected in Phase 1.
-Cutover boundary evidence above supplies automated coverage; later qualification
-reviews the remaining external and combined scenarios. The contract itself receives
+Cutover boundary evidence above supplies automated coverage; Phase 6 records
+selected external qualification and its remaining hardware limits. The target
+statuses below retain the initial partial coverage assessment; current boundary
+evidence and checkpoint results are recorded above. The contract itself receives
 review at the normative checkpoint. Integration tests added in later phases must
 exercise the real production boundary with deterministic handshakes, following
 [test_design.md](../development/test_design.md).
@@ -275,8 +329,9 @@ and primary-failure coverage at the v2 boundary.
 
 This table classifies selected behavior against corrected main and stock Zephyr.
 The linked experiment matrix supplies the detailed histories. The production
-cutover and its selected-profile validation are complete; broader qualification
-of the combined acceptance obligations remains pending.
+cutover and Phase 6 selected-profile qualification are complete. Remaining
+hardware limits are listed above; passing these profiles does not establish
+every combined history on every external setup.
 
 | Behavior | Classification | Contract decision / acceptance boundary |
 | --- | --- | --- |
