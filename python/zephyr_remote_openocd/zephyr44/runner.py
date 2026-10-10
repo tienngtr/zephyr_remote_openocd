@@ -174,14 +174,14 @@ def _execute_operation(runner, command, request, plan):
                 "Remote OpenOCD: %s", shlex.join(argv)
             ),
         )
-        assert session.descriptor is not None
-        descriptor = session.descriptor
-        runner.logger.info(
-            "Remote session %s OpenOCD workspace=%s bindto=%s",
-            descriptor.session_id,
-            descriptor.remote_workspace,
-            descriptor.remote_address,
-        )
+        if session.descriptor is not None:
+            descriptor = session.descriptor
+            runner.logger.info(
+                "Remote session %s OpenOCD workspace=%s bindto=%s",
+                descriptor.session_id,
+                descriptor.remote_workspace,
+                descriptor.remote_address,
+            )
         returncode = _execute_started_operation(
             runner,
             command,
@@ -215,7 +215,7 @@ def _finalize_operation(session, operation_error, observed_returncode):
     except BaseException as error:
         cleanup_error = error
 
-    openocd_returncode = session.openocd_returncode
+    openocd_returncode = session.openocd_failure_returncode
     if operation_error is not None:
         if cleanup_error is not None:
             _add_failure_diagnostic(
@@ -261,7 +261,7 @@ def _execute_gdb_client(runner, plan, session):
     returncode = session.check_openocd_exit()
     if returncode is not None:
         raise RuntimeError(f"remote OpenOCD exited before GDB startup with status {returncode}")
-    runner.run_client(list(plan.gdb_argv))
+    session.run_dependent(lambda: runner.run_client(list(plan.gdb_argv)))
     return session.check_openocd_exit()
 
 
@@ -272,7 +272,7 @@ def _execute_rtt(runner, plan, session, observe_openocd_exit):
     returncode = session.check_openocd_exit()
     if returncode is not None:
         raise RuntimeError(f"remote OpenOCD exited before GDB startup with status {returncode}")
-    runner.run_client(list(plan.gdb_argv))
+    session.run_dependent(lambda: runner.run_client(list(plan.gdb_argv)))
     session.mark_auxiliary(tuple(service for service in plan.services if service.name == "gdb"))
     session.forward((plan.rtt_service,), required=True)
     _report_rtt_service(runner, plan, session)
@@ -286,7 +286,9 @@ def _execute_rtt(runner, plan, session, observe_openocd_exit):
     returncode = check_openocd_exit()
     if returncode is not None:
         raise RuntimeError(f"remote OpenOCD exited before RTT startup with status {returncode}")
-    return run_rtt_client(plan.rtt_service.local_port, check_openocd_exit)
+    return session.run_dependent(
+        lambda: run_rtt_client(plan.rtt_service.local_port, check_openocd_exit)
+    )
 
 
 def _execute_server(runner, command, plan, session):

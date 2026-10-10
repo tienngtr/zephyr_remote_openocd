@@ -1,14 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Remote-session errors and synchronized helper observations."""
+"""Local lifecycle authority shared by the helper reader and launch entry."""
 
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable
+from collections.abc import Iterable
 from dataclasses import dataclass
-from enum import Enum, auto
-from typing import Literal
+
+from .launch import LaunchGate
+from .model import Service
+from .outcome import CompletionPolicy, Diagnostic, TerminalSnapshot
 
 
 class SessionError(RuntimeError):
@@ -19,130 +21,133 @@ class SessionClosedError(SessionError):
     pass
 
 
-@dataclass(frozen=True, slots=True)
-class _SessionClosed:
-    reason: Literal["requested", "process_exit"]
-    returncode: int | None
-
-
-@dataclass(frozen=True, slots=True)
-class _HelperError:
-    error: SessionError
-
-
-_SessionEnding = _SessionClosed | _HelperError
+def _render_diagnostic(detail: Diagnostic) -> str:
+    return "; ".join(
+        (
+            f"{detail.code}: {detail.message}",
+            *(_render_diagnostic(child) for child in detail.diagnostics),
+        )
+    )
 
 
 @dataclass(frozen=True, slots=True)
 class _SessionSnapshot:
-    ending: _SessionEnding | None
+    ending: TerminalSnapshot | None
     reader_failure: BaseException | None
-    stop_requested: bool
-
-
-@dataclass(frozen=True, slots=True)
-class _StopWritten:
-    pass
-
-
-_StopResult = _StopWritten | _SessionEnding
-
-
-class _HelperErrorDelivery(Enum):
-    UNREPORTED = auto()
-    REPORTED = auto()
-    CLOSE = auto()
+    closing: bool
 
 
 class _SessionObservations:
-    """Synchronize facts observed from the helper event stream."""
+    """Serialize recorded fatal facts, cancellation, and actual launch entry.
+
+    Entry commits under the same lock used by the event reader. The caller then
+    invokes its synchronous launch without a scheduling boundary. The lock is
+    released before blocking client work so reverse output remains observable.
+    """
 
     def __init__(self) -> None:
-        self._ending: _SessionEnding | None = None
-        self._helper_error_delivery = _HelperErrorDelivery.UNREPORTED
+        self._ending: TerminalSnapshot | None = None
         self._reader_failure: BaseException | None = None
-        self._stop_requested = False
-        self._lock = threading.RLock()
-        self._changed = threading.Condition(self._lock)
+        self._closing = False
+        self._error_reported = False
+        self._policy = CompletionPolicy.LIVE_SERVER
+        self._gate = LaunchGate()
+        self._changed = threading.Condition(threading.RLock())
 
     def snapshot(self) -> _SessionSnapshot:
         with self._changed:
-            return _SessionSnapshot(
-                self._ending,
-                self._reader_failure,
-                self._stop_requested,
-            )
+            return _SessionSnapshot(self._ending, self._reader_failure, self._closing)
 
-    def record_close(
-        self,
-        reason: Literal["requested", "process_exit"],
-        returncode: int | None,
-    ) -> None:
-        """Record a session-close event and wake result waiters."""
+    def set_policy(self, policy: CompletionPolicy) -> None:
         with self._changed:
-            self._ending = _SessionClosed(reason, returncode)
+            self._policy = policy
+
+    def record_ready(self) -> None:
+        with self._changed:
+            self._gate.observe_remote_ready()
             self._changed.notify_all()
 
-    def record_error_event(self, error: SessionError, *, reported: bool = False) -> None:
-        """Record the helper's ERROR event and wake result waiters."""
+    def record_terminal(self, snapshot: TerminalSnapshot) -> None:
         with self._changed:
-            self._ending = _HelperError(error)
-            self._helper_error_delivery = (
-                _HelperErrorDelivery.REPORTED if reported else _HelperErrorDelivery.UNREPORTED
-            )
+            self._ending = snapshot
+            self._gate.end()
             self._changed.notify_all()
 
-    def take_unreported_helper_error(self) -> SessionError | None:
-        """Atomically consume a helper error not yet delivered to the caller."""
+    def cancel(self) -> None:
         with self._changed:
-            if (
-                not isinstance(self._ending, _HelperError)
-                or self._helper_error_delivery is not _HelperErrorDelivery.UNREPORTED
-            ):
-                return None
-            self._helper_error_delivery = _HelperErrorDelivery.CLOSE
-            return self._ending.error
-
-    def helper_error_for_operation(self) -> SessionError | None:
-        """Return the helper error and suppress its later replay during close."""
-        with self._changed:
-            if (
-                not isinstance(self._ending, _HelperError)
-                or self._helper_error_delivery is _HelperErrorDelivery.CLOSE
-            ):
-                return None
-            self._helper_error_delivery = _HelperErrorDelivery.REPORTED
-            return self._ending.error
+            self._closing = True
+            self._gate.cancel()
+            self._changed.notify_all()
 
     def record_reader_failure(self, error: BaseException) -> None:
-        """Record an event-reader failure and wake result waiters."""
         with self._changed:
-            self._reader_failure = error
+            if self._reader_failure is None:
+                self._reader_failure = error
+            self._gate.fail(Diagnostic.from_exception("READER_FAILURE", error))
             self._changed.notify_all()
+
+    def _terminal_error(self, *, include_child_status: bool = True) -> SessionError | None:
+        ending = self._ending
+        if ending is None or not ending.operation_failed(self._policy):
+            return None
+        outcome = ending.outcome
+        result = outcome.child_result
+        if (
+            not include_child_status
+            and ending.cleanup.confirmed
+            and outcome.primary_failure is None
+            and result is not None
+            and not result.termination_requested
+        ):
+            return None
+        details = tuple(
+            _render_diagnostic(item)
+            for item in (
+                *((outcome.primary_failure,) if outcome.primary_failure is not None else ()),
+                *outcome.diagnostics,
+            )
+        )
+        result = outcome.child_result
+        message = "; ".join(details) or (
+            f"remote process failed ({result.returncode})"
+            if result is not None
+            else "remote session ended without an operation result"
+        )
+        return SessionError(message)
+
+    def helper_error_for_operation(self) -> SessionError | None:
+        with self._changed:
+            error = self._terminal_error(include_child_status=False)
+            if error is not None:
+                self._error_reported = True
+            return error
+
+    def take_unreported_helper_error(self) -> SessionError | None:
+        with self._changed:
+            if self._error_reported:
+                return None
+            error = self._terminal_error()
+            self._error_reported = error is not None
+            return error
+
+    def enter(self, required: Iterable[Service], forwarded: Iterable[Service]) -> None:
+        with self._changed:
+            if self._reader_failure is not None:
+                raise SessionError(
+                    f"helper event reader failed: {self._reader_failure}"
+                ) from self._reader_failure
+            error = self._terminal_error()
+            if error is not None:
+                self._error_reported = True
+                raise error
+            if self._closing or self._ending is not None:
+                raise SessionClosedError("operation no longer permits dependent launch")
+            generation = self._gate.prepare(required)
+            self._gate.observe_forwarded(forwarded)
+            if not self._gate.enter(generation):
+                raise SessionError("dependent launch requires READY and required forwarding")
 
     def wait_for_change(self, timeout: float | None) -> None:
         with self._changed:
-            if not self._has_result_locked():
+            if self._ending is None and self._reader_failure is None and not self._closing:
                 self._changed.wait(timeout)
-
-    def request_stop(self, write_stop: Callable[[], None]) -> _StopResult:
-        """Write STOP atomically with session-ending event observation.
-
-        The write occurs while holding the state lock so a session-ending event
-        cannot be mistaken for an unsolicited shutdown between the write and
-        recording that STOP was requested.
-        """
-        with self._changed:
-            if self._ending is not None:
-                return self._ending
-            write_stop()
-            self._stop_requested = True
-            return _StopWritten()
-
-    def _has_result_locked(self) -> bool:
-        if self._reader_failure is not None or isinstance(self._ending, _HelperError):
-            return True
-        return isinstance(self._ending, _SessionClosed) and (
-            self._ending.reason == "process_exit"
-            or (self._ending.reason == "requested" and not self._stop_requested)
-        )

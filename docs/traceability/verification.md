@@ -8,10 +8,10 @@ been executed recently.
 
 Every SRS requirement is listed in either the baseline coverage matrix or the
 [controller-lease migration](#controller-lease-migration) matrix. At this
-physical-boundary checkpoint, production still implements Protocol v1. Baseline
-coverage below describes that implementation, not conformance to revised
-lifecycle clauses. Migration status supersedes baseline status for those clauses;
-passing existing tests does not qualify Protocol v2. **Documented** records
+client/helper cutover checkpoint, production implements Protocol v2. Migration
+coverage below identifies the actual v2 authority and wire boundaries; historical
+Protocol v1 counts are comparison evidence. Passing a foundation test alone does
+not qualify its physical integration. **Documented** records
 user-facing
 documentation evidence, **Failing** records a maintained test that currently
 fails in this environment, and **Unverified** records that no maintained test
@@ -138,15 +138,44 @@ The SRS, SAD, and [Protocol v2](../architecture/protocol.md) define the selected
 target. Phase 1 revised those contracts together. Phase 2 adds structured
 foundations without integrating the remote authority or local launch gate into
 the current runtime. Phase 3 adapts physical ownership and observation beneath
-the current Protocol v1 authority. Client/session authority adaptation and v2
-acceptance remain pending subsequent checkpoints.
-Existing v1 tests stay in place while production needs their current safeguards.
+the then-current Protocol v1 authority. Phase 4 integrates the canonical authority,
+shared local launch gate, directional EOF, and structured v2 terminal handling.
+Phase 5 removal of remaining unused migration definitions is deferred.
+
+### Cutover boundary evidence
+
+The following production tests now exercise Protocol v2. Broader qualification
+and documentation completion remain later checkpoints; these links record
+maintained regression coverage, not a claim about every possible external setup.
+
+| Boundary | Maintained evidence |
+| --- | --- |
+| Strict wire grammar and result provenance | [`test_wire.py`](../../tests/unit/test_wire.py), [`test_remote.py`](../../tests/unit/test_remote.py), and [`test_helper_client.py`](../../tests/unit/test_helper_client.py): bounded framing, nested diagnostics, exact fields, generation/order validation, explicit completion policy, missing terminal, independent helper status, and bounded half-close shutdown. |
+| Canonical remote authority with physical owners | [`test_remote_helper.py`](../../tests/unit/test_remote_helper.py): actual child acquisition/rollback, signal capture, ATTEMPT/READY admission, one frozen terminal, final readiness observation, cleanup failure and retained nested diagnostics. Pure authority invariants remain in [`test_lifecycle.py`](../../tests/unit/test_lifecycle.py). |
+| Shared local launch authority | [`test_session.py`](../../tests/unit/test_session.py): cancellation and late READY, required forwards, queued execution, and a real helper client's recorded reader failure after the preceding session check and before execution entry. [`test_adapter.py`](../../tests/zephyr_integration/test_adapter.py) uses the public GDB runner and independent RTT client. |
+| Real stream/process ownership | [`test_remote_process.py`](../../tests/local_integration/test_remote_process.py) and [`test_helper_startup.py`](../../tests/local_integration/test_helper_startup.py): directional EOF with reverse terminal delivery, native signals, blocked output, incremental fragments, group cleanup, staging exclusion, startup adoption, retries, and result provenance. |
+| Deployment and actual SSH | [`test_helper_bundle.py`](../../tests/unit/test_helper_bundle.py): isolated standard-library execution of the content-addressed bundle. [`test_ssh_integration.py`](../../tests/ssh_integration/test_ssh_integration.py): deployed v2 sessions, directional EOF, shared transport master retention, SSH loss, and owned forwarding failure. |
+
+The Phase 4 checkpoint passed 766 ordinary tests on both Python 3.14 and Python
+3.12, all 111 Zephyr 4.4 integration tests, all 12 configured SSH nodes, and all
+14 available hardware nodes. External nodes were collected first and required
+external execution, with no skips. Hardware nodes ran serially; inspection after
+every node confirmed no new owned processes, forwards, or workspace residue.
+Repository static checks passed. Mutations of the shared launch entry and
+non-reaping spawn rollback both failed their corresponding regressions.
+These results qualify the selected environments and profiles; the combined
+acceptance obligations below remain partial evidence for broader qualification.
+
+The cutover intentionally removes recognized-prefix STOP/EOF success precedence.
+Tests requiring that v1 order are replaced by explicit EOF/post-START-input and
+local-entry checks. Existing physical owner tests remain, and adapted coordinator
+regressions inspect canonical outcomes instead of exception identity. This does
+not begin Phase 5 deletion of unused migration definitions.
 
 ### Structured-foundation evidence
 
-The following evidence establishes Phase 2 semantics, not full target runtime
-acceptance. The revised-clause status below remains Unverified until the actual
-physical and wire boundaries are exercised after integration.
+The following table records the Phase 2 checkpoint and its then-remaining
+obligations. Cutover evidence above supersedes the historical integration gaps.
 
 | Foundation | Maintained evidence | Remaining boundary |
 | --- | --- | --- |
@@ -159,7 +188,7 @@ These foundations acquire no physical resources. Existing helper, process,
 forwarding, RTT, staging, and workspace owners remain in place. Foundation
 settlement facts do not claim that cancellation or timeout disposed a resource.
 
-### Physical-boundary evidence
+### Physical-boundary checkpoint evidence (historical)
 
 Phase 3 retains Protocol v1 framing, STOP, result interpretation, control fences,
 and reader-recognition protections. The standalone helper's physical interfaces
@@ -185,38 +214,36 @@ They compare corrected main `ce12b6a` and a runtime experiment. They are design
 evidence, not production acceptance or actual target/GDB/RTT qualification. The
 experiment branches are preserved; no experimental code is merged or copied.
 
-### Revised-clause verification obligations
+### Revised-clause acceptance obligations
 
-**Unverified** below means the revised clause lacks production-target acceptance,
-even when baseline tests provide partial coverage. The contract itself receives
+The matrix below records the complete acceptance obligations selected in Phase 1.
+Cutover boundary evidence above supplies automated coverage; later qualification
+reviews the remaining external and combined scenarios. The contract itself receives
 review at the normative checkpoint. Integration tests added in later phases must
 exercise the real production boundary with deterministic handshakes, following
 [test_design.md](../development/test_design.md).
 
 | Requirements / revised clause | Target status | Design and required acceptance |
 | --- | --- | --- |
-| SRS §2.8; `REQ-FUNC-SSH-001`, `REQ-FUNC-SSH-012`: directional EOF and sharing | Unverified | SAD §§31–32, 39; protocol controller lease. Real pipes and configured SSH, with and without supported sharing, must prove stdin half-close reaches remote EOF while final reverse output survives and the external master remains alive. Baseline SSH-command tests do not establish this shutdown contract. |
-| SRS §§2.10–2.11; `REQ-FUNC-HELP-005`: authority-handled controller termination | Unverified | SAD §38.2; protocol benign races. EOF during pending readiness and output backpressure must reach the authority and trigger cleanup without a readiness wait. READY/retry before remote EOF handling is allowed; termination committed before attempt entry must forbid it. |
-| `REQ-FUNC-HELP-005`, `REQ-FUNC-HELP-006`, `REQ-FUNC-HELP-011`: remote native signal failure | Unverified | Protocol SESSION_ENDED and SAD §38.6 require non-null primary failure for a signal trigger under both policies. Reject signal-triggered null-primary snapshots and fail valid signal outcomes even with zero child/helper/SSH status and confirmed disposal. Account signals before START, during live startup or one-shot execution, and during EOF-initiated cleanup; preserve established primary/trigger and independent disposal. After snapshot freeze, preserve immutability and fail through nonzero helper status. Controller EOF and helper-issued child-disposal signals remain distinct from native helper signal failure. |
-| `REQ-FUNC-CONFIG-023`: exact argv admission | Unverified | SAD §38.2; protocol ATTEMPT. Baseline pre-spawn tests provide partial evidence. Every actual failed/successful/retried spawn must have exact argv admission, and failed admission must prevent Popen. No peer-receipt guarantee is claimed. |
-| `REQ-FUNC-DEBUG-003`; `REQ-FUNC-SSH-010`: dependent launch eligibility | Unverified | SAD §39. Exercise cancellation before launch, late READY, READY without required forwarding, terminal/fatal facts recorded during forwarding, and queued launch revalidation at execution entry. Baseline adapter/session tests cover some recorded-outcome boundaries, not the complete new gate. |
-| `REQ-FUNC-FLASH-005`, `REQ-FUNC-DEBUG-003`, `REQ-FUNC-HELP-006`: explicit completion policy | Unverified | START requires `completion_policy` with no default: `live_server` requires READY, while `process_exit` forbids READY and readiness waits/timers and preserves genuine zero/nonzero child results. Exercise empty-marker live requests, exit requests regardless of marker/service list shape, rejection of missing/invalid policy and READY under exit policy, and a temporarily full writer during one-shot acquisition with draining before terminal admission, so no unnecessary READY can fail the operation. Child-exit interpretation and retry eligibility must use policy, not list shape. |
-| `REQ-FUNC-DEBUG-003`, `REQ-FUNC-HELP-006`: final readiness observation | Unverified | SAD §40; protocol READY. Deterministically hold ordinary observation and expose marker bytes, EOF/final decoder evidence, and actual child exit to the bounded final scan. Continuous output must not replenish its finite cut; dead child cannot authorize READY. |
-| `REQ-FUNC-HELP-004`, `REQ-FUNC-HELP-006`, `REQ-FUNC-HELP-008`: full v2 validation | Unverified | Protocol framing, request/templates, state validation, generations, and standalone responses. Matching client/helper, invalid/extra fields, duplicate keys, size limits, post-START bytes, creation failure, and invalid event order need updated protocol fixtures and compatibility tests at cutover. Version equality alone is insufficient. |
-| `REQ-FUNC-HELP-006`: output and terminal uniqueness | Unverified | SAD §38.5; protocol CHILD_OUTPUT/SESSION_ENDED. Real blocked/partial pipe writes, newline-free fragments, per-stream FIFO, bounded memory, failed ATTEMPT/READY admission, finite tail drain, and terminal partial-write failure must preserve cleanup and at most one snapshot. No total cross-stream order is required. |
-| `REQ-FUNC-HELP-009`, `REQ-FUNC-HELP-011`: result provenance and composition | Unverified | SAD §§38.5, 42. Genuine child result and pre/post-termination-request observation context must survive either shutdown trigger; helper/SSH status must never become child status. Established primary and nested ordered secondary diagnostics survive cleanup/writer failure. Missing terminal with zero helper status remains infrastructure uncertainty. Normal server disposal must not turn successful local client work into failure. |
-| SRS §3.5; `REQ-FUNC-HELP-010`: shutdown and disposal uncertainty | Unverified | SAD §39. Close helper stdin, keep reading, await terminal and owned transport within one finite coordination budget, then escalate owned SSH if needed. Timeout reports unconfirmed remote cleanup. Independent forwards, RTT, pipes, and drains still receive cleanup attempts after an earlier failure or interruption. |
-| `REQ-FUNC-HELP-012`, `REQ-FUNC-HELP-013`: acquisition and cleanup ownership | Unverified | SAD §§38.1, 38.4, 38.6. Existing physical regressions remain partial evidence. Interrupt immediately before/after acquisition and adoption, then verify group termination, reaping, descriptors, workspace ownership, and independent rollback. Late producer completion must remain owned; timeout/cancellation is not settlement. GDB Ctrl-C acceptance remains interactive GDB use. |
-| `REQ-FUNC-HELP-014`: safe retry and stale attempts | Unverified | SAD §38.3; protocol attempt generations. Classified bind failure plus proven old-producer/resource settlement permits retry; unresolved producer, cleanup failure, or committed termination forbids it. Stale results cannot alter current ownership, readiness, result, or retry. |
-| `REQ-FUNC-FILE-001`, `REQ-FUNC-DATA-003`, `REQ-FUNC-DATA-005`: dependent workspace lifetime | Unverified | SAD §§38.4, 38.7. Keep process-shared staging exclusion. Close staging admission before waits; process cleanup proceeds independently. Active staging and live/unconfirmed child or producer retain inputs. Exclusive removal follows confirmed settlement. Later reclamation must not mistake a released helper lock for proof that residual child ownership ended. |
+| SRS §2.8; `REQ-FUNC-SSH-001`, `REQ-FUNC-SSH-012`: directional EOF and sharing | Automated (partial) | SAD §§31–32, 39; protocol controller lease. Real pipes and configured SSH, with and without supported sharing, must prove stdin half-close reaches remote EOF while final reverse output survives and the external master remains alive. Baseline SSH-command tests do not establish this shutdown contract. |
+| SRS §§2.10–2.11; `REQ-FUNC-HELP-005`: authority-handled controller termination | Automated (partial) | SAD §38.2; protocol benign races. EOF during pending readiness and output backpressure must reach the authority and trigger cleanup without a readiness wait. READY/retry before remote EOF handling is allowed; termination committed before attempt entry must forbid it. |
+| `REQ-FUNC-HELP-005`, `REQ-FUNC-HELP-006`, `REQ-FUNC-HELP-011`: remote native signal failure | Automated (partial) | Protocol SESSION_ENDED and SAD §38.6 require non-null primary failure for a signal trigger under both policies. Reject signal-triggered null-primary snapshots and fail valid signal outcomes even with zero child/helper/SSH status and confirmed disposal. Account signals before START, during live startup or one-shot execution, and during EOF-initiated cleanup; preserve established primary/trigger and independent disposal. After snapshot freeze, preserve immutability and fail through nonzero helper status. Controller EOF and helper-issued child-disposal signals remain distinct from native helper signal failure. |
+| `REQ-FUNC-CONFIG-023`: exact argv admission | Automated (partial) | SAD §38.2; protocol ATTEMPT. Baseline pre-spawn tests provide partial evidence. Every actual failed/successful/retried spawn must have exact argv admission, and failed admission must prevent Popen. No peer-receipt guarantee is claimed. |
+| `REQ-FUNC-DEBUG-003`; `REQ-FUNC-SSH-010`: dependent launch eligibility | Automated (partial) | SAD §39. Exercise cancellation before launch, late READY, READY without required forwarding, terminal/fatal facts recorded during forwarding, and queued launch revalidation at execution entry. Baseline adapter/session tests cover some recorded-outcome boundaries, not the complete new gate. |
+| `REQ-FUNC-FLASH-005`, `REQ-FUNC-DEBUG-003`, `REQ-FUNC-HELP-006`: explicit completion policy | Automated (partial) | START requires `completion_policy` with no default: `live_server` requires READY, while `process_exit` forbids READY and readiness waits/timers and preserves genuine zero/nonzero child results. Exercise empty-marker live requests, exit requests regardless of marker/service list shape, rejection of missing/invalid policy and READY under exit policy, and a temporarily full writer during one-shot acquisition with draining before terminal admission, so no unnecessary READY can fail the operation. Child-exit interpretation and retry eligibility must use policy, not list shape. |
+| `REQ-FUNC-DEBUG-003`, `REQ-FUNC-HELP-006`: final readiness observation | Automated (partial) | SAD §40; protocol READY. Deterministically hold ordinary observation and expose marker bytes, EOF/final decoder evidence, and actual child exit to the bounded final scan. Continuous output must not replenish its finite cut; dead child cannot authorize READY. |
+| `REQ-FUNC-HELP-004`, `REQ-FUNC-HELP-006`, `REQ-FUNC-HELP-008`: full v2 validation | Automated (partial) | Protocol framing, request/templates, state validation, generations, and standalone responses. Matching client/helper, invalid/extra fields, duplicate keys, size limits, post-START bytes, creation failure, and invalid event order need updated protocol fixtures and compatibility tests at cutover. Version equality alone is insufficient. |
+| `REQ-FUNC-HELP-006`: output and terminal uniqueness | Automated (partial) | SAD §38.5; protocol CHILD_OUTPUT/SESSION_ENDED. Real blocked/partial pipe writes, newline-free fragments, per-stream FIFO, bounded memory, failed ATTEMPT/READY admission, finite tail drain, and terminal partial-write failure must preserve cleanup and at most one snapshot. No total cross-stream order is required. |
+| `REQ-FUNC-HELP-009`, `REQ-FUNC-HELP-011`: result provenance and composition | Automated (partial) | SAD §§38.5, 42. Genuine child result and pre/post-termination-request observation context must survive either shutdown trigger; helper/SSH status must never become child status. Established primary and nested ordered secondary diagnostics survive cleanup/writer failure. Missing terminal with zero helper status remains infrastructure uncertainty. Normal server disposal must not turn successful local client work into failure. |
+| SRS §3.5; `REQ-FUNC-HELP-010`: shutdown and disposal uncertainty | Automated (partial) | SAD §39. Close helper stdin, keep reading, await terminal and owned transport within one finite coordination budget, then escalate owned SSH if needed. Timeout reports unconfirmed remote cleanup. Independent forwards, RTT, pipes, and drains still receive cleanup attempts after an earlier failure or interruption. |
+| `REQ-FUNC-HELP-012`, `REQ-FUNC-HELP-013`: acquisition and cleanup ownership | Automated (partial) | SAD §§38.1, 38.4, 38.6. Existing physical regressions remain partial evidence. Interrupt immediately before/after acquisition and adoption, then verify group termination, reaping, descriptors, workspace ownership, and independent rollback. Late producer completion must remain owned; timeout/cancellation is not settlement. GDB Ctrl-C acceptance remains interactive GDB use. |
+| `REQ-FUNC-HELP-014`: safe retry and stale attempts | Automated (partial) | SAD §38.3; protocol attempt generations. Classified bind failure plus proven old-producer/resource settlement permits retry; unresolved producer, cleanup failure, or committed termination forbids it. Stale results cannot alter current ownership, readiness, result, or retry. |
+| `REQ-FUNC-FILE-001`, `REQ-FUNC-DATA-003`, `REQ-FUNC-DATA-005`: dependent workspace lifetime | Automated (partial) | SAD §§38.4, 38.7. Keep process-shared staging exclusion. Close staging admission before waits; process cleanup proceeds independently. Active staging and live/unconfirmed child or producer retain inputs. Exclusive removal follows confirmed settlement. Later reclamation must not mistake a released helper lock for proof that residual child ownership ended. |
 
-Protocol v1 tests such as
-`test_readiness_reconciles_control_failure_waiting_for_publication` and
-`test_natural_close_preserves_control_failure_consumed_before_dispatch` remain
-baseline regression evidence while v1 runs. Their recognized-prefix ordering
-is not a target requirement. Later removal or adaptation must preserve any
-remaining physical failure diagnostics, cleanup, and primary-failure coverage.
-No test is deleted solely because its private mechanism has a similar name.
+Protocol v1 recognition-order tests supplied baseline evidence before cutover.
+Their recognized-prefix ordering is intentionally absent from the target; the
+adapted coordinator tests preserve physical diagnostics, cleanup, final-observation,
+and primary-failure coverage at the v2 boundary.
 
 ### Differential acceptance decisions
 

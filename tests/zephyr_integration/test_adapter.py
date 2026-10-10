@@ -585,6 +585,7 @@ def test_operation_primary_failure_rules(
     session = Mock()
     session.descriptor = SessionDescriptor(SessionAllocation("session", "/workspace"), "127.0.0.1")
     session.openocd_returncode = None
+    session.openocd_failure_returncode = None
     operation_error = RuntimeError("operation failed")
     cleanup_error = RuntimeError(cleanup_failure) if cleanup_failure is not None else None
     if operation_fails and cleanup_error is not None:
@@ -594,10 +595,12 @@ def test_operation_primary_failure_rules(
         if operation_fails:
             raise operation_error
         session.openocd_returncode = observed_returncode
+        session.openocd_failure_returncode = observed_returncode
         return observed_returncode
 
     def close():
         session.openocd_returncode = cleanup_returncode
+        session.openocd_failure_returncode = cleanup_returncode
         if cleanup_error is not None:
             raise cleanup_error
 
@@ -700,6 +703,7 @@ def test_background_openocd_result_does_not_replace_active_operation_failure(
 
         def __init__(self):
             self.openocd_returncode = None
+            self.openocd_failure_returncode = None
             self.close_calls = 0
 
         def acquire(self, **_kwargs):
@@ -716,6 +720,7 @@ def test_background_openocd_result_does_not_replace_active_operation_failure(
         reader_ready.set()
         assert reader_can_record.wait(5)
         session.openocd_returncode = OPENOCD_FAILURE_RC
+        session.openocd_failure_returncode = OPENOCD_FAILURE_RC
         reader_recorded.set()
 
     reader = threading.Thread(target=record_openocd_failure)

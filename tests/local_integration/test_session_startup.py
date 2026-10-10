@@ -23,19 +23,23 @@ from pathlib import Path
 root = Path(__file__).parent
 command = sys.argv[-1]
 def emit(kind, **fields):
-    print(json.dumps(dict(version=1, type=kind, **fields)), flush=True)
+    print(json.dumps(dict(version=2, type=kind, **fields)), flush=True)
 if command.endswith(" control"):
     emit("SESSION_CREATED", helper="peer", session_id="session", remote_workspace="/workspace")
     request = json.loads(sys.stdin.buffer.readline())
-    emit("PROCESS_STARTING", argv=request["argv"])
-    emit("PROCESS_READY", remote_address="127.64.0.1", child_pid=1)
+    emit("ATTEMPT", generation=1, argv=request["argv"])
+    emit("READY", generation=1, remote_address="127.64.0.1", child_pid=1)
     with (root / "gate").open("rb", buffering=0) as gate:
         assert gate.read(1) == b"x"
     ending = (root / "ending").read_text()
-    if ending == "error":
-        emit("ERROR", code="CLEANUP_FAILED", message="failure during forwarding")
-    else:
-        emit("SESSION_CLOSED", reason="process_exit", returncode=int(ending))
+    error = (dict(code="CLEANUP_FAILED", message="failure during forwarding", diagnostics=[])
+             if ending == "error" else None)
+    emit("SESSION_ENDED", trigger="helper_failure" if error else "child_exit",
+         primary_failure=error, diagnostics=[],
+         child_result=None if error else dict(generation=1, returncode=int(ending),
+                                             termination_requested=False),
+         cleanup=dict(child_disposal="confirmed", workspace_disposal="confirmed",
+                      residual_resources=[]))
 elif " stage " in command:
     sys.stdin.buffer.read()
     emit("STAGED", byte_count=0, sha256=hashlib.sha256(b"").hexdigest(), files=[], directories=[])
@@ -100,7 +104,11 @@ def test_acquisition_rejects_helper_termination_recorded_during_forwarding(
             session.acquire()
         assert session.openocd_returncode == (None if ending == "error" else int(ending))
     finally:
-        session.close()
+        if ending == "7":
+            with pytest.raises(SessionError):
+                session.close()
+        else:
+            session.close()
     assert session.closed
     assert all(process.poll() is not None for process in transports)
     assert not session.forwarded_services

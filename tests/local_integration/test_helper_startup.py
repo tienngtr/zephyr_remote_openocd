@@ -61,7 +61,7 @@ def test_helper_startup_retains_workspace_cleanup_ownership(tmp_path, boundary, 
             _stdout, stderr = process.communicate(timeout=30)
             records = [json.loads(line) for line in stderr.splitlines() if line.startswith(b"{")]
             final = records[-1]
-            assert process.returncode == (1 if action == "exception" else 0)
+            assert process.returncode == 1
             assert final["lock_closed"] and final["handlers_restored"]
             assert not final["workspace_remaining"] and not final["lease_remaining"]
             assert not any(workspace.parent.iterdir())
@@ -92,5 +92,5 @@ def test_empty_materialized_executable_fails_without_invalid_start_event(tmp_pat
     order = EventOrder()
     for event in events:
         order.accept(event)
-    assert [event["type"] for event in events] == ["SESSION_CREATED", "ERROR"]
+    assert [event["type"] for event in events] == ["SESSION_CREATED", "SESSION_ENDED"]
     assert not any(Path(events[0]["remote_workspace"]).parent.iterdir())

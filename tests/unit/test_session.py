@@ -1,128 +1,116 @@
 # SPDX-License-Identifier: Apache-2.0
 
-from __future__ import annotations
+"""Shared local authority: READY cannot override cancellation or recorded fatal facts."""
 
 import threading
 
 import pytest
-from zephyr_remote_openocd.remote.session import (
-    SessionError,
-    _HelperError,
-    _SessionClosed,
-    _SessionObservations,
-    _StopWritten,
-)
+from zephyr_remote_openocd.remote.model import Service
+from zephyr_remote_openocd.remote.outcome import Trigger
+from zephyr_remote_openocd.remote.session import SessionError, _SessionObservations
 
-OPENOCD_FAILURE_RC = 7
+from tests.protocol_support import terminal_snapshot
 
 
-def test_request_stop_returns_existing_session_close_without_writing_stop():
+@pytest.mark.parametrize("fact", ("cancel", "reader", "terminal"))
+def test_recorded_fact_prevents_dependent_entry_after_ready(fact):
     observations = _SessionObservations()
-    observations.record_close("process_exit", OPENOCD_FAILURE_RC)
-    stop_written = threading.Event()
+    if fact == "cancel":
+        observations.cancel()
+    elif fact == "reader":
+        observations.record_reader_failure(RuntimeError("reader failed"))
+    else:
+        observations.record_terminal(terminal_snapshot(Trigger.HELPER_FAILURE, code="FAILED"))
+    observations.record_ready()
+    with pytest.raises(SessionError):
+        observations.enter((), ())
 
-    result = observations.request_stop(stop_written.set)
 
-    assert result == _SessionClosed("process_exit", OPENOCD_FAILURE_RC)
-    assert not stop_written.is_set()
-
-
-def test_request_stop_returns_existing_helper_error_without_writing_stop():
+def test_ready_requires_required_forwarding_at_entry():
     observations = _SessionObservations()
-    error = SessionError("background failed")
-    observations.record_error_event(error)
-    stop_written = threading.Event()
-
-    result = observations.request_stop(stop_written.set)
-
-    assert result == _HelperError(error)
-    assert not stop_written.is_set()
+    service = Service("gdb", 3333, 3333)
+    observations.record_ready()
+    with pytest.raises(SessionError):
+        observations.enter((service,), ())
+    observations.enter((service,), (service,))
 
 
 @pytest.mark.timeout(10)
-def test_requested_stop_serializes_close_event_with_stop_write():
-    close_attempted = threading.Event()
-    stop_write_entered = threading.Event()
-    release_stop_write = threading.Event()
-    close_recorded = threading.Event()
-    observe_close = threading.Event()
-
-    class ObservableCondition(threading.Condition):
-        def __enter__(self):
-            if observe_close.is_set():
-                close_attempted.set()
-            return super().__enter__()
-
+def test_queued_launch_rechecks_fatal_fact_at_execution_entry():
     observations = _SessionObservations()
-    observations._changed = ObservableCondition(observations._lock)
-    stop_results = []
+    observations.record_ready()
+    scheduled = threading.Event()
+    execute = threading.Event()
+    errors = []
+    launched = []
 
-    def write_stop():
-        stop_write_entered.set()
-        assert release_stop_write.wait(5)
+    def queued_launch():
+        scheduled.set()
+        assert execute.wait(5)
+        try:
+            observations.enter((), ())
+            launched.append(True)
+        except SessionError as error:
+            errors.append(error)
 
-    stopper = threading.Thread(
-        target=lambda: stop_results.append(observations.request_stop(write_stop))
+    thread = threading.Thread(target=queued_launch)
+    thread.start()
+    assert scheduled.wait(5)
+    observations.record_reader_failure(RuntimeError("fatal fact before execution"))
+    execute.set()
+    thread.join(5)
+    assert not thread.is_alive()
+    assert errors and not launched
+
+
+def test_reported_terminal_failure_is_not_replayed_during_close():
+    observations = _SessionObservations()
+    observations.record_terminal(terminal_snapshot(Trigger.HELPER_FAILURE, code="FAILED"))
+    assert observations.helper_error_for_operation() is not None
+    assert observations.take_unreported_helper_error() is None
+
+
+@pytest.mark.timeout(10)
+def test_integrated_entry_accounts_reader_fatal_after_preceding_helper_check(monkeypatch):
+    from zephyr_remote_openocd.remote.backend import RemoteSession
+    from zephyr_remote_openocd.remote.deploy import DeploymentResult
+    from zephyr_remote_openocd.remote.helper_client import _HelperClient
+    from zephyr_remote_openocd.remote.model import RemoteProcess, RemoteSessionRequest
+    from zephyr_remote_openocd.remote.ssh import SshCommand
+
+    request = RemoteSessionRequest("host", SshCommand(), RemoteProcess(("openocd",)))
+    deployment = DeploymentResult("/helper.py", "digest", False)
+    session = RemoteSession(request, deployment)
+    helper = _HelperClient(
+        request.ssh_command, request.host, deployment, observations=session._observations
     )
-    stopper.start()
-    assert stop_write_entered.wait(5)
+    session._helper = helper
+    session._observations.record_ready()
+    observing = threading.Event()
+    observed = threading.Event()
+    launched = []
 
-    def record_close():
-        observe_close.set()
-        observations.record_close("requested", None)
-        close_recorded.set()
+    def reader():
+        assert observing.wait(5)
+        helper._observations.record_reader_failure(RuntimeError("concurrent helper failure"))
+        observed.set()
 
-    close = threading.Thread(target=record_close)
-    close.start()
-    assert close_attempted.wait(5)
-    assert not close_recorded.is_set()
+    thread = threading.Thread(target=reader)
+    thread.start()
 
-    release_stop_write.set()
-    stopper.join(timeout=5)
-    close.join(timeout=5)
+    enter = session._observations.enter
 
-    assert not stopper.is_alive()
-    assert not close.is_alive()
-    assert close_recorded.is_set()
-    assert stop_results == [_StopWritten()]
-    snapshot = observations.snapshot()
-    assert snapshot.ending == _SessionClosed("requested", None)
-    assert snapshot.stop_requested
-    assert snapshot.reader_failure is None
+    def execution_entry(required, forwarded):
+        observing.set()
+        assert observed.wait(5)
+        enter(required, forwarded)
 
-
-@pytest.mark.timeout(10)
-def test_session_observations_wakes_on_process_exit():
-    waiting = threading.Event()
-    results = []
-
-    class ObservableCondition(threading.Condition):
-        def wait(self, timeout=None):
-            waiting.set()
-            return super().wait(timeout)
-
-    observations = _SessionObservations()
-    observations._changed = ObservableCondition(observations._lock)
-
-    def wait_for_result():
-        observations.wait_for_change(None)
-        results.append(observations.snapshot())
-
-    waiter = threading.Thread(target=wait_for_result)
-    waiter.start()
-    assert waiting.wait(5)
-    observations.record_close("process_exit", 0)
-    waiter.join(timeout=5)
-
-    assert not waiter.is_alive()
-    assert results == [observations.snapshot()]
-    assert results[0].ending == _SessionClosed("process_exit", 0)
-
-
-def test_helper_error_claimed_by_close_is_not_replayed_to_operation():
-    observations = _SessionObservations()
-    helper_error = SessionError("background failed")
-    observations.record_error_event(helper_error)
-
-    assert observations.take_unreported_helper_error() is helper_error
-    assert observations.helper_error_for_operation() is None
+    monkeypatch.setattr(session._observations, "enter", execution_entry)
+    try:
+        with pytest.raises(SessionError, match="concurrent helper failure"):
+            session.run_dependent(lambda: launched.append(True))
+        assert not launched
+    finally:
+        thread.join(5)
+        session.close()
+    assert not thread.is_alive()

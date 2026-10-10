@@ -110,7 +110,13 @@ def test_open_rolls_back_once_and_preserves_startup_failure(monkeypatch, cleanup
         return deployment
 
     def make_helper(
-        _ssh_command, _host, _deployment, *, output_handler=None, process_start_handler=None
+        _ssh_command,
+        _host,
+        _deployment,
+        *,
+        output_handler=None,
+        process_start_handler=None,
+        observations=None,
     ):
         return _PreparedHelper()
 
@@ -320,7 +326,13 @@ def test_staging_rejects_response_without_lf(monkeypatch):
             return _HelperCloseResult(None, ())
 
     def make_helper(
-        _ssh_command, _host, _deployment, *, output_handler=None, process_start_handler=None
+        _ssh_command,
+        _host,
+        _deployment,
+        *,
+        output_handler=None,
+        process_start_handler=None,
+        observations=None,
     ):
         del output_handler
         return Helper()

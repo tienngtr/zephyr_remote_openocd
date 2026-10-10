@@ -148,7 +148,7 @@ class RemoteProcess:
     readiness_timeout: float = 30.0
     literal_prefix: int = 0
     argv_templates: tuple[tuple[int, ArgumentTemplate], ...] = ()
-    # Internal operation policy; serialized only at the coordinated v2 cutover.
+    # Explicit operation policy shared with the helper request.
     completion_policy: CompletionPolicy = CompletionPolicy.LIVE_SERVER
 
     def __post_init__(self) -> None:
@@ -205,7 +205,7 @@ def _validate_process_argv(argv: tuple[str, ...]) -> None:
         not argv
         or not isinstance(argv[0], str)
         or not argv[0]
-        or not all(isinstance(arg, str) for arg in argv[1:])
+        or not all(isinstance(arg, str) and "\0" not in arg for arg in argv)
     ):
         raise ValueError("remote process argv must start with a non-empty string")
 

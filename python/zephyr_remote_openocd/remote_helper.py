@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 
-"""Protocol v1 remote helper. This file is deliberately self-contained."""
+"""Protocol v2 remote helper, deployed with its canonical lifecycle modules."""
 
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ import fcntl
 import hashlib
 import io
 import ipaddress
-import json
 import math
 import os
 import secrets
@@ -36,7 +35,36 @@ from pathlib import Path, PurePosixPath
 from types import FrameType
 from typing import IO, Any, Literal, NamedTuple
 
-VERSION = 1
+# Direct source execution is a development path; deployed zip applications
+# already contain these canonical modules and need no installed package.
+if Path(__file__).name == "remote_helper.py":
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from zephyr_remote_openocd.remote.lifecycle import (  # noqa: E402
+    AuthorizedAttempt,
+    Closed,
+    Created,
+    OwnedAttempt,
+    RemoteLifecycle,
+    Starting,
+    Terminating,
+)
+from zephyr_remote_openocd.remote.outcome import (  # noqa: E402
+    CleanupReport,
+    CompletionPolicy,
+    Diagnostic,
+    Outcome,
+    ResidualResource,
+    TerminalSnapshot,
+    Trigger,
+)
+from zephyr_remote_openocd.remote.wire import (  # noqa: E402
+    decode_frame,
+    encode_frame,
+    terminal_fields,
+)
+
+VERSION = 2
 RANGE = ipaddress.IPv4Network("127.64.0.0/10")
 SESSION_LOCK = ".session.lock"
 UNCONFIRMED_CHILD = ".child-disposal-unconfirmed"
@@ -82,14 +110,13 @@ def _raise_cleanup_errors(errors):
 
 
 def emit(kind, **values):
-    line = json.dumps(
-        {"version": VERSION, "type": kind, **values}, separators=(",", ":"), sort_keys=True
-    )
+    frame = encode_frame(kind, **values)
     output = _protocol_output.get()
     if output is None:
-        print(line, flush=True)
+        sys.stdout.write(frame.decode("utf-8"))
+        sys.stdout.flush()
     else:
-        output.enqueue((line + "\n").encode("utf-8"))
+        output.enqueue(frame)
 
 
 def error(message, code="HELPER_ERROR"):
@@ -628,7 +655,7 @@ def _validate_argv(argv):
         raise ValueError("START requires a non-empty string argv")
     if not isinstance(argv[0], str) or not argv[0]:
         raise ValueError("START requires a non-empty string argv")
-    if not all(isinstance(arg, str) for arg in argv[1:]):
+    if not all(isinstance(arg, str) and "\0" not in arg for arg in argv):
         raise ValueError("START requires a non-empty string argv")
 
 
@@ -789,6 +816,7 @@ class RequiredPath(NamedTuple):
 
 
 class StartRequest(NamedTuple):
+    completion_policy: CompletionPolicy
     argv: tuple[str, ...]
     environment: tuple[tuple[str, str], ...]
     required_paths: tuple[RequiredPath, ...]
@@ -855,6 +883,7 @@ def _decode_start(message):
         "literal_prefix",
         "argv_templates",
         "preferred_address",
+        "completion_policy",
     }
     if set(message) != fields:
         raise ValueError("START fields are invalid")
@@ -872,6 +901,7 @@ def _decode_start(message):
     preferred_address = message["preferred_address"]
     _validate_preferred_address(preferred_address)
     return StartRequest(
+        CompletionPolicy(message["completion_policy"]),
         tuple(argv),
         tuple(environment.items()),
         checks,
@@ -889,11 +919,7 @@ def decode_command(message):
     kind = _protocol_kind(message)
     if kind == "START":
         return _decode_start(message)
-    if kind == "STOP":
-        if set(message) != {"version", "type"}:
-            raise ValueError("STOP fields are invalid")
-        return StopRequest()
-    raise ValueError(f"unexpected command: {kind!r}")
+    raise ValueError("only START is valid on controller input")
 
 
 async def _readable(descriptor: int) -> None:
@@ -1124,6 +1150,7 @@ class _ChildAcquisition:
         self.child: SupervisedChild | None = None
         self.producer_quiescent = False
         self.rollback_confirmed = False
+        self.termination_requested = False
 
 
 class _ChildSettlement(NamedTuple):
@@ -1143,6 +1170,20 @@ class _ChildSettlement(NamedTuple):
         )
 
 
+def _poll_unreaped_process(process: subprocess.Popen[bytes]) -> int | None:
+    """Observe genuine status while reserving the leader's group identity."""
+    if process.returncode is not None:
+        return process.returncode
+    result = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+    if result is None or result.si_pid == 0:
+        return None
+    if result.si_code == os.CLD_EXITED:
+        return result.si_status
+    if result.si_code in (os.CLD_KILLED, os.CLD_DUMPED):
+        return -result.si_status
+    raise RuntimeError(f"unexpected child wait status: {result.si_code}")
+
+
 class SupervisedChild:
     """Own a process group; observe the leader before explicitly reaping it."""
 
@@ -1160,6 +1201,7 @@ class SupervisedChild:
         self.readers: dict[str, _AsyncInput] = {}
         self.tasks: list[asyncio.Task[_ObservationFailed | None]] = []
         self._observed_returncode: int | None = None
+        self.generation = 1
         self.group_disposed = False
         self.termination_requested = False
 
@@ -1176,20 +1218,8 @@ class SupervisedChild:
     def poll(self) -> int | None:
         if self._observed_returncode is not None:
             return self._observed_returncode
-        if self.process.returncode is not None:
-            self._observed_returncode = self.process.returncode
-            return self._observed_returncode
-        result = os.waitid(os.P_PID, self.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
-        if result is None or result.si_pid == 0:
-            return None
-        if result.si_code == os.CLD_EXITED:
-            returncode = result.si_status
-        elif result.si_code in (os.CLD_KILLED, os.CLD_DUMPED):
-            returncode = -result.si_status
-        else:
-            raise RuntimeError(f"unexpected child wait status: {result.si_code}")
-        self._observed_returncode = returncode
-        return returncode
+        self._observed_returncode = _poll_unreaped_process(self.process)
+        return self._observed_returncode
 
     async def wait_for_exit(self) -> int:
         returncode = self.poll()
@@ -1331,14 +1361,22 @@ class SupervisedChild:
         _raise_cleanup_errors(errors)
 
 
-def _rollback_spawned_process(process):
+def _rollback_spawned_process(process, ownership: _ChildAcquisition | None = None):
     errors = []
     try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
+        observed = _poll_unreaped_process(process)
     except BaseException as error:
         errors.append(error)
+        observed = None
+    if process.returncode is None:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+            if observed is None and ownership is not None:
+                ownership.termination_requested = True
+        except ProcessLookupError:
+            pass
+        except BaseException as error:
+            errors.append(error)
     try:
         process.wait(timeout=CHILD_REAP_TIMEOUT)
     except BaseException as error:
@@ -1382,7 +1420,7 @@ def _spawn_child(
     except BaseException as error:
         if owner.process is not None:
             try:
-                _rollback_spawned_process(owner.process)
+                _rollback_spawned_process(owner.process, owner)
                 owner.rollback_confirmed = True
             except BaseException as cleanup_error:
                 error.add_note(f"child ownership rollback also failed: {cleanup_error}")
@@ -1459,6 +1497,10 @@ class _ControlFrame(NamedTuple):
     frame: bytes
 
 
+class _StartReceived(NamedTuple):
+    request: StartRequest
+
+
 class _ControlEOF(NamedTuple):
     pass
 
@@ -1486,7 +1528,7 @@ class _SignalReceived(NamedTuple):
 
 class _ObservationFailed(NamedTuple):
     source: str
-    exception: Exception
+    exception: BaseException
     child: SupervisedChild | None = None
 
 
@@ -1502,6 +1544,7 @@ class _ControlFence(NamedTuple):
 
 _Observation = (
     _ControlFrame
+    | _StartReceived
     | _ControlEOF
     | _ChildOutput
     | _ChildExited
@@ -1544,44 +1587,38 @@ class _SessionSignals:
 
 
 class ControlSession:
-    """Sole lifecycle owner of one structured remote-helper session."""
+    """Coordinate physical facts through the canonical remote lifecycle."""
 
     def __init__(self, session_id: str, work: Path, workspace_lock: IO[bytes]) -> None:
         self.session_id = session_id
         self.work = work
         self.workspace_lock = workspace_lock
+        self.lifecycle: RemoteLifecycle[StartRequest] = RemoteLifecycle()
+        self.request: StartRequest | None = None
         self.child: SupervisedChild | None = None
-        self.protocol_error: BaseException | None = None
         self._child_acquisition: _ChildAcquisition | None = None
         self._child_settlement: _ChildSettlement | None = None
-        self._staging_closed = False
-        self.operation_error: BaseException | None = None
-        self.cleanup_errors: list[BaseException] = []
-        self.state = _State.CREATED
-        self.ending = False
-        self.close_reason: str | None = None
-        self.natural_returncode: int | None = None
-        self.request: StartRequest | None = None
-        self.attempt = 0
-        self.address = ""
+        self._child_acquired = False
         self._address_lease: socket.socket | None = None
-        self._group_cleaned = False
-        self._startup_exit: int | None = None
-        self._deadline_task: asyncio.Task[_ObservationFailed | None] | None = None
+        self.address = ""
+        self.cleanup_errors: list[BaseException] = []
         self._events: asyncio.Queue[_Observation] = asyncio.Queue(MAX_PENDING_OBSERVATIONS)
         self._signals: asyncio.Queue[int] = asyncio.Queue(1)
         self._signal_scope = _SessionSignals()
+        self._signal_accounted = False
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._tasks: asyncio.TaskGroup | None = None
         self._session_tasks: list[asyncio.Task[_ObservationFailed | None]] = []
         self._observation_failures: dict[asyncio.Task[Any], _ObservationFailed] = {}
-        self._resources_released = False
-        self._output_available = True
+        self._deadline_task: asyncio.Task[_ObservationFailed | None] | None = None
         self._control_reader: _AsyncInput | None = None
         self._control_task: asyncio.Task[_ObservationFailed | None] | None = None
-        self._control_fence: _ControlFence | None = None
-        self._pending_control: _ControlFrame | _ControlEOF | None = None
-        self._reconciling_readiness = False
-        self._loop: asyncio.AbstractEventLoop | None = None
+        self._child_cleaning = False
+        self._group_cleaned = False
+        self._attempt_finished = False
+        self._staging_closed = False
+        self._resources_released = False
+        self._output_available = True
 
     @classmethod
     def create(cls) -> ControlSession:
@@ -1589,8 +1626,6 @@ class ControlSession:
         try:
             return cls(session_id, work, workspace_lock)
         except BaseException as failure:
-            # Allocation owns these resources until construction succeeds.
-            # A failed directory removal must not prevent lock release.
             for cleanup in (lambda: remove_workspace(work), workspace_lock.close):
                 try:
                     cleanup()
@@ -1609,61 +1644,40 @@ class ControlSession:
         )
 
     def handle_signal(self, signum: int = signal.SIGTERM, _frame: FrameType | None = None) -> None:
-        # Latch only plain state here: asyncio primitives are not safe to
-        # mutate from reentrant Unix signal-handler context.
-        if not self._signal_scope.capture(signum):
-            return
-        if self._loop is not None:
+        if self._signal_scope.capture(signum) and self._loop is not None:
             self._loop.call_soon_threadsafe(self._enqueue_signal, signum)
 
     def _enqueue_signal(self, signum: int) -> None:
-        # This callback runs on the loop, after the signal handler returns.
-        with suppress(asyncio.QueueFull):
+        if self._signals.empty():
             self._signals.put_nowait(signum)
 
     async def _observe_signals(self) -> None:
-        while True:
-            await self._events.put(_SignalReceived(await self._signals.get()))
+        await self._events.put(_SignalReceived(await self._signals.get()))
 
     async def _observe_control(self) -> None:
         frames = _ControlFrames()
-        reader = _AsyncInput(sys.stdin.buffer.fileno(), on_idle=self._acknowledge_control_fence)
+        reader = _AsyncInput(sys.stdin.buffer.fileno())
         self._control_reader = reader
+        started = False
         try:
             while True:
                 chunk = await reader.read()
                 if not chunk:
                     frames.finish()
-                    self._pending_control = _ControlEOF()
-                    await self._events.put(self._pending_control)
-                    self._pending_control = None
+                    await self._events.put(_ControlEOF())
                     return
+                if started:
+                    raise ValueError("unexpected input after START")
                 frames.feed(chunk)
-                while (frame := frames.pop_frame()) is not None:
-                    self._pending_control = _ControlFrame(frame)
-                    await self._events.put(self._pending_control)
-                    self._pending_control = None
-                await self._acknowledge_control_fence()
+                frame = frames.pop_frame()
+                if frame is not None:
+                    request = decode_command(decode_frame(frame))
+                    if frames._buffer:
+                        raise ValueError("unexpected input after START")
+                    started = True
+                    await self._events.put(_StartReceived(request))
         finally:
             reader.close()
-
-    async def _acknowledge_control_fence(self) -> None:
-        fence = self._control_fence
-        if fence is not None:
-            # Called only after publishing a whole consumed batch or scanning
-            # an idle descriptor. Pause observation until the coordinator has
-            # dispatched the fence and made its retry decision.
-            fence.observed.set_result(None)
-            await fence.resume
-
-    async def _observe_control_fence(self, fence: _ControlFence) -> None:
-        if self._control_task is not None:
-            # A completed guard has published EOF or its framing/read failure.
-            # Unlike a raw-reader checkpoint, this also covers queue backpressure.
-            await asyncio.wait(
-                (fence.observed, self._control_task), return_when=asyncio.FIRST_COMPLETED
-            )
-        await self._events.put(fence)
 
     async def _observe_output(self, child: SupervisedChild, name: str, stream: IO[bytes]) -> None:
         reader = _AsyncInput(stream.fileno())
@@ -1678,8 +1692,7 @@ class ControlSession:
             reader.close()
 
     async def _observe_exit(self, child: SupervisedChild) -> None:
-        returncode = await child.wait_for_exit()
-        await self._events.put(_ChildExited(child, returncode))
+        await self._events.put(_ChildExited(child, await child.wait_for_exit()))
 
     async def _observe_deadline(
         self, child: SupervisedChild, timeout: float, *, readiness: bool
@@ -1695,16 +1708,15 @@ class ControlSession:
     ) -> _ObservationFailed | None:
         try:
             await observation
-        except Exception as exc:
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:
             failure = _ObservationFailed(source, exc, child)
             task = asyncio.current_task()
-            if task is not None:
-                # Recognition precedes publication, which may block or be
-                # cancelled before the coordinator can dispatch the failure.
-                self._observation_failures[task] = failure
-                if task.cancelling():
-                    # Cancellation must not block cleanup on a full event queue.
-                    return failure
+            assert task is not None
+            self._observation_failures[task] = failure
+            if task.cancelling():
+                return failure
             await self._events.put(failure)
         return None
 
@@ -1716,27 +1728,63 @@ class ControlSession:
     ) -> asyncio.Task[_ObservationFailed | None]:
         assert self._tasks is not None
         task = self._tasks.create_task(self._guard(source, observation, child), name=source)
-        # A task cancelled before its first turn never enters _guard.
         task.add_done_callback(lambda _task: observation.close())
-        if child is None:
-            self._session_tasks.append(task)
-        else:
-            child.tasks.append(task)
+        (self._session_tasks if child is None else child.tasks).append(task)
         return task
 
-    def _start_attempt(self) -> None:
-        assert self.request is not None
-        request = self.request
-        if self._address_lease is not None:
-            # Failed retirement leaves the old owner reachable and prevents a
-            # replacement spawn; terminal cleanup still attempts its release.
-            self._address_lease.close()
-            self._address_lease = None
-        ports = [service.remote_port for service in request.services]
-        allocated = allocate_service_address(
-            ports, preferred_address=request.preferred_address if self.attempt == 0 else None
+    def _failure(self, trigger: Trigger, code: str, error: BaseException) -> None:
+        self.lifecycle.terminate(trigger, Diagnostic.from_exception(code, error))
+
+    def _cleanup_failure(self, error: BaseException) -> None:
+        self.cleanup_errors.append(error)
+        self._failure(Trigger.HELPER_FAILURE, "CLEANUP_FAILURE", error)
+
+    def _account_recorded_failures(self) -> None:
+        if self._signal_scope.pending_signum is not None and not self._signal_accounted:
+            self._signal_accounted = True
+            self.lifecycle.terminate(
+                Trigger.SIGNAL,
+                Diagnostic(
+                    "REMOTE_SIGNAL", f"helper received signal {self._signal_scope.pending_signum}"
+                ),
+            )
+        for failure in tuple(self._observation_failures.values()):
+            self._observation_failed(failure)
+
+    def _observation_failed(self, failure: _ObservationFailed) -> None:
+        for task, recorded in tuple(self._observation_failures.items()):
+            if recorded is failure:
+                del self._observation_failures[task]
+                break
+        else:
+            return
+        if failure.child is not None and failure.child is not self.child:
+            return
+        if failure.child is not None and failure.source in ("stdout", "stderr"):
+            failure.child.output_finished.add(failure.source)
+        trigger = (
+            Trigger.PROTOCOL_FAILURE
+            if failure.source == "control"
+            else (
+                Trigger.OUTPUT_FAILURE
+                if failure.source == "protocol output"
+                else Trigger.HELPER_FAILURE
+            )
         )
-        self._address_lease = getattr(allocated, "lease", None)
+        self._failure(trigger, "OBSERVER_FAILURE", failure.exception)
+
+    def _start_attempt(self) -> None:
+        self._account_recorded_failures()
+        state = self.lifecycle.state
+        if not isinstance(state, Starting) or not isinstance(state.attempt, AuthorizedAttempt):
+            return
+        request = state.request
+        generation = state.attempt.generation
+        allocated = allocate_service_address(
+            [service.remote_port for service in request.services],
+            preferred_address=request.preferred_address if generation == 1 else None,
+        )
+        self._address_lease = allocated.lease
         self.address = str(allocated)
         argv = materialize_argv(
             request.argv,
@@ -1746,40 +1794,58 @@ class ControlSession:
             argv_templates=request.argv_templates,
         )
         _validate_argv(list(argv))
-        replacements = {"workspace": str(self.work), "address": self.address}
-        _check_required_paths(request.required_paths, replacements)
-        emit("PROCESS_STARTING", argv=list(argv))
-        # Publish conservative retention before any child can acquire inputs.
-        # A later metadata write failure must not enable stale reclamation.
-        (self.work / UNCONFIRMED_CHILD).touch(mode=0o600)
-        owner = _ChildAcquisition(self.attempt + 1)
+        _check_required_paths(
+            request.required_paths, {"workspace": str(self.work), "address": self.address}
+        )
+        self._account_recorded_failures()
+        if not isinstance(self.lifecycle.state, Starting):
+            return
+        try:
+            emit("ATTEMPT", generation=generation, argv=list(argv))
+        except BaseException as error:
+            self._failure(Trigger.OUTPUT_FAILURE, "ATTEMPT_ADMISSION", error)
+            return
+        if not self.lifecycle.enter_attempt(generation, admitted=True):
+            return
+        owner = _ChildAcquisition(generation)
         self._child_acquisition = owner
         self._child_settlement = None
+        self._child_cleaning = self._group_cleaned = self._attempt_finished = False
         try:
-            child = _spawn_child(
+            (self.work / UNCONFIRMED_CHILD).touch(mode=0o600)
+            self.child = _spawn_child(
                 argv,
                 cwd=self.work / "staged",
                 environment=_child_environment(request),
                 required_output_sentinels=request.required_output_sentinels,
                 ownership=owner,
             )
-            self.child = child
+        except BaseException as error:
+            self._failure(Trigger.STARTUP_FAILURE, "SPAWN_FAILURE", error)
         finally:
-            # The ticket stays reachable even if return/adoption is interrupted.
             owner.producer_quiescent = True
+            self._child_acquired |= owner.process is not None
             if self.child is None:
                 self.child = owner.child
-        self.state = _State.STARTING
-        self._group_cleaned = False
-        self._startup_exit = None
-        self._start_output_observers(child)
-        self._observe("child exit", self._observe_exit(child), child)
-        self._deadline_task = self._observe(
-            "readiness deadline",
-            self._observe_deadline(child, request.readiness_timeout, readiness=True),
-            child,
-        )
-        if not request.required_output_sentinels:
+        if self.child is None:
+            if owner.process is not None and owner.process.returncode is not None:
+                if owner.termination_requested:
+                    self.lifecycle.record_child_termination(generation)
+                self.lifecycle.observe_child_exit(generation, owner.process.returncode)
+            return
+        self.child.generation = generation
+        self.child.termination_requested |= owner.termination_requested
+        self.lifecycle.adopt_attempt(generation)
+        self._start_output_observers(self.child)
+        self._observe("child exit", self._observe_exit(self.child), self.child)
+        if request.completion_policy == CompletionPolicy.LIVE_SERVER and isinstance(
+            self.lifecycle.state, Starting
+        ):
+            self._deadline_task = self._observe(
+                "readiness deadline",
+                self._observe_deadline(self.child, request.readiness_timeout, readiness=True),
+                self.child,
+            )
             self._ready()
 
     def _start_output_observers(self, child: SupervisedChild) -> None:
@@ -1792,71 +1858,72 @@ class ControlSession:
                 raise RuntimeError("child output was not captured")
             if stream.closed:
                 child.output_finished.add(name)
-                continue
-            self._observe(name, self._observe_output(child, name, stream), child)
+            else:
+                self._observe(name, self._observe_output(child, name, stream), child)
+
+    def _record_exit(self, child: SupervisedChild, returncode: int) -> None:
+        if child.termination_requested:
+            self.lifecycle.record_child_termination(child.generation)
+        self.lifecycle.observe_child_exit(child.generation, returncode)
+        self._classify_collision(child)
+
+    def _classify_collision(self, child: SupervisedChild) -> None:
+        state = self.lifecycle.state
+        if (
+            isinstance(state, Starting)
+            and isinstance(state.attempt, OwnedAttempt)
+            and state.attempt.child_result is not None
+            and is_bind_collision(child.startup_output)
+        ):
+            self.lifecycle.classify_startup_failure(
+                child.generation,
+                Diagnostic(
+                    "STARTUP_EXIT",
+                    f"bind collision before READY ({state.attempt.child_result.returncode})",
+                ),
+                safely_repeatable=True,
+            )
 
     def _ready(self) -> None:
-        assert self.child is not None
-        if self._reconciling_readiness:
-            return
-        # Dispatch the bounded queue before success. Output dispatch may request
-        # readiness again; the outer call alone owns this publication decision.
-        self._reconciling_readiness = True
-        try:
-            while not self._events.empty():
-                self._handle(self._events.get_nowait())
-                if self.ending:
-                    return
-            # A control observer may have consumed a fact but be blocked at put.
-            # It remains owned here until normal publication; terminal dispatch
-            # makes any later duplicate harmless through the existing guards.
-            if self._pending_control is not None:
-                self._handle(self._pending_control)
-                if self.ending:
-                    return
-        finally:
-            self._reconciling_readiness = False
-        # A guard may already know a fatal fact while its queue publication is
-        # blocked. Reconcile through the coordinator's existing failure path.
-        for failure in tuple(self._observation_failures.values()):
-            self._observation_failed(failure)
-            if self.ending:
-                return
+        self._account_recorded_failures()
+        state = self.lifecycle.state
+        child = self.child
         if (
-            self.ending
-            or self.state != _State.STARTING
-            or self._signal_scope.pending_signum is not None
+            not isinstance(state, Starting)
+            or child is None
+            or state.request.completion_policy != CompletionPolicy.LIVE_SERVER
         ):
             return
-        self.state = _State.ACTIVE
-        if self._deadline_task is not None:
-            self._deadline_task.cancel()
-        emit("PROCESS_READY", remote_address=self.address, child_pid=self.child.pid)
-
-    def _select_failure(self, exception: BaseException, *, protocol: bool = False) -> None:
-        if self.ending:
+        for marker in set(state.request.required_output_sentinels) - set(
+            child.required_output_sentinels.unseen
+        ):
+            self.lifecycle.observe_marker(child.generation, marker)
+        state = self.lifecycle.state
+        if (
+            not isinstance(state, Starting)
+            or not isinstance(state.attempt, OwnedAttempt)
+            or state.attempt.child_result is not None
+            or state.provisional_failure is not None
+            or not set(state.request.required_output_sentinels).issubset(state.evidence)
+        ):
             return
-        if protocol:
-            self.protocol_error = exception
-        else:
-            self.operation_error = exception
-        self.ending = True
-
-    def _command(self, frame: bytes) -> None:
-        if self.ending:
+        returncode = child.poll()
+        if returncode is not None:
+            self._record_exit(child, returncode)
             return
         try:
-            request = decode_command(json.loads(frame))
-            if isinstance(request, StartRequest):
-                if self.request is not None:
-                    raise ValueError("START is only valid once")
-                self.request = request
-                self._start_attempt()
-            else:
-                self.ending = True
-                self.close_reason = "requested"
-        except Exception as exc:
-            self._select_failure(exc, protocol=True)
+            emit(
+                "READY",
+                generation=child.generation,
+                remote_address=self.address,
+                child_pid=child.pid,
+            )
+        except BaseException as error:
+            self._failure(Trigger.OUTPUT_FAILURE, "READY_ADMISSION", error)
+            return
+        self.lifecycle.ready(child.generation, child_live=True, admitted=True)
+        if self._deadline_task is not None:
+            self._deadline_task.cancel()
 
     def _output(self, observation: _ChildOutput) -> None:
         child = observation.child
@@ -1869,167 +1936,78 @@ class ControlSession:
                 try:
                     emit(
                         "CHILD_OUTPUT",
+                        generation=child.generation,
                         stream=fragment.stream,
                         payload=fragment.payload,
                         line_end=fragment.line_end,
                     )
-                except Exception as exc:
+                except BaseException as error:
                     self._output_available = False
-                    if self.ending:
-                        self.cleanup_errors.append(exc)
-                    else:
-                        self._select_failure(exc)
+                    self._failure(Trigger.OUTPUT_FAILURE, "CHILD_OUTPUT_ADMISSION", error)
         if not observation.chunk:
             child.output_finished.add(observation.stream)
-        if (
-            self.state == _State.STARTING
-            and not self.ending
-            and child.required_output_sentinels.ready
-        ):
-            returncode = child.poll()
-            if returncode is None:
-                self._ready()
-            else:
-                self._exited(_ChildExited(child, returncode))
-
-    def _exited(self, observation: _ChildExited) -> None:
-        if observation.child is not self.child or self.ending:
-            return
-        if self.state == _State.STARTING:
-            self._startup_exit = observation.returncode
-            self._begin_child_cleanup()
-        elif self.state == _State.ACTIVE:
-            self.natural_returncode = observation.returncode
-            self.close_reason = "process_exit"
-            self.ending = True
+        self._classify_collision(child)
+        self._ready()
 
     async def _observe_final_readiness(self, child: SupervisedChild) -> None:
         readers = list(child.readers.values())
-        if self._control_reader is not None:
-            readers.append(self._control_reader)
-        # Readers acknowledge one raw scan, even when the fd has no new bytes.
-        # Continue consuming the bounded queue while they publish those facts.
         if readers:
             await asyncio.wait([reader.checkpoint() for reader in readers])
         await self._events.put(_Deadline(child, readiness=True, final=True))
-
-    def _final_readiness_observation(self, child: SupervisedChild) -> None:
-        if child is self.child and self.state == _State.STARTING:
-            returncode = child.poll()
-            if returncode is not None:
-                self._exited(_ChildExited(child, returncode))
-            elif child.required_output_sentinels.ready:
-                self._ready()
-            else:
-                self._select_failure(RuntimeError("process readiness timed out"), protocol=True)
-
-    def _observation_failed(self, observation: _ObservationFailed) -> None:
-        for task, failure in self._observation_failures.items():
-            if failure is observation:
-                del self._observation_failures[task]
-                break
-        else:
-            # Joining the owner may already have accounted for this queued fact.
-            return
-        if observation.child is not None and observation.child is not self.child:
-            return
-        if observation.child is not None and observation.source in ("stdout", "stderr"):
-            observation.child.output_finished.add(observation.source)
-        if self.state == _State.TERMINATING and self.ending:
-            self.cleanup_errors.append(observation.exception)
-        else:
-            self._select_failure(observation.exception, protocol=observation.source == "control")
-
-    def _group_cleanup_finished(self, observation: _GroupCleaned) -> None:
-        if observation.child is not self.child:
-            return
-        self._group_cleaned = True
-        if observation.exception is not None:
-            self.cleanup_errors.append(observation.exception)
-        self._deadline_task = self._observe(
-            "output drain deadline",
-            self._observe_deadline(observation.child, CHILD_RELAY_JOIN_TIMEOUT, readiness=False),
-            observation.child,
-        )
-
-    def _deadline(self, observation: _Deadline) -> None:
-        if observation.child is not self.child:
-            return
-        if observation.readiness and self.state == _State.STARTING and not self.ending:
-            if observation.final:
-                self._final_readiness_observation(observation.child)
-            else:
-                self._observe(
-                    "final readiness observation",
-                    self._observe_final_readiness(observation.child),
-                    observation.child,
-                )
-        elif (
-            not observation.readiness
-            and self.state == _State.TERMINATING
-            and observation.child.output_finished != {"stdout", "stderr"}
-        ):
-            self.cleanup_errors.append(RuntimeError("child output relay did not stop"))
-            observation.child.output_finished.update(("stdout", "stderr"))
-
-    def _handle(self, observation: _Observation) -> None:
-        if isinstance(observation, _ControlFrame):
-            self._command(observation.frame)
-        elif isinstance(observation, (_ControlEOF, _SignalReceived)):
-            self.ending = True
-        elif isinstance(observation, _ChildOutput):
-            self._output(observation)
-        elif isinstance(observation, _ChildExited):
-            self._exited(observation)
-        elif isinstance(observation, _ObservationFailed):
-            self._observation_failed(observation)
-        elif isinstance(observation, _GroupCleaned):
-            self._group_cleanup_finished(observation)
-        elif isinstance(observation, _Deadline):
-            self._deadline(observation)
 
     async def _clean_group(self, child: SupervisedChild) -> None:
         failure = None
         try:
             await child.terminate()
-        except BaseException as exc:
-            failure = exc
+        except BaseException as error:
+            failure = error
         await self._events.put(_GroupCleaned(child, failure))
 
     def _begin_child_cleanup(self) -> None:
-        if self.state == _State.TERMINATING:
+        child = self.child
+        if child is None or self._child_cleaning:
             return
-        assert self.child is not None
-        self.state = _State.TERMINATING
-        # Partial adoption still owns captured pipes. Give their sole readers
-        # the same finite drain opportunity as normally initialized attempts.
-        self._start_output_observers(self.child)
+        self._child_cleaning = True
+        self._start_output_observers(child)
         if self._deadline_task is not None:
             self._deadline_task.cancel()
-        self._observe("process-group cleanup", self._clean_group(self.child), self.child)
+        self._observe("process-group cleanup", self._clean_group(child), child)
 
-    async def _cancel(self, tasks: list[asyncio.Task[_ObservationFailed | None]]) -> None:
-        for task in tasks:
+    async def _cancel(self, tasks: Iterable[asyncio.Task[Any]]) -> None:
+        owned = tuple(tasks)
+        for task in owned:
             task.cancel()
-        for task in tasks:
+        for task in owned:
             try:
                 await task
             except asyncio.CancelledError:
                 pass
-            except BaseException as exc:
-                self.cleanup_errors.append(exc)
-            failure = self._observation_failures.pop(task, None)
+            except BaseException as error:
+                self._cleanup_failure(error)
+            failure = self._observation_failures.get(task)
             if failure is not None:
-                self.cleanup_errors.append(failure.exception)
+                self._observation_failed(failure)
+
+    def _close_address_lease(self) -> None:
+        if self._address_lease is not None:
+            try:
+                self._address_lease.close()
+            except BaseException as error:
+                self._cleanup_failure(error)
+            else:
+                self._address_lease = None
 
     async def _finish_attempt(self) -> None:
-        assert self.child is not None
         child = self.child
+        assert child is not None
         await self._cancel(child.tasks)
         try:
             child.close_streams()
-        except BaseException as exc:
-            self.cleanup_errors.append(exc)
+        except BaseException as error:
+            self._cleanup_failure(error)
+        returncode = child.returncode
+        if returncode is not None:
+            self._record_exit(child, returncode)
         owner = self._child_acquisition
         assert owner is not None
         self._child_settlement = _ChildSettlement(
@@ -2042,111 +2020,116 @@ class ControlSession:
                 for stream in (child.process.stdout, child.process.stderr)
             ),
         )
-        retry = (
-            not self.ending
-            and not self.cleanup_errors
-            and self._child_settlement.confirmed
-            and is_bind_collision(child.startup_output)
-            and self.attempt + 1 < MAX_ADDRESS_ALLOCATION_ATTEMPTS
-        )
-        if retry:
-            await self._retry_commit_boundary()
-        if self._child_settlement.confirmed:
+        self._close_address_lease()
+        self._account_recorded_failures()
+        state = self.lifecycle.state
+        if isinstance(state, Starting):
+            failure = Diagnostic(
+                "STARTUP_EXIT", f"child exited before READY with status {returncode}"
+            )
+            repeatable = is_bind_collision(child.startup_output) and not self.cleanup_errors
+            self.lifecycle.classify_startup_failure(
+                child.generation, failure, safely_repeatable=repeatable
+            )
+        if self._child_settlement.confirmed and self._address_lease is None:
+            self.lifecycle.settle_attempt(
+                child.generation, producer_quiescent=True, resources_disposed=True
+            )
             self.child = None
         else:
-            self.cleanup_errors.append(RuntimeError("child disposal remains unconfirmed"))
-            self.ending = True
-            self.state = _State.CLOSED
-        if not self.ending and not self.cleanup_errors:
-            if retry:
-                self.attempt += 1
+            self._cleanup_failure(RuntimeError("child disposal remains unconfirmed"))
+        self._attempt_finished = True
+        generation = self.lifecycle.retry(child.generation)
+        if generation is not None:
+            try:
+                self._start_attempt()
+            except BaseException as error:
+                self._failure(Trigger.STARTUP_FAILURE, "STARTUP_FAILURE", error)
+
+    def _handle(self, observation: _Observation) -> None:
+        if isinstance(observation, _StartReceived):
+            self._account_recorded_failures()
+            if isinstance(self.lifecycle.state, Created):
+                self.request = observation.request
+                self.lifecycle.start(observation.request)
                 try:
                     self._start_attempt()
-                except Exception as exc:
-                    self._select_failure(exc, protocol=True)
-                return
-            self._select_failure(
-                RuntimeError(f"process exited before readiness with status {self._startup_exit}"),
-                protocol=True,
-            )
-        self.ending = True
-
-    async def _retry_commit_boundary(self) -> None:
-        loop = asyncio.get_running_loop()
-        fence = _ControlFence(loop.create_future(), loop.create_future())
-        self._control_fence = fence
-        if self._control_reader is not None:
-            self._control_reader.wake()
-        self._observe("retry control fence", self._observe_control_fence(fence))
-        try:
-            while not self.ending and not self.cleanup_errors:
-                observation = await self._events.get()
-                if observation is fence:
-                    break
-                self._handle(observation)
-                await asyncio.sleep(0)
-            if self._signal_scope.pending_signum is not None:
-                self.ending = True
-        finally:
-            self._control_fence = None
-            if not fence.resume.done():
-                fence.resume.set_result(None)
-
-    def _release_workspace(self) -> None:
-        if self._resources_released:
-            return
-        self._resources_released = True
-        if self._address_lease is not None:
-            try:
-                self._address_lease.close()
-            except BaseException as exc:
-                self.cleanup_errors.append(exc)
-            self._address_lease = None
-        try:
-            owner = self._child_acquisition
-            disposed = (
-                owner is None
-                or owner.process is None
-                or owner.rollback_confirmed
-                or self._child_settlement is not None
-                and self._child_settlement.confirmed
-            )
-            if disposed:
-                try:
-                    (self.work / UNCONFIRMED_CHILD).unlink(missing_ok=True)
-                except BaseException as exc:
-                    self.cleanup_errors.append(exc)
-                remove_workspace(self.work)
-            else:
-                close_staging_admission(self.work)
-                self.cleanup_errors.append(
-                    RuntimeError("retaining workspace for unconfirmed child disposal")
+                except BaseException as error:
+                    self._failure(Trigger.STARTUP_FAILURE, "STARTUP_FAILURE", error)
+        elif isinstance(observation, _ControlEOF):
+            self.lifecycle.terminate(Trigger.CONTROLLER_EOF)
+        elif isinstance(observation, _SignalReceived):
+            self._account_recorded_failures()
+        elif isinstance(observation, _ObservationFailed):
+            self._observation_failed(observation)
+        elif isinstance(observation, _ChildOutput):
+            self._output(observation)
+        elif isinstance(observation, _ChildExited):
+            if observation.child is self.child:
+                self._record_exit(observation.child, observation.returncode)
+        elif isinstance(observation, _GroupCleaned):
+            if observation.child is self.child:
+                self._group_cleaned = True
+                if observation.exception is not None:
+                    self._cleanup_failure(observation.exception)
+                self._deadline_task = self._observe(
+                    "output drain deadline",
+                    self._observe_deadline(
+                        observation.child, CHILD_RELAY_JOIN_TIMEOUT, readiness=False
+                    ),
+                    observation.child,
                 )
-        except FileNotFoundError as exc:
-            if self.work.exists():
-                self.cleanup_errors.append(exc)
-        except BaseException as exc:
-            self.cleanup_errors.append(exc)
-        try:
-            self.workspace_lock.close()
-        except BaseException as exc:
-            self.cleanup_errors.append(exc)
+        elif isinstance(observation, _Deadline) and observation.child is self.child:
+            state = self.lifecycle.state
+            if observation.readiness and isinstance(state, Starting):
+                if observation.final:
+                    self._ready()
+                    state = self.lifecycle.state
+                    if (
+                        isinstance(state, Starting)
+                        and isinstance(state.attempt, OwnedAttempt)
+                        and state.attempt.child_result is None
+                    ):
+                        self._failure(
+                            Trigger.STARTUP_FAILURE,
+                            "READINESS_TIMEOUT",
+                            RuntimeError("process readiness timed out"),
+                        )
+                else:
+                    self._observe(
+                        "final readiness observation",
+                        self._observe_final_readiness(observation.child),
+                        observation.child,
+                    )
+            elif not observation.readiness and observation.child.output_finished != {
+                "stdout",
+                "stderr",
+            }:
+                self._cleanup_failure(RuntimeError("child output relay did not stop"))
+                observation.child.output_finished.update(("stdout", "stderr"))
 
     async def _coordinate(self) -> None:
-        while self.state != _State.CLOSED:
-            if self.ending:
+        while True:
+            self._account_recorded_failures()
+            state = self.lifecycle.state
+            if isinstance(state, Terminating):
                 if not self._staging_closed:
                     try:
                         close_staging_admission(self.work)
-                    except BaseException as exc:
-                        self.cleanup_errors.append(exc)
+                    except BaseException as error:
+                        self._cleanup_failure(error)
                     self._staging_closed = True
-                if self.child is None:
-                    self.state = _State.CLOSED
-                    break
+                if self.child is None or self._attempt_finished:
+                    return
+                self._begin_child_cleanup()
+            elif (
+                isinstance(state, Starting)
+                and isinstance(state.attempt, OwnedAttempt)
+                and state.attempt.child_result is not None
+            ):
                 self._begin_child_cleanup()
             if (
-                self.state == _State.TERMINATING
+                self._child_cleaning
                 and self._group_cleaned
                 and self.child is not None
                 and self.child.output_finished == {"stdout", "stderr"}
@@ -2154,130 +2137,174 @@ class ControlSession:
                 await self._finish_attempt()
                 continue
             self._handle(await self._events.get())
-            # Let owned observers and the nonblocking protocol writer progress.
             await asyncio.sleep(0)
 
-    async def _run_session_tasks(
-        self, output: _ProtocolOutput, signals: _SessionSignals
-    ) -> BaseException | None:
-        """Keep the writer owned until observers stop and terminal output drains."""
-        final_exception: BaseException | None = None
+    def _child_disposed(self) -> bool:
+        owner = self._child_acquisition
+        return (
+            owner is None
+            or owner.producer_quiescent
+            and (
+                owner.process is None
+                or owner.rollback_confirmed
+                or self._child_settlement is not None
+                and self._child_settlement.confirmed
+            )
+        )
+
+    def _release_workspace(self) -> None:
+        if self._resources_released:
+            return
+        self._resources_released = True
+        self._close_address_lease()
+        try:
+            if self._child_disposed() and self._address_lease is None:
+                try:
+                    (self.work / UNCONFIRMED_CHILD).unlink(missing_ok=True)
+                except BaseException as error:
+                    self._cleanup_failure(error)
+                remove_workspace(self.work)
+            else:
+                close_staging_admission(self.work)
+                self._cleanup_failure(
+                    RuntimeError("retaining workspace for unconfirmed child disposal")
+                )
+        except BaseException as error:
+            self._cleanup_failure(error)
+        try:
+            self.workspace_lock.close()
+        except BaseException as error:
+            self._cleanup_failure(error)
+
+    def _disposed_path(self, path: Path) -> bool:
+        try:
+            return _path_absent(path)
+        except BaseException as failure:
+            self._cleanup_failure(failure)
+            return False
+
+    def _cleanup_report(self) -> CleanupReport:
+        residuals: list[ResidualResource] = []
+        owner = self._child_acquisition
+        if owner is not None and not owner.producer_quiescent:
+            residuals.append("child_producer")
+        if not self._child_disposed():
+            if (
+                owner is not None
+                and owner.child is None
+                or self._child_settlement is None
+                or not self._child_settlement.group_disposed
+            ):
+                residuals.append("child_group")
+            if self._child_settlement is None or not (
+                self._child_settlement.observers_settled and self._child_settlement.pipes_closed
+            ):
+                residuals.append("child_relays")
+        if self._address_lease is not None:
+            residuals.append("address_lease")
+        child_status: Literal["not_acquired", "confirmed", "unconfirmed"] = (
+            "unconfirmed"
+            if residuals
+            else ("confirmed" if self._child_acquired else "not_acquired")
+        )
+        if not self._disposed_path(self.work):
+            residuals.append("workspace")
+        if not self.workspace_lock.closed or not all(
+            self._disposed_path(path) for path in (_lease_path(self.work), _closure_path(self.work))
+        ):
+            residuals.append("workspace_metadata")
+        workspace_status: Literal["not_created", "confirmed", "unconfirmed"] = (
+            "unconfirmed" if {"workspace", "workspace_metadata"} & set(residuals) else "confirmed"
+        )
+        if self._child_disposed() and self._address_lease is None and owner is not None:
+            self.lifecycle.settle_attempt(
+                owner.generation,
+                producer_quiescent=owner.producer_quiescent,
+                resources_disposed=True,
+            )
+        return CleanupReport(child_status, workspace_status, tuple(residuals))
+
+    async def _run_session_tasks(self, output: _ProtocolOutput, signals: _SessionSignals) -> None:
         writer_task = None
         async with asyncio.TaskGroup() as tasks:
             self._tasks = tasks
             try:
                 if output.descriptor is not None:
                     writer_task = self._observe("protocol output", output.run())
-                self.announce()
+                try:
+                    self.announce()
+                except BaseException as error:
+                    self._failure(Trigger.OUTPUT_FAILURE, "SESSION_CREATED_ADMISSION", error)
                 signals.install(self.handle_signal)
                 self._control_task = self._observe("control", self._observe_control())
                 self._observe("signal", self._observe_signals())
                 await self._coordinate()
-            except BaseException as exc:
-                self._select_failure(exc)
+            except BaseException as error:
+                self._failure(Trigger.HELPER_FAILURE, "HELPER_FAILURE", error)
                 await self._coordinate()
             finally:
-                await self._cancel(
-                    [task for task in self._session_tasks if task is not writer_task]
-                )
+                await self._cancel(task for task in self._session_tasks if task is not writer_task)
                 self._release_workspace()
+            self._account_recorded_failures()
+            snapshot = self.lifecycle.freeze(self._cleanup_report())
             try:
-                self._report_outcome()
-            except BaseException as exc:
-                final_exception = exc
-                if isinstance(exc, Exception):
-                    try:
-                        error(exc)
-                    except Exception as output_error:
-                        exc.add_note(f"terminal output also failed: {output_error}")
-                        for note in tuple(getattr(output_error, "__notes__", ())):
-                            exc.add_note(f"terminal output failure detail: {note}")
-            try:
+                emit("SESSION_ENDED", **terminal_fields(snapshot))
                 await output.drain()
-            except Exception as exc:
-                if final_exception is None:
-                    final_exception = exc
-                else:
-                    final_exception.add_note(f"protocol output cleanup also failed: {exc}")
-                    for note in tuple(getattr(exc, "__notes__", ())):
-                        final_exception.add_note(f"protocol output cleanup detail: {note}")
+            except BaseException as error:
+                self._failure(Trigger.OUTPUT_FAILURE, "TERMINAL_DELIVERY", error)
             finally:
                 if writer_task is not None:
-                    await self._cancel([writer_task])
-        return final_exception
+                    await self._cancel((writer_task,))
 
     async def run_async(self) -> None:
-        """Own output and signal scopes around the structured session tasks."""
         self._loop = asyncio.get_running_loop()
         if self._signal_scope.pending_signum is not None:
-            # Publish a pre-loop signal through the same observation path as
-            # later signals, without overtaking already-published control facts.
             self._loop.call_soon(self._enqueue_signal, self._signal_scope.pending_signum)
-        signals = self._signal_scope
         output = None
-        output_token = None
-        final_exception: BaseException | None = None
+        token = None
         try:
             output = _ProtocolOutput()
-            output_token = _protocol_output.set(output)
-            final_exception = await self._run_session_tasks(output, signals)
-        except BaseException as exc:
-            final_exception = exc
+            token = _protocol_output.set(output)
+            await self._run_session_tasks(output, self._signal_scope)
+        except BaseException as error:
+            self._failure(Trigger.HELPER_FAILURE, "HELPER_FAILURE", error)
         finally:
             self._tasks = None
             self._loop = None
             self._release_workspace()
-            if output_token is not None:
-                _protocol_output.reset(output_token)
+            if token is not None:
+                _protocol_output.reset(token)
             if output is not None:
                 try:
                     output.close()
-                except BaseException as exc:
-                    if final_exception is None:
-                        final_exception = exc
-                    else:
-                        final_exception.add_note(f"protocol output cleanup also failed: {exc}")
-                        for note in tuple(getattr(exc, "__notes__", ())):
-                            final_exception.add_note(f"protocol output cleanup detail: {note}")
-            for restoration_error in signals.restore():
-                self.cleanup_errors.append(restoration_error)
-                if final_exception is None:
-                    final_exception = restoration_error
-            if final_exception is not None:
-                for cleanup_error in self.cleanup_errors:
-                    if cleanup_error is not final_exception:
-                        note = f"session cleanup also failed: {cleanup_error}"
-                        if note not in getattr(final_exception, "__notes__", ()):
-                            final_exception.add_note(note)
-                        for detail in tuple(getattr(cleanup_error, "__notes__", ())):
-                            note = f"session cleanup failure detail: {detail}"
-                            if note not in getattr(final_exception, "__notes__", ()):
-                                final_exception.add_note(note)
-        if final_exception is not None:
-            raise final_exception
-
-    def _report_outcome(self) -> None:
-        failure = self.protocol_error or self.operation_error
-        if failure is not None:
-            for exc in self.cleanup_errors:
-                failure.add_note(f"session cleanup also failed: {exc}")
-                for note in tuple(getattr(exc, "__notes__", ())):
-                    failure.add_note(f"session cleanup failure detail: {note}")
-            if self.protocol_error is not None:
-                error(failure, "PROTOCOL_ERROR")
-                if self.cleanup_errors:
-                    raise SystemExit(1)
-                return
-            raise failure
-        _raise_cleanup_errors(self.cleanup_errors)
-        if self.close_reason is not None:
-            emit("SESSION_CLOSED", reason=self.close_reason, returncode=self.natural_returncode)
+                except BaseException as error:
+                    self._cleanup_failure(error)
+            for restoration_error in self._signal_scope.restore():
+                self._cleanup_failure(restoration_error)
+            self._account_recorded_failures()
+        state = self.lifecycle.state
+        if (
+            not isinstance(state, Closed)
+            or state.local_diagnostics
+            or state.snapshot.operation_failed(
+                self.request.completion_policy
+                if self.request is not None
+                else CompletionPolicy.LIVE_SERVER
+            )
+        ):
+            raise SystemExit(1)
 
     def run(self) -> None:
-        # Set up the loop before creating its coroutine; failed loop setup
-        # leaves only the workspace for the control entry point to release.
         with asyncio.Runner() as runner:
             runner.run(self.run_async())
+
+
+def _path_absent(path: Path) -> bool:
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return True
+    return False
 
 
 def control() -> None:
@@ -2317,6 +2344,14 @@ def control() -> None:
                 signal.signal(signum, handler)
             except BaseException as exc:
                 cleanup_errors.append(exc)
+    if session is not None:
+        session._account_recorded_failures()
+        if (
+            isinstance(session.lifecycle.state, Closed)
+            and session.lifecycle.state.local_diagnostics
+            and failure is None
+        ):
+            failure = SystemExit(1)
     if failure is None and cleanup_errors:
         failure = cleanup_errors.pop(0)
     if failure is not None:
@@ -2329,7 +2364,17 @@ def control() -> None:
                     note = f"session cleanup failure detail: {detail}"
                     if note not in getattr(failure, "__notes__", ()):
                         failure.add_note(note)
-        # The session owns ERROR delivery and bounded output cleanup; never
+        if session is None:
+            diagnostic = Diagnostic.from_exception("SESSION_CREATION", failure)
+            snapshot = TerminalSnapshot(
+                Outcome(Trigger.HELPER_FAILURE, diagnostic),
+                CleanupReport("not_acquired", "unconfirmed", ("workspace", "workspace_metadata")),
+            )
+            try:
+                emit("SESSION_ENDED", **terminal_fields(snapshot))
+            finally:
+                raise SystemExit(1) from failure
+        # The session owns terminal delivery and bounded output cleanup; never
         # retry a blocking stdout write after the structured scope has closed.
         if session is not None and isinstance(failure, Exception):
             raise SystemExit(1) from failure

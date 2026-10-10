@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Digest-based installation of the Protocol v1 helper."""
+"""Digest-based installation of the Protocol v2 helper."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ BOOTSTRAP = r'''import fcntl,hashlib,json,os,pathlib,sys,tempfile,time
 STALE_HELPER_AGE_SECONDS=24*60*60
 data=sys.stdin.buffer.read()
 digest=hashlib.sha256(data).hexdigest()
-base=pathlib.Path.home()/'.local/libexec/zephyr_remote_openocd/protocol_v1'
+base=pathlib.Path.home()/'.local/libexec/zephyr_remote_openocd/protocol_v2'
 base.mkdir(mode=0o700,parents=True,exist_ok=True)
 os.chmod(base,0o700)
 with (base/'.deploy.lock').open('a+b') as lock:
@@ -51,7 +51,7 @@ with (base/'.deploy.lock').open('a+b') as lock:
                 candidate.unlink()
         except OSError:
             pass
-print(json.dumps({'version':1,'type':'DEPLOYED','status':'reused' if reused else 'deployed',
+print(json.dumps({'version':2,'type':'DEPLOYED','status':'reused' if reused else 'deployed',
                   'path':str(target.resolve()),'sha256':digest}))
 '''
 

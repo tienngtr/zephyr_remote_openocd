@@ -6,7 +6,6 @@ import array
 import fcntl
 import hashlib
 import io
-import ipaddress
 import json
 import os
 import select
@@ -49,12 +48,10 @@ from zephyr_remote_openocd.remote.model import (
     StagedDirectory,
     StagedFile,
 )
+from zephyr_remote_openocd.remote.outcome import CompletionPolicy, Trigger
 from zephyr_remote_openocd.remote.paths import REMOTE_ADDRESS_PLACEHOLDER, PathPlanner
 from zephyr_remote_openocd.remote.protocol import encode_message
 from zephyr_remote_openocd.remote.rtt import RttClientError, run_rtt_client
-from zephyr_remote_openocd.remote.services import (
-    LOOPBACK_RANGE,
-)
 from zephyr_remote_openocd.remote.session import SessionError
 from zephyr_remote_openocd.remote.ssh import (
     ManagedSshProcess,
@@ -65,6 +62,7 @@ from zephyr_remote_openocd.remote.ssh import (
 from zephyr_remote_openocd.remote.staging import build_archive
 
 from tests.process_support import read_line, read_lines
+from tests.protocol_support import terminal_message
 from tests.support import ROOT
 
 TEST_PROCESS = RemoteProcess(("test-process",))
@@ -184,16 +182,16 @@ def test_sigint_during_helper_reader_start_keeps_one_owned_reader(monkeypatch):
     created = encode_message(
         "SESSION_CREATED", helper="test", session_id="session", remote_workspace="/workspace"
     )
-    ready = encode_message("PROCESS_STARTING", argv=["test-process"]) + encode_message(
-        "PROCESS_READY", remote_address="127.64.0.1", child_pid=1
+    ready = encode_message("ATTEMPT", generation=1, argv=["test-process"]) + encode_message(
+        "READY", generation=1, remote_address="127.64.0.1", child_pid=1
     )
-    closed = encode_message("SESSION_CLOSED", reason="requested", returncode=None)
+    closed = terminal_message(Trigger.CONTROLLER_EOF, returncode=None)
     code = (
         "import json,os,sys\n"
         f"os.write(1, {created!r})\n"
         "assert json.loads(sys.stdin.readline())['type'] == 'START'\n"
         f"os.write(1, {ready!r})\n"
-        "assert json.loads(sys.stdin.readline())['type'] == 'STOP'\n"
+        "assert sys.stdin.buffer.read() == b''\n"
         f"os.write(1, {closed!r})\n"
     )
     helper = _HelperClient(
@@ -251,9 +249,9 @@ def test_helper_close_allows_recorded_natural_exit_before_termination(
                 session_id="session",
                 remote_workspace="/workspace",
             ),
-            encode_message("PROCESS_STARTING", argv=["test-process"]),
-            encode_message("PROCESS_READY", remote_address="127.64.0.1", child_pid=1),
-            encode_message("SESSION_CLOSED", reason="process_exit", returncode=openocd_returncode),
+            encode_message("ATTEMPT", generation=1, argv=["test-process"]),
+            encode_message("READY", generation=1, remote_address="127.64.0.1", child_pid=1),
+            terminal_message(Trigger.CHILD_EXIT, returncode=openocd_returncode),
         )
     )
     code = (
@@ -318,7 +316,10 @@ def test_helper_close_allows_recorded_natural_exit_before_termination(
             assert isinstance(result.error, subprocess.TimeoutExpired)
         else:
             assert managed.returncode == 0
-            assert result.error is None
+            if openocd_returncode:
+                assert isinstance(result.error, SessionError)
+            else:
+                assert result.error is None
         assert result.cleanup_errors == ()
         assert helper.openocd_returncode == openocd_returncode
         assert managed.stdin is not None and managed.stdin.closed
@@ -395,9 +396,11 @@ def start_frame(
     literal_prefix=0,
     argv_templates=(),
     preferred_address=None,
+    completion_policy="live_server",
 ):
     return encode_message(
         "START",
+        completion_policy=completion_policy,
         argv=list(argv),
         environment={} if environment is None else environment,
         required_paths=[] if required_paths is None else required_paths,
@@ -1003,7 +1006,7 @@ class TestRttClient:
         class Connection:
             def recv(self, _size):
                 helper_client._dispatch(
-                    {"type": "SESSION_CLOSED", "reason": "process_exit", "returncode": 0}
+                    json.loads(terminal_message(Trigger.CHILD_EXIT, returncode=0))
                 )
                 return b""
 
@@ -1166,8 +1169,8 @@ class TestRealProcessHelper:
                 )
                 process.stdin.flush()
                 events = [json.loads(line) for line in read_lines(process.stdout)]
-                ready = next(event for event in events if event["type"] == "PROCESS_READY")
-                assert events[0]["type"] == "PROCESS_STARTING"
+                ready = next(event for event in events if event["type"] == "READY")
+                assert events[0]["type"] == "ATTEMPT"
                 output = "".join(
                     event["payload"] for event in events if event["type"] == "CHILD_OUTPUT"
                 )
@@ -1377,7 +1380,7 @@ helper['stage'](sys.argv[2])
 
         assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
         assert json.loads(result.stdout) == {
-            "version": 1,
+            "version": 2,
             "type": "STAGED",
             "byte_count": archive.byte_count,
             "sha256": archive.sha256,
@@ -1495,7 +1498,7 @@ helper['stage'](sys.argv[2])
         assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
         response = json.loads(result.stdout)
         assert response == {
-            "version": 1,
+            "version": 2,
             "type": "STAGED",
             "byte_count": len(b"firstsecond"),
             "sha256": hashlib.sha256(b"firstsecond").hexdigest(),
@@ -1561,7 +1564,7 @@ helper['stage'](sys.argv[2])
             ),
             json.dumps(
                 {
-                    "version": 1,
+                    "version": 2,
                     "byte_count": len(b"firmware"),
                     "sha256": hashlib.sha256(b"firmware").hexdigest(),
                     "files": ["firmware.bin"],
@@ -1689,16 +1692,18 @@ helper['stage'](sys.argv[2])
                     start_frame(
                         [sys.executable, "-c", "import os; print(os.environ['ZRO_TEST_FORWARD'])"],
                         environment={"ZRO_TEST_FORWARD": "before_config"},
+                        completion_policy="process_exit",
                     )
                 )
                 process.stdin.flush()
                 events = [json.loads(line) for line in read_lines(process.stdout)]
                 output = next(event for event in events if event["type"] == "CHILD_OUTPUT")
                 assert output == {
-                    "version": 1,
+                    "version": 2,
                     "type": "CHILD_OUTPUT",
                     "stream": "stdout",
                     "payload": "before_config",
+                    "generation": 1,
                     "line_end": True,
                 }
                 assert process.wait(timeout=5) == 0
@@ -1732,7 +1737,8 @@ helper['stage'](sys.argv[2])
                             sys.executable,
                             "-c",
                             "import os; print(os.environ['ZRO_TEST_REMOTE_INHERITED'])",
-                        ]
+                        ],
+                        completion_policy="process_exit",
                     )
                 )
                 process.stdin.flush()
@@ -1758,7 +1764,7 @@ helper['stage'](sys.argv[2])
                 id="unsupported-version",
             ),
             pytest.param(
-                b'{"version":1,"type":"STOP"}',
+                b'{"version":2,"type":"STOP"}',
                 True,
                 id="missing-lf",
             ),
@@ -1784,9 +1790,9 @@ helper['stage'](sys.argv[2])
                 if close_input:
                     process.stdin.close()
                 error = json.loads(read_line(process.stdout))
-                assert error["type"] == "ERROR"
-                assert error["code"] == "PROTOCOL_ERROR"
-                assert process.wait(timeout=5) == 0
+                assert error["type"] == "SESSION_ENDED"
+                assert error["trigger"] == "protocol_failure"
+                assert process.wait(timeout=5) == 1
             finally:
                 if process.poll() is None:
                     process.kill()
@@ -1842,9 +1848,9 @@ helper['stage'](sys.argv[2])
                 )
                 process.stdin.flush()
                 events: list[dict[str, Any]] = []
-                while not any(event["type"] == "PROCESS_READY" for event in events):
+                while not any(event["type"] == "READY" for event in events):
                     events.append(json.loads(read_line(process.stdout)))
-                ready = next(event for event in events if event["type"] == "PROCESS_READY")
+                ready = next(event for event in events if event["type"] == "READY")
                 child_pid = ready["child_pid"]
                 child_pidfd = os.pidfd_open(child_pid)
                 assert any(
@@ -1856,8 +1862,7 @@ helper['stage'](sys.argv[2])
                     event["payload"] for event in events if event["type"] == "CHILD_OUTPUT"
                 }
                 assert output_payloads >= {first_sentinel, second_sentinel}
-                process.stdin.write(encode_message("STOP"))
-                process.stdin.flush()
+                process.stdin.close()
                 assert process.wait(timeout=8) == 0
                 assert not workspace.exists()
                 _assert_pidfd_exited(child_pidfd)
@@ -1940,23 +1945,20 @@ helper['stage'](sys.argv[2])
                 )
                 process.stdin.flush()
                 events: list[dict[str, Any]] = []
-                while not any(event["type"] == "PROCESS_READY" for event in events):
+                while not any(event["type"] == "READY" for event in events):
                     events.append(json.loads(read_line(process.stdout)))
                 assert any(
                     event["type"] == "CHILD_OUTPUT"
                     and "address already in use" in event["payload"].casefold()
                     for event in events
                 )
-                ready = next(event for event in events if event["type"] == "PROCESS_READY")
-                attempts = [
-                    event["argv"] for event in events if event["type"] == "PROCESS_STARTING"
-                ]
+                ready = next(event for event in events if event["type"] == "READY")
+                attempts = [event["argv"] for event in events if event["type"] == "ATTEMPT"]
                 assert len(attempts) >= 2
                 assert attempts[0][2] == "127.64.0.7"
                 assert attempts[0][2] != attempts[-1][2]
                 assert attempts[-1][2] == ready["remote_address"]
-                process.stdin.write(encode_message("STOP"))
-                process.stdin.flush()
+                process.stdin.close()
                 assert process.wait(timeout=8) == 0
             finally:
                 if process.poll() is None:
@@ -1988,21 +1990,21 @@ helper['stage'](sys.argv[2])
                     f'import sys;print("out");print("err",file=sys.stderr);'
                     f"sys.exit({OPENOCD_FAILURE_RC})",
                 ]
-                process.stdin.write(start_frame(command))
+                process.stdin.write(start_frame(command, completion_policy="process_exit"))
                 process.stdin.flush()
                 events = [json.loads(line) for line in read_lines(process.stdout)]
-                assert process.wait(timeout=5) == 0
-                assert events[0]["type"] == "PROCESS_STARTING"
-                assert events[1]["type"] == "PROCESS_READY"
+                assert process.wait(timeout=5) == 1
+                assert events[0]["type"] == "ATTEMPT"
+                assert not any(event["type"] == "READY" for event in events)
                 outputs = {
                     (event["stream"], event["payload"])
                     for event in events
                     if event["type"] == "CHILD_OUTPUT" and event["payload"]
                 }
                 assert outputs == {("stdout", "out"), ("stderr", "err")}
-                exit_event = next(event for event in events if event["type"] == "SESSION_CLOSED")
-                assert exit_event["returncode"] == OPENOCD_FAILURE_RC
-                assert exit_event["reason"] == "process_exit"
+                exit_event = next(event for event in events if event["type"] == "SESSION_ENDED")
+                assert exit_event["child_result"]["returncode"] == OPENOCD_FAILURE_RC
+                assert exit_event["trigger"] == "child_exit"
                 assert not Path(created["remote_workspace"]).exists()
                 assert process.stderr is not None
                 assert process.stderr.read() == b""
@@ -2014,7 +2016,7 @@ helper['stage'](sys.argv[2])
                     if stream is not None and not stream.closed:
                         stream.close()
 
-    @pytest.mark.parametrize("shutdown", ("eof", "stop", "signal"))
+    @pytest.mark.parametrize("shutdown", ("eof", "signal"))
     def test_helper_cleans_up_while_protocol_output_pipe_is_full(self, tmp_path, shutdown):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
         child_pid_file = tmp_path / "child.pid"
@@ -2052,7 +2054,7 @@ helper['stage'](sys.argv[2])
                 )
             )
             process.stdin.flush()
-            assert json.loads(read_line(process.stdout))["type"] == "PROCESS_STARTING"
+            assert json.loads(read_line(process.stdout))["type"] == "ATTEMPT"
             deadline = time.monotonic() + 30
             # Poll an explicit OS condition; expiry is only a deadlock backstop.
             while True:
@@ -2067,9 +2069,6 @@ helper['stage'](sys.argv[2])
             try:
                 if shutdown == "eof":
                     process.stdin.close()
-                elif shutdown == "stop":
-                    process.stdin.write(encode_message("STOP"))
-                    process.stdin.flush()
                 else:
                     process.send_signal(signal.SIGTERM)
                 process.wait(timeout=20)
@@ -2115,9 +2114,9 @@ helper['stage'](sys.argv[2])
                 command = [sys.executable, "-c", "import time; time.sleep(30)"]
                 process.stdin.write(start_frame(command))
                 process.stdin.flush()
-                assert json.loads(read_line(process.stdout))["type"] == "PROCESS_STARTING"
+                assert json.loads(read_line(process.stdout))["type"] == "ATTEMPT"
                 started = json.loads(read_line(process.stdout))
-                assert started["type"] == "PROCESS_READY"
+                assert started["type"] == "READY"
                 child_pid = started["child_pid"]
                 child_pidfd = os.pidfd_open(child_pid)
                 # Restricted sandboxes may block asyncio's socketpair wakeup
@@ -2125,7 +2124,10 @@ helper['stage'](sys.argv[2])
                 # real-process deadline and run this test where that wakeup is
                 # permitted instead of masking the environment failure.
                 process.terminate()
-                assert process.wait(timeout=8) == 0
+                assert process.wait(timeout=8) == 1
+                terminal = json.loads(read_line(process.stdout))
+                assert terminal["trigger"] == "signal"
+                assert terminal["primary_failure"] is not None
                 assert not workspace.exists()
                 _assert_pidfd_exited(child_pidfd)
             finally:
@@ -2170,7 +2172,7 @@ helper['stage'](sys.argv[2])
             )
             process.stdin.flush()
             # Child output is a handshake that startup is pending, not a readiness sentinel.
-            assert json.loads(read_line(process.stdout))["type"] == "PROCESS_STARTING"
+            assert json.loads(read_line(process.stdout))["type"] == "ATTEMPT"
             output = json.loads(read_line(process.stdout))
             assert output["type"] == "CHILD_OUTPUT"
             child_pid = int(output["payload"])
@@ -2183,17 +2185,12 @@ helper['stage'](sys.argv[2])
 
             events = [json.loads(line) for line in read_lines(process.stdout, timeout=10)]
 
-            assert process.wait(timeout=10) == 0
-            assert not any(event["type"] in ("PROCESS_READY", "ERROR") for event in events)
-            if close_input:
-                assert not any(event["type"] == "SESSION_CLOSED" for event in events)
-            else:
-                assert events[-1] == {
-                    "version": 1,
-                    "type": "SESSION_CLOSED",
-                    "reason": "requested",
-                    "returncode": None,
-                }
+            assert process.wait(timeout=10) == (0 if close_input else 1)
+            assert not any(event["type"] == "READY" for event in events)
+            assert events[-1]["type"] == "SESSION_ENDED"
+            assert events[-1]["trigger"] == (
+                "controller_eof" if close_input else "protocol_failure"
+            )
             assert not workspace.exists()
             _assert_pidfd_exited(child_pidfd)
         finally:
@@ -2231,9 +2228,9 @@ helper['stage'](sys.argv[2])
                     start_frame([sys.executable, "-c", "import time; time.sleep(30)"])
                 )
                 process.stdin.flush()
-                assert json.loads(read_line(process.stdout))["type"] == "PROCESS_STARTING"
+                assert json.loads(read_line(process.stdout))["type"] == "ATTEMPT"
                 started = json.loads(read_line(process.stdout))
-                assert started["type"] == "PROCESS_READY"
+                assert started["type"] == "READY"
                 child_pid = started["child_pid"]
                 child_pidfd = os.pidfd_open(child_pid)
                 process.stdin.close()
@@ -2284,8 +2281,8 @@ helper['stage'](sys.argv[2])
                 process.stdin.flush()
                 events = [json.loads(line) for line in read_lines(process.stdout)]
                 assert any(event["type"] == "CHILD_OUTPUT" for event in events)
-                assert events[-1]["type"] == "ERROR"
-                assert process.wait(timeout=8) == 0
+                assert events[-1]["type"] == "SESSION_ENDED"
+                assert process.wait(timeout=8) == 1
                 assert not workspace.exists()
             finally:
                 if process.poll() is None:
@@ -2332,6 +2329,7 @@ helper['stage'](sys.argv[2])
                     "-c",
                     f'import sys;print("hello");sys.exit({sample_openocd_exit_code})',
                 ),
+                completion_policy=CompletionPolicy.PROCESS_EXIT,
             )
             request = RemoteSessionRequest("local", LocalCommand(), process=remote_process)
             deployment = DeploymentResult(str(helper), "digest", False)
@@ -2343,8 +2341,7 @@ helper['stage'](sys.argv[2])
                     ),
                 )
             try:
-                assert backend.descriptor is not None
-                assert ipaddress.ip_address(backend.descriptor.remote_address) in LOOPBACK_RANGE
+                assert backend.descriptor is None
                 assert backend.wait_for_openocd_exit(5) == sample_openocd_exit_code
                 assert [
                     (payload, line_end)
@@ -2357,7 +2354,8 @@ helper['stage'](sys.argv[2])
                     if stream == "stderr"
                 ] == []
             finally:
-                backend.close()
+                with pytest.raises(SessionError):
+                    backend.close()
 
     def test_backend_surfaces_helper_descendant_warning(self):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
@@ -2416,113 +2414,35 @@ helper['stage'](sys.argv[2])
     @pytest.mark.parametrize(
         ("event_stream_tail", "exit_code", "expected", "expected_openocd_result"),
         (
+            (terminal_message().decode().rstrip("\n"), 0, None, None),
             (
-                json.dumps(
-                    {
-                        "version": 1,
-                        "type": "SESSION_CLOSED",
-                        "reason": "requested",
-                        "returncode": None,
-                    },
-                    separators=(",", ":"),
-                ),
+                (
+                    encode_message("ATTEMPT", generation=1, argv=["child"])
+                    + terminal_message(Trigger.CHILD_EXIT, returncode=0)
+                )
+                .decode()
+                .rstrip("\n"),
                 0,
                 None,
-                None,
-            ),
-            (
-                json.dumps(
-                    {
-                        "version": 1,
-                        "type": "SESSION_CLOSED",
-                        "reason": "process_exit",
-                        "returncode": 7,
-                    },
-                    separators=(",", ":"),
-                ),
                 0,
-                None,
-                OPENOCD_FAILURE_RC,
             ),
             (
-                '{"version":1,"type":"SESSION_CLOSED","reason":"requested",'
-                '"returncode":null}\n'
-                '{"version":1,"type":"ERROR","code":"CLEANUP",'
-                '"message":"cleanup failed"}',
+                terminal_message().decode() + terminal_message().decode().rstrip("\n"),
                 0,
-                ("unexpected ERROR event in closed state",),
+                ("outside session lifetime",),
                 None,
             ),
+            (terminal_message().decode() + "not-json", 0, ("malformed",), None),
             (
-                '{"version":1,"type":"SESSION_CLOSED","reason":"requested",'
-                '"returncode":null}\nnot-json',
-                0,
-                ("malformed protocol message",),
-                None,
-            ),
-            (
-                json.dumps(
-                    {"version": 1, "type": "ERROR", "code": "CLEANUP", "message": "cleanup failed"},
-                    separators=(",", ":"),
-                ),
+                terminal_message(Trigger.HELPER_FAILURE, code="CLEANUP", message="cleanup failed")
+                .decode()
+                .rstrip("\n"),
                 7,
-                ("remote helper error",),
+                ("cleanup failed", "status 7"),
                 None,
             ),
-            (
-                json.dumps(
-                    {
-                        "version": 1,
-                        "type": "SESSION_CLOSED",
-                        "reason": "requested",
-                        "returncode": None,
-                    },
-                    separators=(",", ":"),
-                ),
-                7,
-                ("status 7", "requested shutdown"),
-                None,
-            ),
-            (
-                json.dumps(
-                    {
-                        "version": 1,
-                        "type": "SESSION_CLOSED",
-                        "reason": "requested",
-                        "returncode": 0,
-                    },
-                    separators=(",", ":"),
-                ),
-                0,
-                ("invalid required fields for SESSION_CLOSED",),
-                None,
-            ),
-            (
-                json.dumps(
-                    {
-                        "version": 1,
-                        "type": "SESSION_CLOSED",
-                        "reason": "process_exit",
-                        "returncode": 7,
-                    },
-                    separators=(",", ":"),
-                ),
-                7,
-                ("status 7", "process_exit shutdown"),
-                OPENOCD_FAILURE_RC,
-            ),
-            (None, 7, ("did not produce SESSION_CLOSED",), None),
-        ),
-        ids=(
-            "requested-success",
-            "process-exit-after-stop-success",
-            "requested-then-error",
-            "requested-then-malformed",
-            "error-and-nonzero",
-            "requested-session-close-nonzero",
-            "malformed-session-close",
-            "process-exit-with-nonzero-helper",
-            "nonzero-without-session-close",
+            (terminal_message().decode().rstrip("\n"), 7, ("status 7",), None),
+            (None, 7, ("did not produce SESSION_ENDED",), None),
         ),
     )
     def test_helper_client_close_validates_helper_shutdown(
@@ -2538,7 +2458,7 @@ import json
 import sys
 
 created = {{
-    "version": 1,
+    "version": 2,
     "type": "SESSION_CREATED",
     "helper": "test",
     "session_id": "id",
@@ -2573,66 +2493,10 @@ sys.exit({exit_code})
             else:
                 result = helper_client.close()
                 assert result.error is not None
-                assert all(fragment in str(result.error) for fragment in expected)
-        finally:
-            with suppress(BaseException):
-                helper_client.close()
-
-    def test_helper_client_rejects_requested_session_close_before_local_stop(self):
-        helper_code = """
-import json
-import sys
-
-print(
-    json.dumps(
-        {
-            "version": 1,
-            "type": "SESSION_CREATED",
-            "helper": "test",
-            "session_id": "id",
-            "remote_workspace": "/workspace",
-        }
-    ),
-    flush=True,
-)
-print(
-    json.dumps(
-        {"version": 1, "type": "SESSION_CLOSED", "reason": "requested", "returncode": None}
-    ),
-    flush=True,
-)
-sys.stdin.buffer.read()
-"""
-
-        class LocalCommand(_BlockedSshCommand):
-            def popen(inner, host, remote_command, *, local_forward=None):  # pylint: disable=no-self-argument
-                return managed_popen(
-                    [sys.executable, "-c", helper_code],
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
+                assert all(
+                    fragment in str(result.error) + " ".join(getattr(result.error, "__notes__", ()))
+                    for fragment in expected
                 )
-
-        helper_client = _helper_client(
-            RemoteSessionRequest("local", LocalCommand(), TEST_PROCESS),
-            DeploymentResult("/helper.py", "digest", False),
-        )
-        session_close_consumed = threading.Event()
-        dispatch = helper_client._dispatch
-
-        def observe_session_close(event):
-            dispatch(event)
-            if event["type"] == "SESSION_CLOSED":
-                session_close_consumed.set()
-
-        try:
-            helper_client.acquire()
-            with patch.object(helper_client, "_dispatch", side_effect=observe_session_close):
-                helper_client._start_event_drain()
-                assert helper_client._reader_thread is not None
-                assert session_close_consumed.wait(5)
-            result = helper_client.close()
-            assert isinstance(result.error, SessionError)
         finally:
             with suppress(BaseException):
                 helper_client.close()
@@ -2644,15 +2508,16 @@ import sys
 
 events = (
     {{
-        "version": 1,
+        "version": 2,
         "type": "SESSION_CREATED",
         "helper": "test",
         "session_id": "id",
         "remote_workspace": "/workspace",
     }},
-    {{"version": 1, "type": "PROCESS_STARTING", "argv": ["test-process"]}},
-    {{"version": 1, "type": "PROCESS_READY", "remote_address": "127.64.0.1", "child_pid": 1}},
-    {{"version": 1, "type": "SESSION_CLOSED", "reason": "process_exit", "returncode": 0}},
+    {{"version": 2, "type": "ATTEMPT", "generation": 1, "argv": ["test-process"]}},
+    {{"version": 2, "type": "READY", "generation": 1,
+     "remote_address": "127.64.0.1", "child_pid": 1}},
+    {json.loads(terminal_message(Trigger.CHILD_EXIT, returncode=0))!r},
 )
 for event in events:
     print(json.dumps(event, separators=(",", ":")), flush=True)
@@ -2693,7 +2558,7 @@ sys.exit({HELPER_FAILURE_RC})
                 command.process.wait(timeout=5)
                 helper_exited.set()
                 assert helper_client._join_reader(timeout=5)
-            with pytest.raises(SessionError):
+            with pytest.raises(SessionError, match="status 9"):
                 helper_client.recorded_openocd_exit()
             assert helper_client.openocd_returncode == 0
         finally:

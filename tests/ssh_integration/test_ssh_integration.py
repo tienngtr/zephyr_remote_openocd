@@ -238,7 +238,7 @@ class TestSshTransportIntegration:
         )
         assert failed.returncode == REMOTE_FAILURE_EXIT_CODE
 
-    def test_protocol_v1_helper_vertical_slice(self):
+    def test_protocol_v2_helper_vertical_slice(self):
         """Exercise the production transport path with an explicit test process."""
         first = deploy_helper(self.ssh, self.host)
         second = deploy_helper(self.ssh, self.host)
@@ -412,7 +412,7 @@ class TestSshTransportIntegration:
             with pytest.raises(SessionError):
                 session.wait_for_openocd_exit(timeout=20)
         finally:
-            with pytest.raises(SessionError, match="SESSION_CLOSED"):
+            with pytest.raises(SessionError, match="SESSION_ENDED"):
                 session.close()
         assert session.closed
         result = self.ssh.run(

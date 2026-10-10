@@ -34,11 +34,11 @@ from .preferred_address_cache import load_preferred_address, remember_preferred_
 from .protocol import (
     ProtocolError,
     decode_single_frame,
-    validate_helper_event,
+    validate_error_response,
     validate_openocd_version_response,
     validate_staged_response,
 )
-from .session import SessionClosedError, SessionError
+from .session import SessionClosedError, SessionError, _SessionObservations
 from .ssh import SshCommand
 from .staging import build_archive
 
@@ -60,7 +60,7 @@ def _one_shot_failure_detail(stdout: bytes, stderr: bytes) -> str:
     if stdout:
         try:
             message = decode_single_frame(stdout)
-            validate_helper_event(message)
+            validate_error_response(message)
             if message["type"] == "ERROR":
                 return f"{message['code']}: {message['message']}"
         except (ProtocolError, ValueError):
@@ -106,7 +106,7 @@ class _SessionHelper(Protocol):
         services: Iterable[Service],
         *,
         preferred_address: str | None = None,
-    ) -> str: ...
+    ) -> str | None: ...
 
     def recorded_openocd_exit(self) -> int | None: ...
 
@@ -148,6 +148,7 @@ class RemoteSession:
         self.deployment = deployment
         self._forwards: _SessionForwards = _ForwardManager(request.ssh_command, request.host)
         self._helper: _SessionHelper | None = None
+        self._observations = _SessionObservations()
         self.closed = False
         self.descriptor: SessionDescriptor | None = None
         self._advisory_handler = advisory_handler or _log_forward_advisory
@@ -189,6 +190,7 @@ class RemoteSession:
             self.deployment,
             output_handler=output_handler,
             process_start_handler=process_start_handler,
+            observations=self._observations,
         )
         self._helper.acquire()
         self._stage(self.request.staged_files)
@@ -250,7 +252,7 @@ class RemoteSession:
         except (ProtocolError, ValueError) as error:
             raise SessionError(f"invalid remote staging response: {result.stdout!r}") from error
 
-    def _start_process(self, services: Iterable[Service]) -> SessionDescriptor:
+    def _start_process(self, services: Iterable[Service]) -> SessionDescriptor | None:
         service_list = tuple(services)
         helper = self._helper_or_error()
         address = helper.start_process(
@@ -260,6 +262,9 @@ class RemoteSession:
             if self.request.address_services
             else None,
         )
+        if address is None:
+            return None
+        self._observations.record_ready()
         self.descriptor = SessionDescriptor(helper.allocation, address)
         auxiliary = set(self.request.auxiliary_services)
         self.forward(tuple(service for service in service_list if service not in auxiliary))
@@ -270,7 +275,7 @@ class RemoteSession:
         return self.descriptor
 
     def forward(self, services: Iterable[Service], *, required: bool = True) -> None:
-        if self.closed:
+        if self.closed or self._observations.snapshot().closing:
             raise SessionClosedError("remote session is closed")
         if self.descriptor is None:
             raise SessionError("remote session is not ready for additional forwarding")
@@ -292,7 +297,7 @@ class RemoteSession:
 
     def mark_auxiliary(self, services: Iterable[Service]) -> None:
         """Reclassify owned forwards after their required phase completes."""
-        if self.closed:
+        if self.closed or self._observations.snapshot().closing:
             raise SessionClosedError("remote session is closed")
         service_set = set(services)
         if not service_set.issubset(self._forwards.services):
@@ -323,6 +328,24 @@ class RemoteSession:
         self._check_forward_health()
         return result if result is not None else helper.recorded_openocd_exit()
 
+    def run_dependent[ResultT](self, launch: Callable[[], ResultT]) -> ResultT:
+        """Commit actual execution entry after accounting recorded fatal facts."""
+        returncode = self.check_openocd_exit()
+        if returncode is not None:
+            raise SessionError(f"remote OpenOCD exited before dependent launch ({returncode})")
+        self._observations.enter(self._required_services, self._forwards.services)
+        return launch()
+
+    @property
+    def openocd_failure_returncode(self) -> int | None:
+        """A cleanup-induced server exit is genuine status, not operation failure."""
+        ending = self._observations.snapshot().ending
+        if ending is not None and ending.outcome.child_result is not None:
+            result = ending.outcome.child_result
+            if result.termination_requested:
+                return None
+        return self.openocd_returncode
+
     def wait_for_openocd_exit(self, timeout: float | None = None) -> int:
         if self.closed:
             result = self.openocd_returncode
@@ -351,6 +374,7 @@ class RemoteSession:
         # Protect subsystem entry as well as each owner's cleanup sequence.
         previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
         try:
+            self._observations.cancel()
             try:
                 self._forwards.close()
             except BaseException as error:

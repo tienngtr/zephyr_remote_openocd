@@ -20,11 +20,15 @@ from collections.abc import Buffer, Callable
 from contextlib import suppress
 from pathlib import Path
 from types import FrameType, SimpleNamespace
-from typing import IO, Any
+from typing import IO
 from unittest.mock import create_autospec
 
 import pytest
-from zephyr_remote_openocd.remote.protocol import decode_message
+from zephyr_remote_openocd.remote.lifecycle import Closed
+from zephyr_remote_openocd.remote.model import RemotePathCheck, RemoteProcess
+from zephyr_remote_openocd.remote.outcome import CompletionPolicy, Trigger
+from zephyr_remote_openocd.remote.protocol import write_start
+from zephyr_remote_openocd.remote.wire import decode_terminal
 
 from tests.support import ROOT
 
@@ -45,184 +49,6 @@ def control_pipe(monkeypatch):
     with os.fdopen(read_fd, "rb") as reader, os.fdopen(write_fd, "wb", buffering=0) as writer:
         monkeypatch.setattr(remote_helper.sys, "stdin", SimpleNamespace(buffer=reader))
         yield reader, writer
-
-
-@pytest.mark.parametrize(
-    ("interruption", "expected_error", "batch", "sentinels"),
-    (
-        pytest.param(
-            b'{"version":1,"type":"STOP"}\n', None, True, ["not-ready"], id="batched-stop"
-        ),
-        pytest.param(b'{"version":1,"type":"STOP"}\n', None, True, [], id="immediate-batched-stop"),
-        pytest.param(
-            b"not-json\n", json.JSONDecodeError, False, ["not-ready"], id="malformed-json"
-        ),
-        pytest.param(
-            b'{"version":1,"type":"STOP"}', ValueError, False, ["not-ready"], id="incomplete-eof"
-        ),
-        pytest.param(
-            b'{"version":1,"type":"UNKNOWN"}\n', ValueError, False, ["not-ready"], id="unexpected"
-        ),
-        pytest.param(b"START", ValueError, False, ["not-ready"], id="duplicate-start"),
-    ),
-)
-def test_control_session_services_input_during_readiness(
-    tmp_path, monkeypatch, control_pipe, interruption, expected_error, batch, sentinels
-):
-    _reader, writer = control_pipe
-    workspace = tmp_path / "workspace"
-    (workspace / "staged").mkdir(parents=True)
-    lock = (workspace / remote_helper.SESSION_LOCK).open("w+b")
-    start = (
-        json.dumps(
-            {
-                "version": 1,
-                "type": "START",
-                "argv": [sys.executable, "-c", "import signal; signal.pause()"],
-                "environment": {},
-                "required_paths": [],
-                "services": [],
-                "required_output_sentinels": sentinels,
-                "readiness_timeout": 30,
-                "literal_prefix": 1,
-                "argv_templates": [],
-                "preferred_address": None,
-            }
-        ).encode()
-        + b"\n"
-    )
-    original_spawn = remote_helper._spawn_child
-    children = []
-    events: list[tuple[str, dict[str, Any]]] = []
-
-    def spawn(*args, **kwargs):
-        assert events[-1] == ("PROCESS_STARTING", {"argv": list(args[0])})
-        child = original_spawn(*args, **kwargs)
-        children.append(child)
-        if not batch:
-            writer.write(start if interruption == b"START" else interruption)
-            if not interruption.endswith(b"\n") and interruption != b"START":
-                writer.close()
-        return child
-
-    def record_event(kind, **values):
-        if kind in ("SESSION_CLOSED", "ERROR"):
-            assert children[0].process.returncode is not None
-            assert not workspace.exists()
-            assert lock.closed
-        events.append((kind, values))
-
-    writer.write(start + interruption if batch else start)
-    monkeypatch.setattr(remote_helper, "emit", record_event)
-    monkeypatch.setattr(remote_helper, "_spawn_child", spawn)
-    session = remote_helper.ControlSession("session", workspace, lock)
-
-    session.run()
-
-    assert len(children) == 1
-    assert children[0].process.returncode is not None
-    assert children[0].process.stdout.closed
-    assert children[0].process.stderr.closed
-    assert not workspace.exists()
-    assert lock.closed
-    assert not any(kind == "PROCESS_READY" for kind, _values in events)
-    if expected_error is not None:
-        assert isinstance(session.protocol_error, expected_error)
-        assert events[-1][0] == "ERROR"
-        assert events[-1][1]["code"] == "PROTOCOL_ERROR"
-    else:
-        assert session.protocol_error is None
-        assert events[-1] == ("SESSION_CLOSED", {"reason": "requested", "returncode": None})
-
-
-@pytest.mark.parametrize("termination", ("stop", "eof", "invalid-command"))
-def test_readiness_honors_control_fact_blocked_at_publication(
-    tmp_path, monkeypatch, control_pipe, capsys, termination
-):
-    reader, writer = control_pipe
-    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
-    session = remote_helper.ControlSession.create()
-    recognized = asyncio.Event()
-    publish = asyncio.Event()
-    children = []
-    original_put = session._events.put
-    original_read = remote_helper._AsyncInput.read
-    original_spawn = remote_helper._spawn_child
-    original_emit = remote_helper.emit
-
-    async def put(observation):
-        if session.request is not None and isinstance(
-            observation, (remote_helper._ControlFrame, remote_helper._ControlEOF)
-        ):
-            recognized.set()
-            await publish.wait()
-        await original_put(observation)
-
-    async def read(source):
-        if source.descriptor != reader.fileno():
-            await recognized.wait()
-        return await original_read(source)
-
-    def spawn(*args, **kwargs):
-        child = original_spawn(*args, **kwargs)
-        children.append(child)
-        if termination == "eof":
-            writer.close()
-        else:
-            writer.write(
-                b'{"version":1,"type":"STOP"}\n' if termination == "stop" else b'not-json\n'
-            )
-        return child
-
-    def emit(kind, **values):
-        original_emit(kind, **values)
-        if kind == "PROCESS_READY":
-            # Release a buggy implementation so its assertion fails after cleanup.
-            publish.set()
-
-    monkeypatch.setattr(session._events, "put", put)
-    monkeypatch.setattr(remote_helper._AsyncInput, "read", read)
-    monkeypatch.setattr(remote_helper, "_spawn_child", spawn)
-    monkeypatch.setattr(remote_helper, "emit", emit)
-    writer.write(
-        _start_session_command(
-            [sys.executable, "-c", "import signal;print('ready',flush=True);signal.pause()"],
-            ("ready",),
-        )
-    )
-
-    session.run()
-
-    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
-    assert recognized.is_set()
-    assert not any(event["type"] == "PROCESS_READY" for event in events)
-    if termination == "stop":
-        assert events[-1]["type"] == "SESSION_CLOSED"
-        assert events[-1]["reason"] == "requested"
-    elif termination == "invalid-command":
-        assert events[-1]["type"] == "ERROR"
-        assert events[-1]["code"] == "PROTOCOL_ERROR"
-    assert children[0].process.returncode is not None
-    assert children[0].process.stdout.closed and children[0].process.stderr.closed
-    assert session.workspace_lock.closed and not any(tmp_path.iterdir())
-
-
-def test_helper_accepts_json_whitespace_inside_command_frame(tmp_path, control_pipe, capsys):
-    _reader, writer = control_pipe
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    with (workspace / remote_helper.SESSION_LOCK).open("w+b") as lock:
-        session = remote_helper.ControlSession("session", workspace, lock)
-        writer.write(b' \t{"version":1,"type":"STOP"} \t\r\n')
-
-        session.run()
-
-        assert session.protocol_error is None
-        assert not workspace.exists()
-        assert lock.closed
-    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
-    assert events[-1]["type"] == "SESSION_CLOSED"
-    assert events[-1]["reason"] == "requested"
 
 
 def test_control_frames_retain_partial_bytes_without_waiting_for_lf():
@@ -336,8 +162,9 @@ if descendant == 0:
 @pytest.fixture
 def start_command():
     return {
-        "version": 1,
+        "version": 2,
         "type": "START",
+        "completion_policy": "live_server",
         "argv": ["openocd", "{address}"],
         "environment": {"ZRO_TEST": "value"},
         "required_paths": [{"kind": "file", "path": "{workspace}/image"}],
@@ -468,61 +295,6 @@ def test_relay_preserves_split_utf8_and_invalid_bytes(monkeypatch):
     assert all(len(event["payload"]) <= 3 for event in output_events)
 
 
-def test_relay_real_child_flushes_newline_free_output_before_exit(
-    tmp_path, monkeypatch, control_pipe
-):
-    _reader, writer = control_pipe
-    workspace = tmp_path / "workspace"
-    (workspace / "staged").mkdir(parents=True)
-    lock = (workspace / remote_helper.SESSION_LOCK).open("w+b")
-    monkeypatch.setattr(remote_helper, "RELAY_CHUNK_SIZE", 64)
-    session = remote_helper.ControlSession("session", workspace, lock)
-    output_size = remote_helper.MAX_CAPTURED_STARTUP_FRAGMENTS * 64 + 1
-    events = []
-
-    def emit(kind, **values):
-        events.append((kind, values))
-        if kind == "CHILD_OUTPUT":
-            assert session.child is not None
-            assert len(session.child.startup_output) <= remote_helper.MAX_CAPTURED_STARTUP_FRAGMENTS
-            output = [values["payload"] for kind, values in events if kind == "CHILD_OUTPUT"]
-            if len("".join(output)) == output_size:
-                assert session.child.poll() is None
-                writer.write(b'{"version":1,"type":"STOP"}\n')
-
-    monkeypatch.setattr(remote_helper, "emit", emit)
-    writer.write(
-        json.dumps(
-            {
-                "version": 1,
-                "type": "START",
-                "argv": [
-                    sys.executable,
-                    "-c",
-                    "import signal,sys;"
-                    f"sys.stdout.buffer.write(b'x'*{output_size});sys.stdout.flush();signal.pause()",
-                ],
-                "environment": {},
-                "required_paths": [],
-                "services": [],
-                "required_output_sentinels": [],
-                "readiness_timeout": 30,
-                "literal_prefix": 3,
-                "argv_templates": [],
-                "preferred_address": None,
-            }
-        ).encode()
-        + b"\n"
-    )
-
-    session.run()
-
-    output = [values for kind, values in events if kind == "CHILD_OUTPUT"]
-    assert output
-    assert all(len(values["payload"]) <= 64 for values in output)
-    assert events[-1][0] == "SESSION_CLOSED"
-
-
 @pytest.mark.parametrize("cleanup_fails", (False, True))
 def test_spawn_child_rolls_back_process_when_ownership_wrapper_fails(monkeypatch, cleanup_fails):
     original_popen = remote_helper.subprocess.Popen
@@ -581,6 +353,48 @@ def test_spawn_child_rolls_back_process_when_ownership_wrapper_fails(monkeypatch
                     stream.close()
         for process_pidfd in process_pidfds:
             os.close(process_pidfd)
+
+
+@pytest.mark.timeout(10)
+def test_spawn_rollback_preserves_exited_leader_identity_until_group_signal(monkeypatch):
+    popen = remote_helper.subprocess.Popen
+    killpg = remote_helper.os.killpg
+    failure = RuntimeError("supervisor construction failed after child exit")
+    owner = remote_helper._ChildAcquisition(1)
+    signalled = []
+
+    def exited_process(*args, **kwargs):
+        process = popen(*args, **kwargs)
+        os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOWAIT)
+        return process
+
+    def fail_construction(*_args, **_kwargs):
+        raise failure
+
+    def signal_owned_group(pid, signum):
+        # Reaping before this boundary would release the identity and make this
+        # observation fail, even though the acquisition ticket still owns it.
+        if signum != 0:
+            status = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            assert status is not None and status.si_status == SAMPLE_CHILD_EXIT_CODE
+            signalled.append(pid)
+        killpg(pid, signum)
+
+    monkeypatch.setattr(remote_helper.subprocess, "Popen", exited_process)
+    monkeypatch.setattr(remote_helper, "SupervisedChild", fail_construction)
+    monkeypatch.setattr(remote_helper.os, "killpg", signal_owned_group)
+    with pytest.raises(RuntimeError) as raised:
+        remote_helper._spawn_child(
+            (sys.executable, "-c", f"import sys;sys.exit({SAMPLE_CHILD_EXIT_CODE})"),
+            ownership=owner,
+        )
+    assert raised.value is failure
+    assert owner.process is not None
+    assert signalled == [owner.process.pid]
+    assert owner.process.returncode == SAMPLE_CHILD_EXIT_CODE
+    assert owner.rollback_confirmed and owner.producer_quiescent
+    assert not owner.termination_requested
+    assert owner.process.stdout.closed and owner.process.stderr.closed
 
 
 def test_bind_collision_detection_reassembles_same_stream_chunks_across_interleaving():
@@ -984,7 +798,7 @@ def test_coordinator_adoption_failure_attempts_lock_cleanup_after_workspace_fail
         signum: signal.getsignal(signum) for signum in (signal.SIGINT, signal.SIGTERM)
     }
     try:
-        with pytest.raises(RuntimeError if boundary == "constructor" else SystemExit) as raised:
+        with pytest.raises(SystemExit) as raised:
             remote_helper.control()
         assert (raised.value.__cause__ or raised.value) is failure
         assert acquired[0][2].closed
@@ -997,227 +811,6 @@ def test_coordinator_adoption_failure_attempts_lock_cleanup_after_workspace_fail
         if acquired:
             acquired[0][2].close()
             remove(acquired[0][1])
-
-
-def test_control_session_cleans_up_when_announcement_fails(tmp_path, monkeypatch):
-    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
-    session_id, workspace, lock = remote_helper.new_workspace()
-
-    failure = BrokenPipeError("injected announcement failure")
-
-    def fail_announce(_session):
-        raise failure
-
-    monkeypatch.setattr(remote_helper.ControlSession, "announce", fail_announce)
-    session = remote_helper.ControlSession(session_id, workspace, lock)
-
-    with pytest.raises(BrokenPipeError) as raised:
-        session.run()
-
-    assert raised.value is failure
-    assert not workspace.exists()
-    assert lock.closed
-
-
-def test_control_session_cleans_up_when_protocol_output_setup_fails(tmp_path, monkeypatch):
-    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
-    session_id, workspace, lock = remote_helper.new_workspace()
-    session = remote_helper.ControlSession(session_id, workspace, lock)
-    failure = OSError("injected output fd setup failure")
-
-    def fail_output_setup(_descriptor):
-        raise failure
-
-    with monkeypatch.context() as patch:
-        patch.setattr(remote_helper.sys, "stdout", sys.__stdout__)
-        patch.setattr(remote_helper.os, "get_blocking", fail_output_setup)
-        with pytest.raises(OSError) as raised:
-            session.run()
-
-    assert raised.value is failure
-    assert not workspace.exists()
-    assert lock.closed
-
-
-@pytest.mark.parametrize("failure_type", (OSError, asyncio.CancelledError))
-@pytest.mark.parametrize("restoration_fails", (False, True))
-def test_partial_signal_installation_restores_handlers_and_preserves_failure(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    failure_type: type[BaseException],
-    restoration_fails: bool,
-) -> None:
-    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
-    session = remote_helper.ControlSession.create()
-    failure = failure_type("injected signal installation failure")
-    restoration_failure = OSError("injected signal restoration failure")
-    restoration_detail = "signal restoration retained detail"
-    restoration_failure.add_note(restoration_detail)
-    previous = {signum: signal.getsignal(signum) for signum in (signal.SIGTERM, signal.SIGINT)}
-    original_signal = signal.signal
-    installed: set[int] = set()
-    restored: list[int] = []
-
-    def install_then_fail(signum: int, handler: SignalHandler) -> SignalHandler:
-        result = original_signal(signum, handler)
-        if handler == session.handle_signal:
-            installed.add(signum)
-            if signum == signal.SIGINT:
-                raise failure
-        elif signum in installed:
-            restored.append(signum)
-            installed.remove(signum)
-            if restoration_fails:
-                raise restoration_failure
-        return result
-
-    monkeypatch.setattr(remote_helper.signal, "signal", install_then_fail)
-
-    async def run() -> None:
-        tasks_before = asyncio.all_tasks()
-        output_before = remote_helper._protocol_output.get()
-        with pytest.raises(failure_type) as raised:
-            await session.run_async()
-        assert raised.value is failure
-        assert asyncio.all_tasks() == tasks_before
-        assert remote_helper._protocol_output.get() is output_before
-
-    try:
-        asyncio.run(run())
-        assert set(restored) == set(previous)
-        assert all(signal.getsignal(signum) == handler for signum, handler in previous.items())
-        if restoration_fails:
-            assert any(str(restoration_failure) in note for note in failure.__notes__)
-            assert any(restoration_detail in note for note in failure.__notes__)
-        assert session.workspace_lock.closed
-        assert not session.work.exists()
-    finally:
-        for signum, handler in previous.items():
-            original_signal(signum, handler)
-        session._release_workspace()
-
-
-@pytest.mark.parametrize("failure_type", (OSError, KeyboardInterrupt))
-def test_signal_restoration_attempts_both_handlers_after_normal_exit(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    control_pipe: tuple[IO[bytes], IO[bytes]],
-    failure_type: type[BaseException],
-) -> None:
-    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
-    session = remote_helper.ControlSession.create()
-    _reader, writer = control_pipe
-    writer.write(b'{"version":1,"type":"STOP"}\n')
-    previous = {signum: signal.getsignal(signum) for signum in (signal.SIGTERM, signal.SIGINT)}
-    original_signal = signal.signal
-    failures: dict[int, BaseException] = {
-        signum: failure_type(f"restoration failed for {signum}") for signum in previous
-    }
-    installed: set[int] = set()
-    restored: list[int] = []
-
-    def restore_then_fail(signum: int, handler: SignalHandler) -> SignalHandler:
-        result = original_signal(signum, handler)
-        if handler == session.handle_signal:
-            installed.add(signum)
-        elif signum in installed:
-            restored.append(signum)
-            installed.remove(signum)
-            raise failures[signum]
-        return result
-
-    monkeypatch.setattr(remote_helper.signal, "signal", restore_then_fail)
-    try:
-        with pytest.raises(failure_type) as raised:
-            session.run()
-        assert set(restored) == set(previous)
-        assert raised.value is failures[signal.SIGTERM]
-        assert any(str(failures[signal.SIGINT]) in note for note in raised.value.__notes__)
-        assert all(signal.getsignal(signum) == handler for signum, handler in previous.items())
-        assert session.workspace_lock.closed
-        assert not session.work.exists()
-    finally:
-        for signum, handler in previous.items():
-            original_signal(signum, handler)
-        session._release_workspace()
-
-
-@pytest.mark.parametrize("primary_type", (None, OSError, asyncio.CancelledError))
-@pytest.mark.parametrize("close_type", (OSError, KeyboardInterrupt))
-def test_protocol_writer_and_close_failures_preserve_primary_exception(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    control_pipe: tuple[IO[bytes], IO[bytes]],
-    primary_type: type[BaseException] | None,
-    close_type: type[BaseException],
-) -> None:
-    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
-    session = remote_helper.ControlSession.create()
-    _control_reader, control_writer = control_pipe
-    control_writer.write(b'{"version":1,"type":"STOP"}\n')
-    primary = primary_type("injected session setup failure") if primary_type is not None else None
-    writer_failure = BrokenPipeError("injected protocol write failure")
-    close_failure = close_type("injected protocol descriptor restoration failure")
-    close_detail = "protocol descriptor cleanup retained detail"
-    close_failure.add_note(close_detail)
-    original_signal = signal.signal
-    original_write = os.write
-    original_set_blocking = os.set_blocking
-    previous = {signum: signal.getsignal(signum) for signum in (signal.SIGTERM, signal.SIGINT)}
-    output_read, output_write = os.pipe()
-    close_attempts: list[int] = []
-
-    def install_then_fail(signum: int, handler: SignalHandler) -> SignalHandler:
-        result = original_signal(signum, handler)
-        if signum == signal.SIGINT and handler == session.handle_signal and primary is not None:
-            raise primary
-        return result
-
-    def fail_write(descriptor: int, payload: Buffer) -> int:
-        if descriptor == output_write:
-            raise writer_failure
-        return original_write(descriptor, payload)
-
-    def restore_then_fail(descriptor: int, blocking: bool) -> None:
-        original_set_blocking(descriptor, blocking)
-        if descriptor == output_write and blocking:
-            close_attempts.append(descriptor)
-            raise close_failure
-
-    async def run() -> None:
-        tasks_before = asyncio.all_tasks()
-        output_before = remote_helper._protocol_output.get()
-        expected = primary if primary is not None else writer_failure
-        with pytest.raises(BaseException) as raised:
-            await session.run_async()
-        assert raised.value is expected
-        assert any(str(close_failure) in note for note in expected.__notes__)
-        assert any(close_detail in note for note in expected.__notes__)
-        if primary is not None:
-            assert any(str(writer_failure) in note for note in expected.__notes__)
-        assert asyncio.all_tasks() == tasks_before
-        assert remote_helper._protocol_output.get() is output_before
-
-    try:
-        with (
-            os.fdopen(output_read, "rb"),
-            os.fdopen(output_write, "w", encoding="utf-8") as stdout,
-            monkeypatch.context() as patch,
-        ):
-            patch.setattr(remote_helper.sys, "stdout", stdout)
-            patch.setattr(remote_helper.signal, "signal", install_then_fail)
-            patch.setattr(remote_helper.os, "write", fail_write)
-            patch.setattr(remote_helper.os, "set_blocking", restore_then_fail)
-            asyncio.run(run())
-            assert os.get_blocking(output_write)
-        assert close_attempts == [output_write]
-        assert all(signal.getsignal(signum) == handler for signum, handler in previous.items())
-        assert session.workspace_lock.closed
-        assert not session.work.exists()
-    finally:
-        for signum, handler in previous.items():
-            original_signal(signum, handler)
-        session._release_workspace()
 
 
 @pytest.mark.parametrize("boundary", ("reader", "writer"))
@@ -1319,73 +912,13 @@ def test_workspace_allocation_rollback_preserves_primary_and_cleans_independentl
     assert any(secondary.__notes__[0] in note for note in primary.__notes__)
 
 
-def test_failed_address_lease_retirement_prevents_replacement_spawn(
-    tmp_path, monkeypatch, control_pipe
-):
-    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
-    session = remote_helper.ControlSession.create()
-    _reader, writer = control_pipe
-    original_allocate = remote_helper.allocate_service_address
-    original_spawn = remote_helper._spawn_child
-    children = []
-    failure = OSError("address lease retirement failed")
-    leases = []
-
-    def allocate(*args, **kwargs):
-        allocated = original_allocate(*args, **kwargs)
-        lease = allocated.lease
-        leases.append(lease)
-        controlled = create_autospec(socket.socket, instance=True, spec_set=True)
-
-        def retire():
-            lease.close()
-            if controlled.close.call_count == 1:
-                raise failure
-
-        controlled.close.side_effect = retire
-        allocated.lease = controlled
-        return allocated
-
-    def spawn(*args, **kwargs):
-        child = original_spawn(*args, **kwargs)
-        children.append(child)
-        return child
-
-    monkeypatch.setattr(remote_helper, "allocate_service_address", allocate)
-    monkeypatch.setattr(remote_helper, "_spawn_child", spawn)
-    writer.write(
-        _start_session_command(
-            [
-                sys.executable,
-                "-c",
-                "import sys;print('Address already in use',file=sys.stderr,flush=True)",
-            ],
-            ("not-ready",),
-        )
-    )
-    try:
-        try:
-            session.run()
-        except OSError as raised:
-            assert raised is failure
-        assert len(children) == 1
-        assert session.protocol_error is failure
-        assert children[0].process.returncode is not None
-        assert not session.work.exists()
-        assert session.workspace_lock.closed
-    finally:
-        for lease in leases:
-            lease.close()
-        for child in children:
-            _cleanup_test_child(child, None)
-
-
 def _start_session_command(argv, sentinels=()):
     return (
         json.dumps(
             {
-                "version": 1,
+                "version": 2,
                 "type": "START",
+                "completion_policy": "live_server",
                 "argv": argv,
                 "environment": {},
                 "required_paths": [],
@@ -1399,728 +932,6 @@ def _start_session_command(argv, sentinels=()):
         ).encode()
         + b"\n"
     )
-
-
-@pytest.mark.parametrize(
-    ("interruption", "expected_error", "publication"),
-    (
-        pytest.param(b'{"version":1,"type":"STOP"}\n', None, "queued", id="queued-stop"),
-        pytest.param(None, None, "queued", id="queued-eof"),
-        pytest.param(b"not-json\n", json.JSONDecodeError, "queued", id="queued-malformed"),
-        pytest.param(b"START", ValueError, "queued", id="queued-duplicate-start"),
-        pytest.param(
-            b'{"version":1,"type":"STOP"}\n', None, "queued-signal", id="stop-before-signal"
-        ),
-        pytest.param(
-            b"not-json\n", json.JSONDecodeError, "queued-signal", id="malformed-before-signal"
-        ),
-        pytest.param(b"START", ValueError, "queued-signal", id="duplicate-start-before-signal"),
-        pytest.param(b'{"version":1,"type":"STOP"}\n', None, "pending", id="pending-stop"),
-        pytest.param(None, None, "pending", id="pending-eof"),
-        pytest.param(b"not-json\n", json.JSONDecodeError, "pending", id="pending-malformed"),
-        pytest.param(b"START", ValueError, "pending", id="pending-duplicate-start"),
-        pytest.param(b'{"version":1,"type":"STOP"}', ValueError, "pending", id="partial-eof"),
-        pytest.param(b'{"version":1,"type":"STOP"}\n', None, "full", id="backpressure-stop"),
-        pytest.param(b"SIGNAL", None, "pending", id="latched-signal"),
-    ),
-)
-def test_retry_does_not_spawn_after_terminal_control_observed_during_cleanup(
-    tmp_path, monkeypatch, control_pipe, interruption, expected_error, publication
-):
-    _reader, writer = control_pipe
-    workspace = tmp_path / "workspace"
-    (workspace / "staged").mkdir(parents=True)
-    lock = (workspace / remote_helper.SESSION_LOCK).open("w+b")
-    session = remote_helper.ControlSession("session", workspace, lock)
-    consumed = asyncio.Event()
-    publish = asyncio.Event()
-    pending = []
-    children = []
-    events = []
-    original_put = session._events.put
-    original_spawn = remote_helper._spawn_child
-    start = _start_session_command(
-        [
-            sys.executable,
-            "-c",
-            "import sys;print('Address already in use',file=sys.stderr,flush=True)",
-        ],
-        ("not-ready",),
-    )
-
-    async def controlled_put(observation):
-        terminal_control = (
-            isinstance(observation, (remote_helper._ControlFrame, remote_helper._ControlEOF))
-            and session.request is not None
-        ) or (
-            isinstance(observation, remote_helper._ObservationFailed)
-            and observation.source == "control"
-        )
-        if terminal_control:
-            pending.append(observation)
-            consumed.set()
-            await publish.wait()
-            if publication in ("queued", "queued-signal"):
-                return
-        await original_put(observation)
-
-    def spawn(*args, **kwargs):
-        child = original_spawn(*args, **kwargs)
-        children.append(child)
-        if len(children) != 1:
-            # Keep a buggy extra launch owned and ensure the failing test exits.
-            session.handle_signal()
-            return child
-        terminate = child.terminate
-        close_streams = child.close_streams
-
-        async def terminate_then_observe_control():
-            await terminate()
-            if interruption == b"SIGNAL":
-                return
-            if interruption is None:
-                writer.close()
-            else:
-                writer.write(start if interruption == b"START" else interruption)
-                if interruption != b"START" and not interruption.endswith(b"\n"):
-                    writer.close()
-            await consumed.wait()
-
-        def close_then_release_publication():
-            close_streams()
-            if interruption == b"SIGNAL":
-                session.handle_signal()
-            elif publication in ("queued", "queued-signal"):
-                session._events.put_nowait(pending[0])
-                if publication == "queued-signal":
-                    session.handle_signal()
-            elif publication == "full":
-                for _ in range(session._events.maxsize):
-                    session._events.put_nowait(remote_helper._ChildOutput(child, "stdout", b""))
-            publish.set()
-
-        monkeypatch.setattr(child, "terminate", terminate_then_observe_control)
-        monkeypatch.setattr(child, "close_streams", close_then_release_publication)
-        return child
-
-    monkeypatch.setattr(session._events, "put", controlled_put)
-    monkeypatch.setattr(remote_helper, "_spawn_child", spawn)
-    monkeypatch.setattr(remote_helper, "emit", lambda kind, **values: events.append((kind, values)))
-    writer.write(start)
-
-    async def run():
-        tasks_before = asyncio.all_tasks()
-        await session.run_async()
-        assert asyncio.all_tasks() == tasks_before
-
-    asyncio.run(run())
-
-    assert len(children) == 1
-    assert [kind for kind, _values in events].count("PROCESS_STARTING") == 1
-    assert not any(kind == "PROCESS_READY" for kind, _values in events)
-    assert children[0].process.returncode is not None
-    assert children[0].process.stdout.closed and children[0].process.stderr.closed
-    assert not workspace.exists()
-    assert lock.closed
-    if expected_error is not None:
-        assert isinstance(session.protocol_error, expected_error)
-        assert events[-1][0] == "ERROR"
-        assert events[-1][1]["code"] == "PROTOCOL_ERROR"
-    else:
-        assert session.protocol_error is None
-        if interruption == b'{"version":1,"type":"STOP"}\n':
-            assert events[-1] == ("SESSION_CLOSED", {"reason": "requested", "returncode": None})
-
-
-@pytest.mark.parametrize("with_start", (False, True), ids=("without-child", "with-child"))
-@pytest.mark.timeout(60)
-@pytest.mark.parametrize(
-    ("command", "expected_error"),
-    (
-        pytest.param(b'{"version":1,"type":"STOP"}\n', None, id="stop"),
-        pytest.param(b"not-json\n", json.JSONDecodeError, id="malformed-json"),
-        pytest.param(b'{"version":1,"type":"UNKNOWN"}\n', ValueError, id="unexpected-command"),
-        pytest.param(b"{", ValueError, id="incomplete-eof"),
-    ),
-)
-def test_control_fact_published_before_signal_keeps_its_outcome(
-    tmp_path, monkeypatch, control_pipe, capsys, with_start, command, expected_error
-):
-    _reader, writer = control_pipe
-    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
-    session = remote_helper.ControlSession.create()
-    published = asyncio.Event()
-    original_put = session._events.put
-    original_coordinate = session._coordinate
-    original_spawn = remote_helper._spawn_child
-    children = []
-
-    async def publish(observation):
-        await original_put(observation)
-        if (
-            isinstance(observation, remote_helper._ControlFrame) and observation.frame == command
-        ) or (
-            isinstance(observation, remote_helper._ObservationFailed)
-            and observation.source == "control"
-        ):
-            session.handle_signal(signal.SIGTERM)
-            published.set()
-
-    async def coordinate_after_publication():
-        # Hold dispatch until the real control observer has queued the fact
-        # and the later signal is latched; no scheduler timing is required.
-        await published.wait()
-        await original_coordinate()
-
-    def spawn(*args, **kwargs):
-        child = original_spawn(*args, **kwargs)
-        children.append(child)
-        return child
-
-    monkeypatch.setattr(session._events, "put", publish)
-    monkeypatch.setattr(session, "_coordinate", coordinate_after_publication)
-    monkeypatch.setattr(remote_helper, "_spawn_child", spawn)
-    if with_start:
-        writer.write(
-            _start_session_command(
-                [sys.executable, "-c", "import signal;signal.pause()"], ("not-ready",)
-            )
-        )
-    writer.write(command)
-    if not command.endswith(b"\n"):
-        writer.close()
-
-    session.run()
-
-    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
-    if expected_error is None:
-        assert session.protocol_error is None
-        assert events[-1]["type"] == "SESSION_CLOSED"
-        assert events[-1]["reason"] == "requested"
-    else:
-        assert isinstance(session.protocol_error, expected_error)
-        assert events[-1]["type"] == "ERROR"
-        assert events[-1]["code"] == "PROTOCOL_ERROR"
-    assert not session.cleanup_errors
-    assert not any(event["type"] == "PROCESS_READY" for event in events)
-    assert len(children) == int(with_start)
-    for child in children:
-        assert child.process.returncode is not None
-        assert child.process.stdout.closed and child.process.stderr.closed
-    assert session.workspace_lock.closed and not any(tmp_path.iterdir())
-
-
-@pytest.mark.parametrize("publication", ("queued", "pending"))
-@pytest.mark.parametrize("cleanup_fails", (False, True))
-@pytest.mark.timeout(60)
-def test_natural_close_preserves_control_failure_consumed_before_dispatch(
-    tmp_path, monkeypatch, control_pipe, capsys, publication, cleanup_fails
-):
-    _reader, writer = control_pipe
-    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
-    session = remote_helper.ControlSession.create()
-    release = tmp_path / "child-release"
-    os.mkfifo(release)
-    children = []
-    failures = []
-    grouped = asyncio.Event()
-    stdout_finished = asyncio.Event()
-    failure_consumed = asyncio.Event()
-    final_eof_published = asyncio.Event()
-    blocked_publication = asyncio.Event()
-    cleanup_error = OSError("process-group cleanup failed")
-    original_spawn = remote_helper._spawn_child
-    original_read = remote_helper._AsyncInput.read
-    original_put = session._events.put
-    original_emit = remote_helper.emit
-
-    def spawn(*args, **kwargs):
-        child = original_spawn(*args, **kwargs)
-        children.append(child)
-        terminate = child.terminate
-
-        async def terminate_then_fail():
-            await terminate()
-            if cleanup_fails:
-                raise cleanup_error
-
-        monkeypatch.setattr(child, "terminate", terminate_then_fail)
-        return child
-
-    async def read(source):
-        chunk = await original_read(source)
-        if children and not chunk and source.descriptor == children[0].process.stderr.fileno():
-            # Deliver the final child EOF only after the real control reader
-            # has recognized its framing failure during group cleanup.
-            await grouped.wait()
-            await stdout_finished.wait()
-            await failure_consumed.wait()
-        return chunk
-
-    async def publish(observation):
-        if isinstance(observation, remote_helper._GroupCleaned):
-            writer.write(b"{")
-            writer.close()
-            await failure_consumed.wait()
-        if (
-            isinstance(observation, remote_helper._ObservationFailed)
-            and observation.source == "control"
-        ):
-            failures.append(observation.exception)
-            failure_consumed.set()
-            await final_eof_published.wait()
-            if publication == "pending":
-                # Model a put suspended by bounded-queue backpressure. The
-                # real guard must retain the failure when shutdown cancels it.
-                await blocked_publication.wait()
-        await original_put(observation)
-        if isinstance(observation, remote_helper._GroupCleaned):
-            grouped.set()
-        elif isinstance(observation, remote_helper._ChildOutput) and not observation.chunk:
-            if observation.stream == "stdout":
-                stdout_finished.set()
-            else:
-                final_eof_published.set()
-
-    def emit(kind, **values):
-        original_emit(kind, **values)
-        if kind == "PROCESS_READY":
-            # FIFO open/EOF handshakes release a ready child to exit naturally.
-            descriptor = os.open(release, os.O_WRONLY)
-            os.close(descriptor)
-
-    monkeypatch.setattr(remote_helper, "_spawn_child", spawn)
-    monkeypatch.setattr(remote_helper._AsyncInput, "read", read)
-    monkeypatch.setattr(session._events, "put", publish)
-    monkeypatch.setattr(remote_helper, "emit", emit)
-    writer.write(
-        _start_session_command(
-            [
-                sys.executable,
-                "-c",
-                "import os,sys; print('ready',flush=True); "
-                "fd=os.open(sys.argv[1],os.O_RDONLY); os.read(fd,1); os.close(fd)",
-                str(release),
-            ],
-            ("ready",),
-        )
-    )
-
-    async def run():
-        tasks_before = asyncio.all_tasks()
-        with pytest.raises(OSError if cleanup_fails else ValueError) as raised:
-            await session.run_async()
-        assert raised.value is (cleanup_error if cleanup_fails else failures[0])
-        assert asyncio.all_tasks() == tasks_before
-
-    try:
-        asyncio.run(run())
-    finally:
-        for child in children:
-            if child.process.returncode is None:
-                asyncio.run(child.terminate())
-            child.close_streams()
-        session.workspace_lock.close()
-
-    assert isinstance(failures[0], ValueError)
-    assert session.cleanup_errors == ([cleanup_error] if cleanup_fails else []) + failures
-    assert children[0].process.returncode == 0
-    assert children[0].process.stdout.closed and children[0].process.stderr.closed
-    assert not session.work.exists()
-    assert session.workspace_lock.closed
-    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
-    assert events[-1]["type"] == "ERROR"
-    assert sum(event["type"] == "ERROR" for event in events) == 1
-    assert not any(event["type"] == "SESSION_CLOSED" for event in events)
-
-
-def test_control_session_cleanup_attempts_all_resources_once(tmp_path, monkeypatch, control_pipe):
-    _reader, writer = control_pipe
-    workspace = tmp_path / "workspace"
-    (workspace / "staged").mkdir(parents=True)
-    lock = (workspace / remote_helper.SESSION_LOCK).open("w+b")
-    session = remote_helper.ControlSession("session", workspace, lock)
-    failure = RuntimeError("child cleanup failed")
-    original_spawn = remote_helper._spawn_child
-    children = []
-    calls = []
-
-    def spawn(*args, **kwargs):
-        child = original_spawn(*args, **kwargs)
-        children.append(child)
-        terminate = child.terminate
-
-        async def terminate_then_fail():
-            calls.append("terminate")
-            session.handle_signal()
-            await terminate()
-            raise failure
-
-        monkeypatch.setattr(child, "terminate", terminate_then_fail)
-        return child
-
-    monkeypatch.setattr(remote_helper, "_spawn_child", spawn)
-    writer.write(
-        _start_session_command(
-            [sys.executable, "-c", "import signal;signal.pause()"], ("not-ready",)
-        )
-        + b'{"version":1,"type":"STOP"}\n'
-    )
-    with pytest.raises(RuntimeError) as raised:
-        session.run()
-
-    assert raised.value is failure
-    assert calls == ["terminate"]
-    assert children[0].process.returncode is not None
-    assert children[0].process.stdout.closed and children[0].process.stderr.closed
-    assert lock.closed
-    assert not workspace.exists()
-
-
-@pytest.mark.parametrize("failure_type", (RuntimeError, KeyboardInterrupt))
-def test_spawn_return_interruption_keeps_child_reachable_for_cleanup(
-    tmp_path, monkeypatch, control_pipe, failure_type
-):
-    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
-    session = remote_helper.ControlSession.create()
-    _reader, writer = control_pipe
-    original_spawn = remote_helper._spawn_child
-    children = []
-    failure = failure_type("interrupted before coordinator adoption")
-
-    def interrupt_return(*args, **kwargs):
-        child = original_spawn(*args, **kwargs)
-        children.append(child)
-        raise failure
-
-    monkeypatch.setattr(remote_helper, "_spawn_child", interrupt_return)
-    writer.write(
-        _start_session_command([sys.executable, "-c", "import signal;signal.pause()"], ("ready",))
-    )
-
-    async def run():
-        tasks_before = asyncio.all_tasks()
-        if failure_type is RuntimeError:
-            await session.run_async()
-            assert session.protocol_error is failure
-        else:
-            with pytest.raises(failure_type) as raised:
-                await session.run_async()
-            assert raised.value is failure
-        assert asyncio.all_tasks() == tasks_before
-
-    try:
-        asyncio.run(run())
-        assert len(children) == 1
-        assert children[0].process.returncode is not None
-        assert children[0].process.stdout.closed and children[0].process.stderr.closed
-        assert not session.work.exists()
-        assert session.workspace_lock.closed
-    finally:
-        for child in children:
-            _cleanup_test_child(child, None)
-
-
-def test_unconfirmed_spawn_rollback_retains_workspace_without_supervisor(
-    tmp_path, monkeypatch, control_pipe
-):
-    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
-    session = remote_helper.ControlSession.create()
-    _reader, writer = control_pipe
-    original_popen = remote_helper.subprocess.Popen
-    original_waits = remote_helper._group_exit_waits
-    processes = []
-    failure = RuntimeError("supervisor construction failed")
-    rollback_failure = PermissionError("group disposal could not be confirmed")
-
-    def acquire(*args, **kwargs):
-        process = original_popen(*args, **kwargs)
-        processes.append(process)
-        return process
-
-    def fail_supervisor(*_args, **_kwargs):
-        raise failure
-
-    def unconfirmed(pid):
-        yield from original_waits(pid)
-        raise rollback_failure
-
-    monkeypatch.setattr(remote_helper.subprocess, "Popen", acquire)
-    monkeypatch.setattr(remote_helper, "SupervisedChild", fail_supervisor)
-    monkeypatch.setattr(remote_helper, "_group_exit_waits", unconfirmed)
-    writer.write(
-        _start_session_command([sys.executable, "-c", "import signal;signal.pause()"], ("ready",))
-    )
-
-    with pytest.raises(SystemExit) as raised:
-        session.run()
-    assert raised.value.code == 1
-    assert session.protocol_error is failure
-    assert any(str(rollback_failure) in note for note in failure.__notes__)
-    assert processes[0].returncode is not None
-    assert processes[0].stdout.closed and processes[0].stderr.closed
-    assert session.work.is_dir()
-    assert session.workspace_lock.closed
-    with pytest.raises(ValueError), remote_helper._stage_lease(session.work):
-        pytest.fail("failed spawn rollback admitted staging")
-
-
-def test_terminal_cleanup_closes_staging_before_waiting_for_child(
-    tmp_path, monkeypatch, control_pipe
-):
-    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
-    session = remote_helper.ControlSession.create()
-    _reader, writer = control_pipe
-    original_spawn = remote_helper._spawn_child
-    cleanup_started = asyncio.Event()
-    release_cleanup = asyncio.Event()
-
-    def spawn(*args, **kwargs):
-        child = original_spawn(*args, **kwargs)
-        terminate = child.terminate
-
-        async def cleanup():
-            cleanup_started.set()
-            await release_cleanup.wait()
-            await terminate()
-
-        monkeypatch.setattr(child, "terminate", cleanup)
-        return child
-
-    monkeypatch.setattr(remote_helper, "_spawn_child", spawn)
-    writer.write(
-        _start_session_command([sys.executable, "-c", "import signal;signal.pause()"], ("ready",))
-        + b'{"version":1,"type":"STOP"}\n'
-    )
-
-    async def run():
-        operation = asyncio.create_task(session.run_async())
-        try:
-            with remote_helper._stage_lease(session.work):
-                await cleanup_started.wait()
-                assert session.work.is_dir()
-                with pytest.raises(ValueError), remote_helper._stage_lease(session.work):
-                    pytest.fail("terminal cleanup admitted a new stage")
-            release_cleanup.set()
-            await operation
-        finally:
-            release_cleanup.set()
-            await operation
-
-    asyncio.run(run())
-    assert not session.work.exists()
-    assert session.workspace_lock.closed
-
-
-@pytest.mark.parametrize("signal_source", ("callback", "os"))
-def test_control_session_signal_during_spawn_terminates_owned_child(
-    tmp_path, monkeypatch, control_pipe, signal_source
-):
-    _reader, writer = control_pipe
-    workspace = tmp_path / "workspace"
-    (workspace / "staged").mkdir(parents=True)
-    lock = (workspace / remote_helper.SESSION_LOCK).open("w+b")
-    session = remote_helper.ControlSession("session", workspace, lock)
-    original_spawn = remote_helper._spawn_child
-    spawned = []
-    events = []
-    in_signal_handler = False
-    queue_mutations_in_handler = []
-    original_handler = session.handle_signal
-    original_put = session._signals.put_nowait
-
-    def handle_signal(signum, frame=None):
-        nonlocal in_signal_handler
-        in_signal_handler = True
-        try:
-            original_handler(signum, frame)
-        finally:
-            in_signal_handler = False
-
-    def record_signal(signum):
-        queue_mutations_in_handler.append(in_signal_handler)
-        original_put(signum)
-
-    monkeypatch.setattr(session, "handle_signal", handle_signal)
-    monkeypatch.setattr(session._signals, "put_nowait", record_signal)
-
-    def spawn_then_signal(*args, **kwargs):
-        child = original_spawn(*args, **kwargs)
-        spawned.append(child)
-        if signal_source == "os":
-            os.kill(os.getpid(), signal.SIGTERM)
-        else:
-            session.handle_signal(signal.SIGTERM)
-        return child
-
-    monkeypatch.setattr(remote_helper, "_spawn_child", spawn_then_signal)
-    monkeypatch.setattr(remote_helper, "emit", lambda kind, **values: events.append((kind, values)))
-    writer.write(_start_session_command([sys.executable, "-c", "import signal;signal.pause()"]))
-
-    session.run()
-
-    assert len(spawned) == 1
-    assert spawned[0].process.returncode is not None
-    assert queue_mutations_in_handler and not any(queue_mutations_in_handler)
-    assert not any(kind == "PROCESS_READY" for kind, _ in events)
-    assert not workspace.exists()
-    assert lock.closed
-
-
-def test_control_session_signal_during_spawn_preserves_spawn_failure(
-    tmp_path, monkeypatch, control_pipe
-):
-    _reader, writer = control_pipe
-    workspace = tmp_path / "workspace"
-    (workspace / "staged").mkdir(parents=True)
-    lock = (workspace / remote_helper.SESSION_LOCK).open("w+b")
-    session = remote_helper.ControlSession("session", workspace, lock)
-    failure = OSError("injected spawn failure")
-
-    def signal_then_fail(*_args, **_kwargs):
-        session.handle_signal()
-        raise failure
-
-    monkeypatch.setattr(remote_helper, "_spawn_child", signal_then_fail)
-    writer.write(_start_session_command(["openocd"]))
-
-    session.run()
-
-    assert session.protocol_error is failure
-    assert not workspace.exists()
-    assert lock.closed
-
-
-@pytest.mark.parametrize("readiness", ("markers", "immediate"))
-def test_readiness_reconciles_control_failure_waiting_for_publication(
-    tmp_path, monkeypatch, control_pipe, readiness
-):
-    _reader, writer = control_pipe
-    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
-    session = remote_helper.ControlSession.create()
-    recognized = asyncio.Event()
-    withheld = asyncio.Event()
-    spawned = asyncio.Event()
-    original_put = session._events.put
-    original_get = session._events.get
-    original_read = remote_helper._AsyncInput.read
-    original_spawn = remote_helper._spawn_child
-    children = []
-    failures = []
-    events = []
-
-    async def publish(observation):
-        if isinstance(observation, remote_helper._ObservationFailed):
-            assert observation.source == "control"
-            failures.append(observation.exception)
-            recognized.set()
-            await withheld.wait()
-        await original_put(observation)
-
-    async def receive():
-        observation = await original_get()
-        if readiness == "immediate" and isinstance(observation, remote_helper._ControlFrame):
-            # The control reader can recognize the next frame's EOF failure
-            # while dispatch of a valid START is still pending.
-            await recognized.wait()
-        return observation
-
-    async def read(reader):
-        if reader.descriptor == _reader.fileno():
-            chunk = await original_read(reader)
-            if not chunk and readiness == "markers":
-                await spawned.wait()
-            return chunk
-        await recognized.wait()
-        return await original_read(reader)
-
-    def spawn(*args, **kwargs):
-        child = original_spawn(*args, **kwargs)
-        children.append(child)
-        spawned.set()
-        return child
-
-    def emit(kind, **values):
-        events.append((kind, values))
-        if kind == "PROCESS_READY":
-            # Let the pre-fix implementation shut down without a timeout.
-            session.handle_signal()
-
-    monkeypatch.setattr(session._events, "put", publish)
-    monkeypatch.setattr(session._events, "get", receive)
-    monkeypatch.setattr(remote_helper._AsyncInput, "read", read)
-    monkeypatch.setattr(remote_helper, "_spawn_child", spawn)
-    monkeypatch.setattr(remote_helper, "emit", emit)
-    writer.write(
-        _start_session_command(
-            [sys.executable, "-c", "import signal;print('ready',flush=True);signal.pause()"],
-            ("ready",) if readiness == "markers" else (),
-        )
-        + b"{"
-    )
-    writer.close()
-
-    async def run():
-        tasks_before = asyncio.all_tasks()
-        with suppress(ValueError):
-            await session.run_async()
-        assert asyncio.all_tasks() == tasks_before
-
-    asyncio.run(run())
-    assert failures and isinstance(failures[0], ValueError)
-    assert not any(kind == "PROCESS_READY" for kind, _values in events)
-    assert events[-1][0] == "ERROR"
-    assert events[-1][1]["code"] == "PROTOCOL_ERROR"
-    assert session.protocol_error is failures[0] and not session.cleanup_errors
-    assert len(children) == 1 and children[0].process.returncode is not None
-    assert children[0].process.stdout.closed and children[0].process.stderr.closed
-    assert session.workspace_lock.closed and not any(tmp_path.iterdir())
-
-
-def test_output_observer_failure_ends_session_and_cancels_tasks(
-    tmp_path, monkeypatch, control_pipe
-):
-    _reader, writer = control_pipe
-    workspace = tmp_path / "workspace"
-    (workspace / "staged").mkdir(parents=True)
-    lock = (workspace / remote_helper.SESSION_LOCK).open("w+b")
-    session = remote_helper.ControlSession("session", workspace, lock)
-    children = []
-    original_spawn = remote_helper._spawn_child
-    original_read = remote_helper._AsyncInput.read
-    failure = OSError("injected pipe read failure")
-
-    def spawn(*args, **kwargs):
-        child = original_spawn(*args, **kwargs)
-        children.append(child)
-        return child
-
-    async def fail_output_read(reader):
-        if children and reader.descriptor == children[0].process.stdout.fileno():
-            raise failure
-        return await original_read(reader)
-
-    monkeypatch.setattr(remote_helper, "_spawn_child", spawn)
-    monkeypatch.setattr(remote_helper._AsyncInput, "read", fail_output_read)
-    writer.write(
-        _start_session_command(
-            [sys.executable, "-c", "import signal;signal.pause()"], ("not-ready",)
-        )
-    )
-
-    async def run():
-        tasks_before = asyncio.all_tasks()
-        with pytest.raises(OSError) as raised:
-            await session.run_async()
-        assert raised.value is failure
-        assert asyncio.all_tasks() == tasks_before
-
-    asyncio.run(run())
-
-    assert children[0].process.returncode is not None
-    assert children[0].process.stdout.closed and children[0].process.stderr.closed
-    assert lock.closed
-    assert not workspace.exists()
 
 
 @pytest.mark.parametrize("source", ("available-prefix", "continuous"))
@@ -2170,456 +981,6 @@ def test_final_reader_scan_consumes_available_prefix_with_finite_budget(monkeypa
     finally:
         os.close(read_fd)
         os.close(write_fd)
-
-
-@pytest.mark.parametrize("final_observation", ("ready", "exit", "timeout"))
-def test_readiness_deadline_processes_final_visible_observation(
-    tmp_path, monkeypatch, control_pipe, final_observation
-):
-    _reader, writer = control_pipe
-    workspace = tmp_path / "workspace"
-    (workspace / "staged").mkdir(parents=True)
-    lock = (workspace / remote_helper.SESSION_LOCK).open("w+b")
-    session = remote_helper.ControlSession("session", workspace, lock)
-    children = []
-    events = []
-    original_spawn = remote_helper._spawn_child
-    original_read = remote_helper.os.read
-    original_sleep = remote_helper.asyncio.sleep
-    output_blocked = True
-
-    def spawn(*args, **kwargs):
-        child = original_spawn(*args, **kwargs)
-        children.append(child)
-        return child
-
-    def controlled_read(descriptor, size):
-        if output_blocked and children and descriptor == children[0].process.stdout.fileno():
-            raise BlockingIOError
-        return original_read(descriptor, size)
-
-    async def controlled_sleep(delay):
-        nonlocal output_blocked
-        if delay == 30:
-            # Observe readiness through a duplicate fd without reading any bytes.
-            descriptor = os.dup(children[0].process.stdout.fileno())
-            try:
-                await remote_helper._readable(descriptor)
-            finally:
-                os.close(descriptor)
-            if final_observation == "exit":
-                child = children[0]
-                descriptor = os.pidfd_open(child.pid)
-                try:
-                    os.kill(child.pid, signal.SIGUSR1)
-                    await remote_helper._readable(descriptor)
-                finally:
-                    os.close(descriptor)
-            # The deadline producer enqueues its fact before yielding again.
-            output_blocked = False
-        else:
-            await original_sleep(delay)
-
-    def emit(kind, **values):
-        events.append((kind, values))
-        if kind == "PROCESS_READY":
-            writer.write(b'{"version":1,"type":"STOP"}\n')
-
-    monkeypatch.setattr(remote_helper, "_spawn_child", spawn)
-    monkeypatch.setattr(remote_helper.os, "read", controlled_read)
-    monkeypatch.setattr(remote_helper.asyncio, "sleep", controlled_sleep)
-    monkeypatch.setattr(remote_helper, "emit", emit)
-    marker = "diagnostic" if final_observation == "timeout" else "READY"
-    writer.write(
-        _start_session_command(
-            [
-                sys.executable,
-                "-c",
-                "import signal,sys;"
-                "signal.signal(signal.SIGUSR1,lambda *_:sys.exit(7));"
-                f"print({marker!r},flush=True);signal.pause()",
-            ],
-            ("READY",),
-        )
-    )
-
-    session.run()
-
-    if final_observation == "ready":
-        assert session.protocol_error is None
-        assert [kind for kind, _ in events].count("PROCESS_READY") == 1
-        assert events[-1][0] == "SESSION_CLOSED"
-    else:
-        assert isinstance(session.protocol_error, RuntimeError)
-        assert not any(kind == "PROCESS_READY" for kind, _ in events)
-        assert events[-1][0] == "ERROR"
-        if final_observation == "exit":
-            assert str(SAMPLE_CHILD_EXIT_CODE) in str(session.protocol_error)
-    assert children[0].process.returncode is not None
-    assert not workspace.exists()
-    assert lock.closed
-
-
-@pytest.mark.parametrize("phase", ("active", "retry-fence"))
-def test_cancelled_session_cleans_child_before_leaving_task_scope(
-    tmp_path, monkeypatch, control_pipe, phase
-):
-    _reader, writer = control_pipe
-    workspace = tmp_path / "workspace"
-    (workspace / "staged").mkdir(parents=True)
-    lock = (workspace / remote_helper.SESSION_LOCK).open("w+b")
-    session = remote_helper.ControlSession("session", workspace, lock)
-    children = []
-    original_spawn = remote_helper._spawn_child
-
-    def spawn(*args, **kwargs):
-        child = original_spawn(*args, **kwargs)
-        children.append(child)
-        return child
-
-    def emit(kind, **_values):
-        if kind == "PROCESS_READY":
-            task = asyncio.current_task()
-            assert task is not None
-            task.cancel()
-
-    original_put = session._events.put
-    coordinator_task: asyncio.Task[None] | None = None
-
-    async def cancel_at_fence(observation):
-        if isinstance(observation, remote_helper._ControlFence):
-            assert coordinator_task is not None
-            coordinator_task.cancel()
-        await original_put(observation)
-
-    if phase == "retry-fence":
-        monkeypatch.setattr(session._events, "put", cancel_at_fence)
-        writer.write(
-            _start_session_command(
-                [
-                    sys.executable,
-                    "-c",
-                    "import sys;print('Address already in use',file=sys.stderr,flush=True)",
-                ],
-                ("not-ready",),
-            )
-        )
-    monkeypatch.setattr(remote_helper, "_spawn_child", spawn)
-    monkeypatch.setattr(remote_helper, "emit", emit)
-    if phase == "active":
-        writer.write(_start_session_command([sys.executable, "-c", "import signal;signal.pause()"]))
-
-    async def run():
-        nonlocal coordinator_task
-        coordinator_task = asyncio.current_task()
-        tasks_before = asyncio.all_tasks()
-        with pytest.raises(asyncio.CancelledError):
-            await session.run_async()
-        assert asyncio.all_tasks() == tasks_before
-
-    asyncio.run(run())
-
-    assert len(children) == 1
-    assert children[0].process.returncode is not None
-    assert children[0].process.stdout.closed and children[0].process.stderr.closed
-    assert not workspace.exists()
-    assert lock.closed
-
-
-def test_output_drain_deadline_cancels_readers_and_closes_streams(
-    tmp_path, monkeypatch, control_pipe
-):
-    _reader, writer = control_pipe
-    workspace = tmp_path / "workspace"
-    (workspace / "staged").mkdir(parents=True)
-    lock = (workspace / remote_helper.SESSION_LOCK).open("w+b")
-    session = remote_helper.ControlSession("session", workspace, lock)
-    children = []
-    original_spawn = remote_helper._spawn_child
-    original_read = remote_helper._AsyncInput.read
-    original_sleep = remote_helper.asyncio.sleep
-    blocked = asyncio.Event()
-
-    def spawn(*args, **kwargs):
-        child = original_spawn(*args, **kwargs)
-        children.append(child)
-        return child
-
-    async def held_reader(reader):
-        if children and reader.descriptor in (
-            children[0].process.stdout.fileno(),
-            children[0].process.stderr.fileno(),
-        ):
-            await blocked.wait()
-        return await original_read(reader)
-
-    async def controlled_sleep(delay):
-        if delay != remote_helper.CHILD_RELAY_JOIN_TIMEOUT:
-            await original_sleep(delay)
-
-    monkeypatch.setattr(remote_helper, "_spawn_child", spawn)
-    monkeypatch.setattr(remote_helper._AsyncInput, "read", held_reader)
-    monkeypatch.setattr(remote_helper.asyncio, "sleep", controlled_sleep)
-    writer.write(
-        _start_session_command(
-            [sys.executable, "-c", "import signal;signal.pause()"], ("not-ready",)
-        )
-        + b'{"version":1,"type":"STOP"}\n'
-    )
-
-    async def run():
-        tasks_before = asyncio.all_tasks()
-        with pytest.raises(RuntimeError):
-            await session.run_async()
-        assert asyncio.all_tasks() == tasks_before
-
-    asyncio.run(run())
-
-    assert children[0].process.returncode is not None
-    assert children[0].process.stdout.closed and children[0].process.stderr.closed
-    assert not workspace.exists()
-    assert lock.closed
-
-
-def test_output_delivery_failure_during_shutdown_remains_fatal(tmp_path, monkeypatch, control_pipe):
-    _reader, writer = control_pipe
-    workspace = tmp_path / "workspace"
-    (workspace / "staged").mkdir(parents=True)
-    lock = (workspace / remote_helper.SESSION_LOCK).open("w+b")
-    session = remote_helper.ControlSession("session", workspace, lock)
-    events = []
-    failure = BrokenPipeError("injected shutdown output failure")
-
-    def emit(kind, **values):
-        if kind == "CHILD_OUTPUT" and "shutdown" in values["payload"]:
-            raise failure
-        events.append((kind, values))
-        if kind == "PROCESS_READY":
-            writer.write(b'{"version":1,"type":"STOP"}\n')
-
-    monkeypatch.setattr(remote_helper, "emit", emit)
-    writer.write(
-        _start_session_command(
-            [
-                sys.executable,
-                "-c",
-                "import signal,sys;"
-                "signal.signal(signal.SIGTERM,"
-                "lambda *_:(print('shutdown',flush=True),sys.exit(0)));"
-                "print('ready',flush=True);signal.pause()",
-            ],
-            ("ready",),
-        )
-    )
-
-    with pytest.raises(BrokenPipeError) as raised:
-        session.run()
-
-    assert raised.value is failure
-    assert any(kind == "ERROR" for kind, _ in events)
-    assert not any(kind == "SESSION_CLOSED" for kind, _ in events)
-    assert lock.closed
-    assert not workspace.exists()
-
-
-def test_control_session_natural_exit_cleanup_failure_emits_error_event(
-    tmp_path, monkeypatch, control_pipe
-):
-    _reader, writer = control_pipe
-    workspace = tmp_path / "workspace"
-    (workspace / "staged").mkdir(parents=True)
-    lock = (workspace / remote_helper.SESSION_LOCK).open("w+b")
-    events = []
-    monkeypatch.setattr(remote_helper, "emit", lambda kind, **values: events.append((kind, values)))
-    original_rmtree = remote_helper.shutil.rmtree
-    failure = OSError("injected workspace removal failure")
-
-    def fail_workspace_removal(path):
-        if path == workspace:
-            raise failure
-        original_rmtree(path)
-
-    monkeypatch.setattr(remote_helper.shutil, "rmtree", fail_workspace_removal)
-    session = remote_helper.ControlSession("session", workspace, lock)
-    writer.write(_start_session_command([sys.executable, "-c", "pass"]))
-
-    with pytest.raises(OSError) as raised:
-        session.run()
-    assert raised.value is failure
-
-    assert events[-1][0] == "ERROR"
-    assert sum(kind == "ERROR" for kind, _ in events) == 1
-    assert not any(kind == "SESSION_CLOSED" for kind, _ in events)
-    assert workspace.exists()
-    assert not (workspace / remote_helper.UNCONFIRMED_CHILD).exists()
-    assert lock.closed
-    original_rmtree(workspace)
-
-
-@pytest.mark.parametrize("observation", ("exists", "permission-denied"))
-def test_control_session_unconfirmed_group_exit_fails_after_other_cleanup(
-    tmp_path, monkeypatch, control_pipe, observation
-):
-    _reader, writer = control_pipe
-    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
-    session = remote_helper.ControlSession.create()
-    children = []
-    events = []
-    original_spawn = remote_helper._spawn_child
-    original_killpg = os.killpg
-    original_sleep = asyncio.sleep
-    now = 0.0
-
-    def spawn(*args, **kwargs):
-        child = original_spawn(*args, **kwargs)
-        children.append(child)
-        return child
-
-    def killpg(pid, signum):
-        if children and pid == children[0].pid and children[0].process.returncode is not None:
-            assert signum == 0
-            if observation == "permission-denied":
-                raise PermissionError("group cannot be inspected")
-            return
-        original_killpg(pid, signum)
-
-    async def controlled_sleep(delay):
-        nonlocal now
-        if (
-            children
-            and children[0].process.returncode is not None
-            and 0 < delay <= remote_helper.CHILD_POLL_INTERVAL
-        ):
-            now += delay
-        else:
-            await original_sleep(delay)
-
-    def emit(kind, **values):
-        events.append((kind, values))
-        if kind == "PROCESS_READY":
-            writer.write(b'{"version":1,"type":"STOP"}\n')
-
-    monkeypatch.setattr(remote_helper, "_spawn_child", spawn)
-    monkeypatch.setattr(remote_helper.os, "killpg", killpg)
-    monkeypatch.setattr(remote_helper, "time", SimpleNamespace(monotonic=lambda: now))
-    monkeypatch.setattr(remote_helper.asyncio, "sleep", controlled_sleep)
-    monkeypatch.setattr(remote_helper, "emit", emit)
-    writer.write(
-        _start_session_command(
-            [sys.executable, "-c", "import signal;print('ready',flush=True);signal.pause()"],
-            ("ready",),
-        )
-    )
-
-    expected = TimeoutError if observation == "exists" else PermissionError
-    with pytest.raises(expected):
-        session.run()
-
-    assert events[-1][0] == "ERROR"
-    assert not any(kind == "SESSION_CLOSED" for kind, _ in events)
-    assert children[0].process.returncode is not None
-    assert children[0].process.stdout.closed and children[0].process.stderr.closed
-    assert session.workspace_lock.closed
-    assert session.work.is_dir()
-    assert (session.work / remote_helper.UNCONFIRMED_CHILD).exists()
-    with pytest.raises(ValueError), remote_helper._stage_lease(session.work):
-        pytest.fail("retained workspace admitted staging")
-    remote_helper.reclaim_stale_workspaces(
-        session.work.parent, now=time.time() + remote_helper.STALE_SESSION_AGE + 1
-    )
-    assert session.work.is_dir()
-
-
-@pytest.mark.parametrize("protocol_failure", (True, False))
-def test_remote_cleanup_diagnostics_survive_error_serialization(
-    tmp_path, monkeypatch, control_pipe, capsys, protocol_failure
-):
-    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
-    session = remote_helper.ControlSession.create()
-    original_rmtree = remote_helper.shutil.rmtree
-    original_close = session.workspace_lock.close
-    workspace_failure = OSError("injected workspace removal failure")
-    lock_failure = OSError("injected workspace lock closure failure")
-    lock_detail = "workspace lock cleanup retained detail"
-    lock_failure.add_note(lock_detail)
-
-    def fail_workspace_removal(path):
-        if path == session.work:
-            raise workspace_failure
-        original_rmtree(path)
-
-    def fail_lock_close():
-        original_close()
-        raise lock_failure
-
-    monkeypatch.setattr(remote_helper.ControlSession, "create", lambda: session)
-    monkeypatch.setattr(remote_helper.shutil, "rmtree", fail_workspace_removal)
-    monkeypatch.setattr(session.workspace_lock, "close", fail_lock_close)
-    monkeypatch.setattr(remote_helper.sys, "argv", ["remote_helper.py", "control"])
-    _reader, writer = control_pipe
-    writer.write(b"not-json\n" if protocol_failure else b'{"version":1,"type":"STOP"}\n')
-
-    try:
-        with pytest.raises(SystemExit) as raised:
-            remote_helper.main()
-
-        assert raised.value.code == 1
-        events = [decode_message(line) for line in capsys.readouterr().out.splitlines()]
-        assert [event["type"] for event in events] == ["SESSION_CREATED", "ERROR"]
-        assert events[-1]["code"] == ("PROTOCOL_ERROR" if protocol_failure else "HELPER_ERROR")
-        primary = session.protocol_error if protocol_failure else workspace_failure
-        assert events[-1]["message"].startswith(str(primary))
-        assert str(workspace_failure) in events[-1]["message"]
-        assert str(lock_failure) in events[-1]["message"]
-        assert lock_detail in events[-1]["message"]
-        assert session.work.exists()
-        assert session.workspace_lock.closed
-    finally:
-        original_rmtree(session.work)
-        original_close()
-
-
-def test_protocol_error_retains_both_workspace_metadata_cleanup_failures(
-    tmp_path, monkeypatch, control_pipe, capsys
-):
-    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
-    session = remote_helper.ControlSession.create()
-    closure = remote_helper._closure_path(session.work)
-    lease = remote_helper._lease_path(session.work)
-    closure_failure = OSError("workspace closure removal failed")
-    lease_failure = OSError("workspace lease removal failed")
-    unlink = Path.unlink
-    attempts = []
-
-    def fail_metadata_removal(path, *args, **kwargs):
-        if path in (closure, lease):
-            attempts.append(path)
-            raise closure_failure if path == closure else lease_failure
-        return unlink(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "unlink", fail_metadata_removal)
-    monkeypatch.setattr(remote_helper.ControlSession, "create", lambda: session)
-    _reader, writer = control_pipe
-    writer.write(b"not-json\n")
-    try:
-        with pytest.raises(SystemExit) as raised:
-            remote_helper.control()
-
-        assert raised.value.code == 1
-        events = [decode_message(line) for line in capsys.readouterr().out.splitlines()]
-        assert [event["type"] for event in events] == ["SESSION_CREATED", "ERROR"]
-        assert events[-1]["code"] == "PROTOCOL_ERROR"
-        assert events[-1]["message"].startswith(str(session.protocol_error))
-        assert str(closure_failure) in events[-1]["message"]
-        assert str(lease_failure) in events[-1]["message"]
-        assert attempts == [closure, lease]
-        assert session.workspace_lock.closed
-        assert not session.work.exists()
-        assert closure.exists() and lease.exists()
-    finally:
-        session._release_workspace()
-        unlink(closure, missing_ok=True)
-        unlink(lease, missing_ok=True)
 
 
 def test_supervised_child_terminates_descendant_after_leader_term(tmp_path):
@@ -2803,12 +1164,20 @@ def test_supervised_child_group_cleanup_ignores_diagnostic_failure(monkeypatch):
 
 
 @pytest.fixture
-def cleanup_process():
+def cleanup_process(monkeypatch):
     process = create_autospec(subprocess.Popen, instance=True)
     process.pid = 123
     process.returncode = None
     process.stdout = io.BytesIO()
     process.stderr = io.BytesIO()
+    waitid = os.waitid
+
+    def observe_owned_process(kind, pid, options):
+        if kind == os.P_PID and pid == process.pid:
+            return None
+        return waitid(kind, pid, options)
+
+    monkeypatch.setattr(remote_helper.os, "waitid", observe_owned_process)
 
     def reap(timeout=None):
         assert timeout is not None and math.isfinite(timeout) and timeout > 0
@@ -3014,53 +1383,6 @@ def test_decode_command_rejects_tcl_quoting_in_a_filesystem_path(start_command):
         remote_helper.decode_command(start_command)
 
 
-@pytest.mark.parametrize("service_less", (False, True))
-def test_control_session_does_not_launch_when_required_file_is_missing(
-    tmp_path, monkeypatch, start_command, control_pipe, capsys, service_less
-):
-    workspace = tmp_path / "workspace"
-    staged = workspace / "staged"
-    staged.mkdir(parents=True)
-    missing_file = staged / "image"
-    start_command["required_paths"] = [
-        {"kind": "file", "path": {"parts": [{"session": "workspace"}, "/staged/image"]}}
-    ]
-    spawn_calls = []
-    monkeypatch.setattr(
-        remote_helper,
-        "_spawn_child",
-        lambda *args, **kwargs: spawn_calls.append((args, kwargs)),
-    )
-    if service_less:
-        start_command["services"] = []
-    allocated_ports = []
-
-    def allocate(ports, *, preferred_address=None):
-        del preferred_address
-        allocated_ports.append(tuple(ports))
-        return "127.0.0.1"
-
-    monkeypatch.setattr(remote_helper, "allocate_service_address", allocate)
-    _reader, writer = control_pipe
-    lock = (workspace / remote_helper.SESSION_LOCK).open("w+b")
-    session = remote_helper.ControlSession("session", workspace, lock)
-    writer.write(json.dumps(start_command).encode() + b"\n")
-
-    session.run()
-
-    assert isinstance(session.protocol_error, ValueError)
-    message = str(session.protocol_error)
-    assert "required remote file" in message
-    assert "missing" in message
-    assert str(missing_file) in message
-    assert spawn_calls == []
-    assert len(allocated_ports) == 1
-    if service_less:
-        assert allocated_ports == [()]
-    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
-    assert not any(event["type"] == "PROCESS_STARTING" for event in events)
-
-
 @pytest.mark.parametrize(
     ("field", "value"),
     (
@@ -3108,7 +1430,642 @@ def test_decode_command_rejects_unknown_start_and_stop_fields(start_command):
     with pytest.raises(ValueError):
         remote_helper.decode_command(start_command)
     with pytest.raises(ValueError):
-        remote_helper.decode_command({"version": 1, "type": "STOP", "future": True})
+        remote_helper.decode_command({"version": 2, "type": "STOP", "future": True})
+
+
+@pytest.mark.parametrize("suffix", ("lease", "closed"))
+def test_reclaimer_removes_orphaned_lease_but_preserves_live_workspace(
+    tmp_path, monkeypatch, suffix
+):
+    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
+    _session_id, workspace, owner_lock = remote_helper.new_workspace()
+    try:
+        with remote_helper._stage_lease(workspace):
+            orphan = tmp_path / f".removed.{suffix}"
+            orphan.write_bytes(b"closed")
+            live_lease = remote_helper._lease_path(workspace)
+            for path in (orphan, live_lease):
+                os.utime(path, (1.0, 1.0))
+            remote_helper.reclaim_stale_workspaces(
+                tmp_path, now=remote_helper.STALE_SESSION_AGE + 2
+            )
+            assert not orphan.exists()
+            assert live_lease.exists()
+            assert workspace.is_dir()
+    finally:
+        owner_lock.close()
+
+
+@pytest.fixture
+def coordinated_helper(tmp_path, monkeypatch, control_pipe):
+    """Use real workspace, child owners, pipes, and the lifecycle coordinator."""
+    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
+    session = remote_helper.ControlSession.create()
+    _, writer = control_pipe
+    events = []
+    children = []
+    spawn = remote_helper._spawn_child
+
+    def acquire(*args, **kwargs):
+        child = spawn(*args, **kwargs)
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(remote_helper, "_spawn_child", acquire)
+    monkeypatch.setattr(remote_helper, "emit", lambda kind, **fields: events.append((kind, fields)))
+    yield session, writer, events, children
+    for child in children:
+        _cleanup_test_child(child, None)
+    session._release_workspace()
+
+
+def _terminal_event(events):
+    terminals = [fields for kind, fields in events if kind == "SESSION_ENDED"]
+    assert len(terminals) == 1
+    return decode_terminal(
+        json.loads(json.dumps(dict(version=2, type="SESSION_ENDED", **terminals[0])))
+    )
+
+
+def _run_terminated(session, *, fails):
+    if fails:
+        with pytest.raises(SystemExit) as raised:
+            session.run()
+        assert raised.value.code == 1
+    else:
+        session.run()
+    assert isinstance(session.lifecycle.state, Closed)
+
+
+@pytest.mark.parametrize("suffix", (b"\n", b" ", b'{"version":2,"type":"STOP"}\n', b"junk"))
+def test_post_start_bytes_are_failure_even_in_same_read(coordinated_helper, suffix):
+    session, writer, events, _children = coordinated_helper
+    stream = io.BytesIO()
+    write_start(stream, RemoteProcess((sys.executable, "-c", "import signal;signal.pause()")), ())
+    writer.write(stream.getvalue() + suffix)
+    _run_terminated(session, fails=True)
+    snapshot = _terminal_event(events)
+    assert snapshot.outcome.trigger == Trigger.PROTOCOL_FAILURE
+    assert snapshot.outcome.primary_failure is not None
+    assert snapshot.cleanup.confirmed
+    assert not _children  # Reject the batched invalid input before physical entry.
+
+
+@pytest.mark.parametrize("partial", (False, True))
+def test_controller_eof_before_start_has_explicit_result(coordinated_helper, partial):
+    session, writer, events, _children = coordinated_helper
+    if partial:
+        writer.write(b'{"version":2')
+    writer.close()
+    _run_terminated(session, fails=partial)
+    snapshot = _terminal_event(events)
+    assert snapshot.outcome.trigger == (
+        Trigger.PROTOCOL_FAILURE if partial else Trigger.CONTROLLER_EOF
+    )
+    assert snapshot.outcome.child_result is None
+    assert snapshot.cleanup.confirmed
+
+
+@pytest.mark.parametrize("kind", ("file", "directory"))
+def test_missing_required_path_fails_before_attempt_admission(coordinated_helper, kind):
+    session, writer, events, children = coordinated_helper
+    missing = session.work / "staged" / "missing"
+    write_start(
+        writer,
+        RemoteProcess((sys.executable,), required_paths=(RemotePathCheck(str(missing), kind),)),
+        (),
+    )
+    _run_terminated(session, fails=True)
+    snapshot = _terminal_event(events)
+    assert snapshot.outcome.primary_failure is not None
+    assert str(missing) in snapshot.outcome.primary_failure.message
+    assert not children and not any(event == "ATTEMPT" for event, _ in events)
+    assert snapshot.cleanup.confirmed
+
+
+@pytest.mark.parametrize("policy", tuple(CompletionPolicy))
+def test_completion_policy_controls_readiness(coordinated_helper, monkeypatch, policy):
+    session, writer, events, children = coordinated_helper
+    record = remote_helper.emit
+
+    def emit(kind, **fields):
+        record(kind, **fields)
+        if kind == "READY":
+            writer.close()
+
+    monkeypatch.setattr(remote_helper, "emit", emit)
+    code = (
+        "print('done',flush=True)"
+        if policy == CompletionPolicy.PROCESS_EXIT
+        else "import signal;print('ready',flush=True);signal.pause()"
+    )
+    write_start(writer, RemoteProcess((sys.executable, "-c", code), completion_policy=policy), ())
+    _run_terminated(session, fails=False)
+    kinds = [kind for kind, _ in events]
+    assert ("READY" in kinds) == (policy == CompletionPolicy.LIVE_SERVER)
+    assert kinds.index("ATTEMPT") < kinds.index("SESSION_ENDED")
+    snapshot = _terminal_event(events)
+    assert snapshot.cleanup.confirmed
+    assert snapshot.outcome.child_result is not None
+    assert snapshot.outcome.child_result.termination_requested == (
+        policy == CompletionPolicy.LIVE_SERVER
+    )
+    assert all(child.process.stdout.closed and child.process.stderr.closed for child in children)
+    assert not session.work.exists() and session.workspace_lock.closed
+
+
+@pytest.mark.parametrize("admission", ("ATTEMPT", "READY", "SESSION_ENDED"))
+def test_admission_failure_does_not_publish_success_or_repeat_terminal(
+    coordinated_helper, monkeypatch, admission
+):
+    session, writer, events, children = coordinated_helper
+    record = remote_helper.emit
+    attempts = []
+
+    def emit(kind, **fields):
+        attempts.append(kind)
+        if kind == admission:
+            if kind == "SESSION_ENDED":
+                assert not session.work.exists()
+            raise BrokenPipeError("admission failed")
+        record(kind, **fields)
+        if kind == "READY":
+            writer.close()
+
+    monkeypatch.setattr(remote_helper, "emit", emit)
+    write_start(writer, RemoteProcess((sys.executable, "-c", "import signal;signal.pause()")), ())
+    _run_terminated(session, fails=True)
+    assert attempts.count("SESSION_ENDED") == 1
+    assert len(children) == (0 if admission == "ATTEMPT" else 1)
+    assert session.lifecycle.state.snapshot.cleanup.confirmed
+    assert not session.work.exists()
+    if admission == "SESSION_ENDED":
+        assert session.lifecycle.state.local_diagnostics
+    else:
+        assert _terminal_event(events).outcome.primary_failure.code == admission + "_ADMISSION"
+
+
+@pytest.mark.parametrize("boundary", ("before_spawn", "returned", "wrapper_failure"))
+def test_signal_capture_and_spawn_handoff_keep_cleanup_reachable(
+    coordinated_helper, monkeypatch, boundary
+):
+    session, writer, events, _children = coordinated_helper
+    spawn = remote_helper._spawn_child
+    supervisor = remote_helper.SupervisedChild
+
+    def acquire(*args, **kwargs):
+        if boundary == "before_spawn":
+            session.handle_signal(signal.SIGTERM)
+        child = spawn(*args, **kwargs)
+        if boundary == "returned":
+            session.handle_signal(signal.SIGINT)
+            raise KeyboardInterrupt("interrupted after return")
+        return child
+
+    def construct(*args, **kwargs):
+        session.handle_signal(signal.SIGTERM)
+        raise RuntimeError("supervisor adoption failed")
+
+    monkeypatch.setattr(remote_helper, "_spawn_child", acquire)
+    if boundary == "wrapper_failure":
+        monkeypatch.setattr(remote_helper, "SupervisedChild", construct)
+    write_start(writer, RemoteProcess((sys.executable, "-c", "import signal;signal.pause()")), ())
+    _run_terminated(session, fails=True)
+    snapshot = _terminal_event(events)
+    assert snapshot.outcome.primary_failure is not None
+    assert snapshot.cleanup.confirmed
+    assert "READY" not in [kind for kind, _ in events]
+    assert not session.work.exists() and session.workspace_lock.closed
+    monkeypatch.setattr(remote_helper, "SupervisedChild", supervisor)
+
+
+@pytest.mark.parametrize("failure", ("observer", "workspace"))
+def test_nested_failure_detail_survives_cleanup_and_wire(coordinated_helper, monkeypatch, failure):
+    session, writer, events, children = coordinated_helper
+    nested = RuntimeError("nested cause")
+    nested.add_note("nested retained note")
+    grouped = ExceptionGroup(
+        "composed failure", [OSError("first cause"), ExceptionGroup("inner", [nested])]
+    )
+    grouped.add_note("outer retained note")
+    if failure == "observer":
+
+        async def fail_output(_child, _name, _stream):
+            raise grouped
+
+        monkeypatch.setattr(session, "_observe_output", fail_output)
+    else:
+
+        def fail_removal(_work):
+            raise grouped
+
+        monkeypatch.setattr(remote_helper, "remove_workspace", fail_removal)
+        record = remote_helper.emit
+
+        def emit(kind, **fields):
+            record(kind, **fields)
+            if kind == "READY":
+                writer.close()
+
+        monkeypatch.setattr(remote_helper, "emit", emit)
+    write_start(writer, RemoteProcess((sys.executable, "-c", "import signal;signal.pause()")), ())
+    _run_terminated(session, fails=True)
+    snapshot = _terminal_event(events)
+    detail = snapshot.outcome.primary_failure
+    assert detail is not None
+    assert detail.diagnostics[1].diagnostics[0].diagnostics[0].message == "nested retained note"
+    assert detail.diagnostics[-1].message == "outer retained note"
+    assert children[0].process.returncode is not None
+    assert children[0].process.stdout.closed and children[0].process.stderr.closed
+    assert session.workspace_lock.closed
+    assert snapshot.cleanup.confirmed == (failure == "observer")
+
+
+@pytest.mark.parametrize("final_observation", ("ready", "exit", "timeout"))
+def test_readiness_deadline_processes_final_visible_observation(
+    tmp_path, monkeypatch, control_pipe, final_observation
+):
+    _reader, writer = control_pipe
+    workspace = tmp_path / "workspace"
+    (workspace / "staged").mkdir(parents=True)
+    lock = (workspace / remote_helper.SESSION_LOCK).open("w+b")
+    session = remote_helper.ControlSession("session", workspace, lock)
+    children = []
+    events = []
+    original_spawn = remote_helper._spawn_child
+    original_read = remote_helper.os.read
+    original_sleep = remote_helper.asyncio.sleep
+    output_blocked = True
+
+    def spawn(*args, **kwargs):
+        child = original_spawn(*args, **kwargs)
+        children.append(child)
+        return child
+
+    def controlled_read(descriptor, size):
+        if output_blocked and children and descriptor == children[0].process.stdout.fileno():
+            raise BlockingIOError
+        return original_read(descriptor, size)
+
+    async def controlled_sleep(delay):
+        nonlocal output_blocked
+        if delay == 30:
+            # Observe readiness through a duplicate fd without reading any bytes.
+            descriptor = os.dup(children[0].process.stdout.fileno())
+            try:
+                await remote_helper._readable(descriptor)
+            finally:
+                os.close(descriptor)
+            if final_observation == "exit":
+                child = children[0]
+                descriptor = os.pidfd_open(child.pid)
+                try:
+                    os.kill(child.pid, signal.SIGUSR1)
+                    await remote_helper._readable(descriptor)
+                finally:
+                    os.close(descriptor)
+            # The deadline producer enqueues its fact before yielding again.
+            output_blocked = False
+        else:
+            await original_sleep(delay)
+
+    def emit(kind, **values):
+        events.append((kind, values))
+        if kind == "READY":
+            writer.close()
+
+    monkeypatch.setattr(remote_helper, "_spawn_child", spawn)
+    monkeypatch.setattr(remote_helper.os, "read", controlled_read)
+    monkeypatch.setattr(remote_helper.asyncio, "sleep", controlled_sleep)
+    monkeypatch.setattr(remote_helper, "emit", emit)
+    marker = "diagnostic" if final_observation == "timeout" else "READY"
+    writer.write(
+        _start_session_command(
+            [
+                sys.executable,
+                "-c",
+                "import signal,sys;"
+                "signal.signal(signal.SIGUSR1,lambda *_:sys.exit(7));"
+                f"print({marker!r},flush=True);signal.pause()",
+            ],
+            ("READY",),
+        )
+    )
+
+    _run_terminated(session, fails=final_observation != "ready")
+    snapshot = _terminal_event(events)
+    assert [kind for kind, _ in events].count("READY") == (1 if final_observation == "ready" else 0)
+    assert snapshot.cleanup.confirmed
+    if final_observation == "exit":
+        assert snapshot.outcome.child_result.returncode == SAMPLE_CHILD_EXIT_CODE
+    elif final_observation == "timeout":
+        assert snapshot.outcome.primary_failure.code == "READINESS_TIMEOUT"
+    assert children[0].process.returncode is not None
+    assert not workspace.exists()
+    assert lock.closed
+
+
+@pytest.mark.parametrize("failure_type", (OSError, asyncio.CancelledError))
+@pytest.mark.parametrize("restoration_fails", (False, True))
+def test_partial_signal_installation_restores_handlers_and_preserves_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_type: type[BaseException],
+    restoration_fails: bool,
+) -> None:
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    session = remote_helper.ControlSession.create()
+    failure = failure_type("injected signal installation failure")
+    restoration_failure = OSError("injected signal restoration failure")
+    restoration_detail = "signal restoration retained detail"
+    restoration_failure.add_note(restoration_detail)
+    previous = {signum: signal.getsignal(signum) for signum in (signal.SIGTERM, signal.SIGINT)}
+    original_signal = signal.signal
+    installed: set[int] = set()
+    restored: list[int] = []
+
+    def install_then_fail(signum: int, handler: SignalHandler) -> SignalHandler:
+        result = original_signal(signum, handler)
+        if handler == session.handle_signal:
+            installed.add(signum)
+            if signum == signal.SIGINT:
+                raise failure
+        elif signum in installed:
+            restored.append(signum)
+            installed.remove(signum)
+            if restoration_fails:
+                raise restoration_failure
+        return result
+
+    monkeypatch.setattr(remote_helper.signal, "signal", install_then_fail)
+
+    async def run() -> None:
+        tasks_before = asyncio.all_tasks()
+        output_before = remote_helper._protocol_output.get()
+        with pytest.raises(SystemExit):
+            await session.run_async()
+        assert session.lifecycle.state.snapshot.outcome.primary_failure.message == str(failure)
+        assert asyncio.all_tasks() == tasks_before
+        assert remote_helper._protocol_output.get() is output_before
+
+    try:
+        asyncio.run(run())
+        assert set(restored) == set(previous)
+        assert all(signal.getsignal(signum) == handler for signum, handler in previous.items())
+        if restoration_fails:
+            assert restoration_detail in repr(session.lifecycle.state.local_diagnostics)
+        assert session.workspace_lock.closed
+        assert not session.work.exists()
+    finally:
+        for signum, handler in previous.items():
+            original_signal(signum, handler)
+        session._release_workspace()
+
+
+@pytest.mark.parametrize("failure_type", (OSError, KeyboardInterrupt))
+def test_signal_restoration_attempts_both_handlers_after_normal_exit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    control_pipe: tuple[IO[bytes], IO[bytes]],
+    failure_type: type[BaseException],
+) -> None:
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    session = remote_helper.ControlSession.create()
+    _reader, writer = control_pipe
+    writer.close()
+    previous = {signum: signal.getsignal(signum) for signum in (signal.SIGTERM, signal.SIGINT)}
+    original_signal = signal.signal
+    failures: dict[int, BaseException] = {
+        signum: failure_type(f"restoration failed for {signum}") for signum in previous
+    }
+    installed: set[int] = set()
+    restored: list[int] = []
+
+    def restore_then_fail(signum: int, handler: SignalHandler) -> SignalHandler:
+        result = original_signal(signum, handler)
+        if handler == session.handle_signal:
+            installed.add(signum)
+        elif signum in installed:
+            restored.append(signum)
+            installed.remove(signum)
+            raise failures[signum]
+        return result
+
+    monkeypatch.setattr(remote_helper.signal, "signal", restore_then_fail)
+    try:
+        with pytest.raises(SystemExit):
+            session.run()
+        assert set(restored) == set(previous)
+        assert len(session.lifecycle.state.local_diagnostics) == 2
+        assert session.lifecycle.state.snapshot.outcome.primary_failure is None
+        assert all(signal.getsignal(signum) == handler for signum, handler in previous.items())
+        assert session.workspace_lock.closed
+        assert not session.work.exists()
+    finally:
+        for signum, handler in previous.items():
+            original_signal(signum, handler)
+        session._release_workspace()
+
+
+@pytest.mark.parametrize("primary_type", (None, OSError, asyncio.CancelledError))
+@pytest.mark.parametrize("close_type", (OSError, KeyboardInterrupt))
+def test_protocol_writer_and_close_failures_preserve_primary_exception(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    control_pipe: tuple[IO[bytes], IO[bytes]],
+    primary_type: type[BaseException] | None,
+    close_type: type[BaseException],
+) -> None:
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    session = remote_helper.ControlSession.create()
+    _control_reader, control_writer = control_pipe
+    control_writer.close()
+    primary = primary_type("injected session setup failure") if primary_type is not None else None
+    writer_failure = BrokenPipeError("injected protocol write failure")
+    close_failure = close_type("injected protocol descriptor restoration failure")
+    close_detail = "protocol descriptor cleanup retained detail"
+    close_failure.add_note(close_detail)
+    original_signal = signal.signal
+    original_write = os.write
+    original_set_blocking = os.set_blocking
+    previous = {signum: signal.getsignal(signum) for signum in (signal.SIGTERM, signal.SIGINT)}
+    output_read, output_write = os.pipe()
+    close_attempts: list[int] = []
+
+    def install_then_fail(signum: int, handler: SignalHandler) -> SignalHandler:
+        result = original_signal(signum, handler)
+        if signum == signal.SIGINT and handler == session.handle_signal and primary is not None:
+            raise primary
+        return result
+
+    def fail_write(descriptor: int, payload: Buffer) -> int:
+        if descriptor == output_write:
+            raise writer_failure
+        return original_write(descriptor, payload)
+
+    def restore_then_fail(descriptor: int, blocking: bool) -> None:
+        original_set_blocking(descriptor, blocking)
+        if descriptor == output_write and blocking:
+            close_attempts.append(descriptor)
+            raise close_failure
+
+    async def run() -> None:
+        tasks_before = asyncio.all_tasks()
+        output_before = remote_helper._protocol_output.get()
+        with pytest.raises(SystemExit):
+            await session.run_async()
+        state = session.lifecycle.state
+        assert isinstance(state, Closed)
+        assert close_detail in repr(state.local_diagnostics)
+        all_detail = repr(state.snapshot.outcome) + repr(state.local_diagnostics)
+        assert str(writer_failure) in all_detail
+        if primary is not None:
+            assert state.snapshot.outcome.primary_failure is not None
+            assert state.snapshot.outcome.primary_failure.message == str(primary)
+        assert asyncio.all_tasks() == tasks_before
+        assert remote_helper._protocol_output.get() is output_before
+
+    try:
+        with (
+            os.fdopen(output_read, "rb"),
+            os.fdopen(output_write, "w", encoding="utf-8") as stdout,
+            monkeypatch.context() as patch,
+        ):
+            patch.setattr(remote_helper.sys, "stdout", stdout)
+            patch.setattr(remote_helper.signal, "signal", install_then_fail)
+            patch.setattr(remote_helper.os, "write", fail_write)
+            patch.setattr(remote_helper.os, "set_blocking", restore_then_fail)
+            asyncio.run(run())
+            assert os.get_blocking(output_write)
+        assert close_attempts == [output_write]
+        assert all(signal.getsignal(signum) == handler for signum, handler in previous.items())
+        assert session.workspace_lock.closed
+        assert not session.work.exists()
+    finally:
+        for signum, handler in previous.items():
+            original_signal(signum, handler)
+        session._release_workspace()
+
+
+@pytest.mark.parametrize("cleanup_failure", ("group", "lease"))
+def test_unconfirmed_disposal_retains_inputs_but_settles_independent_owners(
+    coordinated_helper, monkeypatch, cleanup_failure
+):
+    session, writer, events, children = coordinated_helper
+    record = remote_helper.emit
+    terminate = remote_helper.SupervisedChild.terminate
+    lease = None
+
+    async def uncertain(child):
+        await terminate(child)
+        child.group_disposed = False
+        raise OSError("group disposal could not be established")
+
+    class UnconfirmedLease:
+        def close(self):
+            raise OSError("address lease close failed")
+
+    def emit(kind, **fields):
+        nonlocal lease
+        record(kind, **fields)
+        if kind == "READY":
+            if cleanup_failure == "lease":
+                lease = session._address_lease
+                monkeypatch.setattr(session, "_address_lease", UnconfirmedLease())
+            writer.close()
+
+    monkeypatch.setattr(remote_helper, "emit", emit)
+    if cleanup_failure == "group":
+        monkeypatch.setattr(remote_helper.SupervisedChild, "terminate", uncertain)
+    write_start(writer, RemoteProcess((sys.executable, "-c", "import signal;signal.pause()")), ())
+    try:
+        _run_terminated(session, fails=True)
+        snapshot = _terminal_event(events)
+        assert not snapshot.cleanup.confirmed
+        assert (
+            "child_group" if cleanup_failure == "group" else "address_lease"
+        ) in snapshot.cleanup.residual_resources
+        assert "workspace" in snapshot.cleanup.residual_resources
+        assert "child_relays" not in snapshot.cleanup.residual_resources
+        assert session.work.is_dir()
+        assert (session.work / remote_helper.UNCONFIRMED_CHILD).is_file()
+        assert session.workspace_lock.closed
+        assert children[0].process.returncode is not None
+        assert children[0].process.stdout.closed and children[0].process.stderr.closed
+    finally:
+        if lease is not None:
+            lease.close()
+
+
+def test_native_signal_after_frozen_result_fails_without_second_terminal(
+    tmp_path, monkeypatch, control_pipe
+):
+    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
+    _, writer = control_pipe
+    writer.close()
+    run = remote_helper.ControlSession.run
+    emit = remote_helper.emit
+    events = []
+
+    def run_then_signal(session):
+        run(session)
+        # The allocation wrapper still owns the native handlers at this point.
+        signal.raise_signal(signal.SIGTERM)
+
+    def record(kind, **fields):
+        events.append((kind, fields))
+        emit(kind, **fields)
+
+    monkeypatch.setattr(remote_helper.ControlSession, "run", run_then_signal)
+    monkeypatch.setattr(remote_helper, "emit", record)
+    with pytest.raises(SystemExit) as raised:
+        remote_helper.control()
+    assert raised.value.code == 1
+    snapshot = _terminal_event(events)
+    assert snapshot.outcome.trigger == Trigger.CONTROLLER_EOF
+    assert snapshot.outcome.primary_failure is None
+    assert snapshot.cleanup.confirmed
+    assert not any(tmp_path.iterdir())
+
+
+def test_terminal_partial_write_failure_does_not_replay_frozen_snapshot(
+    tmp_path, monkeypatch, control_pipe
+):
+    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
+    session = remote_helper.ControlSession.create()
+    _, writer = control_pipe
+    writer.close()
+    read_fd, write_fd = os.pipe()
+    write = os.write
+    emit = remote_helper.emit
+    terminals = []
+    partial = False
+
+    def fail_after_prefix(descriptor, payload):
+        nonlocal partial
+        if descriptor == write_fd:
+            if partial:
+                raise BrokenPipeError("terminal prefix already delivered")
+            if bytes(payload).startswith(b'{"child_result"'):
+                partial = True
+                return write(descriptor, payload[:5])
+        return write(descriptor, payload)
+
+    def record(kind, **fields):
+        if kind == "SESSION_ENDED":
+            terminals.append(fields)
+        emit(kind, **fields)
+
+    with os.fdopen(read_fd, "rb"), os.fdopen(write_fd, "w", encoding="utf-8") as stdout:
+        monkeypatch.setattr(remote_helper.sys, "stdout", stdout)
+        monkeypatch.setattr(remote_helper.os, "write", fail_after_prefix)
+        monkeypatch.setattr(remote_helper, "emit", record)
+        _run_terminated(session, fails=True)
+    assert partial
+    assert len(terminals) == 1
+    assert session.lifecycle.state.snapshot.cleanup.confirmed
+    assert session.lifecycle.state.local_diagnostics
+    assert session.workspace_lock.closed and not session.work.exists()
 
 
 def test_workspace_cleanup_timeout_closes_admission_without_removing_live_stage(
@@ -3162,46 +2119,26 @@ def test_metadata_removal_failure_fails_session_and_is_reclaimed_later(
         return original_unlink(path, *args, **kwargs)
 
     _reader, writer = control_pipe
-    writer.write(b'{"version":1,"type":"STOP"}\n')
+    writer.close()
     with monkeypatch.context() as patch:
         patch.setattr(path_type, "unlink", fail_metadata_removal)
-        with pytest.raises(PermissionError):
+        with pytest.raises(SystemExit):
             session.run()
 
     assert not workspace.exists()
     assert owner_lock.closed
     assert set(tmp_path.iterdir()) == metadata
     events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
-    assert events[-1]["type"] == "ERROR"
-    assert not any(event["type"] == "SESSION_CLOSED" for event in events)
+    assert events[-1]["type"] == "SESSION_ENDED"
+    snapshot = decode_terminal(events[-1])
+    assert snapshot.cleanup.residual_resources == ("workspace_metadata",)
+    assert snapshot.outcome.primary_failure is not None
+    assert all(suffix in repr(snapshot.outcome) for suffix in failed_suffixes)
 
     for path in metadata:
         os.utime(path, (1.0, 1.0))
     remote_helper.reclaim_stale_workspaces(tmp_path, now=remote_helper.STALE_SESSION_AGE + 2)
     assert tuple(tmp_path.iterdir()) == ()
-
-
-@pytest.mark.parametrize("suffix", ("lease", "closed"))
-def test_reclaimer_removes_orphaned_lease_but_preserves_live_workspace(
-    tmp_path, monkeypatch, suffix
-):
-    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
-    _session_id, workspace, owner_lock = remote_helper.new_workspace()
-    try:
-        with remote_helper._stage_lease(workspace):
-            orphan = tmp_path / f".removed.{suffix}"
-            orphan.write_bytes(b"closed")
-            live_lease = remote_helper._lease_path(workspace)
-            for path in (orphan, live_lease):
-                os.utime(path, (1.0, 1.0))
-            remote_helper.reclaim_stale_workspaces(
-                tmp_path, now=remote_helper.STALE_SESSION_AGE + 2
-            )
-            assert not orphan.exists()
-            assert live_lease.exists()
-            assert workspace.is_dir()
-    finally:
-        owner_lock.close()
 
 
 def test_cleanup_closes_admission_without_waiting_for_global_gate(tmp_path, monkeypatch):
@@ -3240,3 +2177,46 @@ def test_cleanup_closes_admission_without_waiting_for_global_gate(tmp_path, monk
             assert not second.exists()
         assert first.is_dir()
     remote_helper.remove_workspace(first)
+
+
+def test_address_lease_retirement_failure_forbids_collision_retry(coordinated_helper, monkeypatch):
+    session, writer, events, children = coordinated_helper
+    record = remote_helper.emit
+    lease = None
+
+    class FailedLease:
+        def close(self):
+            raise OSError("old address lease remains owned")
+
+    def emit(kind, **fields):
+        nonlocal lease
+        record(kind, **fields)
+        if kind == "ATTEMPT":
+            lease = session._address_lease
+            monkeypatch.setattr(session, "_address_lease", FailedLease())
+
+    monkeypatch.setattr(remote_helper, "emit", emit)
+    write_start(
+        writer,
+        RemoteProcess(
+            (
+                sys.executable,
+                "-c",
+                "import sys;print('Address already in use',file=sys.stderr,flush=True);sys.exit(1)",
+            ),
+            required_output_sentinels=("not-ready",),
+        ),
+        (),
+    )
+    try:
+        _run_terminated(session, fails=True)
+        snapshot = _terminal_event(events)
+        assert len(children) == 1
+        assert [fields["generation"] for kind, fields in events if kind == "ATTEMPT"] == [1]
+        assert snapshot.outcome.child_result.generation == 1
+        assert any(detail.code == "STARTUP_EXIT" for detail in snapshot.outcome.diagnostics)
+        assert "address_lease" in snapshot.cleanup.residual_resources
+        assert session.work.is_dir() and session.workspace_lock.closed
+    finally:
+        if lease is not None:
+            lease.close()

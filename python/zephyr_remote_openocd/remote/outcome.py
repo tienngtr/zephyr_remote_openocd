@@ -2,8 +2,8 @@
 
 """Immutable lifecycle results, independent of exceptions and transport status.
 
-These are internal foundations for the controller-lease cutover. Protocol v1
-continues to use its existing result path until client and helper change together.
+The helper freezes these results for Protocol v2; the client preserves the
+child provenance independently of helper and transport status.
 """
 
 from __future__ import annotations

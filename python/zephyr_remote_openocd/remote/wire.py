@@ -89,24 +89,37 @@ def decode_frame(frame: bytes | str) -> dict[str, Any]:
     return value
 
 
+def _check_render_values(value: Any) -> None:
+    """Bound each JSON encoder fragment before rendering a large string."""
+    if isinstance(value, str):
+        if len(value) > MAX_FRAME_SIZE:
+            raise ProtocolError("protocol frame exceeds maximum size")
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            _check_render_values(key)
+            _check_render_values(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _check_render_values(item)
+
+
 def encode_frame(kind: str, **fields: Any) -> bytes:
     if not string(kind, nonempty=True) or {"version", "type"} & fields.keys():
         raise ProtocolError("invalid protocol envelope")
     try:
-        data = (
-            json.dumps(
-                {"version": VERSION, "type": kind, **fields},
-                separators=(",", ":"),
-                sort_keys=True,
-                allow_nan=False,
-            )
-            + "\n"
-        ).encode("utf-8")
+        value = {"version": VERSION, "type": kind, **fields}
+        _check_render_values(value)
+        encoder = json.JSONEncoder(separators=(",", ":"), sort_keys=True, allow_nan=False)
+        data = bytearray()
+        for fragment in encoder.iterencode(value):
+            encoded = fragment.encode("utf-8")
+            if len(data) + len(encoded) + 1 > MAX_FRAME_SIZE:
+                raise ProtocolError("protocol frame exceeds maximum size")
+            data.extend(encoded)
+        data.extend(b"\n")
     except (TypeError, ValueError, RecursionError) as error:
         raise ProtocolError(f"cannot encode protocol frame: {error}") from error
-    if len(data) > MAX_FRAME_SIZE:
-        raise ProtocolError("protocol frame exceeds maximum size")
-    return data
+    return bytes(data)
 
 
 def integer(value: Any, *, low: int | None = None, high: int | None = None) -> bool:

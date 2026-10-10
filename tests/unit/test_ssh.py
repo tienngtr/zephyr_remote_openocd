@@ -27,6 +27,7 @@ from zephyr_remote_openocd.remote.model import (
     RemoteSessionRequest,
     Service,
 )
+from zephyr_remote_openocd.remote.outcome import Trigger
 from zephyr_remote_openocd.remote.protocol import encode_message
 from zephyr_remote_openocd.remote.session import SessionError
 from zephyr_remote_openocd.remote.ssh import (
@@ -34,6 +35,8 @@ from zephyr_remote_openocd.remote.ssh import (
     SshLocalForward,
     _stop_process,
 )
+
+from tests.protocol_support import terminal_message
 
 STREAM_CHILD_EXIT_CODE = 4
 SAMPLE_OPENOCD_EXIT_CODE = 6
@@ -425,11 +428,9 @@ def test_initial_forward_failure_consumes_session_close_event(monkeypatch):
             session_id="session",
             remote_workspace="/workspace",
         )
-        + encode_message("PROCESS_STARTING", argv=["test-process"])
-        + encode_message("PROCESS_READY", remote_address="127.64.0.1", child_pid=1)
-        + encode_message(
-            "SESSION_CLOSED", reason="process_exit", returncode=SAMPLE_OPENOCD_EXIT_CODE
-        )
+        + encode_message("ATTEMPT", generation=1, argv=["test-process"])
+        + encode_message("READY", generation=1, remote_address="127.64.0.1", child_pid=1)
+        + terminal_message(Trigger.CHILD_EXIT, returncode=SAMPLE_OPENOCD_EXIT_CODE)
     )
     helper.returncode = 0
     command = _ForwardCommand(helper)
@@ -450,7 +451,7 @@ def test_initial_forward_failure_consumes_session_close_event(monkeypatch):
 
     def observe_close(helper_client, event):
         dispatch(helper_client, event)
-        if event["type"] == "SESSION_CLOSED":
+        if event["type"] == "SESSION_ENDED":
             close_seen.set()
 
     def fail_forwards(_manager, _services, _address):
@@ -464,7 +465,7 @@ def test_initial_forward_failure_consumes_session_close_event(monkeypatch):
         RemoteSession.open(request)
 
     assert raised.value is forward_error
-    assert not getattr(raised.value, "__notes__", ())
+    assert any("remote process failed" in note for note in raised.value.__notes__)
 
 
 def test_drain_startup_error_is_primary_when_process_cleanup_fails(monkeypatch):

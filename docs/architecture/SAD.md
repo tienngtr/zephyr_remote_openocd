@@ -13,9 +13,9 @@
 
 This document describes the selected architecture for the Zephyr west runner
 for remote OpenOCD. The controller-lease lifecycle and Protocol v2 are the
-redesign target, not yet the deployed helper behavior. Structured remote and
-local lifecycle foundations and physical-owner adaptation are implemented.
-Production remains on Protocol v1 until client/helper cutover;
+deployed client/helper behavior at the Phase 4 checkpoint. Structured remote and
+local lifecycle authorities consume the adapted physical owners. Broader removal
+of obsolete migration machinery remains the following phase;
 existing physical ownership mechanisms described here are retained or adapted,
 not replaced by experimental implementations. The implementation gaps are
 tracked in [verification.md](../traceability/verification.md#controller-lease-migration).
@@ -1292,7 +1292,11 @@ deployment fail; the selected target is never removed. The deployment lock is
 released before the session helper starts. Exact deployment response fields
 remain part of the wire contract defined in [protocol.md](protocol.md).
 
-The v2 namespace is selected at cutover; production still uses `protocol_v1`.
+The cutover selects the separate `protocol_v2` deployment namespace. The
+content-addressed zip application includes the canonical outcome, lifecycle, and
+wire modules, using empty package initializers to retain standard-library-only
+remote execution. Its digest covers every bundled source, with no copied codec
+or lifecycle implementation.
 Client and helper move together, without a dual-protocol runtime or wrapper
 fallback. The YAML schema, configured argv, staging archive, and path-template
 contracts remain unchanged. A version bump records an incompatible wire change,
@@ -1534,9 +1538,10 @@ classification and separate producer/resource settlement facts. Termination
 prevents further entry or activation, including after a late acquisition result.
 Closure freezes one snapshot; later failures remain local diagnostics.
 
-This authority is not yet wired into the deployed helper. Protocol v1's current
-authority and fences remain the only remote runtime authority until adaptation
-and cutover. Physical adapters must validate eligibility before wire admission,
+The deployed helper's coordinator uses this authority for START, attempt entry,
+adoption, marker evidence, readiness, observed exit, retry, termination, and freeze.
+Its observers report immutable facts; physical cleanup facts stay with their
+owners. Physical adapters must validate eligibility before wire admission,
 retain immediate acquisition ownership, and establish the facts passed into the
 foundation. Boolean admission/liveness/settlement facts are not physical effects
 or proof of adapter correctness. No new effect queue or controller-recognition
@@ -1547,9 +1552,10 @@ provides immutable diagnostics, child results, outcomes, disposal reports, and
 terminal snapshots. Existing exception notes can be captured at a boundary as
 nested diagnostic values without mutating the source exception. The first
 failure stays primary and subsequent failures retain order and nested detail.
-Independent helper/SSH validation and bounded wire encoding remain cutover work.
-Flash and debug plans now select completion policy explicitly in the internal
-process description; Protocol v1 START serialization is unchanged.
+Independent helper/SSH status validation and bounded wire encoding are integrated.
+Flash and debug plans serialize explicit completion policy in Protocol v2 START.
+Flash starts its event reader immediately without waiting for READY; its genuine
+child exit is the operation result. Live operations wait for current READY.
 
 One remote coordinator decides lifecycle transitions. Control-input, stream,
 child-exit, deadline, writer, and signal adapters report facts; none independently
@@ -1703,7 +1709,8 @@ observation bound, not a timeout or a new product setting. Decoding and ordered
 publication remain on the normal observation path. The coordinator continues
 dispatching while checkpoint facts are published, then performs its existing
 child-status and retained-evidence decision. Reader cancellation or close still
-settles the checkpoint. The Protocol v1 control fence remains in place.
+settles the checkpoint. At cutover, readiness scans only child streams; controller
+input has no recognition fence or checkpoint acknowledgement.
 
 ### 38.5 Output and outcome ownership
 
@@ -1725,8 +1732,9 @@ signal scope owns both installed handlers and a plain first-signal latch;
 handlers report facts without deciding transitions or mutating asyncio queues.
 Signal-handler, descriptor, workspace, and allocation rollback cleanup continues
 across `BaseException` failures while preserving the primary outcome and nested
-secondary notes on the current Protocol v1 boundary. Failed retirement of an
-address lease prevents a replacement spawn and leaves its cleanup owner reachable.
+secondary diagnostics on the structured Protocol v2 boundary. Failed retirement
+of an address lease prevents a replacement spawn and leaves its cleanup owner
+reachable.
 Address allocation likewise retains its reservation until all temporary TCP
 probes have closed and the return value can adopt it. A probe finalizer or return
 construction failure attempts every independent socket release and prevents
@@ -1773,8 +1781,8 @@ sending `SIGKILL`. Failure or a race during this best-effort diagnostic does
 not affect the group cleanup decision or success criterion; complete `/proc`
 enumeration is not required.
 
-Phase 3 adapts the current standalone helper's physical boundaries while its
-Protocol v1 coordinator remains the runtime authority. A generation-scoped
+Phase 3 adapted the standalone helper's physical boundaries; Phase 4 connects
+those owners to the canonical remote lifecycle authority. A generation-scoped
 acquisition ticket is reachable before `Popen`, retains the raw process through
 supervisor construction, and retains the supervisor through coordinator
 adoption. Both construction rollback and an interrupted return use this same
@@ -1784,7 +1792,8 @@ Native handlers latch facts throughout those synchronous effects.
 Physical settlement records producer return, verified group disappearance,
 joined observers, and closed pipes separately. Finishing a cleanup coroutine
 does not confirm disposal. Retry requires all those facts as well as the
-existing classification and Protocol v1 control fence. Before cleanup signalling,
+classified bind failure and the canonical lifecycle settlement transition. Before
+cleanup signalling,
 the process owner observes genuine leader status without reaping its identity;
 delivered termination is recorded independently from that result. Group signals,
 finite escalation, reaping, and disappearance checks retain their existing OS
@@ -1945,24 +1954,26 @@ Standalone staging behavior and protocol framing remain coordinated through
 
 The Phase 2 foundation in
 [`remote/launch.py`](../../python/zephyr_remote_openocd/remote/launch.py) models
-local launch eligibility without integration into the production session.
-It requires observed readiness and phase-specific forwarding, preserves
-cancellation and fatal failure across boundaries, and rejects stale queued
+local launch eligibility. Phase 4 integrates it into the synchronized session
+observations. It requires observed readiness and phase-specific forwarding,
+preserves cancellation and fatal failure across boundaries, and rejects stale queued
 generations. Its pure tests establish these transition semantics.
 
-Integration awaits the later client/session adaptation. The Protocol v1 helper
+At cutover, the shared session observations lock serializes recorded terminal and
+reader failure facts with cancellation and actual launch entry. The helper
 reader can record a fatal fact after a session check returns but before gate
 entry. Checking the helper and then entering an independent gate does not
 account for that already-recorded fact at actual execution entry. The adapted
-coordinator must give fatal observations and launch eligibility a shared
-authority boundary before this gate can protect production launch. A test that
+coordinator therefore records both through the same session lock
+before committing execution entry. A test that
 synchronously closes the session during observation only tests direct gate
 cancellation; it does not qualify that concurrent reader boundary.
 
-Current GDB/RTT entry retains its existing Protocol v1 session checks and uses
+GDB/RTT entry checks helper and forwarding health, then commits eligibility under
+that shared authority before its immediate synchronous launch callback. It uses
 Zephyr's `run_client`, including native interactive SIGINT handling. Cleanup
-ownership, the SIGINT-masked cleanup scope, and the STOP path remain unchanged.
-The following local lifecycle describes the redesign target.
+ownership and the SIGINT-masked cleanup scope remain in place. Controller input
+EOF replaces STOP. The following local lifecycle describes the deployed design.
 
 The local operation alone owns dependent launch eligibility. Its conceptual
 phases are Opening, Active, Cancelling, and Ended. These roles apply to each
@@ -2399,9 +2410,28 @@ implementation template. In particular, it does not authorize copying pidfd,
 `/proc`, or subreaper machinery beyond existing qualified process ownership.
 The [migration traceability](../traceability/verification.md#controller-lease-migration)
 records intentional differences and unimplemented acceptance obligations.
-The physical-boundary checkpoint follows the structured foundations. The current
-Protocol v1 coordinator consumes the adapted physical owners; foundation and
-physical-boundary tests do not establish Protocol v2 acceptance. Client/session
-authority integration, the coordinated wire/controller-lease cutover, and removal
-of Protocol v1-only machinery remain later work. No protocol cutover has occurred
-at this checkpoint.
+The Phase 4 checkpoint deploys the client/helper cutover together. The local
+session authority gates public GDB and RTT launch; controller stdin lifetime
+replaces STOP, and one structured terminal snapshot replaces split terminal
+reconstruction. The remote coordinator accounts already-recorded observer and
+signal failures before publication and retry without restoring controller-prefix
+precedence. Retired generations remain diagnostic output only.
+
+The bounded writer retains its existing 16-MiB queue and partial-write ownership.
+Each direction now uses the canonical one-MiB frame codec; incremental rendering
+rejects excessive output before accumulating an unbounded encoded frame. Terminal
+delivery receives a finite drain opportunity after physical cleanup, and delivery
+failure records local diagnostics and nonzero helper status without another freeze.
+
+Local shutdown cancels launch first, half-closes stdin, retains the event reader
+through a 15-second coordination window, then applies the existing bounded cleanup
+of the owned SSH transport and reader. Missing or malformed terminal information
+and independent nonzero helper/SSH status remain failures. The shared connection
+master is externally owned and is never a cleanup target. Native helper signals
+are failures, including signals after freeze; child disposal signals retain their
+separate result provenance.
+
+Broader removal of unused migration definitions is deferred to Phase 5. Tests
+whose old STOP ordering was intentionally removed are adapted or replaced at the
+cutover boundary; physical ownership, final observation, output, workspace,
+forwarding, and GDB interaction remain required regression evidence.

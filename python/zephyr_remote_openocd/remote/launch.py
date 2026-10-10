@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Pure local launch foundation for the later client/session adaptation.
+"""Pure local launch eligibility for the controller-lease client.
 
 The coordinator must account for recorded fatal observations at execution
-entry through the same authority boundary. This gate has no synchronization
-with the Protocol v1 reader and is not integrated into the current session.
+entry through the same authority boundary. The session observations serialize
+reader facts and execution entry through one shared authority; this pure gate
+itself owns no synchronization.
 """
 
 from collections.abc import Iterable

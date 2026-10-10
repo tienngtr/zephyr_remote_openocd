@@ -4,23 +4,20 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Iterable
 from pathlib import PurePosixPath
 from typing import Any, BinaryIO
 
 from .model import RemoteProcess, Service
 from .services import validate_preferred_address
+from .wire import EventOrder as EventOrder  # pylint: disable=useless-import-alias
+from .wire import ProtocolError, decode_frame, encode_frame, validate_event
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 # The deployed helper is self-contained; keep its matching bound in sync.
 MAX_CONTROL_FRAME_SIZE = 1024 * 1024
 SHA256_HEX_DIGEST_LENGTH = 64
 _ENVELOPE_FIELDS = frozenset(("version", "type"))
-
-
-class ProtocolError(RuntimeError):
-    pass
 
 
 def is_protocol_version(value: Any) -> bool:
@@ -28,54 +25,19 @@ def is_protocol_version(value: Any) -> bool:
 
 
 def encode_message(message_type: str, **fields: Any) -> bytes:
-    if not message_type or not isinstance(message_type, str):
-        raise ProtocolError("message type must be a non-empty string")
-    if _ENVELOPE_FIELDS & fields.keys():
-        raise ProtocolError("protocol fields must not override version or type")
-    message = {"version": PROTOCOL_VERSION, "type": message_type, **fields}
-    return (json.dumps(message, separators=(",", ":"), sort_keys=True) + "\n").encode("utf-8")
+    return encode_frame(message_type, **fields)
 
 
 def decode_message(line: bytes | str) -> dict[str, Any]:
-    try:
-        text = line.decode("utf-8") if isinstance(line, bytes) else line
-        value = json.loads(text)
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise ProtocolError(f"malformed protocol message: {error}") from error
-    return _validate_message(value)
+    return decode_frame(line)
 
 
 def decode_single_frame(frame: bytes | str) -> dict[str, Any]:
-    """Decode exactly one JSON object followed by one LF, with no extra data."""
-    try:
-        text = frame.decode("utf-8") if isinstance(frame, bytes) else frame
-    except UnicodeDecodeError as error:
-        raise ProtocolError(f"malformed protocol message: {error}") from error
-    if not text.endswith("\n") or text.count("\n") != 1:
-        raise ProtocolError("protocol response must contain exactly one LF-terminated frame")
-
-    body = text[:-1]
-    try:
-        value = json.loads(body)
-    except json.JSONDecodeError as error:
-        raise ProtocolError(f"malformed protocol message: {error}") from error
-    return _validate_message(value)
-
-
-def _validate_message(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise ProtocolError("protocol message must be an object")
-    if not is_protocol_version(value.get("version")):
-        raise ProtocolError(
-            f"incompatible protocol version {value.get('version')!r}; expected {PROTOCOL_VERSION}"
-        )
-    if not isinstance(value.get("type"), str) or not value["type"]:
-        raise ProtocolError("protocol message has no valid type")
-    return value
+    return decode_frame(frame)
 
 
 def read_message(stream: BinaryIO) -> dict[str, Any]:
-    line = stream.readline()
+    line = stream.readline(MAX_CONTROL_FRAME_SIZE + 1)
     if not line:
         raise EOFError("helper control channel closed")
     return decode_single_frame(line)
@@ -104,6 +66,7 @@ def write_start(
     _write_frame(
         stream,
         "START",
+        completion_policy=process.completion_policy.value,
         preferred_address=preferred_address,
         argv=list(process.argv),
         environment=dict(process.environment),
@@ -129,12 +92,6 @@ def write_start(
     )
 
 
-def write_stop(stream: BinaryIO) -> None:
-    """Serialize the parameterless session STOP command."""
-
-    _write_frame(stream, "STOP")
-
-
 def _non_empty_string(value: Any) -> bool:
     return isinstance(value, str) and bool(value)
 
@@ -148,94 +105,18 @@ _OPENOCD_VERSION_FIELDS = frozenset(("output",))
 _DEPLOYMENT_FIELDS = frozenset(("status", "path", "sha256"))
 
 
-def _valid_session_created(message: dict[str, Any]) -> bool:
-    return (
-        _non_empty_string(message.get("helper"))
-        and _non_empty_string(message.get("session_id"))
-        and _non_empty_string(message.get("remote_workspace"))
-    )
-
-
-def _valid_process_ready(message: dict[str, Any]) -> bool:
-    child_pid = message.get("child_pid")
-    return (
-        _non_empty_string(message.get("remote_address"))
-        and isinstance(child_pid, int)
-        and not isinstance(child_pid, bool)
-        and child_pid > 0
-    )
-
-
-def _valid_process_starting(message: dict[str, Any]) -> bool:
-    argv = message.get("argv")
-    return (
-        isinstance(argv, list)
-        and bool(argv)
-        and _non_empty_string(argv[0])
-        and all(isinstance(arg, str) for arg in argv[1:])
-    )
-
-
-def _valid_child_output(message: dict[str, Any]) -> bool:
-    payload = message.get("payload")
-    line_end = message.get("line_end")
-    return (
-        message.get("stream") in {"stdout", "stderr"}
-        and isinstance(payload, str)
-        and "\n" not in payload
-        and isinstance(line_end, bool)
-        and (payload != "" or line_end)
-    )
-
-
-def _valid_session_closed(message: dict[str, Any]) -> bool:
-    reason = message.get("reason")
-    return reason in {"requested", "process_exit"} and (
-        (reason == "requested" and message.get("returncode") is None)
-        or (
-            reason == "process_exit"
-            and isinstance(message.get("returncode"), int)
-            and not isinstance(message.get("returncode"), bool)
-        )
-    )
-
-
-def _valid_error(message: dict[str, Any]) -> bool:
-    return _non_empty_string(message.get("code")) and isinstance(message.get("message"), str)
-
-
-_EVENT_FIELDS = {
-    "SESSION_CREATED": frozenset(("helper", "session_id", "remote_workspace")),
-    "PROCESS_STARTING": frozenset(("argv",)),
-    "PROCESS_READY": frozenset(("remote_address", "child_pid")),
-    "CHILD_OUTPUT": frozenset(("stream", "payload", "line_end")),
-    "SESSION_CLOSED": frozenset(("reason", "returncode")),
-    "ERROR": frozenset(("code", "message")),
-}
-_EVENT_VALIDATORS = {
-    "SESSION_CREATED": _valid_session_created,
-    "PROCESS_STARTING": _valid_process_starting,
-    "PROCESS_READY": _valid_process_ready,
-    "CHILD_OUTPUT": _valid_child_output,
-    "SESSION_CLOSED": _valid_session_closed,
-    "ERROR": _valid_error,
-}
-
-
 def validate_helper_event(message: dict[str, Any]) -> None:
-    """Validate one event in the current session helper contract."""
+    validate_event(message)
 
-    if not isinstance(message, dict):
-        raise ProtocolError("invalid helper event fields")
-    kind = message.get("type")
-    if not isinstance(kind, str):
-        raise ProtocolError("invalid helper event fields")
-    fields = _EVENT_FIELDS.get(kind)
-    validator = _EVENT_VALIDATORS.get(kind)
-    if fields is None or validator is None or not _has_exact_fields(message, fields):
-        raise ProtocolError("invalid helper event fields")
-    if not validator(message):
-        raise ProtocolError(f"invalid required fields for {kind}")
+
+def validate_error_response(message: dict[str, Any]) -> None:
+    if (
+        not _has_exact_fields(message, frozenset(("code", "message")))
+        or message.get("type") != "ERROR"
+        or not _non_empty_string(message.get("code"))
+        or not isinstance(message.get("message"), str)
+    ):
+        raise ProtocolError("invalid standalone error response")
 
 
 def validate_staged_response(message: dict[str, Any]) -> None:
@@ -306,37 +187,3 @@ def validate_deployment_response(message: dict[str, Any]) -> None:
         or not _sha256(message.get("sha256"))
     ):
         raise ProtocolError("invalid deployment response")
-
-
-class EventOrder:
-    """Validate the session helper event lifecycle."""
-
-    def __init__(self) -> None:
-        self._state = "new"
-
-    def accept(self, message: dict[str, Any]) -> None:
-        validate_helper_event(message)
-        kind = message["type"]
-        if kind not in _EVENT_TRANSITIONS[self._state]:
-            raise ProtocolError(f"unexpected {kind} event in {self._state} state")
-        if kind != "CHILD_OUTPUT":
-            self._state = _EVENT_NEXT_STATE[kind]
-
-
-_EVENT_TRANSITIONS = {
-    "new": frozenset(("SESSION_CREATED", "ERROR")),
-    "created": frozenset(("PROCESS_STARTING", "SESSION_CLOSED", "ERROR")),
-    "starting": frozenset(
-        ("PROCESS_STARTING", "PROCESS_READY", "CHILD_OUTPUT", "SESSION_CLOSED", "ERROR")
-    ),
-    "active": frozenset(("CHILD_OUTPUT", "SESSION_CLOSED", "ERROR")),
-    "closed": frozenset(),
-}
-
-_EVENT_NEXT_STATE = {
-    "SESSION_CREATED": "created",
-    "PROCESS_STARTING": "starting",
-    "PROCESS_READY": "active",
-    "SESSION_CLOSED": "closed",
-    "ERROR": "closed",
-}

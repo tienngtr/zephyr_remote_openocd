@@ -31,7 +31,7 @@ remote_command = sys.argv[-1]
 if remote_command.endswith(" control"):
     noisy_stderr(b"control-tail")
     print(json.dumps({
-        "version": 1,
+        "version": 2,
         "type": "SESSION_CREATED",
         "helper": "fake",
         "session_id": "session",
@@ -41,24 +41,20 @@ if remote_command.endswith(" control"):
         message = json.loads(line)
         if message["type"] == "START":
             print(json.dumps({
-                "version": 1,
-                "type": "PROCESS_STARTING",
+                "version": 2,
+                "type": "ATTEMPT", "generation": 1,
                 "argv": ["test-process"],
             }), flush=True)
             print(json.dumps({
-                "version": 1,
-                "type": "PROCESS_READY",
+                "version": 2,
+                "type": "READY", "generation": 1,
                 "remote_address": "127.64.0.1",
                 "child_pid": 1,
             }), flush=True)
-        elif message["type"] == "STOP":
-            print(json.dumps({
-                "version": 1,
-                "type": "SESSION_CLOSED",
-                "reason": "requested",
-                "returncode": None,
-            }), flush=True)
-            break
+    print(json.dumps(dict(version=2, type="SESSION_ENDED", trigger="controller_eof",
+        primary_failure=None, diagnostics=[], child_result=None,
+        cleanup=dict(child_disposal="not_acquired", workspace_disposal="confirmed",
+                     residual_resources=[]))), flush=True)
 elif remote_command.startswith("python3 -c "):
     noisy_stderr(b"forward-tail")
     sentinel = re.search(r"ZRO_FORWARD_[0-9a-f]+", remote_command).group(0)

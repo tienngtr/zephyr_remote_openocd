@@ -154,11 +154,11 @@ def test_terminal_cannot_claim_no_child_after_observed_exit() -> None:
         TerminalSnapshot(outcome, CleanupReport("not_acquired", "confirmed"))
 
 
-def test_internal_completion_policy_does_not_change_protocol_v1() -> None:
+def test_completion_policy_is_explicit_in_protocol_v2() -> None:
     frames = []
     for policy in CompletionPolicy:
         process = RemoteProcess(("openocd",), completion_policy=policy)
         stream = io.BytesIO()
         write_start(stream, process, ())
         frames.append(stream.getvalue())
-    assert frames[0] == frames[1]
+    assert frames[0] != frames[1]

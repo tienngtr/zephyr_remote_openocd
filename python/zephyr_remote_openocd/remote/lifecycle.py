@@ -5,8 +5,8 @@
 The coordinator alone calls transitions. Physical adapters retain their own
 resources and report facts: these records neither acquire nor dispose resources.
 Admission, live-child checks, and settlement arguments attest completed adapter
-work, not requests to perform it. Wiring those boundaries is a later phase;
-the Protocol v1 helper continues to use its existing authority meanwhile.
+work, not requests to perform it. The helper coordinator attests these boundaries
+after its physical adapters complete the corresponding work.
 """
 
 from __future__ import annotations
