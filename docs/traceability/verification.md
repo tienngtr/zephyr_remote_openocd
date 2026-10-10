@@ -8,7 +8,7 @@ been executed recently.
 
 Every SRS requirement is listed in either the baseline coverage matrix or the
 [controller-lease migration](#controller-lease-migration) matrix. At this
-structured-foundation checkpoint, production still implements Protocol v1. Baseline
+physical-boundary checkpoint, production still implements Protocol v1. Baseline
 coverage below describes that implementation, not conformance to revised
 lifecycle clauses. Migration status supersedes baseline status for those clauses;
 passing existing tests does not qualify Protocol v2. **Documented** records
@@ -137,9 +137,9 @@ there is no maintained attach-RTT hardware profile yet.
 The SRS, SAD, and [Protocol v2](../architecture/protocol.md) define the selected
 target. Phase 1 revised those contracts together. Phase 2 adds structured
 foundations without integrating the remote authority or local launch gate into
-the current runtime. Client/session authority adaptation, remote physical
-adaptation, and v2 acceptance remain pending subsequent
-checkpoints.
+the current runtime. Phase 3 adapts physical ownership and observation beneath
+the current Protocol v1 authority. Client/session authority adaptation and v2
+acceptance remain pending subsequent checkpoints.
 Existing v1 tests stay in place while production needs their current safeguards.
 
 ### Structured-foundation evidence
@@ -158,6 +158,24 @@ physical and wire boundaries are exercised after integration.
 These foundations acquire no physical resources. Existing helper, process,
 forwarding, RTT, staging, and workspace owners remain in place. Foundation
 settlement facts do not claim that cancellation or timeout disposed a resource.
+
+### Physical-boundary evidence
+
+Phase 3 retains Protocol v1 framing, STOP, result interpretation, control fences,
+and reader-recognition protections. The standalone helper's physical interfaces
+are adapted for later authority cutover; this evidence does not qualify v2.
+
+| Boundary | Maintained evidence | Remaining integration |
+| --- | --- | --- |
+| Acquisition and adoption | `test_spawn_return_interruption_keeps_child_reachable_for_cleanup`, `test_spawn_child_rolls_back_process_when_ownership_wrapper_fails`, and `test_unconfirmed_spawn_rollback_retains_workspace_without_supervisor` in [`test_remote_helper.py`](../../tests/unit/test_remote_helper.py) use actual subprocesses and failure injection before/after ownership handoff. | Map generation-scoped physical acquisition and producer facts into the new authority at cutover. |
+| Group ownership and provenance | Existing descendant, signal-error, reaping, and disappearance tests retain the qualified process-group machinery. Genuine leader status and delivered termination are recorded separately; disposal requires observed group disappearance, joined observers, and closed pipes. | Convert these physical facts into structured child results and cleanup reports. |
+| Final reader observation | `test_final_reader_scan_consumes_available_prefix_with_finite_budget` covers both finite prefixes and continuous arrivals on the real raw-reader path. Existing readiness-deadline cases cover markers, exit, and timeout at the coordinator. | Retain these boundaries when replacing v1 lifecycle/readiness decisions. |
+| Output and signal scopes | Nonblocking acquisition rollback and interrupted writer-close tests cover partial adoption and independent buffer release. Existing blocked-output and capacity tests cover bounded writer behavior. Native-signal and interrupted handler-restoration cases preserve fact capture and independent cleanup. | Structured writer/signal outcome handling and v2 terminal uniqueness. |
+| Workspace and reservations | Early staging-closure, active-upload exclusion, allocation/adoption rollback, unconfirmed-disposal retention, stale-reclamation exclusion, and failed address-lease retirement regressions protect dependency and retry safety. | Encode residual responsibility on the terminal wire; required disposal still cannot be inferred from helper or SSH exit. |
+
+Forwarding and RTT retain their separate existing owners and pending-resource
+rollback paths. No experimental physical implementation is copied, and no local
+launch-gate or Protocol v2 integration is claimed at this checkpoint.
 
 The review evidence is the immutable
 [requirements audit](https://github.com/tienngtr/zephyr_remote_openocd/blob/a24823ed44a25be326b4899b441b8f4ae2120d3f/experiments/lifecycle/controller_lease_runtime/REQUIREMENTS_AUDIT.md)

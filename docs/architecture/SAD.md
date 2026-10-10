@@ -13,9 +13,9 @@
 
 This document describes the selected architecture for the Zephyr west runner
 for remote OpenOCD. The controller-lease lifecycle and Protocol v2 are the
-redesign target, not yet the deployed helper behavior. Phase 2 introduces
-structured remote and local lifecycle foundations. Production remains on Protocol
-v1 until client/helper cutover;
+redesign target, not yet the deployed helper behavior. Structured remote and
+local lifecycle foundations and physical-owner adaptation are implemented.
+Production remains on Protocol v1 until client/helper cutover;
 existing physical ownership mechanisms described here are retained or adapted,
 not replaced by experimental implementations. The implementation gaps are
 tracked in [verification.md](../traceability/verification.md#controller-lease-migration).
@@ -1706,6 +1706,17 @@ congested or failed output path, so reservation would not establish another
 required guarantee. This choice preserves bounded memory and cleanup progress;
 it must be qualified with actual blocked-pipe and capacity-failure regressions.
 
+Phase 3 retains that writer topology and capacity. Reader and writer descriptor
+mode acquisition now rolls back an effect that succeeds before constructor
+adoption fails, preserving the initiating exception and rollback detail. Writer
+close releases retained frames independently of mode-restoration failure. The
+signal scope owns both installed handlers and a plain first-signal latch;
+handlers report facts without deciding transitions or mutating asyncio queues.
+Signal-handler, descriptor, workspace, and allocation rollback cleanup continues
+across `BaseException` failures while preserving the primary outcome and nested
+secondary notes on the current Protocol v1 boundary. Failed retirement of an
+address lease prevents a replacement spawn and leaves its cleanup owner reachable.
+
 Bounded accumulation also applies before writer admission: raw-observation queues,
 per-stream decoding/marker capture, and structured diagnostic retention cannot
 hide an unbounded buffer behind the encoded-output limit. Overflow reports
@@ -1767,11 +1778,13 @@ Terminal cleanup publishes staging closure before child settlement. Admitted
 uploads retain their shared lease, so process cleanup can progress independently
 and removal still waits for exclusive workspace access. A conservative
 `.child-disposal-unconfirmed` marker is published before spawn. Verified child
-settlement permits normal workspace removal; otherwise the inputs and marker
+settlement retires the marker before normal workspace removal; otherwise the inputs and marker
 remain, new staging is rejected, independent local descriptors are closed, and
 cleanup fails. Stale reclamation skips marked workspaces even after helper exit
 or the age threshold: neither proves residual child disposal. Removal of such
 retained data requires independently established disposal.
+Once child disposal is confirmed, a staging or filesystem removal failure alone
+does not prevent later stale reclamation under the existing exclusion mechanism.
 
 The helper then attempts to reap the leader with a finite budget. After that
 attempt, it polls group existence with `killpg(pgid, 0)` under a separate
@@ -2364,7 +2377,9 @@ implementation template. In particular, it does not authorize copying pidfd,
 `/proc`, or subreaper machinery beyond existing qualified process ownership.
 The [migration traceability](../traceability/verification.md#controller-lease-migration)
 records intentional differences and unimplemented acceptance obligations.
-The structured-foundation checkpoint precedes physical-boundary adaptation.
-Remote foundation tests validate semantic transitions, not deployed helper
-behavior or Protocol v2 acceptance. No physical-owner adaptation or protocol
-cutover has occurred at this checkpoint.
+The physical-boundary checkpoint follows the structured foundations. The current
+Protocol v1 coordinator consumes the adapted physical owners; foundation and
+physical-boundary tests do not establish Protocol v2 acceptance. Client/session
+authority integration, the coordinated wire/controller-lease cutover, and removal
+of Protocol v1-only machinery remain later work. No protocol cutover has occurred
+at this checkpoint.

@@ -957,10 +957,12 @@ def test_partial_signal_installation_restores_handlers_and_preserves_failure(
         session._release_workspace()
 
 
+@pytest.mark.parametrize("failure_type", (OSError, KeyboardInterrupt))
 def test_signal_restoration_attempts_both_handlers_after_normal_exit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     control_pipe: tuple[IO[bytes], IO[bytes]],
+    failure_type: type[BaseException],
 ) -> None:
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
     session = remote_helper.ControlSession.create()
@@ -968,8 +970,8 @@ def test_signal_restoration_attempts_both_handlers_after_normal_exit(
     writer.write(b'{"version":1,"type":"STOP"}\n')
     previous = {signum: signal.getsignal(signum) for signum in (signal.SIGTERM, signal.SIGINT)}
     original_signal = signal.signal
-    failures: dict[int, OSError] = {
-        signum: OSError(f"restoration failed for {signum}") for signum in previous
+    failures: dict[int, BaseException] = {
+        signum: failure_type(f"restoration failed for {signum}") for signum in previous
     }
     installed: set[int] = set()
     restored: list[int] = []
@@ -986,7 +988,7 @@ def test_signal_restoration_attempts_both_handlers_after_normal_exit(
 
     monkeypatch.setattr(remote_helper.signal, "signal", restore_then_fail)
     try:
-        with pytest.raises(OSError) as raised:
+        with pytest.raises(failure_type) as raised:
             session.run()
         assert set(restored) == set(previous)
         assert raised.value is failures[signal.SIGTERM]
@@ -1001,11 +1003,13 @@ def test_signal_restoration_attempts_both_handlers_after_normal_exit(
 
 
 @pytest.mark.parametrize("primary_type", (None, OSError, asyncio.CancelledError))
+@pytest.mark.parametrize("close_type", (OSError, KeyboardInterrupt))
 def test_protocol_writer_and_close_failures_preserve_primary_exception(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     control_pipe: tuple[IO[bytes], IO[bytes]],
     primary_type: type[BaseException] | None,
+    close_type: type[BaseException],
 ) -> None:
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
     session = remote_helper.ControlSession.create()
@@ -1013,7 +1017,7 @@ def test_protocol_writer_and_close_failures_preserve_primary_exception(
     control_writer.write(b'{"version":1,"type":"STOP"}\n')
     primary = primary_type("injected session setup failure") if primary_type is not None else None
     writer_failure = BrokenPipeError("injected protocol write failure")
-    close_failure = OSError("injected protocol descriptor restoration failure")
+    close_failure = close_type("injected protocol descriptor restoration failure")
     close_detail = "protocol descriptor cleanup retained detail"
     close_failure.add_note(close_detail)
     original_signal = signal.signal
@@ -1044,7 +1048,7 @@ def test_protocol_writer_and_close_failures_preserve_primary_exception(
         tasks_before = asyncio.all_tasks()
         output_before = remote_helper._protocol_output.get()
         expected = primary if primary is not None else writer_failure
-        with pytest.raises(type(expected)) as raised:
+        with pytest.raises(BaseException) as raised:
             await session.run_async()
         assert raised.value is expected
         assert any(str(close_failure) in note for note in expected.__notes__)
@@ -1074,6 +1078,166 @@ def test_protocol_writer_and_close_failures_preserve_primary_exception(
         for signum, handler in previous.items():
             original_signal(signum, handler)
         session._release_workspace()
+
+
+@pytest.mark.parametrize("boundary", ("reader", "writer"))
+@pytest.mark.parametrize("rollback_fails", (False, True))
+def test_nonblocking_acquisition_rolls_back_effect_before_failed_adoption(
+    monkeypatch, boundary, rollback_fails
+):
+    read_fd, write_fd = os.pipe()
+    original_set_blocking = os.set_blocking
+    primary = KeyboardInterrupt("descriptor adoption interrupted")
+    secondary = OSError("descriptor rollback failed")
+    secondary.add_note("rollback retained nested detail")
+
+    with os.fdopen(read_fd, "rb"), os.fdopen(write_fd, "w", encoding="utf-8") as stdout:
+        descriptor = read_fd if boundary == "reader" else write_fd
+
+        def set_blocking(target, blocking):
+            original_set_blocking(target, blocking)
+            if target == descriptor:
+                if not blocking:
+                    raise primary
+                if rollback_fails:
+                    raise secondary
+
+        monkeypatch.setattr(remote_helper.sys, "stdout", stdout)
+        monkeypatch.setattr(remote_helper.os, "set_blocking", set_blocking)
+        with pytest.raises(KeyboardInterrupt) as raised:
+            if boundary == "reader":
+                remote_helper._AsyncInput(descriptor)
+            else:
+                remote_helper._ProtocolOutput()
+        assert raised.value is primary
+        assert os.get_blocking(descriptor)
+        if rollback_fails:
+            assert any(str(secondary) in note for note in primary.__notes__)
+            assert any(secondary.__notes__[0] in note for note in primary.__notes__)
+
+
+def test_protocol_writer_close_releases_pending_buffer_after_interruption(monkeypatch):
+    read_fd, write_fd = os.pipe()
+    original_set_blocking = os.set_blocking
+    failure = KeyboardInterrupt("writer mode restoration interrupted")
+    with os.fdopen(read_fd, "rb"), os.fdopen(write_fd, "w", encoding="utf-8") as stdout:
+        monkeypatch.setattr(remote_helper.sys, "stdout", stdout)
+        output = remote_helper._ProtocolOutput()
+        output.enqueue(b"queued frame\n")
+
+        def set_blocking(descriptor, blocking):
+            original_set_blocking(descriptor, blocking)
+            if descriptor == write_fd and blocking:
+                raise failure
+
+        monkeypatch.setattr(remote_helper.os, "set_blocking", set_blocking)
+        with pytest.raises(KeyboardInterrupt) as raised:
+            output.close()
+        assert raised.value is failure
+        assert not output.frames
+        assert output.pending_bytes == 0
+        assert os.get_blocking(write_fd)
+
+
+def test_workspace_allocation_rollback_preserves_primary_and_cleans_independently(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
+    original_mkdir = Path.mkdir
+    original_open = Path.open
+    locks = []
+    primary = OSError("staged directory creation failed")
+    secondary = KeyboardInterrupt("allocation lock close interrupted")
+    secondary.add_note("lock rollback retained detail")
+
+    def mkdir(path, *args, **kwargs):
+        if path.name == "staged":
+            raise primary
+        return original_mkdir(path, *args, **kwargs)
+
+    def open_path(path, *args, **kwargs):
+        stream = original_open(path, *args, **kwargs)
+        if path.name == remote_helper.SESSION_LOCK:
+            locks.append(stream)
+            close = stream.close
+
+            def close_then_interrupt():
+                close()
+                raise secondary
+
+            monkeypatch.setattr(stream, "close", close_then_interrupt)
+        return stream
+
+    monkeypatch.setattr(Path, "mkdir", mkdir)
+    monkeypatch.setattr(Path, "open", open_path)
+    with pytest.raises(BaseException) as raised:
+        remote_helper.new_workspace()
+    assert raised.value is primary
+    assert locks and all(lock.closed for lock in locks)
+    assert not tuple(tmp_path.iterdir())
+    assert any(str(secondary) in note for note in primary.__notes__)
+    assert any(secondary.__notes__[0] in note for note in primary.__notes__)
+
+
+def test_failed_address_lease_retirement_prevents_replacement_spawn(
+    tmp_path, monkeypatch, control_pipe
+):
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    session = remote_helper.ControlSession.create()
+    _reader, writer = control_pipe
+    original_allocate = remote_helper.allocate_service_address
+    original_spawn = remote_helper._spawn_child
+    children = []
+    failure = OSError("address lease retirement failed")
+    leases = []
+
+    def allocate(*args, **kwargs):
+        allocated = original_allocate(*args, **kwargs)
+        lease = allocated.lease
+        leases.append(lease)
+        controlled = create_autospec(socket.socket, instance=True, spec_set=True)
+
+        def retire():
+            lease.close()
+            if controlled.close.call_count == 1:
+                raise failure
+
+        controlled.close.side_effect = retire
+        allocated.lease = controlled
+        return allocated
+
+    def spawn(*args, **kwargs):
+        child = original_spawn(*args, **kwargs)
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(remote_helper, "allocate_service_address", allocate)
+    monkeypatch.setattr(remote_helper, "_spawn_child", spawn)
+    writer.write(
+        _start_session_command(
+            [
+                sys.executable,
+                "-c",
+                "import sys;print('Address already in use',file=sys.stderr,flush=True)",
+            ],
+            ("not-ready",),
+        )
+    )
+    try:
+        try:
+            session.run()
+        except OSError as raised:
+            assert raised is failure
+        assert len(children) == 1
+        assert session.protocol_error is failure
+        assert children[0].process.returncode is not None
+        assert not session.work.exists()
+        assert session.workspace_lock.closed
+    finally:
+        for lease in leases:
+            lease.close()
+        for child in children:
+            _cleanup_test_child(child, None)
 
 
 def _start_session_command(argv, sentinels=()):
@@ -2147,6 +2311,7 @@ def test_control_session_natural_exit_cleanup_failure_emits_error_event(
     assert sum(kind == "ERROR" for kind, _ in events) == 1
     assert not any(kind == "SESSION_CLOSED" for kind, _ in events)
     assert workspace.exists()
+    assert not (workspace / remote_helper.UNCONFIRMED_CHILD).exists()
     assert lock.closed
     original_rmtree(workspace)
 

@@ -149,7 +149,7 @@ def remove_workspace(work: Path) -> None:
         for metadata in (_closure_path(work), _lease_path(work)):
             try:
                 metadata.unlink(missing_ok=True)
-            except OSError as exc:
+            except BaseException as exc:
                 errors.append(exc)
         _raise_cleanup_errors(errors)
 
@@ -226,10 +226,17 @@ def new_workspace():
             with _lease_path(path).open("xb"):
                 pass
             return session_id, path, lock
-        except BaseException:
+        except BaseException as failure:
+            cleanups = [lambda work=path: remove_workspace(work)]
             if lock is not None:
-                lock.close()
-            shutil.rmtree(path, ignore_errors=True)
+                cleanups.append(lock.close)
+            for cleanup in cleanups:
+                try:
+                    cleanup()
+                except BaseException as cleanup_error:
+                    failure.add_note(f"workspace allocation rollback also failed: {cleanup_error}")
+                    for note in getattr(cleanup_error, "__notes__", ()):
+                        failure.add_note(f"workspace allocation rollback detail: {note}")
             raise
     raise RuntimeError("could not allocate an unpredictable session directory")
 
@@ -868,6 +875,22 @@ async def _readable(descriptor: int) -> None:
         loop.remove_reader(descriptor)
 
 
+def _acquire_nonblocking(descriptor: int) -> bool:
+    """Own mode rollback until the reader/writer can adopt the descriptor."""
+    previous = os.get_blocking(descriptor)
+    try:
+        os.set_blocking(descriptor, False)
+    except BaseException as failure:
+        try:
+            os.set_blocking(descriptor, previous)
+        except BaseException as cleanup_error:
+            failure.add_note(f"descriptor mode rollback also failed: {cleanup_error}")
+            for note in getattr(cleanup_error, "__notes__", ()):
+                failure.add_note(f"descriptor mode rollback detail: {note}")
+        raise
+    return previous
+
+
 class _ProtocolOutput:
     """Session-owned nonblocking JSON output with bounded buffering and cleanup."""
 
@@ -887,8 +910,7 @@ class _ProtocolOutput:
         self.failure: Exception | None = None
         self.was_blocking = None
         if self.descriptor is not None:
-            self.was_blocking = os.get_blocking(self.descriptor)
-            os.set_blocking(self.descriptor, False)
+            self.was_blocking = _acquire_nonblocking(self.descriptor)
 
     def enqueue(self, frame: bytes) -> None:
         if self.failure is not None:
@@ -953,9 +975,14 @@ class _ProtocolOutput:
             raise self.failure
 
     def close(self) -> None:
-        if self.descriptor is not None and self.was_blocking is not None:
-            os.set_blocking(self.descriptor, self.was_blocking)
-        self.frames.clear()
+        try:
+            if self.descriptor is not None and self.was_blocking is not None:
+                os.set_blocking(self.descriptor, self.was_blocking)
+        finally:
+            self.frames.clear()
+            self.pending_bytes = 0
+            self.offset = 0
+            self.empty.set()
 
 
 class _AsyncInput:
@@ -969,12 +996,11 @@ class _AsyncInput:
     ):
         self.descriptor = descriptor
         self._on_idle = on_idle
-        self.was_blocking = os.get_blocking(descriptor)
         self._wake: asyncio.Future[None] | None = None
         self._checkpoint: asyncio.Future[None] | None = None
         self._scan_remaining = 0
         self._closed = False
-        os.set_blocking(descriptor, False)
+        self.was_blocking = _acquire_nonblocking(descriptor)
 
     def _observed(self) -> None:
         if self._checkpoint is not None and not self._checkpoint.done():
@@ -1457,18 +1483,26 @@ class _SessionSignals:
         self.previous_handlers: dict[
             int, Callable[[int, FrameType | None], object] | int | None
         ] = {}
+        self.pending_signum: int | None = None
+
+    def capture(self, signum: int) -> bool:
+        """Latch only a native fact, without mutating asyncio or lifecycle state."""
+        if self.pending_signum is not None:
+            return False
+        self.pending_signum = signum
+        return True
 
     def install(self, handler: Callable[[int, FrameType | None], None]) -> None:
         for signum in (signal.SIGTERM, signal.SIGINT):
             self.previous_handlers[signum] = signal.getsignal(signum)
             signal.signal(signum, handler)
 
-    def restore(self) -> Iterator[Exception]:
+    def restore(self) -> Iterator[BaseException]:
         """Report each failed restoration before attempting the next handler."""
         for signum, handler in self.previous_handlers.items():
             try:
                 signal.signal(signum, handler)
-            except Exception as exc:
+            except BaseException as exc:
                 yield exc
 
 
@@ -1499,7 +1533,7 @@ class ControlSession:
         self._deadline_task: asyncio.Task[_ObservationFailed | None] | None = None
         self._events: asyncio.Queue[_Observation] = asyncio.Queue(MAX_PENDING_OBSERVATIONS)
         self._signals: asyncio.Queue[int] = asyncio.Queue(1)
-        self._pending_signum: int | None = None
+        self._signal_scope = _SessionSignals()
         self._tasks: asyncio.TaskGroup | None = None
         self._session_tasks: list[asyncio.Task[_ObservationFailed | None]] = []
         self._observation_failures: dict[asyncio.Task[Any], _ObservationFailed] = {}
@@ -1540,9 +1574,8 @@ class ControlSession:
     def handle_signal(self, signum: int = signal.SIGTERM, _frame: FrameType | None = None) -> None:
         # Latch only plain state here: asyncio primitives are not safe to
         # mutate from reentrant Unix signal-handler context.
-        if self._pending_signum is not None:
+        if not self._signal_scope.capture(signum):
             return
-        self._pending_signum = signum
         if self._loop is not None:
             self._loop.call_soon_threadsafe(self._enqueue_signal, signum)
 
@@ -1658,10 +1691,9 @@ class ControlSession:
         assert self.request is not None
         request = self.request
         if self._address_lease is not None:
-            try:
-                self._address_lease.close()
-            except Exception as exc:
-                self.cleanup_errors.append(exc)
+            # Failed retirement leaves the old owner reachable and prevents a
+            # replacement spawn; terminal cleanup still attempts its release.
+            self._address_lease.close()
             self._address_lease = None
         ports = [service.remote_port for service in request.services]
         allocated = allocate_service_address(
@@ -1753,7 +1785,11 @@ class ControlSession:
             self._observation_failed(failure)
             if self.ending:
                 return
-        if self.ending or self.state != _State.STARTING or self._pending_signum is not None:
+        if (
+            self.ending
+            or self.state != _State.STARTING
+            or self._signal_scope.pending_signum is not None
+        ):
             return
         self.state = _State.ACTIVE
         if self._deadline_task is not None:
@@ -1955,7 +1991,7 @@ class ControlSession:
         await self._cancel(child.tasks)
         try:
             child.close_streams()
-        except Exception as exc:
+        except BaseException as exc:
             self.cleanup_errors.append(exc)
         owner = self._child_acquisition
         assert owner is not None
@@ -2012,7 +2048,7 @@ class ControlSession:
                     break
                 self._handle(observation)
                 await asyncio.sleep(0)
-            if self._pending_signum is not None:
+            if self._signal_scope.pending_signum is not None:
                 self.ending = True
         finally:
             self._control_fence = None
@@ -2026,7 +2062,7 @@ class ControlSession:
         if self._address_lease is not None:
             try:
                 self._address_lease.close()
-            except Exception as exc:
+            except BaseException as exc:
                 self.cleanup_errors.append(exc)
             self._address_lease = None
         try:
@@ -2039,6 +2075,10 @@ class ControlSession:
                 and self._child_settlement.confirmed
             )
             if disposed:
+                try:
+                    (self.work / UNCONFIRMED_CHILD).unlink(missing_ok=True)
+                except BaseException as exc:
+                    self.cleanup_errors.append(exc)
                 remove_workspace(self.work)
             else:
                 close_staging_admission(self.work)
@@ -2048,11 +2088,11 @@ class ControlSession:
         except FileNotFoundError as exc:
             if self.work.exists():
                 self.cleanup_errors.append(exc)
-        except Exception as exc:
+        except BaseException as exc:
             self.cleanup_errors.append(exc)
         try:
             self.workspace_lock.close()
-        except Exception as exc:
+        except BaseException as exc:
             self.cleanup_errors.append(exc)
 
     async def _coordinate(self) -> None:
@@ -2061,7 +2101,7 @@ class ControlSession:
                 if not self._staging_closed:
                     try:
                         close_staging_admission(self.work)
-                    except Exception as exc:
+                    except BaseException as exc:
                         self.cleanup_errors.append(exc)
                     self._staging_closed = True
                 if self.child is None:
@@ -2132,11 +2172,11 @@ class ControlSession:
     async def run_async(self) -> None:
         """Own output and signal scopes around the structured session tasks."""
         self._loop = asyncio.get_running_loop()
-        if self._pending_signum is not None:
+        if self._signal_scope.pending_signum is not None:
             # Publish a pre-loop signal through the same observation path as
             # later signals, without overtaking already-published control facts.
-            self._loop.call_soon(self._enqueue_signal, self._pending_signum)
-        signals = _SessionSignals()
+            self._loop.call_soon(self._enqueue_signal, self._signal_scope.pending_signum)
+        signals = self._signal_scope
         output = None
         output_token = None
         final_exception: BaseException | None = None
@@ -2155,7 +2195,7 @@ class ControlSession:
             if output is not None:
                 try:
                     output.close()
-                except Exception as exc:
+                except BaseException as exc:
                     if final_exception is None:
                         final_exception = exc
                     else:
