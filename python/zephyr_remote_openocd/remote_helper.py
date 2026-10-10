@@ -38,6 +38,7 @@ from typing import IO, Any, Literal, NamedTuple
 VERSION = 1
 RANGE = ipaddress.IPv4Network("127.64.0.0/10")
 SESSION_LOCK = ".session.lock"
+UNCONFIRMED_CHILD = ".child-disposal-unconfirmed"
 STALE_SESSION_AGE = 24 * 60 * 60
 WORKSPACE_LEASE_TIMEOUT = 5
 WORKSPACE_LEASE_POLL_INTERVAL = 0.05
@@ -125,8 +126,7 @@ def remove_workspace(work: Path) -> None:
     # O_CREAT publishes closure atomically without depending on any lock owner.
     # Keep the lease identity and closed admission until workspace removal
     # succeeds; delayed stages reject missing workspaces even on an old inode.
-    with _closure_path(work).open("ab"):
-        pass
+    close_staging_admission(work)
     with _lease_path(work).open("a+b") as lease:
         deadline = time.monotonic() + WORKSPACE_LEASE_TIMEOUT
         while True:
@@ -149,6 +149,12 @@ def remove_workspace(work: Path) -> None:
             except OSError as exc:
                 errors.append(exc)
         _raise_cleanup_errors(errors)
+
+
+def close_staging_admission(work: Path) -> None:
+    """Publish closure independently of child cleanup or an active upload."""
+    with _closure_path(work).open("ab"):
+        pass
 
 
 def reclaim_stale_workspaces(root, now=None):
@@ -174,6 +180,10 @@ def reclaim_stale_workspaces(root, now=None):
                         break
                 continue
             if not path.is_dir():
+                continue
+            if (path / UNCONFIRMED_CHILD).exists():
+                # Helper exit cannot prove that a residual child stopped using
+                # these inputs. Age and an unlocked session are insufficient.
                 continue
             if not lock_path.is_file():
                 with suppress(OSError):
@@ -1030,6 +1040,34 @@ def _group_exit_waits(pid: int) -> Iterator[float]:
     raise TimeoutError(f"process group {pid} did not disappear during cleanup")
 
 
+class _ChildAcquisition:
+    """Own spawn results before their adoption by the coordinator."""
+
+    def __init__(self, generation: int) -> None:
+        self.generation = generation
+        self.process: subprocess.Popen[bytes] | None = None
+        self.child: SupervisedChild | None = None
+        self.producer_quiescent = False
+        self.rollback_confirmed = False
+
+
+class _ChildSettlement(NamedTuple):
+    generation: int
+    producer_quiescent: bool
+    group_disposed: bool
+    observers_settled: bool
+    pipes_closed: bool
+
+    @property
+    def confirmed(self) -> bool:
+        return (
+            self.producer_quiescent
+            and self.group_disposed
+            and self.observers_settled
+            and self.pipes_closed
+        )
+
+
 class SupervisedChild:
     """Own a process group; observe the leader before explicitly reaping it."""
 
@@ -1047,6 +1085,8 @@ class SupervisedChild:
         self.readers: dict[str, _AsyncInput] = {}
         self.tasks: list[asyncio.Task[_ObservationFailed | None]] = []
         self._observed_returncode: int | None = None
+        self.group_disposed = False
+        self.termination_requested = False
 
     @property
     def pid(self) -> int:
@@ -1144,46 +1184,65 @@ class SupervisedChild:
                 os.set_blocking(descriptor, was_blocking)
 
     async def terminate(self) -> None:
+        if self.group_disposed:
+            return
         errors = []
         if self.process.returncode is None:
+            # Capture already observable natural status before signalling. Group
+            # disposal still applies when descendants outlive that leader.
+            try:
+                observed = self.poll()
+            except BaseException as exc:
+                errors.append(exc)
+                observed = None
             group_exists = True
             try:
                 os.killpg(self.pid, signal.SIGTERM)
+                if observed is None:
+                    self.termination_requested = True
             except ProcessLookupError:
                 group_exists = False
-            except Exception as exc:
+            except BaseException as exc:
                 errors.append(exc)
             if group_exists:
                 try:
                     await self._wait_for_leader_exit()
-                except Exception as exc:
+                except BaseException as exc:
                     errors.append(exc)
                 try:
                     group_exists = _group_exists(self.pid)
-                except Exception as exc:
+                except BaseException as exc:
                     errors.append(exc)
                     group_exists = True
                 if group_exists:
-                    with suppress(Exception):
+                    with suppress(BaseException):
                         self._warn_remaining_group_members()
                     try:
+                        observed = self.poll()
+                    except BaseException as exc:
+                        errors.append(exc)
+                        observed = None
+                    try:
                         os.killpg(self.pid, signal.SIGKILL)
+                        if observed is None:
+                            self.termination_requested = True
                     except ProcessLookupError:
                         pass
-                    except Exception as exc:
+                    except BaseException as exc:
                         errors.append(exc)
             try:
                 # Reap only after group signalling; this wait has a finite budget.
                 self._observed_returncode = self.process.wait(timeout=CHILD_REAP_TIMEOUT)
-            except Exception as exc:
+            except BaseException as exc:
                 errors.append(exc)
-            try:
-                # An unreaped leader itself keeps the group observable. Once
-                # reaped, only observe: its PID is no longer reserved for us.
-                for delay in _group_exit_waits(self.pid):
-                    await asyncio.sleep(delay)
-            except Exception as exc:
-                errors.append(exc)
+        try:
+            # An unreaped leader itself keeps the group observable. Once
+            # reaped, only observe: its PID is no longer reserved for us.
+            for delay in _group_exit_waits(self.pid):
+                await asyncio.sleep(delay)
+            self.group_disposed = True
+        except BaseException as exc:
+            errors.append(exc)
         _raise_cleanup_errors(errors)
 
     def close_streams(self) -> None:
@@ -1192,7 +1251,7 @@ class SupervisedChild:
             if stream is not None and not stream.closed:
                 try:
                     stream.close()
-                except Exception as exc:
+                except BaseException as exc:
                     errors.append(exc)
         _raise_cleanup_errors(errors)
 
@@ -1224,26 +1283,39 @@ def _rollback_spawned_process(process):
     _raise_cleanup_errors(errors)
 
 
-def _spawn_child(argv, *, cwd=None, environment=None, required_output_sentinels=()):
-    process = subprocess.Popen(
-        argv,
-        cwd=cwd,
-        env=environment,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
-    )
+def _spawn_child(
+    argv,
+    *,
+    cwd=None,
+    environment=None,
+    required_output_sentinels=(),
+    ownership: _ChildAcquisition | None = None,
+) -> SupervisedChild:
+    owner = ownership if ownership is not None else _ChildAcquisition(1)
     try:
-        return SupervisedChild(process, required_output_sentinels)
+        owner.process = subprocess.Popen(
+            argv,
+            cwd=cwd,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        owner.child = SupervisedChild(owner.process, required_output_sentinels)
+        return owner.child
     except BaseException as error:
-        try:
-            _rollback_spawned_process(process)
-        except BaseException as cleanup_error:
-            error.add_note(f"child ownership rollback also failed: {cleanup_error}")
-            for note in tuple(getattr(cleanup_error, "__notes__", ())):
-                error.add_note(f"child ownership rollback detail: {note}")
+        if owner.process is not None:
+            try:
+                _rollback_spawned_process(owner.process)
+                owner.rollback_confirmed = True
+            except BaseException as cleanup_error:
+                error.add_note(f"child ownership rollback also failed: {cleanup_error}")
+                for note in tuple(getattr(cleanup_error, "__notes__", ())):
+                    error.add_note(f"child ownership rollback detail: {note}")
         raise
+    finally:
+        owner.producer_quiescent = True
 
 
 def materialize_argv(
@@ -1345,7 +1417,7 @@ class _ObservationFailed(NamedTuple):
 
 class _GroupCleaned(NamedTuple):
     child: SupervisedChild
-    exception: Exception | None
+    exception: BaseException | None
 
 
 class _ControlFence(NamedTuple):
@@ -1397,6 +1469,9 @@ class ControlSession:
         self.workspace_lock = workspace_lock
         self.child: SupervisedChild | None = None
         self.protocol_error: BaseException | None = None
+        self._child_acquisition: _ChildAcquisition | None = None
+        self._child_settlement: _ChildSettlement | None = None
+        self._staging_closed = False
         self.operation_error: BaseException | None = None
         self.cleanup_errors: list[BaseException] = []
         self.state = _State.CREATED
@@ -1580,8 +1655,8 @@ class ControlSession:
         allocated = allocate_service_address(
             ports, preferred_address=request.preferred_address if self.attempt == 0 else None
         )
-        self.address = str(allocated)
         self._address_lease = getattr(allocated, "lease", None)
+        self.address = str(allocated)
         argv = materialize_argv(
             request.argv,
             workspace=str(self.work),
@@ -1593,21 +1668,30 @@ class ControlSession:
         replacements = {"workspace": str(self.work), "address": self.address}
         _check_required_paths(request.required_paths, replacements)
         emit("PROCESS_STARTING", argv=list(argv))
-        self.child = _spawn_child(
-            argv,
-            cwd=self.work / "staged",
-            environment=_child_environment(request),
-            required_output_sentinels=request.required_output_sentinels,
-        )
+        # Publish conservative retention before any child can acquire inputs.
+        # A later metadata write failure must not enable stale reclamation.
+        (self.work / UNCONFIRMED_CHILD).touch(mode=0o600)
+        owner = _ChildAcquisition(self.attempt + 1)
+        self._child_acquisition = owner
+        self._child_settlement = None
+        try:
+            child = _spawn_child(
+                argv,
+                cwd=self.work / "staged",
+                environment=_child_environment(request),
+                required_output_sentinels=request.required_output_sentinels,
+                ownership=owner,
+            )
+            self.child = child
+        finally:
+            # The ticket stays reachable even if return/adoption is interrupted.
+            owner.producer_quiescent = True
+            if self.child is None:
+                self.child = owner.child
         self.state = _State.STARTING
         self._group_cleaned = False
         self._startup_exit = None
-        child = self.child
-        for name in ("stdout", "stderr"):
-            stream = getattr(child.process, name)
-            if stream is None:
-                raise RuntimeError("child output was not captured")
-            self._observe(name, self._observe_output(child, name, stream), child)
+        self._start_output_observers(child)
         self._observe("child exit", self._observe_exit(child), child)
         self._deadline_task = self._observe(
             "readiness deadline",
@@ -1616,6 +1700,19 @@ class ControlSession:
         )
         if not request.required_output_sentinels:
             self._ready()
+
+    def _start_output_observers(self, child: SupervisedChild) -> None:
+        observed = {task.get_name() for task in child.tasks}
+        for name in ("stdout", "stderr"):
+            if name in observed:
+                continue
+            stream = getattr(child.process, name)
+            if stream is None:
+                raise RuntimeError("child output was not captured")
+            if stream.closed:
+                child.output_finished.add(name)
+                continue
+            self._observe(name, self._observe_output(child, name, stream), child)
 
     def _ready(self) -> None:
         assert self.child is not None
@@ -1810,7 +1907,7 @@ class ControlSession:
         failure = None
         try:
             await child.terminate()
-        except Exception as exc:
+        except BaseException as exc:
             failure = exc
         await self._events.put(_GroupCleaned(child, failure))
 
@@ -1819,6 +1916,9 @@ class ControlSession:
             return
         assert self.child is not None
         self.state = _State.TERMINATING
+        # Partial adoption still owns captured pipes. Give their sole readers
+        # the same finite drain opportunity as normally initialized attempts.
+        self._start_output_observers(self.child)
         if self._deadline_task is not None:
             self._deadline_task.cancel()
         self._observe("process-group cleanup", self._clean_group(self.child), self.child)
@@ -1827,8 +1927,12 @@ class ControlSession:
         for task in tasks:
             task.cancel()
         for task in tasks:
-            with suppress(asyncio.CancelledError):
+            try:
                 await task
+            except asyncio.CancelledError:
+                pass
+            except BaseException as exc:
+                self.cleanup_errors.append(exc)
             failure = self._observation_failures.pop(task, None)
             if failure is not None:
                 self.cleanup_errors.append(failure.exception)
@@ -1841,15 +1945,33 @@ class ControlSession:
             child.close_streams()
         except Exception as exc:
             self.cleanup_errors.append(exc)
+        owner = self._child_acquisition
+        assert owner is not None
+        self._child_settlement = _ChildSettlement(
+            owner.generation,
+            owner.producer_quiescent,
+            child.group_disposed,
+            all(task.done() for task in child.tasks),
+            all(
+                stream is None or stream.closed
+                for stream in (child.process.stdout, child.process.stderr)
+            ),
+        )
         retry = (
             not self.ending
             and not self.cleanup_errors
+            and self._child_settlement.confirmed
             and is_bind_collision(child.startup_output)
             and self.attempt + 1 < MAX_ADDRESS_ALLOCATION_ATTEMPTS
         )
         if retry:
             await self._retry_commit_boundary()
-        self.child = None
+        if self._child_settlement.confirmed:
+            self.child = None
+        else:
+            self.cleanup_errors.append(RuntimeError("child disposal remains unconfirmed"))
+            self.ending = True
+            self.state = _State.CLOSED
         if not self.ending and not self.cleanup_errors:
             if retry:
                 self.attempt += 1
@@ -1896,7 +2018,21 @@ class ControlSession:
                 self.cleanup_errors.append(exc)
             self._address_lease = None
         try:
-            remove_workspace(self.work)
+            owner = self._child_acquisition
+            disposed = (
+                owner is None
+                or owner.process is None
+                or owner.rollback_confirmed
+                or self._child_settlement is not None
+                and self._child_settlement.confirmed
+            )
+            if disposed:
+                remove_workspace(self.work)
+            else:
+                close_staging_admission(self.work)
+                self.cleanup_errors.append(
+                    RuntimeError("retaining workspace for unconfirmed child disposal")
+                )
         except FileNotFoundError as exc:
             if self.work.exists():
                 self.cleanup_errors.append(exc)
@@ -1910,6 +2046,12 @@ class ControlSession:
     async def _coordinate(self) -> None:
         while self.state != _State.CLOSED:
             if self.ending:
+                if not self._staging_closed:
+                    try:
+                        close_staging_admission(self.work)
+                    except Exception as exc:
+                        self.cleanup_errors.append(exc)
+                    self._staging_closed = True
                 if self.child is None:
                     self.state = _State.CLOSED
                     break

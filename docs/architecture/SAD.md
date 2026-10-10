@@ -1736,6 +1736,33 @@ sending `SIGKILL`. Failure or a race during this best-effort diagnostic does
 not affect the group cleanup decision or success criterion; complete `/proc`
 enumeration is not required.
 
+Phase 3 adapts the current standalone helper's physical boundaries while its
+Protocol v1 coordinator remains the runtime authority. A generation-scoped
+acquisition ticket is reachable before `Popen`, retains the raw process through
+supervisor construction, and retains the supervisor through coordinator
+adoption. Both construction rollback and an interrupted return use this same
+cleanup reachability; partially adopted streams still receive owned observers.
+Native handlers latch facts throughout those synchronous effects.
+
+Physical settlement records producer return, verified group disappearance,
+joined observers, and closed pipes separately. Finishing a cleanup coroutine
+does not confirm disposal. Retry requires all those facts as well as the
+existing classification and Protocol v1 control fence. Before cleanup signalling,
+the process owner observes genuine leader status without reaping its identity;
+delivered termination is recorded independently from that result. Group signals,
+finite escalation, reaping, and disappearance checks retain their existing OS
+mechanisms, with independent cleanup attempts after interruption or failure.
+
+Terminal cleanup publishes staging closure before child settlement. Admitted
+uploads retain their shared lease, so process cleanup can progress independently
+and removal still waits for exclusive workspace access. A conservative
+`.child-disposal-unconfirmed` marker is published before spawn. Verified child
+settlement permits normal workspace removal; otherwise the inputs and marker
+remain, new staging is rejected, independent local descriptors are closed, and
+cleanup fails. Stale reclamation skips marked workspaces even after helper exit
+or the age threshold: neither proves residual child disposal. Removal of such
+retained data requires independently established disposal.
+
 The helper then attempts to reap the leader with a finite budget. After that
 attempt, it polls group existence with `killpg(pgid, 0)` under a separate
 one-second deadline. Only `ESRCH` (Python's `ProcessLookupError`) confirms that

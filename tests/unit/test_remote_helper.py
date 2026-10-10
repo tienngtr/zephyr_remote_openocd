@@ -1473,6 +1473,141 @@ def test_control_session_cleanup_attempts_all_resources_once(tmp_path, monkeypat
     assert not workspace.exists()
 
 
+@pytest.mark.parametrize("failure_type", (RuntimeError, KeyboardInterrupt))
+def test_spawn_return_interruption_keeps_child_reachable_for_cleanup(
+    tmp_path, monkeypatch, control_pipe, failure_type
+):
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    session = remote_helper.ControlSession.create()
+    _reader, writer = control_pipe
+    original_spawn = remote_helper._spawn_child
+    children = []
+    failure = failure_type("interrupted before coordinator adoption")
+
+    def interrupt_return(*args, **kwargs):
+        child = original_spawn(*args, **kwargs)
+        children.append(child)
+        raise failure
+
+    monkeypatch.setattr(remote_helper, "_spawn_child", interrupt_return)
+    writer.write(
+        _start_session_command([sys.executable, "-c", "import signal;signal.pause()"], ("ready",))
+    )
+
+    async def run():
+        tasks_before = asyncio.all_tasks()
+        if failure_type is RuntimeError:
+            await session.run_async()
+            assert session.protocol_error is failure
+        else:
+            with pytest.raises(failure_type) as raised:
+                await session.run_async()
+            assert raised.value is failure
+        assert asyncio.all_tasks() == tasks_before
+
+    try:
+        asyncio.run(run())
+        assert len(children) == 1
+        assert children[0].process.returncode is not None
+        assert children[0].process.stdout.closed and children[0].process.stderr.closed
+        assert not session.work.exists()
+        assert session.workspace_lock.closed
+    finally:
+        for child in children:
+            _cleanup_test_child(child, None)
+
+
+def test_unconfirmed_spawn_rollback_retains_workspace_without_supervisor(
+    tmp_path, monkeypatch, control_pipe
+):
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    session = remote_helper.ControlSession.create()
+    _reader, writer = control_pipe
+    original_popen = remote_helper.subprocess.Popen
+    original_waits = remote_helper._group_exit_waits
+    processes = []
+    failure = RuntimeError("supervisor construction failed")
+    rollback_failure = PermissionError("group disposal could not be confirmed")
+
+    def acquire(*args, **kwargs):
+        process = original_popen(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    def fail_supervisor(*_args, **_kwargs):
+        raise failure
+
+    def unconfirmed(pid):
+        yield from original_waits(pid)
+        raise rollback_failure
+
+    monkeypatch.setattr(remote_helper.subprocess, "Popen", acquire)
+    monkeypatch.setattr(remote_helper, "SupervisedChild", fail_supervisor)
+    monkeypatch.setattr(remote_helper, "_group_exit_waits", unconfirmed)
+    writer.write(
+        _start_session_command([sys.executable, "-c", "import signal;signal.pause()"], ("ready",))
+    )
+
+    with pytest.raises(SystemExit) as raised:
+        session.run()
+    assert raised.value.code == 1
+    assert session.protocol_error is failure
+    assert any(str(rollback_failure) in note for note in failure.__notes__)
+    assert processes[0].returncode is not None
+    assert processes[0].stdout.closed and processes[0].stderr.closed
+    assert session.work.is_dir()
+    assert session.workspace_lock.closed
+    with pytest.raises(ValueError), remote_helper._stage_lease(session.work):
+        pytest.fail("failed spawn rollback admitted staging")
+
+
+def test_terminal_cleanup_closes_staging_before_waiting_for_child(
+    tmp_path, monkeypatch, control_pipe
+):
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    session = remote_helper.ControlSession.create()
+    _reader, writer = control_pipe
+    original_spawn = remote_helper._spawn_child
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+
+    def spawn(*args, **kwargs):
+        child = original_spawn(*args, **kwargs)
+        terminate = child.terminate
+
+        async def cleanup():
+            cleanup_started.set()
+            await release_cleanup.wait()
+            await terminate()
+
+        monkeypatch.setattr(child, "terminate", cleanup)
+        return child
+
+    monkeypatch.setattr(remote_helper, "_spawn_child", spawn)
+    writer.write(
+        _start_session_command([sys.executable, "-c", "import signal;signal.pause()"], ("ready",))
+        + b'{"version":1,"type":"STOP"}\n'
+    )
+
+    async def run():
+        operation = asyncio.create_task(session.run_async())
+        try:
+            with remote_helper._stage_lease(session.work):
+                await cleanup_started.wait()
+                assert session.work.is_dir()
+                with pytest.raises(ValueError), remote_helper._stage_lease(session.work):
+                    pytest.fail("terminal cleanup admitted a new stage")
+            release_cleanup.set()
+            await operation
+        finally:
+            release_cleanup.set()
+            await operation
+
+    asyncio.run(run())
+    assert not session.work.exists()
+    assert session.workspace_lock.closed
+
+
 @pytest.mark.parametrize("signal_source", ("callback", "os"))
 def test_control_session_signal_during_spawn_terminates_owned_child(
     tmp_path, monkeypatch, control_pipe, signal_source
@@ -2031,7 +2166,14 @@ def test_control_session_unconfirmed_group_exit_fails_after_other_cleanup(
     assert children[0].process.returncode is not None
     assert children[0].process.stdout.closed and children[0].process.stderr.closed
     assert session.workspace_lock.closed
-    assert not list(session.work.parent.iterdir())
+    assert session.work.is_dir()
+    assert (session.work / remote_helper.UNCONFIRMED_CHILD).exists()
+    with pytest.raises(ValueError), remote_helper._stage_lease(session.work):
+        pytest.fail("retained workspace admitted staging")
+    remote_helper.reclaim_stale_workspaces(
+        session.work.parent, now=time.time() + remote_helper.STALE_SESSION_AGE + 1
+    )
+    assert session.work.is_dir()
 
 
 @pytest.mark.parametrize("protocol_failure", (True, False))
@@ -2143,6 +2285,8 @@ def test_supervised_child_terminates_descendant_after_leader_term(tmp_path):
         child.close_streams()
 
         assert child.returncode == 0
+        assert child.termination_requested
+        assert child.group_disposed
         _assert_pidfd_exited(descendant_pidfd)
         with pytest.raises(ProcessLookupError):
             os.killpg(child.pid, 0)
@@ -2174,6 +2318,8 @@ def test_supervised_child_warns_and_terminates_descendant_after_leader_exit(tmp_
         child.close_streams()
 
         assert child.returncode == 0
+        assert not child.termination_requested
+        assert child.group_disposed
         _assert_pidfd_exited(descendant_pidfd)
         assert str(descendant_pid) in capfd.readouterr().err
         with pytest.raises(ProcessLookupError):
@@ -2275,6 +2421,7 @@ def test_supervised_child_group_cleanup_ignores_diagnostic_failure(monkeypatch):
             return self.returncode
 
     child = remote_helper.SupervisedChild(Process())
+    monkeypatch.setattr(remote_helper.os, "waitid", lambda *_args: None)
     signals = []
 
     def killpg(_pid, signum):
@@ -2431,6 +2578,7 @@ def test_supervised_child_cleanup_uses_finite_budgets_after_failures(monkeypatch
 
     process = Process()
     child = remote_helper.SupervisedChild(process)
+    monkeypatch.setattr(remote_helper.os, "waitid", lambda *_args: None)
     signal_error = RuntimeError("signal failed")
     signals = []
 
