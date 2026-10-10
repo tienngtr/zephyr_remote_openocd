@@ -1730,6 +1730,11 @@ adoption fails, preserving the initiating exception and rollback detail. Writer
 close releases retained frames independently of mode-restoration failure. The
 signal scope owns both installed handlers and a plain first-signal latch;
 handlers report facts without deciding transitions or mutating asyncio queues.
+READY admission/activation and terminal freeze block native SIGINT/SIGTERM
+delivery, account already-latched failures while blocked, and revalidate before
+committing. Restoring the previous mask delivers signals arriving during the
+blocked interval after that commit. Terminal cleanup inspection precedes this
+boundary, so signals latched during inspection belong to the frozen outcome.
 Signal-handler, descriptor, workspace, and allocation rollback cleanup continues
 across `BaseException` failures while preserving the primary outcome and nested
 secondary diagnostics on the structured Protocol v2 boundary. Failed retirement

@@ -1585,6 +1585,15 @@ class _SessionSignals:
             except BaseException as exc:
                 yield exc
 
+    @contextmanager
+    def commit(self) -> Iterator[None]:
+        """Serialize native signal delivery with a synchronous lifecycle commit."""
+        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT, signal.SIGTERM})
+        try:
+            yield
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+
 
 class ControlSession:
     """Coordinate physical facts through the canonical remote lifecycle."""
@@ -1911,17 +1920,21 @@ class ControlSession:
         if returncode is not None:
             self._record_exit(child, returncode)
             return
-        try:
-            emit(
-                "READY",
-                generation=child.generation,
-                remote_address=self.address,
-                child_pid=child.pid,
-            )
-        except BaseException as error:
-            self._failure(Trigger.OUTPUT_FAILURE, "READY_ADMISSION", error)
-            return
-        self.lifecycle.ready(child.generation, child_live=True, admitted=True)
+        with self._signal_scope.commit():
+            self._account_recorded_failures()
+            if not isinstance(self.lifecycle.state, Starting):
+                return
+            try:
+                emit(
+                    "READY",
+                    generation=child.generation,
+                    remote_address=self.address,
+                    child_pid=child.pid,
+                )
+            except BaseException as error:
+                self._failure(Trigger.OUTPUT_FAILURE, "READY_ADMISSION", error)
+                return
+            self.lifecycle.ready(child.generation, child_live=True, admitted=True)
         if self._deadline_task is not None:
             self._deadline_task.cancel()
 
@@ -2245,8 +2258,10 @@ class ControlSession:
             finally:
                 await self._cancel(task for task in self._session_tasks if task is not writer_task)
                 self._release_workspace()
-            self._account_recorded_failures()
-            snapshot = self.lifecycle.freeze(self._cleanup_report())
+            cleanup = self._cleanup_report()
+            with signals.commit():
+                self._account_recorded_failures()
+                snapshot = self.lifecycle.freeze(cleanup)
             try:
                 emit("SESSION_ENDED", **terminal_fields(snapshot))
                 await output.drain()

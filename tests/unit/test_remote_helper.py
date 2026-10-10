@@ -1997,6 +1997,86 @@ def test_unconfirmed_disposal_retains_inputs_but_settles_independent_owners(
             lease.close()
 
 
+@pytest.mark.parametrize("boundary", ("ready", "freeze"))
+def test_latched_signal_before_commit_is_accounted(coordinated_helper, monkeypatch, boundary):
+    session, writer, events, children = coordinated_helper
+    if boundary == "ready":
+        poll = remote_helper.SupervisedChild.poll
+        injected = False
+
+        def poll_then_signal(child):
+            nonlocal injected
+            result = poll(child)
+            if not injected:
+                injected = True
+                session.handle_signal(signal.SIGTERM)
+            return result
+
+        monkeypatch.setattr(remote_helper.SupervisedChild, "poll", poll_then_signal)
+        write_start(
+            writer, RemoteProcess((sys.executable, "-c", "import signal;signal.pause()")), ()
+        )
+    else:
+        cleanup_report = session._cleanup_report
+
+        def report_then_signal():
+            report = cleanup_report()
+            session.handle_signal(signal.SIGTERM)
+            return report
+
+        monkeypatch.setattr(session, "_cleanup_report", report_then_signal)
+        writer.close()
+    _run_terminated(session, fails=True)
+    snapshot = _terminal_event(events)
+    assert snapshot.outcome.primary_failure is not None
+    assert snapshot.outcome.primary_failure.code == "REMOTE_SIGNAL"
+    assert not any(kind == "READY" for kind, _ in events)
+    assert snapshot.cleanup.confirmed
+    assert all(child.process.returncode is not None for child in children)
+
+
+@pytest.mark.parametrize("boundary", ("ready", "freeze"))
+def test_native_signal_delivery_linearizes_after_blocked_commit(
+    coordinated_helper, monkeypatch, boundary
+):
+    session, writer, events, _children = coordinated_helper
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, ())
+    if boundary == "ready":
+        emit = remote_helper.emit
+
+        def signal_then_emit(kind, **fields):
+            if kind == "READY":
+                signal.raise_signal(signal.SIGTERM)
+                assert session._signal_scope.pending_signum is None
+            emit(kind, **fields)
+
+        monkeypatch.setattr(remote_helper, "emit", signal_then_emit)
+        write_start(
+            writer, RemoteProcess((sys.executable, "-c", "import signal;signal.pause()")), ()
+        )
+    else:
+        freeze = session.lifecycle.freeze
+
+        def signal_then_freeze(cleanup):
+            signal.raise_signal(signal.SIGTERM)
+            assert session._signal_scope.pending_signum is None
+            return freeze(cleanup)
+
+        monkeypatch.setattr(session.lifecycle, "freeze", signal_then_freeze)
+        writer.close()
+    _run_terminated(session, fails=True)
+    snapshot = _terminal_event(events)
+    assert signal.pthread_sigmask(signal.SIG_BLOCK, ()) == previous_mask
+    assert session._signal_scope.pending_signum == signal.SIGTERM
+    if boundary == "ready":
+        assert any(kind == "READY" for kind, _ in events)
+        assert snapshot.outcome.primary_failure.code == "REMOTE_SIGNAL"
+    else:
+        assert snapshot.outcome.primary_failure is None
+        assert session.lifecycle.state.local_diagnostics[0].code == "REMOTE_SIGNAL"
+    assert snapshot.cleanup.confirmed
+
+
 def test_native_signal_after_frozen_result_fails_without_second_terminal(
     tmp_path, monkeypatch, control_pipe
 ):
