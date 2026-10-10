@@ -197,6 +197,15 @@ have stopped, these remote locations may also be removed:
 
 ```text
 ~/.local/libexec/zephyr_remote_openocd/
+$XDG_RUNTIME_DIR/zephyr_remote_openocd-sessions-v2/
+~/.cache/zephyr_remote_openocd/sessions-v2/
+```
+
+Workspaces from older helper revisions remain in these legacy locations.
+Current helpers leave them alone; remove them only after confirming that their
+OpenOCD processes and staging operations have stopped:
+
+```text
 $XDG_RUNTIME_DIR/zephyr_remote_openocd/
 ~/.cache/zephyr_remote_openocd/sessions/
 ```

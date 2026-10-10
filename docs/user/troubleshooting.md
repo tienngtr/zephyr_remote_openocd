@@ -24,6 +24,12 @@ Orphaned coordination metadata older than 24 hours is reclaimed opportunisticall
 during later session allocation when its workspace is absent; this does not
 guarantee a maximum retention time.
 
+If child disposal cannot be confirmed, the helper retains workspace inputs and
+reports cleanup failure. Confirm that the corresponding OpenOCD processes and
+staging operations have stopped before removing retained data. Current helpers
+also leave legacy workspace roots from older revisions alone; these locations
+are listed in [operations.md](operations.md#stop-and-uninstall).
+
 A best-effort forwarding warning identifies an unavailable Tcl or telnet
 forward. Check the named local port and SSH diagnostic; the operation can
 continue when its required forwards are healthy. With `debug --rtt-server`,

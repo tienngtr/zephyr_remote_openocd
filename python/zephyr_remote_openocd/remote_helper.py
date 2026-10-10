@@ -39,6 +39,9 @@ VERSION = 1
 RANGE = ipaddress.IPv4Network("127.64.0.0/10")
 SESSION_LOCK = ".session.lock"
 UNCONFIRMED_CHILD = ".child-disposal-unconfirmed"
+# Storage format 2 requires residual-child markers. Keep it outside roots
+# scanned by legacy helpers, independently of the helper's wire version.
+WORKSPACE_STORAGE_VERSION = 2
 STALE_SESSION_AGE = 24 * 60 * 60
 WORKSPACE_LEASE_TIMEOUT = 5
 WORKSPACE_LEASE_POLL_INTERVAL = 0.05
@@ -96,8 +99,10 @@ def error(message, code="HELPER_ERROR"):
 def workspace_root():
     runtime = os.environ.get("XDG_RUNTIME_DIR")
     if runtime and Path(runtime).is_dir():
-        return Path(runtime) / "zephyr_remote_openocd"
-    return Path.home() / ".cache" / "zephyr_remote_openocd" / "sessions"
+        return Path(runtime) / f"zephyr_remote_openocd-sessions-v{WORKSPACE_STORAGE_VERSION}"
+    return (
+        Path.home() / ".cache" / "zephyr_remote_openocd" / f"sessions-v{WORKSPACE_STORAGE_VERSION}"
+    )
 
 
 def _lease_path(work: Path) -> Path:

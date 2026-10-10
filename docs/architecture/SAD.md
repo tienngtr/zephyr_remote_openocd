@@ -1315,14 +1315,25 @@ and helper must implement one strict matching contract at cutover.
 Preferred:
 
 ```text
-$XDG_RUNTIME_DIR/zephyr_remote_openocd/<session-id>/
+$XDG_RUNTIME_DIR/zephyr_remote_openocd-sessions-v2/<session-id>/
 ```
 
 Fallback:
 
 ```text
-~/.cache/zephyr_remote_openocd/sessions/<session-id>/
+~/.cache/zephyr_remote_openocd/sessions-v2/<session-id>/
 ```
+
+Workspace storage format 2 requires the residual-child marker described in
+§38.7. Its roots are separate from, rather than beneath, the legacy runtime
+`zephyr_remote_openocd/` and cache `sessions/` roots. Legacy helper revisions
+cannot scan the new workspaces during reclamation, and new helpers neither
+stage into nor reclaim legacy workspaces. Marker absence in a legacy workspace
+does not establish child disposal. Legacy data requires independent disposal
+evidence before manual removal; it is not migrated automatically. This storage
+compatibility boundary is independent of Protocol v1/v2 and content-addressed
+helper deployment. Future incompatible reclamation rules require another
+isolated storage format rather than interpreting older data optimistically.
 
 Session workspaces and their storage root use owner-only directory
 permissions. Staging directories and associated session metadata remain

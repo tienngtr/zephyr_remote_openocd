@@ -764,6 +764,38 @@ sys.stdin.buffer.read()
             process.wait(timeout=30)
 
 
+@pytest.mark.parametrize("storage", ("runtime", "cache"))
+def test_workspace_storage_isolates_legacy_reclamation(tmp_path, monkeypatch, storage):
+    monkeypatch.setattr(remote_helper.Path, "home", lambda: tmp_path / "home")
+    if storage == "runtime":
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+        legacy_root = tmp_path / "zephyr_remote_openocd"
+    else:
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+        legacy_root = tmp_path / "home/.cache/zephyr_remote_openocd/sessions"
+    legacy = legacy_root / "abandoned"
+    (legacy / "staged").mkdir(parents=True)
+    (legacy / remote_helper.SESSION_LOCK).touch()
+    inputs = legacy / "staged/child-input"
+    inputs.write_bytes(b"legacy child may still use this")
+    os.utime(legacy, (1.0, 1.0))
+
+    _session_id, workspace, owner_lock = remote_helper.new_workspace()
+    try:
+        root = workspace.parent
+        # Old reclaimers scan arbitrary directories beneath their own root.
+        assert root != legacy_root
+        assert legacy_root not in root.parents
+        assert root not in legacy_root.parents
+        assert tuple(legacy_root.iterdir()) == (legacy,)
+        assert inputs.read_bytes() == b"legacy child may still use this"
+        with pytest.raises(ValueError):
+            remote_helper.stage(legacy)
+    finally:
+        owner_lock.close()
+        remote_helper.remove_workspace(workspace)
+
+
 def test_new_workspace_reclaims_only_unlocked_stale_sessions(tmp_path, monkeypatch):
     monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
     _stale_id, stale, stale_lock = remote_helper.new_workspace()
