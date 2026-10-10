@@ -40,6 +40,7 @@ from zephyr_remote_openocd.remote.model import (
     StagedDirectory,
     StagedFile,
 )
+from zephyr_remote_openocd.remote.outcome import CompletionPolicy
 from zephyr_remote_openocd.remote.paths import (
     REMOTE_ADDRESS_PLACEHOLDER,
     PathPlanner,
@@ -889,6 +890,7 @@ class TestFlashPlanning:
                 (("PROBE", "value"),),
             )
             argv = plan.process.argv
+            assert plan.process.completion_policy == CompletionPolicy.PROCESS_EXIT
             assert f"bindto {REMOTE_ADDRESS_PLACEHOLDER}" in argv
             assert "gdb_port 7777" in argv
             assert "gdb_port disabled" not in argv
@@ -1202,6 +1204,7 @@ class TestDebugPlanning:
             ) < server.process.argv.index("-f")
             assert "reset init" in server.process.argv
             for plan in (debug, attach, server):
+                assert plan.process.completion_policy == CompletionPolicy.LIVE_SERVER
                 assert plan.auxiliary_services == (
                     Service("tcl", 6333, 6333),
                     Service("telnet", 4444, 4444),
@@ -1355,6 +1358,7 @@ class TestDebugPlanning:
                 PathPlanner(()),
             )
             assert plan.gdb_argv is not None
+            assert plan.process.completion_policy == CompletionPolicy.LIVE_SERVER
             services = {item.name: item for item in plan.services}
             assert services == {
                 "gdb": Service("gdb", 3333, 3333),

@@ -11,6 +11,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 from .arguments import ArgumentTemplate, TclWord
+from .outcome import CompletionPolicy
 from .ssh import SshCommand
 
 
@@ -147,8 +148,11 @@ class RemoteProcess:
     readiness_timeout: float = 30.0
     literal_prefix: int = 0
     argv_templates: tuple[tuple[int, ArgumentTemplate], ...] = ()
+    # Internal operation policy; serialized only at the coordinated v2 cutover.
+    completion_policy: CompletionPolicy = CompletionPolicy.LIVE_SERVER
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "completion_policy", CompletionPolicy(self.completion_policy))
         argv, environment, required_paths, required_output_sentinels = _normalized_process_fields(
             self
         )

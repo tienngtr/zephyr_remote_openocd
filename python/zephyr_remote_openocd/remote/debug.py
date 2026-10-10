@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from .arguments import ArgumentTemplate, SessionValue
 from .model import DuplicateServiceError, RemoteProcess, Service, validated_services
 from .openocd_plan import plan_openocd_base
+from .outcome import CompletionPolicy
 from .paths import PathPlanner
 
 RTT_SEARCH_RANGE_SIZE = 0x10
@@ -288,6 +289,7 @@ def build_debug_plan(
         readiness_timeout=OPENOCD_READINESS_TIMEOUT,
         literal_prefix=base.literal_prefix,
         argv_templates=base.argv_templates,
+        completion_policy=CompletionPolicy.LIVE_SERVER,
     )
     return DebugPlan(
         process,

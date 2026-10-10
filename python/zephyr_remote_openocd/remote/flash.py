@@ -11,6 +11,7 @@ from pathlib import Path
 from .arguments import ArgumentTemplate, SessionValue, TclPathArgument
 from .model import RemoteProcess
 from .openocd_plan import OpenOcdBasePlan, plan_openocd_base
+from .outcome import CompletionPolicy
 from .paths import PathPlanner
 
 
@@ -284,5 +285,6 @@ def build_flash_plan(
             for index, arg in enumerate(arguments)
             if isinstance(arg, TclPathArgument)
         ),
+        completion_policy=CompletionPolicy.PROCESS_EXIT,
     )
     return FlashPlan(process, tuple(planner.staged_files), image.remote)
