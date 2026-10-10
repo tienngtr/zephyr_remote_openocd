@@ -1,0 +1,67 @@
+{
+  "local-after-cancel": {
+    "baseline_passed": true,
+    "semantic_assertion_failed": true,
+    "node": "test_boundaries.py::test_local_launch_revalidates_cancellation",
+    "mutant_exit": 1
+  },
+  "early-retry": {
+    "baseline_passed": true,
+    "semantic_assertion_failed": true,
+    "node": "test_runtime.py::test_retry_requires_true_producer_settlement",
+    "mutant_exit": 1
+  },
+  "stale-adopt": {
+    "baseline_passed": true,
+    "semantic_assertion_failed": true,
+    "node": "test_runtime.py::test_stale_offer_cannot_replace_current_attempt",
+    "mutant_exit": 1
+  },
+  "lose-ownership": {
+    "baseline_passed": true,
+    "semantic_assertion_failed": true,
+    "node": "test_runtime.py::test_real_acquisition_interruption_keeps_cleanup_owner[acquired]",
+    "mutant_exit": 1
+  },
+  "replace-primary": {
+    "baseline_passed": true,
+    "semantic_assertion_failed": true,
+    "node": "test_runtime.py::test_primary_is_preserved_when_real_workspace_cleanup_fails",
+    "mutant_exit": 1
+  },
+  "attempt-after-terminal": {
+    "baseline_passed": true,
+    "semantic_assertion_failed": true,
+    "node": "test_runtime.py::test_terminal_authority_forbids_attempt_entry",
+    "mutant_exit": 1
+  },
+  "second-terminal": {
+    "baseline_passed": true,
+    "semantic_assertion_failed": true,
+    "node": "test_boundaries.py::test_terminal_writer_failure_no_second_result[False]",
+    "mutant_exit": 1
+  },
+  "timeout-success": {
+    "baseline_passed": true,
+    "semantic_assertion_failed": true,
+    "node": "test_boundaries.py::test_local_timeout_does_not_claim_remote_cleanup",
+    "mutant_exit": 1
+  },
+  "sources_sha256": {
+    "__init__.py": "4383ad7dbb0ed0372954186cdfbbcd6b70bb1c5e6e480965fb32573f6e981422",
+    "harness.py": "8f60244e39833e1dcccc5f9606aa92cdf6b6131806df8fe673ab6c89e0f877ee",
+    "helper.py": "e5a1631c1eb1f53ce0630c1515686ac5bd8876b149d2c767f599dfaa26a7d5eb",
+    "local.py": "63984ea145a9ccab102150a6b8ba5ae54aa43505d258f0d62ade3748e2b85343",
+    "model.py": "4ca9c83ebe03bcc198cb725a45a329f0db215d7ed1377a9cf6b1cd7c34c43fe9",
+    "mutations.py": "5d52b1567a515826ebdcf9a0d106c5b17c770af65330df780b41a057efeab318",
+    "runtime.py": "4598637d9c53fd8e025a445588584ec8a7f70cdfeb3c121a4b08f56540ae394d",
+    "standin.py": "f6162ecc73316112869b5eb6c4da85fe69ff488cdf10683a779096784dbe4730",
+    "streams.py": "d08e901e100e3d5ed0ceb7ac38a458e520e0ccae77d5e5b9d0fbd6509ff4af6b",
+    "test_boundaries.py": "d1e99f2897833444b077e3afe0bdf08badcf3bf91fa799f273f19dca16a5871e",
+    "test_process.py": "b3aa4a6771016a8adc04a99974cb9ea56ba9ff903365bad8563f2c52d3b83ae1",
+    "test_runtime.py": "8100e01002de975901ff0f1c2c1d1a702431d810c4d3d432344420fb177c7266",
+    "unix.py": "77f3eb5a9235c930b5e9819b1d402fa28e18ba34ddf454f7953e84da89962727",
+    "verify_transport.py": "7cbd952c3b540750973c97f352912a1b05e1fcdb25a6c0e853dc9dd32beb9185",
+    "workspace.py": "ae8c862f29f77f1670a855f4b8d6231c249278942cc51581a0f44707e5bb0664"
+  }
+}

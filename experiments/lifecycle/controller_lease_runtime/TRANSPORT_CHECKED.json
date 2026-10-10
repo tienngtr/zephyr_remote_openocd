@@ -1,0 +1,27 @@
+{
+  "pipe-False": {
+    "final_received": true,
+    "cleanup_confirmed_by_observation": true
+  },
+  "pipe-True": {
+    "final_received": false,
+    "cleanup_confirmed_by_observation": true
+  },
+  "openssh_version": "OpenSSH_10.6p1, OpenSSL 3.6.5 29 Sep 2026",
+  "ssh-False": {
+    "final_received": true,
+    "cleanup_confirmed_by_observation": true
+  },
+  "ssh-True": {
+    "final_received": false,
+    "cleanup_confirmed_by_observation": true
+  },
+  "mux-False": {
+    "final_received": true,
+    "cleanup_confirmed_by_observation": true
+  },
+  "mux-True": {
+    "final_received": false,
+    "cleanup_confirmed_by_observation": true
+  }
+}
