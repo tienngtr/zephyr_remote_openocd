@@ -13,6 +13,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO, override
 
@@ -631,7 +632,9 @@ exec({deploy_module.BOOTSTRAP!r}, {{\"__name__\": \"__main__\"}})
 def test_packaged_remote_helper_is_available_and_valid_python():
     source = _helper_source()
     assert source
-    compile(source, "remote_helper.py", "exec")
+    with zipfile.ZipFile(io.BytesIO(source)) as bundle:
+        for name in bundle.namelist():
+            compile(bundle.read(name), name, "exec")
 
 
 class TestStaging:

@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import shlex
+import zipfile
 from dataclasses import dataclass
 from importlib.resources import files
 
@@ -67,7 +69,26 @@ class DeploymentResult:
 
 def _helper_source() -> bytes:
     try:
-        return files("zephyr_remote_openocd").joinpath("remote_helper.py").read_bytes()
+        package = files("zephyr_remote_openocd")
+        entries = {
+            "__main__.py": package.joinpath("remote_helper.py").read_bytes(),
+            "zephyr_remote_openocd/__init__.py": b"",
+            "zephyr_remote_openocd/remote/__init__.py": b"",
+        }
+        for module in ("outcome", "lifecycle", "wire"):
+            entries[f"zephyr_remote_openocd/remote/{module}.py"] = package.joinpath(
+                "remote", f"{module}.py"
+            ).read_bytes()
+        # Python executes a zip application regardless of filename extension.
+        # Fixed metadata makes its digest depend only on canonical source bytes.
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+            for name, data in sorted(entries.items()):
+                info = zipfile.ZipInfo(name)
+                info.compress_type = zipfile.ZIP_DEFLATED
+                info.external_attr = 0o600 << 16
+                bundle.writestr(info, data)
+        return output.getvalue()
     except OSError as error:
         raise DeploymentError(f"cannot read packaged remote helper: {error}") from error
 
