@@ -168,6 +168,25 @@ def test_unsafe_startup_failure_is_primary_before_cleanup() -> None:
     assert tuple(detail.code for detail in state.outcome.diagnostics) == ("SIGNAL",)
 
 
+def test_controller_eof_during_retry_settlement_retains_attempt_failure() -> None:
+    lifecycle, generation = _owned()
+    assert lifecycle.observe_child_exit(generation, 1)
+    assert lifecycle.classify_startup_failure(generation, BIND_COLLISION, safely_repeatable=True)
+    assert not lifecycle.settle_attempt(
+        generation, producer_quiescent=True, resources_disposed=False
+    )
+
+    lifecycle.terminate(Trigger.CONTROLLER_EOF)
+    assert lifecycle.retry(generation) is None
+    assert lifecycle.settle_attempt(generation, producer_quiescent=True, resources_disposed=True)
+    snapshot = lifecycle.freeze(CONFIRMED)
+
+    assert snapshot.outcome.trigger == Trigger.CONTROLLER_EOF
+    assert snapshot.outcome.primary_failure is None
+    assert snapshot.outcome.diagnostics == (BIND_COLLISION,)
+    assert snapshot.outcome.child_result == ChildResult(generation, 1, False)
+
+
 def test_retry_generation_budget_is_finite() -> None:
     lifecycle, generation = _starting()
     for expected in range(1, 33):

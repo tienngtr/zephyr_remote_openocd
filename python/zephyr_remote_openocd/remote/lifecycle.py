@@ -294,7 +294,11 @@ class RemoteLifecycle[RequestT: StartupRequest]:
             else attempt.child_result
         )
         # Validate the incoming cause even when another trigger is established.
-        outcome = Outcome(trigger, failure, child_result=result)
+        provisional = state.provisional_failure if isinstance(state, Starting) else None
+        # A winning termination retains the classified attempt failure as detail;
+        # retry exhaustion already promotes that same failure to primary.
+        diagnostics = (provisional,) if provisional is not None and provisional != failure else ()
+        outcome = Outcome(trigger, failure, diagnostics, child_result=result)
         if isinstance(state, Closed):
             if failure is not None:
                 self._state = replace(state, local_diagnostics=(*state.local_diagnostics, failure))
