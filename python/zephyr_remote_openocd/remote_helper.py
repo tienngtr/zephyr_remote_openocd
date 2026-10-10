@@ -500,26 +500,45 @@ def allocate_service_address(ports, preferred_address=None):
         lease = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
         try:
             lease.bind(f"\0zephyr_remote_openocd.address.{address}")
-        except OSError as exc:
-            lease.close()
-            if exc.errno == errno.EADDRINUSE:
+        except BaseException as exc:
+            try:
+                lease.close()
+            except BaseException as cleanup_error:
+                _raise_cleanup_errors([exc, cleanup_error])
+            if isinstance(exc, OSError) and exc.errno == errno.EADDRINUSE:
                 continue
             raise
         sockets = []
+        primary = None
         try:
             for port in ports:
                 candidate = socket.socket()
                 sockets.append(candidate)
                 candidate.bind((address, port))
-            return _AllocatedAddress(address, lease)
-        except OSError:
-            lease.close()
-        except BaseException:
-            lease.close()
-            raise
-        finally:
-            for candidate in sockets:
+        except BaseException as exc:
+            primary = exc
+        cleanup_errors = []
+        for candidate in sockets:
+            try:
                 candidate.close()
+            except BaseException as exc:
+                cleanup_errors.append(exc)
+        if primary is None and not cleanup_errors:
+            try:
+                # Transfer only after independent probes settle; until the
+                # return value is constructed, the allocator owns rollback.
+                return _AllocatedAddress(address, lease)
+            except BaseException as exc:
+                primary = exc
+        try:
+            lease.close()
+        except BaseException as exc:
+            cleanup_errors.append(exc)
+        if isinstance(primary, OSError) and not cleanup_errors:
+            continue
+        if primary is not None:
+            cleanup_errors.insert(0, primary)
+        _raise_cleanup_errors(cleanup_errors)
     raise RuntimeError(
         f"loopback allocation exhausted after {MAX_ADDRESS_ALLOCATION_ATTEMPTS} attempts"
     )

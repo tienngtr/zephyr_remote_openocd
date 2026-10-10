@@ -1716,6 +1716,11 @@ Signal-handler, descriptor, workspace, and allocation rollback cleanup continues
 across `BaseException` failures while preserving the primary outcome and nested
 secondary notes on the current Protocol v1 boundary. Failed retirement of an
 address lease prevents a replacement spawn and leaves its cleanup owner reachable.
+Address allocation likewise retains its reservation until all temporary TCP
+probes have closed and the return value can adopt it. A probe finalizer or return
+construction failure attempts every independent socket release and prevents
+candidate retry when cleanup remains unsuccessful. Ordinary pre-spawn candidate
+selection remains distinct from a post-spawn child retry.
 
 Bounded accumulation also applies before writer admission: raw-observation queues,
 per-stream decoding/marker capture, and structured diagnostic retention cannot

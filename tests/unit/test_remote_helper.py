@@ -607,6 +607,40 @@ def test_bind_collision_detection_does_not_cross_lines_or_streams():
     )
 
 
+@pytest.mark.parametrize("failure_type", (OSError, KeyboardInterrupt))
+def test_address_probe_finalizer_failure_rolls_back_every_socket(monkeypatch, failure_type):
+    original_socket = socket.socket
+    sockets = []
+    failure = failure_type("address probe close interrupted adoption")
+
+    def acquire(*args, **kwargs):
+        owned = original_socket(*args, **kwargs)
+        sockets.append(owned)
+        controlled = create_autospec(original_socket, instance=True, spec_set=True)
+        controlled.bind.side_effect = owned.bind
+        if len(sockets) == 2:
+
+            def close_then_fail():
+                owned.close()
+                raise failure
+
+            controlled.close.side_effect = close_then_fail
+        else:
+            controlled.close.side_effect = owned.close
+        return controlled
+
+    monkeypatch.setattr(remote_helper.socket, "socket", acquire)
+    try:
+        with pytest.raises(failure_type) as raised:
+            remote_helper.allocate_service_address((0, 0))
+        assert raised.value is failure
+        assert len(sockets) == 3
+        assert all(owned.fileno() == -1 for owned in sockets)
+    finally:
+        for owned in sockets:
+            owned.close()
+
+
 def test_preferred_address_is_leased_before_random_allocation(monkeypatch):
     def unexpected_random():
         raise AssertionError("a free preferred address should be reused")
