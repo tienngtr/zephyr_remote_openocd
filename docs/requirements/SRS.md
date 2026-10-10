@@ -39,9 +39,9 @@ The implementation and user-facing documentation is board- and board-vendor-agno
 ---
 
 The lifecycle requirements below define the controller-lease redesign target.
-This normative-contract checkpoint changes documentation only: production still
-implements Protocol v1 until the coordinated client/helper cutover. Revised
-requirements are not claims of current implementation conformance; migration
+Production still implements Protocol v1 until the coordinated client/helper
+cutover. Structured foundations and local launch gating precede that cutover.
+Revised requirements are not claims of current implementation conformance; migration
 gaps and acceptance obligations are recorded in
 [verification.md](../traceability/verification.md#controller-lease-migration).
 The product YAML contract is unchanged.

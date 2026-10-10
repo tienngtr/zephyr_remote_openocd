@@ -3,11 +3,10 @@
 ## Status and compatibility
 
 This is the selected normative target for the controller-lease redesign.
-The Phase 1 checkpoint changes documentation only. Production client, helper,
-fixtures, and tests still implement
+Production client, helper, and wire fixtures still implement
 [Protocol v1 at the baseline revision](https://github.com/tienngtr/zephyr_remote_openocd/blob/ce12b6a/docs/architecture/protocol.md).
 They move to v2 together at the protocol-cutover checkpoint, after structured
-foundations and physical-boundary adaptation. Passing current tests does not
+foundations and physical-boundary adaptation. Foundation tests do not
 establish v2 conformance.
 
 The incompatible session grammar uses numeric `version: 2`. There is no

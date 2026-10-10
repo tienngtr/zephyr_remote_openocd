@@ -13,8 +13,9 @@
 
 This document describes the selected architecture for the Zephyr west runner
 for remote OpenOCD. The controller-lease lifecycle and Protocol v2 are the
-redesign target at the normative-contract checkpoint, not yet production
-behavior. Production remains on Protocol v1 until client/helper cutover;
+redesign target, not yet the deployed helper behavior. Phase 2 introduces
+structured foundations and local launch gating. Production remains on Protocol
+v1 until client/helper cutover;
 existing physical ownership mechanisms described here are retained or adapted,
 not replaced by experimental implementations. The implementation gaps are
 tracked in [verification.md](../traceability/verification.md#controller-lease-migration).
@@ -1511,6 +1512,34 @@ remote OpenOCD termination.
 
 ### 38.2 Remote lifecycle authority
 
+The Phase 2 foundation in
+[`remote/lifecycle.py`](../../python/zephyr_remote_openocd/remote/lifecycle.py)
+implements a pure transition authority with immutable phase and attempt records.
+Its read-only request role keeps the validated concrete request available to the
+coordinator without coupling the model to Zephyr or physical owners. Attempt
+entry and READY consume admission facts; child observation records the first
+genuine status and the preceding cleanup-signal context. Retry consumes safe
+classification and separate producer/resource settlement facts. Termination
+prevents further entry or activation, including after a late acquisition result.
+Closure freezes one snapshot; later failures remain local diagnostics.
+
+This authority is not yet wired into the deployed helper. Protocol v1's current
+authority and fences remain the only remote runtime authority until adaptation
+and cutover. Physical adapters must validate eligibility before wire admission,
+retain immediate acquisition ownership, and establish the facts passed into the
+foundation. Boolean admission/liveness/settlement facts are not physical effects
+or proof of adapter correctness. No new effect queue or controller-recognition
+fence is introduced.
+
+[`remote/outcome.py`](../../python/zephyr_remote_openocd/remote/outcome.py)
+provides immutable diagnostics, child results, outcomes, disposal reports, and
+terminal snapshots. Existing exception notes can be captured at a boundary as
+nested diagnostic values without mutating the source exception. The first
+failure stays primary and subsequent failures retain order and nested detail.
+Independent helper/SSH validation and bounded wire encoding remain cutover work.
+Flash and debug plans now select completion policy explicitly in the internal
+process description; Protocol v1 START serialization is unchanged.
+
 One remote coordinator decides lifecycle transitions. Control-input, stream,
 child-exit, deadline, writer, and signal adapters report facts; none independently
 chooses shutdown, success, or retry. A standard-library asyncio structured task
@@ -1841,6 +1870,22 @@ Standalone staging behavior and protocol framing remain coordinated through
 ---
 
 ## 39. Local Session Lifecycle
+
+The Phase 2 implementation uses
+[`remote/launch.py`](../../python/zephyr_remote_openocd/remote/launch.py) in the
+session coordinator. Each GDB or RTT entry prepares a launch generation and
+checks observed remote readiness, current required forwards, recorded helper
+exit/failure, and forwarding health before invoking the client. The gate commits
+Active at that entry. A later RTT boundary can return to Opening only while the
+operation still permits launches; cancellation, established failure, or closure
+cannot be reopened. An old queued generation cannot enter a newer boundary.
+
+Session closure revokes launch eligibility inside the existing SIGINT-masked
+cleanup scope before touching physical owners. Cleanup ownership and the
+Protocol v1 STOP path remain unchanged. GDB still uses Zephyr's `run_client`,
+including its native interactive SIGINT handling. The pure gate supports queued
+entry revalidation; the current adapter invokes clients synchronously and adds
+no scheduler or task ownership.
 
 The local operation alone owns dependent launch eligibility. Its conceptual
 phases are Opening, Active, Cancelling, and Ended. These roles apply to each
@@ -2277,5 +2322,7 @@ implementation template. In particular, it does not authorize copying pidfd,
 `/proc`, or subreaper machinery beyond existing qualified process ownership.
 The [migration traceability](../traceability/verification.md#controller-lease-migration)
 records intentional differences and unimplemented acceptance obligations.
-Architectural review at this checkpoint precedes structured foundations; no
-production lifecycle or protocol cutover occurs in this documentation change.
+The structured-foundation checkpoint precedes physical-boundary adaptation.
+Remote foundation tests validate semantic transitions, not deployed helper
+behavior or Protocol v2 acceptance. No physical-owner adaptation or protocol
+cutover has occurred at this checkpoint.

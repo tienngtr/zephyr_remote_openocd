@@ -8,7 +8,7 @@ been executed recently.
 
 Every SRS requirement is listed in either the baseline coverage matrix or the
 [controller-lease migration](#controller-lease-migration) matrix. At this
-normative-contract checkpoint, production still implements Protocol v1. Baseline
+structured-foundation checkpoint, production still implements Protocol v1. Baseline
 coverage below describes that implementation, not conformance to revised
 lifecycle clauses. Migration status supersedes baseline status for those clauses;
 passing existing tests does not qualify Protocol v2. **Documented** records
@@ -135,10 +135,28 @@ there is no maintained attach-RTT hardware profile yet.
 ## Controller-lease migration
 
 The SRS, SAD, and [Protocol v2](../architecture/protocol.md) define the selected
-target. Phase 1 changes those contracts together and stops for architectural
-review. No production code, protocol fixtures, or test expectations change.
-Implementation and new regression evidence remain pending subsequent checkpoints.
+target. Phase 1 revised those contracts together. Phase 2 adds structured
+foundations and integrates the local launch gate without changing the wire
+contract. Remote physical adaptation and v2 acceptance remain pending subsequent
+checkpoints.
 Existing v1 tests stay in place while production needs their current safeguards.
+
+### Structured-foundation evidence
+
+The following evidence establishes Phase 2 semantics, not full target runtime
+acceptance. The revised-clause status below remains Unverified until the actual
+physical and wire boundaries are exercised after integration.
+
+| Foundation | Maintained evidence | Remaining boundary |
+| --- | --- | --- |
+| Structured outcome and child provenance | [`test_outcome.py`](../../tests/unit/test_outcome.py): first failure, ordered nested detail, genuine status separate from infrastructure failure, signal failure, normal server disposal versus one-shot completion, residual cleanup. | Actual child observation, signal capture, bounded serialization, helper/SSH status checks, and terminal wire validation. |
+| Remote phases and attempts | [`test_lifecycle.py`](../../tests/unit/test_lifecycle.py): current owned live readiness, explicit policy, admission failure, real-settlement prerequisites, stale generations, finite retry budget, late acquisition during termination, unique frozen result and late diagnostics. Tests use real foundation objects and immutable process requests. | Physical adapters must supply valid admission, liveness, generation identity, and settlement facts while retaining resource ownership. The deployed v1 helper still uses its current authority. |
+| Local launch eligibility | [`test_launch.py`](../../tests/unit/test_launch.py): READY plus forwarding, cancellation/fatal failure, per-phase forwards, stale queued launch, execution-entry revalidation. [`test_backend.py`](../../tests/unit/test_backend.py) exercises the real coordinator/gate through controlled helper/SSH boundaries, including closure during observation and fatal failure followed by transport recovery. | Actual v2 READY and controller EOF handling; existing adapter GDB/RTT tests exercise the integrated gate under Protocol v1. |
+| Completion policy planning and compatibility | [`TestFlashPlanning` and `TestDebugPlanning`](../../tests/unit/test_remote.py) select process-exit and live-server explicitly; `test_internal_completion_policy_does_not_change_protocol_v1` checks unchanged serialization. | Required v2 policy field, no-READY one-shot runtime, no readiness timer, and policy-aware wire event validation. |
+
+These foundations acquire no physical resources. Existing helper, process,
+forwarding, RTT, staging, and workspace owners remain in place. Foundation
+settlement facts do not claim that cancellation or timeout disposed a resource.
 
 The review evidence is the immutable
 [requirements audit](https://github.com/tienngtr/zephyr_remote_openocd/blob/a24823ed44a25be326b4899b441b8f4ae2120d3f/experiments/lifecycle/controller_lease_runtime/REQUIREMENTS_AUDIT.md)
@@ -152,8 +170,8 @@ experiment branches are preserved; no experimental code is merged or copied.
 
 **Unverified** below means the revised clause lacks production-target acceptance,
 even when baseline tests provide partial coverage. The contract itself receives
-review at this checkpoint. Tests added in later phases must exercise the real
-production boundary with deterministic handshakes, following
+review at the normative checkpoint. Integration tests added in later phases must
+exercise the real production boundary with deterministic handshakes, following
 [test_design.md](../development/test_design.md).
 
 | Requirements / revised clause | Target status | Design and required acceptance |
@@ -207,5 +225,5 @@ An actual cutover difference contradicting a required equivalence or safety row
 is a regression. Unclassified differences require review before cutover is
 accepted. External qualification still follows the configured testing layers,
 collects nodes first, runs destructive profiles serially, and inspects cleanup
-before target reuse. Phase 1 ordinary/static checks establish documentation and
-baseline integrity only; they are not SSH directional-EOF or hardware acceptance.
+before target reuse. Foundation ordinary/static checks establish semantic model
+and baseline integrity; they are not SSH directional-EOF or v2 acceptance.
