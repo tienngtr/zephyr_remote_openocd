@@ -1799,6 +1799,12 @@ remain, new staging is rejected, independent local descriptors are closed, and
 cleanup fails. Stale reclamation skips marked workspaces even after helper exit
 or the age threshold: neither proves residual child disposal. Removal of such
 retained data requires independently established disposal.
+Reclamation uses explicit non-following filesystem inspection. Only
+`FileNotFoundError` establishes marker, lock, or corresponding workspace
+absence; other inspection errors retain the entry. A non-regular session lock
+likewise does not establish inactivity. When a session lock exists, reclamation
+inspects the residual marker after acquiring that lock, so an owner publishing
+the marker before releasing ownership cannot be mistaken for a settled child.
 Once child disposal is confirmed, a staging or filesystem removal failure alone
 does not prevent later stale reclamation under the existing exclusion mechanism.
 

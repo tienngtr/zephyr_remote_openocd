@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import fcntl
 import importlib.util
 import io
@@ -851,6 +852,79 @@ def test_reclaimer_continues_after_stale_lock_error(tmp_path, monkeypatch):
 
     assert blocked.exists()
     assert not removable.exists()
+
+
+@pytest.mark.parametrize("source", ("marker", "lock", "metadata-workspace"))
+@pytest.mark.parametrize("error_number", (errno.EACCES, errno.EIO))
+def test_reclaimer_retains_entries_when_inspection_fails(
+    tmp_path, monkeypatch, source, error_number
+):
+    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
+    _session_id, workspace, owner_lock = remote_helper.new_workspace()
+    owner_lock.close()
+    marker = workspace / remote_helper.UNCONFIRMED_CHILD
+    if source == "marker":
+        marker.touch()
+        uncertain = marker
+    elif source == "lock":
+        uncertain = workspace / remote_helper.SESSION_LOCK
+    else:
+        uncertain = workspace
+    metadata = (remote_helper._lease_path(workspace), remote_helper._closure_path(workspace))
+    metadata[1].touch()
+    inputs = workspace / "staged/child-input"
+    inputs.write_bytes(b"retain uncertain inputs")
+    for path in (workspace, *metadata):
+        os.utime(path, (1.0, 1.0))
+
+    original_stat = os.stat
+    original_lstat = os.lstat
+
+    def inspect(operation, path, *args, **kwargs):
+        if path == uncertain or path == str(uncertain):
+            raise OSError(error_number, "injected filesystem inspection failure")
+        return operation(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            remote_helper.os,
+            "stat",
+            lambda *args, **kwargs: inspect(original_stat, *args, **kwargs),
+        )
+        patch.setattr(
+            remote_helper.os,
+            "lstat",
+            lambda *args, **kwargs: inspect(original_lstat, *args, **kwargs),
+        )
+        remote_helper.reclaim_stale_workspaces(tmp_path, now=remote_helper.STALE_SESSION_AGE + 2)
+
+    assert inputs.read_bytes() == b"retain uncertain inputs"
+    assert all(path.is_file() for path in metadata)
+    if source == "marker":
+        assert marker.is_file()
+
+
+def test_reclaimer_inspects_residual_marker_after_session_lock_handoff(tmp_path, monkeypatch):
+    monkeypatch.setattr(remote_helper, "workspace_root", lambda: tmp_path)
+    _session_id, workspace, owner_lock = remote_helper.new_workspace()
+    marker = workspace / remote_helper.UNCONFIRMED_CHILD
+    os.utime(workspace, (1.0, 1.0))
+    original_flock = remote_helper.fcntl.flock
+
+    def finish_owner_before_lock_acquisition(stream, operation):
+        if Path(stream.name) == workspace / remote_helper.SESSION_LOCK:
+            marker.touch()
+            owner_lock.close()
+        return original_flock(stream, operation)
+
+    monkeypatch.setattr(remote_helper.fcntl, "flock", finish_owner_before_lock_acquisition)
+    try:
+        remote_helper.reclaim_stale_workspaces(tmp_path, now=remote_helper.STALE_SESSION_AGE + 2)
+        assert owner_lock.closed
+        assert marker.is_file()
+        assert (workspace / "staged").is_dir()
+    finally:
+        owner_lock.close()
 
 
 def test_new_workspace_removes_partial_directory_on_initialization_failure(tmp_path, monkeypatch):

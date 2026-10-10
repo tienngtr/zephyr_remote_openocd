@@ -21,6 +21,7 @@ import secrets
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tarfile
@@ -165,37 +166,47 @@ def close_staging_admission(work: Path) -> None:
         pass
 
 
+def _reclaim_unmarked_workspace(work: Path) -> None:
+    """Require confirmed marker absence; inspection errors retain the inputs."""
+    try:
+        (work / UNCONFIRMED_CHILD).lstat()
+    except FileNotFoundError:
+        remove_workspace(work)
+
+
 def reclaim_stale_workspaces(root, now=None):
-    """Remove old workspaces whose owning helper no longer holds its lock."""
+    """Reclaim only entries with established inactive ownership and disposal."""
     cutoff = (time.time() if now is None else now) - STALE_SESSION_AGE
     try:
         candidates = tuple(root.iterdir())
-    except FileNotFoundError:
+    except OSError:
         return
     for path in candidates:
         lock_path = path / SESSION_LOCK
         try:
-            if path.stat().st_mtime > cutoff:
+            entry = path.lstat()
+            if entry.st_mtime > cutoff:
                 continue
-            if path.is_file() and path.name.startswith("."):
+            if stat.S_ISREG(entry.st_mode) and path.name.startswith("."):
                 for suffix in (".lease", ".closed"):
                     if path.name.endswith(suffix):
                         # Metadata is retired only after its workspace is gone.
                         # A pending stage still checks closure and workspace
                         # existence after locking, including on a retired inode.
-                        if not (root / path.name[1 : -len(suffix)]).exists():
+                        try:
+                            (root / path.name[1 : -len(suffix)]).lstat()
+                        except FileNotFoundError:
                             path.unlink()
                         break
                 continue
-            if not path.is_dir():
+            if not stat.S_ISDIR(entry.st_mode):
                 continue
-            if (path / UNCONFIRMED_CHILD).exists():
-                # Helper exit cannot prove that a residual child stopped using
-                # these inputs. Age and an unlocked session are insufficient.
+            try:
+                lock_entry = lock_path.lstat()
+            except FileNotFoundError:
+                _reclaim_unmarked_workspace(path)
                 continue
-            if not lock_path.is_file():
-                with suppress(OSError):
-                    remove_workspace(path)
+            if not stat.S_ISREG(lock_entry.st_mode):
                 continue
             lock = lock_path.open("r+b")
         except OSError:
@@ -206,7 +217,9 @@ def reclaim_stale_workspaces(root, now=None):
             except OSError:
                 continue
             with suppress(OSError):
-                remove_workspace(path)
+                # Inspect after acquiring the session lock: the previous
+                # owner may publish a residual marker before releasing it.
+                _reclaim_unmarked_workspace(path)
         finally:
             lock.close()
 
