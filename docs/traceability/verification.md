@@ -247,10 +247,10 @@ and primary-failure coverage at the v2 boundary.
 
 ### Differential acceptance decisions
 
-This table records selected behavior against corrected main and stock Zephyr.
-It classifies the contract change, not an implemented or qualified difference.
-The linked experiment matrix supplies the detailed histories; all acceptance
-against the new production path remains pending cutover/qualification.
+This table classifies selected behavior against corrected main and stock Zephyr.
+The linked experiment matrix supplies the detailed histories. The production
+cutover and its selected-profile validation are complete; broader qualification
+of the combined acceptance obligations remains pending.
 
 | Behavior | Classification | Contract decision / acceptance boundary |
 | --- | --- | --- |
