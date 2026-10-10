@@ -22,7 +22,6 @@ from .forwarding import (
     _ForwardManager,
 )
 from .helper_client import _HelperClient, _HelperCloseResult
-from .launch import LaunchDenied, LaunchGate
 from .model import (
     RemoteProcess,
     RemoteSessionRequest,
@@ -31,7 +30,6 @@ from .model import (
     SessionDescriptor,
     StagedEntry,
 )
-from .outcome import CompletionPolicy, Diagnostic
 from .preferred_address_cache import load_preferred_address, remember_preferred_address
 from .protocol import (
     ProtocolError,
@@ -156,7 +154,6 @@ class RemoteSession:
         self._required_services: set[Service] = set()
         self._forward_failures: dict[Service, SessionError] = {}
         self._warned_services: set[Service] = set()
-        self._launch_gate = LaunchGate()
 
     @property
     def forwarded_services(self) -> tuple[Service, ...]:
@@ -193,13 +190,9 @@ class RemoteSession:
             output_handler=output_handler,
             process_start_handler=process_start_handler,
         )
-        try:
-            self._helper.acquire()
-            self._stage(self.request.staged_files)
-            self._start_process(self.request.services)
-        except BaseException as error:
-            self._launch_gate.fail(Diagnostic.from_exception("STARTUP_FAILURE", error))
-            raise
+        self._helper.acquire()
+        self._stage(self.request.staged_files)
+        self._start_process(self.request.services)
 
     @classmethod
     def open(
@@ -268,8 +261,6 @@ class RemoteSession:
             else None,
         )
         self.descriptor = SessionDescriptor(helper.allocation, address)
-        if self.request.process.completion_policy == CompletionPolicy.LIVE_SERVER:
-            self._launch_gate.observe_remote_ready()
         auxiliary = set(self.request.auxiliary_services)
         self.forward(tuple(service for service in service_list if service not in auxiliary))
         self.forward(self.request.auxiliary_services, required=False)
@@ -285,11 +276,7 @@ class RemoteSession:
             raise SessionError("remote session is not ready for additional forwarding")
         service_list = tuple(services)
         if required and service_list:
-            try:
-                self._forwards.start(service_list, self.descriptor.remote_address)
-            except BaseException as error:
-                self._launch_gate.fail(Diagnostic.from_exception("FORWARD_FAILURE", error))
-                raise
+            self._forwards.start(service_list, self.descriptor.remote_address)
             self._required_services.update(service_list)
             remember_preferred_address(
                 self.request.host, self.request.ssh_command, self.descriptor.remote_address
@@ -336,30 +323,6 @@ class RemoteSession:
         self._check_forward_health()
         return result if result is not None else helper.recorded_openocd_exit()
 
-    def run_dependent[ResultT](self, action: Callable[[], ResultT], *, client_name: str) -> ResultT:
-        """Check local eligibility at the dependent client's execution boundary."""
-        try:
-            generation = self._launch_gate.prepare(self._required_services)
-        except LaunchDenied as error:
-            raise SessionClosedError(str(error)) from error
-        try:
-            returncode = self.check_openocd_exit()
-            if returncode is not None:
-                raise SessionError(
-                    f"remote OpenOCD exited before {client_name} startup with status {returncode}"
-                )
-            self._launch_gate.observe_forwarded(self.forwarded_services)
-            if not self._launch_gate.enter(generation):
-                raise SessionClosedError(f"{client_name} launch is no longer eligible")
-        except BaseException as error:
-            self._launch_gate.fail(Diagnostic.from_exception("LAUNCH_FAILURE", error))
-            raise
-        try:
-            return action()
-        except BaseException as error:
-            self._launch_gate.fail(Diagnostic.from_exception("CLIENT_FAILURE", error))
-            raise
-
     def wait_for_openocd_exit(self, timeout: float | None = None) -> int:
         if self.closed:
             result = self.openocd_returncode
@@ -388,7 +351,6 @@ class RemoteSession:
         # Protect subsystem entry as well as each owner's cleanup sequence.
         previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
         try:
-            self._launch_gate.cancel()
             try:
                 self._forwards.close()
             except BaseException as error:
@@ -409,7 +371,6 @@ class RemoteSession:
             elif helper_cleanup_errors:
                 errors.extend(helper_cleanup_errors)
             self.closed = True
-            self._launch_gate.end()
         finally:
             try:
                 signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)

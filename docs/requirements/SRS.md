@@ -40,7 +40,8 @@ The implementation and user-facing documentation is board- and board-vendor-agno
 
 The lifecycle requirements below define the controller-lease redesign target.
 Production still implements Protocol v1 until the coordinated client/helper
-cutover. Structured foundations and local launch gating precede that cutover.
+cutover. Structured remote and local lifecycle foundations precede that cutover;
+local launch-gate integration awaits the client/session authority adaptation.
 Revised requirements are not claims of current implementation conformance; migration
 gaps and acceptance obligations are recorded in
 [verification.md](../traceability/verification.md#controller-lease-migration).

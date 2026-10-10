@@ -23,8 +23,6 @@ from zephyr_remote_openocd.remote.protocol import encode_message
 from zephyr_remote_openocd.remote.session import SessionClosedError, SessionError
 from zephyr_remote_openocd.remote.ssh import SshCommand
 
-from tests.forwarding_support import ForwardingHarness
-
 OPENOCD_FAILURE_RC = 7
 FORWARD_FAILURE_RC = 13
 HELPER_FAILURE_RC = 17
@@ -97,57 +95,6 @@ def _make_session() -> RemoteSession:
     request = RemoteSessionRequest("host", SshCommand(), RemoteProcess(("openocd",)))
     deployment = DeploymentResult("/helper.py", "digest", False)
     return RemoteSession(request, deployment)
-
-
-def test_dependent_entry_rechecks_close_during_helper_observation(monkeypatch) -> None:
-    harness = ForwardingHarness(monkeypatch)
-    session = harness.open(services=(), auxiliary=())
-    executed: list[str] = []
-
-    def close_during_observation() -> int | None:
-        session.close()
-        return session.openocd_returncode
-
-    monkeypatch.setattr(harness.helper, "recorded_openocd_exit", close_during_observation)
-    with pytest.raises(SessionClosedError):
-        session.run_dependent(lambda: executed.append("client"), client_name="client")
-    assert executed == []
-    assert harness.helper.close_calls == 1
-
-
-@pytest.mark.parametrize("source", ("helper", "client"))
-def test_dependent_failure_blocks_later_launch_even_when_transport_recovers(
-    monkeypatch, source: str
-) -> None:
-    harness = ForwardingHarness(monkeypatch)
-    session = harness.open()
-    first = RuntimeError("dependent operation failed")
-    executed: list[str] = []
-
-    def fail() -> None:
-        raise first
-
-    if source == "helper":
-
-        def failed_observation() -> int | None:
-            raise first
-
-        monkeypatch.setattr(harness.helper, "recorded_openocd_exit", failed_observation)
-
-        def action() -> None:
-            executed.append("client")
-    else:
-        action = fail
-    try:
-        with pytest.raises(RuntimeError) as raised:
-            session.run_dependent(action, client_name="client")
-        assert raised.value is first
-        monkeypatch.setattr(harness.helper, "recorded_openocd_exit", lambda: None)
-        with pytest.raises(SessionClosedError):
-            session.run_dependent(lambda: executed.append("later client"), client_name="client")
-        assert executed == []
-    finally:
-        session.close()
 
 
 @pytest.mark.parametrize("cleanup_fails", (False, True), ids=("clean", "nested-failure"))

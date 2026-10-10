@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Local dependent-launch authority, independent of the helper lifecycle."""
+"""Pure local launch foundation for the later client/session adaptation.
+
+The coordinator must account for recorded fatal observations at execution
+entry through the same authority boundary. This gate has no synchronization
+with the Protocol v1 reader and is not integrated into the current session.
+"""
 
 from collections.abc import Iterable
 from enum import Enum, auto

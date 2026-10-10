@@ -136,8 +136,9 @@ there is no maintained attach-RTT hardware profile yet.
 
 The SRS, SAD, and [Protocol v2](../architecture/protocol.md) define the selected
 target. Phase 1 revised those contracts together. Phase 2 adds structured
-foundations and integrates the local launch gate without changing the wire
-contract. Remote physical adaptation and v2 acceptance remain pending subsequent
+foundations without integrating the remote authority or local launch gate into
+the current runtime. Client/session authority adaptation, remote physical
+adaptation, and v2 acceptance remain pending subsequent
 checkpoints.
 Existing v1 tests stay in place while production needs their current safeguards.
 
@@ -151,7 +152,7 @@ physical and wire boundaries are exercised after integration.
 | --- | --- | --- |
 | Structured outcome and child provenance | [`test_outcome.py`](../../tests/unit/test_outcome.py): first failure, ordered nested detail, genuine status separate from infrastructure failure, signal failure, normal server disposal versus one-shot completion, residual cleanup. | Actual child observation, signal capture, bounded serialization, helper/SSH status checks, and terminal wire validation. |
 | Remote phases and attempts | [`test_lifecycle.py`](../../tests/unit/test_lifecycle.py): current owned live readiness, explicit policy, admission failure, real-settlement prerequisites, stale generations, finite retry budget, late acquisition during termination, unique frozen result and late diagnostics. Tests use real foundation objects and immutable process requests. | Physical adapters must supply valid admission, liveness, generation identity, and settlement facts while retaining resource ownership. The deployed v1 helper still uses its current authority. |
-| Local launch eligibility | [`test_launch.py`](../../tests/unit/test_launch.py): READY plus forwarding, cancellation/fatal failure, per-phase forwards, stale queued launch, execution-entry revalidation. [`test_backend.py`](../../tests/unit/test_backend.py) exercises the real coordinator/gate through controlled helper/SSH boundaries, including closure during observation and fatal failure followed by transport recovery. | Actual v2 READY and controller EOF handling; existing adapter GDB/RTT tests exercise the integrated gate under Protocol v1. |
+| Local launch eligibility | [`test_launch.py`](../../tests/unit/test_launch.py): READY plus forwarding, cancellation/fatal failure, per-phase forwards, stale queued launch, execution-entry revalidation on the pure gate. | Production integration must share an authority boundary with helper/session fatal observations at actual launch entry, including facts recorded after a preceding session check. Actual v2 READY and controller EOF handling also remain pending. Existing adapter GDB/RTT tests validate the Protocol v1 path, not that target authority boundary. |
 | Completion policy planning and compatibility | [`TestFlashPlanning` and `TestDebugPlanning`](../../tests/unit/test_remote.py) select process-exit and live-server explicitly; `test_internal_completion_policy_does_not_change_protocol_v1` checks unchanged serialization. | Required v2 policy field, no-READY one-shot runtime, no readiness timer, and policy-aware wire event validation. |
 
 These foundations acquire no physical resources. Existing helper, process,

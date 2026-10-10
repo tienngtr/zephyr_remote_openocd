@@ -14,7 +14,7 @@
 This document describes the selected architecture for the Zephyr west runner
 for remote OpenOCD. The controller-lease lifecycle and Protocol v2 are the
 redesign target, not yet the deployed helper behavior. Phase 2 introduces
-structured foundations and local launch gating. Production remains on Protocol
+structured remote and local lifecycle foundations. Production remains on Protocol
 v1 until client/helper cutover;
 existing physical ownership mechanisms described here are retained or adapted,
 not replaced by experimental implementations. The implementation gaps are
@@ -1871,21 +1871,26 @@ Standalone staging behavior and protocol framing remain coordinated through
 
 ## 39. Local Session Lifecycle
 
-The Phase 2 implementation uses
-[`remote/launch.py`](../../python/zephyr_remote_openocd/remote/launch.py) in the
-session coordinator. Each GDB or RTT entry prepares a launch generation and
-checks observed remote readiness, current required forwards, recorded helper
-exit/failure, and forwarding health before invoking the client. The gate commits
-Active at that entry. A later RTT boundary can return to Opening only while the
-operation still permits launches; cancellation, established failure, or closure
-cannot be reopened. An old queued generation cannot enter a newer boundary.
+The Phase 2 foundation in
+[`remote/launch.py`](../../python/zephyr_remote_openocd/remote/launch.py) models
+local launch eligibility without integration into the production session.
+It requires observed readiness and phase-specific forwarding, preserves
+cancellation and fatal failure across boundaries, and rejects stale queued
+generations. Its pure tests establish these transition semantics.
 
-Session closure revokes launch eligibility inside the existing SIGINT-masked
-cleanup scope before touching physical owners. Cleanup ownership and the
-Protocol v1 STOP path remain unchanged. GDB still uses Zephyr's `run_client`,
-including its native interactive SIGINT handling. The pure gate supports queued
-entry revalidation; the current adapter invokes clients synchronously and adds
-no scheduler or task ownership.
+Integration awaits the later client/session adaptation. The Protocol v1 helper
+reader can record a fatal fact after a session check returns but before gate
+entry. Checking the helper and then entering an independent gate does not
+account for that already-recorded fact at actual execution entry. The adapted
+coordinator must give fatal observations and launch eligibility a shared
+authority boundary before this gate can protect production launch. A test that
+synchronously closes the session during observation only tests direct gate
+cancellation; it does not qualify that concurrent reader boundary.
+
+Current GDB/RTT entry retains its existing Protocol v1 session checks and uses
+Zephyr's `run_client`, including native interactive SIGINT handling. Cleanup
+ownership, the SIGINT-masked cleanup scope, and the STOP path remain unchanged.
+The following local lifecycle describes the redesign target.
 
 The local operation alone owns dependent launch eligibility. Its conceptual
 phases are Opening, Active, Cancelling, and Ended. These roles apply to each
