@@ -39,11 +39,16 @@ class Diagnostic:
 
     @classmethod
     def from_exception(cls, code: str, error: BaseException) -> Diagnostic:
-        """Capture legacy boundary detail without retaining mutable exceptions."""
+        """Capture group causes in order, then notes, without mutable exceptions."""
+        causes = (
+            tuple(cls.from_exception(code, cause) for cause in error.exceptions)
+            if isinstance(error, BaseExceptionGroup)
+            else ()
+        )
         return cls(
             code,
             str(error),
-            tuple(cls("EXCEPTION_NOTE", note) for note in getattr(error, "__notes__", ())),
+            (*causes, *(cls("EXCEPTION_NOTE", note) for note in getattr(error, "__notes__", ()))),
         )
 
 

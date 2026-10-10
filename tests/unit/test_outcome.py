@@ -44,6 +44,44 @@ def test_exception_boundary_captures_notes_without_mutating_source() -> None:
     )
 
 
+def test_exception_groups_retain_ordered_nested_causes_and_notes() -> None:
+    first = RuntimeError("group disposal failed")
+    first.add_note("reap also failed")
+    interrupted = KeyboardInterrupt("cleanup interrupted")
+    interrupted.add_note("workspace still owned")
+    nested = BaseExceptionGroup("independent cleanup", [ValueError("pipe failed"), interrupted])
+    nested.add_note("nested cleanup note")
+    error = BaseExceptionGroup("session cleanup", [first, nested])
+    error.add_note("outer cleanup note")
+    error.add_note("transport cleanup also failed")
+
+    diagnostic = Diagnostic.from_exception("CLEANUP", error)
+    interrupted.add_note("later detail")
+
+    assert diagnostic == Diagnostic(
+        "CLEANUP",
+        str(error),
+        (
+            Diagnostic("CLEANUP", str(first), (Diagnostic("EXCEPTION_NOTE", "reap also failed"),)),
+            Diagnostic(
+                "CLEANUP",
+                str(nested),
+                (
+                    Diagnostic("CLEANUP", "pipe failed"),
+                    Diagnostic(
+                        "CLEANUP",
+                        str(interrupted),
+                        (Diagnostic("EXCEPTION_NOTE", "workspace still owned"),),
+                    ),
+                    Diagnostic("EXCEPTION_NOTE", "nested cleanup note"),
+                ),
+            ),
+            Diagnostic("EXCEPTION_NOTE", "outer cleanup note"),
+            Diagnostic("EXCEPTION_NOTE", "transport cleanup also failed"),
+        ),
+    )
+
+
 @pytest.mark.parametrize(
     "trigger",
     [trigger for trigger in Trigger if trigger not in (Trigger.CONTROLLER_EOF, Trigger.CHILD_EXIT)],
