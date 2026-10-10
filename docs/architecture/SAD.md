@@ -11,7 +11,13 @@
 
 ## 1. Purpose
 
-This document describes the current architecture for the Zephyr west runner for remote OpenOCD.
+This document describes the selected architecture for the Zephyr west runner
+for remote OpenOCD. The controller-lease lifecycle and Protocol v2 are the
+redesign target at the normative-contract checkpoint, not yet production
+behavior. Production remains on Protocol v1 until client/helper cutover;
+existing physical ownership mechanisms described here are retained or adapted,
+not replaced by experimental implementations. The implementation gaps are
+tracked in [verification.md](../traceability/verification.md#controller-lease-migration).
 
 The SRS defines externally required behavior.
 
@@ -1110,7 +1116,8 @@ Conceptually:
 ```text
 required:
     execute remote command
-    stdin/stdout streaming
+    stdin/stdout/stderr streaming
+    directional EOF with reverse output retained
     TCP forwarding with generated local-forward support
     runner-owned forwarding-option precedence
 ```
@@ -1119,6 +1126,13 @@ The configured client must preserve the runner's generated `-L` forwarding
 arguments and honor first-value precedence for `ExitOnForwardFailure=yes` and
 `ClearAllForwardings=no`. The detailed forwarding construction and precedence
 requirements are defined in §29.
+
+For the long-lived helper, closing local stdin must deliver remote stdin EOF
+while stdout/stderr remain usable until remote command exit. Stdin-suppressing,
+bidirectionally closing, incompatible PTY, or detaching wrappers do not satisfy
+this contract. There is no STOP fallback, capability negotiation, or new YAML
+setting for them. Under connection sharing, EOF closes only the controller
+channel, leaving the external master alive.
 
 ---
 
@@ -1260,9 +1274,9 @@ Deployment also uses the configured SSH command.
 
 The deployment computes the SHA-256 digest of the helper source and identifies
 the revision with a path of the form
-`protocol_v1/helper-<sha256>.py` beneath the per-user deployment directory.
+`protocol_v2/helper-<sha256>.py` beneath the per-user deployment directory.
 It acquires an exclusive `fcntl` lock on
-`protocol_v1/.deploy.lock` before checking, installing, refreshing, or
+`protocol_v2/.deploy.lock` before checking, installing, refreshing, or
 reclaiming revisions. An existing target is reused only when its content
 digest matches. Otherwise, deployment writes the helper to a mode-0600
 temporary file, flushes and synchronizes it, and atomically renames it to the
@@ -1277,17 +1291,23 @@ deployment fail; the selected target is never removed. The deployment lock is
 released before the session helper starts. Exact deployment response fields
 remain part of the wire contract defined in [protocol.md](protocol.md).
 
+The v2 namespace is selected at cutover; production still uses `protocol_v1`.
+Client and helper move together, without a dual-protocol runtime or wrapper
+fallback. The YAML schema, configured argv, staging archive, and path-template
+contracts remain unchanged. A version bump records an incompatible wire change,
+not a development milestone.
+
 No assumption is made that the local SSH executable comes from the local Linux distribution.
 
 ---
 
 ## 36. Remote Helper Protocol
 
-The current internal helper wire format and behavior are specified solely in
+The selected internal helper wire format and behavior are specified solely in
 [protocol.md](protocol.md). The SAD records the architectural consequences of
 that contract; it does not duplicate message fields, framing, state
 transitions, ordering, validation, or frame-size limits. The deployed client
-and helper implement one strict matching contract.
+and helper must implement one strict matching contract at cutover.
 
 ## 37. Remote Session Storage
 
@@ -1327,6 +1347,9 @@ continues to fail.
 
 ## 38. Process Supervision
 
+The local operation decides dependent launch eligibility (§39); the remote
+helper decides remote phase transitions. Forwarding and RTT retain their own
+physical cleanup and failure domains. No cross-host global supervisor is added.
 The detailed normal local-session sequence is defined in §39. The runner owns
 the local `RemoteSession` lifetime and closes it when the operation finishes.
 The helper may also end the remote session after OpenOCD exit, protocol failure,
@@ -1339,8 +1362,8 @@ or control-channel loss. The ownership boundaries are:
 | `_ForwardManager` | Owns local forwarding SSH processes, forward status checks, and forward cleanup. |
 | `ManagedSshProcess` | Owns one local SSH subprocess and its stderr drain. |
 | External SSH connection-sharing mechanism | Owns its master and any forwarding state retained independently of runner-launched subprocesses; outside runner cleanup. |
-| Remote `ControlSession` | Owns remote session state, workspace, command dispatch, and final cleanup. |
-| `SupervisedChild` | Owns the OpenOCD process group, output relays, startup observation, termination, and stream closure. |
+| Remote lifecycle authority | Owns remote phase transitions, attempt admission, outcome selection, workspace lifetime, and cleanup coordination. |
+| Child physical owner | Owns the acquired OpenOCD process group, output relays, termination, reaping, and stream closure; reports facts to the remote authority. |
 
 `RemoteSession.close()` coordinates the subsystem cleanup sequences and chooses
 the primary failure across helper and forwarding cleanup. Failure of one
@@ -1444,8 +1467,8 @@ client, then restores the caller's previous mask. Pending interruption therefore
 leaves that reader owned for shutdown instead of permitting a second reader.
 If acquisition
 ends before the allocation is accepted, client cleanup terminates and reaps the
-owned control process without attempting a protocol shutdown exchange. An owned
-client with no acquired transport closes harmlessly. Helper acquisition and
+owned control process while closing its input lease and reading any available
+final outcome. An owned client with no acquired transport closes harmlessly. Helper acquisition and
 startup rollback belong to the session owner; `_HelperClient` has no
 resource-acquiring factory. A session is single-use: it cannot be reopened or
 restarted.
@@ -1486,92 +1509,119 @@ Only the cleanup attempt on each side is bounded, beginning after that side
 observes loss. The project does not bound the interval from local detection to
 remote OpenOCD termination.
 
-The helper's `ControlSession` is the sole lifecycle coordinator. Its synchronous
-entry point runs a Python 3.12+ standard-library asyncio session with one
-`TaskGroup`. The session owns one structured lifetime for observers of control
-frames, stdout, stderr, leader exit, readiness/drain deadlines, and signals.
-Those observers report immutable facts through a bounded queue and have no
-independent teardown or terminal-event policy. An owned nonblocking writer
-serializes protocol output. The coordinator alone dispatches commands, changes
-lifecycle state, interprets output/readiness, selects the logical outcome, and
-initiates cleanup.
+### 38.2 Remote lifecycle authority
 
-`run_async()` owns protocol-output activation, descriptor restoration, and the
-outer workspace cleanup fallback. Its `_run_session_tasks()` scope owns the
-TaskGroup and keeps the protocol writer alive after other session observers are
-cancelled, through workspace release, outcome reporting, and bounded output
-drain. The outer scope restores signal handlers after output cleanup and applies
-the final primary-versus-secondary failure rule. `_SessionSignals` records each
-prior handler before installation and reports restoration failures individually,
-so partial setup remains owned and one failed restoration cannot skip another.
+One remote coordinator decides lifecycle transitions. Control-input, stream,
+child-exit, deadline, writer, and signal adapters report facts; none independently
+chooses shutdown, success, or retry. A standard-library asyncio structured task
+scope owns those observers and the writer. Its outer rollback scope retains
+workspace, signal-handler, and descriptor restoration responsibility during
+partial setup and after observer shutdown.
 
-The control entry point observes termination signals before allocating a
-workspace. Until coordinator construction succeeds, allocation retains rollback
-responsibility for the workspace, lease metadata, and session lock. Failed
-construction attempts workspace removal and lock release independently,
-preserving the construction failure. The entry point retains a fallback cleanup
-scope through event-loop setup, before the asynchronous session takes over.
-Signals latch facts throughout this handoff and rollback; the coordinator
-accounts for a signal received before its event loop exists. Previous signal
-handlers are restored after the cleanup attempt. No OpenOCD child exists during
-workspace adoption or event-loop setup.
+The control entry point observes termination signals before workspace allocation.
+Allocation owns the workspace, lease metadata, and session lock until explicit
+coordinator adoption. Construction or event-loop setup failure attempts workspace
+rollback and lock release independently, preserving the setup failure. A latched
+signal remains observable across this transfer. No child exists yet.
 
-Internal states are CREATED, STARTING, ACTIVE, TERMINATING, and CLOSED.
-STARTING is a state in the event loop, not a nested readiness wait: control,
-output, exit, signals, and timeout remain observable concurrently. TERMINATING
-continues draining observed output. Address-collision retries clean up the old
-attempt before starting another; child observations identify their owning
-attempt, so obsolete events cannot affect its replacement. Control framing
-persists across attempts. A control-side termination request, EOF, or a
-protocol failure during retry cleanup prevents another launch.
+Lifecycle data is phase-specific, conceptually:
 
-Only a child that exits before readiness is eligible for a bind-collision
-retry. Recognition depends on the case-insensitive phrase
-`address already in use` in bounded captured startup output; it is not a
-structured OpenOCD error code and does not classify every possible bind failure.
-Other startup failures and exits after readiness do not trigger this retry
-policy. A session permits at most 32 child startup attempts, including the
-initial launch, so at most 31 retries.
-Reaching this limit produces ordinary startup failure rather than another
-launch.
+```text
+Created(workspace owner)
+Starting(immutable request, current attempt, readiness evidence,
+         provisional retry failure)
+Active(owned child attempt)
+Terminating(attempt or residual owners, outcome)
+Closed(outcome, residual obligations, frozen terminal snapshot)
+```
 
-An eligible retry requires successful old-attempt process-group, output-observer,
-and stream cleanup, with no cleanup failure or pending termination. The old
-address lease is released before randomized allocation obtains a fresh lease
-and validates the service ports for the replacement attempt (§27). Restarting
-OpenOCD repeats its configuration and startup commands, which may already have
-touched the target; cleanup does not roll back those target effects.
+These are design roles, not required class names. Phase-specific data prevents
+invalid combinations such as active readiness without child ownership. Parser
+bytes, decoder buffers, writer offsets, native signal latches, descriptors,
+acquisition tickets, and cleanup-task completion are physical adapter state;
+they do not provide a second transition authority. `Closed` means the terminal
+snapshot is frozen, not that every physical disposal necessarily succeeded.
 
-Retry eligibility is not permission to spawn immediately after old-attempt
-cleanup. Before committing a retry, the coordinator requests a publication
-fence from the control observer and continues dispatching ordinary observations.
-The observer acknowledges only after publishing every framed control fact from
-its consumed batch, or after an idle scan; it then pauses until the coordinator
-releases the fence. If control observation has ended, its guarded task must have
-published EOF or its failure before the fence is published. This ordering covers
-facts waiting on the bounded queue as well as facts already queued. The
-coordinator dispatches those facts before the fence and checks terminal state,
-cleanup/observer failures, and latched signals before starting another attempt.
-The retired child remains the current observation owner through this boundary;
-queued failures belonging to that attempt cannot be mistaken for obsolete
-replacement events. No additional control reader or observer-side lifecycle
-policy is introduced. The fence does not wait for future control input.
+An attempt progresses through authorization, production, ownership, and
+settlement. Each authorized replacement has a new monotonically increasing
+session-local generation. Facts identify their attempt; an obsolete generation
+cannot adopt current ownership, satisfy readiness, establish current result, or
+initiate retry. Rejecting a stale returned resource still invokes its physical
+cleanup owner; rejection is not disposal.
 
-Guarded observers retain recognized failures against their owned tasks before
-attempting queue publication. The coordinator accounts for each failure once,
-either during dispatch or when joining a cancelled or completed observer.
-Before committing readiness, the coordinator dispatches the bounded queue and
-any control fact already consumed but blocked at publication. Output dispatched
-during this reconciliation may satisfy readiness, but only the outer readiness
-check publishes success. It also reconciles already-retained fatal facts through
-its existing failure-selection path, even when their queue publication is
-blocked. This applies to immediate readiness and marker-based readiness;
-it neither waits for future input nor guarantees liveness after the check.
-Thus a control-protocol failure already recognized by the observer but not yet
-dispatched by the coordinator survives terminal cleanup, even if publication
-was blocked. Such failures prevent orderly session closure; an earlier failure
-remains primary under the existing outcome rules. No additional control read
-or wait for future input is required at terminal close.
+At actual attempt entry, the authority validates phase and generation, admits
+an immutable exact-argv ATTEMPT diagnostic, establishes acquisition ownership,
+and invokes spawn in the same effect boundary. There is no asynchronous effect
+command queue between that validation and spawn. Failed diagnostic admission
+prevents spawn. Admission means bounded local writer acceptance, not peer receipt.
+Native signal-safe acquisition remains necessary even in a section with no
+`await`.
+
+### 38.3 Retry and readiness decisions
+
+Only a child exiting before readiness with a classified safely repeatable
+bind/address failure is eligible for retry. Preserve the current bounded
+startup-output classifier for the case-insensitive phrase `address already in
+use`; it is not a structured OpenOCD code or universal bind classifier. Other
+startup failures, probe contention, and exit after readiness do not retry.
+At most 32 child attempts, including the initial attempt, are permitted.
+
+Before replacement, the prior acquisition producer must actually finish and
+its process-group, observer, stream, and address ownership must settle enough
+for safe reuse. A cancelled task or expired wait is not proof of producer
+quiescence. Release the old address lease before allocating and validating a
+fresh randomized address (§27). Cleanup failure prevents retry. A classified
+startup failure stays provisional while this safe retry remains possible. If
+retry is exhausted or settlement fails, startup fails; controller termination
+may instead initiate closure, retaining the old failure as attempt diagnostic.
+An established failure is never made provisional again. Restart does not
+roll back target effects or certify arbitrary user Tcl as idempotent.
+
+The authority revalidates Starting state, generation, settlement, and absence
+of its own terminal decision at entry. It may account an immediately available
+controller-termination fact first, but no controller-reader checkpoint, ACK,
+publication fence, or recognized-prefix drain is required before retry or READY.
+EOF occurring, an adapter recognizing it, publishing it, and the authority
+handling it are distinct stages. READY or retry can precede authority handling;
+after termination commits, neither can be newly authorized.
+
+This intentionally removes Protocol v1's recognition-level success precedence.
+The removed ordering had no remaining product requirement: local cancellation
+already revokes dependent launch, and remote handling of controller loss cleans
+all owned work. Fatal physical observer/writer errors still become failures,
+and established primary failure is preserved; their reports must not be lost
+merely because a task is cancelled before queue publication. Already recorded
+fatal physical failures are accounted before READY, retry entry, or terminal
+publication, even if ordinary dispatch is pending. This local failure check
+requires neither future controller input nor recognized-EOF precedence.
+Physical ownership, producer settlement, and stale-generation validation remain
+mandatory.
+
+READY admission requires Starting state, current generation, owned child,
+required evidence, and a final live-child check. Failed admission causes
+termination rather than activation. Local receipt independently feeds the local
+launch gate. The bounded final readiness observation policy is specified in §40.
+
+### 38.4 Child physical ownership
+
+An acquisition ticket or rollback scope exists before each resource-producing
+effect. It owns the effect's returned resource immediately, through construction
+and validation, until an explicit transfer to the longer-lived owner. Transfer
+updates cleanup reachability inside the same interruption-safe guard; rollback
+must remain possible immediately before and after transfer. Resource production
+is settled by actual producer completion and disposition of any returned resource,
+not by cancelling its awaiter.
+
+| Resource acquisition | Immediate / partial owner | Transfer and rollback |
+| --- | --- | --- |
+| Local SSH Popen | Configured transport launch guard | Managed process/drain adoption inside the guard; launch or mask-restoration failure terminates/reaps and closes owned streams. |
+| Workspace, lease metadata, session lock | Allocation rollback scope, including partially created artifacts | Remote coordinator adoption transfers all artifacts; setup failure attempts workspace and lock cleanup independently. |
+| Remote address lease | Current attempt acquisition scope | Transfer to child attempt only with continuous reachability; failed materialization/spawn releases it, retry releases old lease after child settlement. |
+| Child Popen and its pipes | Native interruption-safe acquisition ticket | Child physical owner adopts inside rollback guard; interruption on either side disposes the group, reaps, and settles pipes. |
+| Observer tasks and protocol writer | Task-creation/setup scope | Register with session/attempt owner before publication; setup failure joins/cancels under bounded policy and retains unresolved obligations. |
+| Staging shared lease | Standalone staging scope | Held through validation, extraction, and success reporting; always released on failure/process exit, with no transfer to the controller. |
+| Forwarding transport | Forward manager's pending-resource owner | Keep rollback ownership through validation/adoption; independent failed forwards cannot orphan an acquired process or roll back another active forward. |
+| RTT socket and terminal mode | RTT connection/terminal scopes | Socket remains owned through connect/adoption; terminal restoration and socket closure are independently attempted on failure/interruption. |
 
 A `SupervisedChild` owns the configured OpenOCD process-group resources and
 per-stream decoding state, which only the coordinator consumes. Process
@@ -1586,25 +1636,57 @@ and reserved service ports for bind collisions before startup; OpenOCD owns and
 configures the actual GDB, Tcl, telnet, and RTT listeners. The helper does not
 probe listener connectability.
 
-The control observer owns one raw async fd reader and incremental framer.
-Partial frames remain buffered while other observations proceed; complete
-buffered frames are dispatched in order without requiring another OS
-readability event. The framing syntax, EOF rules, validation, and frame limits
-are defined solely in [protocol.md](protocol.md). Each child stream likewise
-has one raw fd observer; the coordinator incrementally decodes its bytes for
-both output relay and readiness matching. There are no output threads,
-competing readiness readers, or application selector/buffered-reader split.
-Control termination or validation failure ends startup and performs session
-cleanup; event emission follows [protocol.md](protocol.md).
+The input adapter owns one raw reader and bounded incremental START framer.
+After valid START, it observes EOF or unexpected input while startup and active
+work proceed. Each child stream likewise has one raw reader and incremental
+decoder. Normal decoding and the final startup scan share that ownership;
+there are no competing readiness readers. Their facts reach the authority
+independently of bulk-output delivery.
 
-Protocol output uses one ordered queue with a 16 MiB byte bound. A congested
-stdout pipe cannot block control, signal, or child cleanup observations;
-exceeding the output bound is an infrastructure failure. After resource
-cleanup and terminal-event selection, the writer has a bounded drain deadline
-before cancellation and descriptor restoration. If the peer cannot receive
-the queued terminal frame, helper failure remains a transport/infrastructure
-result, not an OpenOCD exit status. Best-effort descendant diagnostics likewise
-use a nonblocking stderr write and may be dropped under backpressure.
+### 38.5 Output and outcome ownership
+
+One nonblocking ordered writer retains a maximum of 16 MiB of encoded pending
+output. Lifecycle-critical observations have an independent reporting path and
+cannot wait behind a full bulk-output queue. The selected policy does not reserve
+separate writer capacity for critical frames: exceeding the bound, including
+failed ATTEMPT or READY admission, is a visible infrastructure failure that
+initiates cleanup. The product does not promise terminal delivery under a
+congested or failed output path, so reservation would not establish another
+required guarantee. This choice preserves bounded memory and cleanup progress;
+it must be qualified with actual blocked-pipe and capacity-failure regressions.
+
+Bounded accumulation also applies before writer admission: raw-observation queues,
+per-stream decoding/marker capture, and structured diagnostic retention cannot
+hide an unbounded buffer behind the encoded-output limit. Overflow reports
+infrastructure failure while critical fact reporting and cleanup remain usable.
+
+After resource cleanup, retained output has a two-second drain opportunity.
+Writer failure or drain expiry cannot undo disposal. Best-effort descendant
+warnings use nonblocking stderr and may be dropped under backpressure.
+
+The canonical outcome is structured data: initiating trigger, primary failure,
+ordered diagnostics with nested detail, and genuine child result. Disposal and
+residual obligations are recorded separately. Once established, a primary failure
+cannot be replaced by later cleanup, transport, writer, or observer failure.
+Unrelated unestablished failures need no globally deterministic winner.
+Exception notes may be rendered at a boundary; exception structure is not the
+canonical result. Existing notes on secondary exceptions must survive conversion
+into structured diagnostics.
+
+The authority freezes at most one terminal snapshot after cleanup attempts and
+retained-output accounting. Admission or partial-write failure cannot create a
+second snapshot. Failures discovered after freezing extend local diagnostics
+only. Child status is recorded from actual child observation, including during
+shutdown; controller EOF does not imply a fabricated code. Retired-attempt
+results stay attempt diagnostics and cannot replace the final attempt's result.
+Helper/SSH status is always separate infrastructure evidence. Child-result
+provenance also records whether the helper had requested child termination
+before observing the status. Before sending a cleanup signal, account any
+already observable natural exit. A disposal-induced nonzero status after
+successful GDB/RTT work is retained as a result without turning ordinary server
+shutdown into operation failure. A natural failure already established during
+operation remains primary. This observation boundary does not establish a global
+natural-exit versus EOF winner.
 
 Cleanup sends `SIGTERM` to the owned group and waits a bounded grace period for
 the leader. It then checks whether the group still exists. If so, the helper
@@ -1634,58 +1716,49 @@ attempt tasks before releasing their streams. Graceful leader waiting and final
 group observation waits are async, so output can continue draining throughout
 supervised termination. The session cancels and awaits all observer tasks before
 its TaskGroup ends.
-Workspace removal and lock release are attempted once even if child cleanup
-fails. Unix signal callbacks record a pending signal in plain state and schedule
-its observation with `call_soon_threadsafe()`. An event-loop callback updates
-the signal queue. A signal latched before loop setup enters that same observation
-path once the loop exists. The coordinator dispatches queued facts in order,
-including control facts published before a signal. A pending signal prevents
-readiness during synchronous spawn and prevents committing a retry after its
-control fence; cleanup begins after child ownership is installed. Subsequent signals
-do not interrupt cleanup. The coordinator keeps logical outcome and cleanup
-failures separate and applies the documented primary-failure rule before
-emitting any terminal event. It does not continuously monitor
-the process tree, retain descendant PID history, or use descendant discovery
-to decide whether the group needs cleanup.
+Workspace cleanup closes new staging admission when termination begins,
+before waiting for child disposal. Independent process/relay cleanup proceeds
+without first blocking on the staging lock. Remove the workspace only after
+acquisition producers have settled, child disposal is confirmed, and exclusive
+staging exclusion is obtained. Unconfirmed child disposal retains required
+inputs, the lease/closure metadata, and explicit residual responsibility.
+A session lock may be released on helper exit, so later reclamation must also
+establish that retained inputs have no dependent child/producer; helper-lock
+availability alone cannot prove that a failed cleanup left a workspace safe.
+The implementation of that residual evidence belongs to physical-boundary work,
+not to a new lifecycle authority or experimental subreaper implementation.
 
-Normal termination:
+### 38.6 Signals and cleanup composition
 
-```text
-local runner finishes
-        |
-        v
-helper terminates OpenOCD
-        |
-        v
-cleanup
-```
+Unix signal callbacks latch a fact and wake the authority. They do not select a
+terminal cause, independently change phase, or dispose resources. A latch before
+loop setup is reported once the loop exists. Native masking or rollback scopes
+protect acquisition and handoff separately from coordinator transitions; lack
+of an `await` does not make a Python section atomic against signal handlers.
+After the authority commits termination, subsequent signals cannot abandon
+independent cleanup actions. Signal restoration attempts each prior handler
+even when another restoration fails.
 
-For a client-requested stop, protocol completion applies the session-close
-outcomes defined in [protocol.md](protocol.md) and records an OpenOCD result
-only when that contract identifies one. Successful local cleanup additionally
-requires the helper to exit with status zero. Protocol, helper, or transport
-failures remain visible to the caller; later cleanup failures are retained as
-diagnostics. A received helper failure event remains the helper failure across
-cleanup, rather than becoming a second reader or cleanup failure. Local
-shutdown attempts all remaining cleanup actions once and then marks the
-session closed. A later `close()` is harmless, but does not resume a partially
-failed cleanup sequence or retain resources solely for that purpose.
+Cleanup composition preserves the established primary and nested secondary
+diagnostics. A failed owner cannot skip another independent owner's attempt.
+An expired task wait leaves residual ownership or a supervised obligation;
+it never marks its producer settled. The structured task scope cannot simply
+discard a late acquisition result on cancellation. The final snapshot reports
+unconfirmed disposal when physical settlement cannot be established.
 
-Unexpected controlling-session loss is handled independently on each side. The
-local runner reports transport failure and attempts bounded local cleanup after
-local detection. The helper performs bounded OpenOCD process-group cleanup only
-after it observes control-channel EOF or a termination signal. Neither side's
-cleanup bound includes its own detection latency, and the project does not add
-a separate network-loss polling deadline or bound the interval between the
-observations.
+### 38.7 Workspace and staging exclusion
+
 Each session holds an advisory lock in its workspace. During new-session
 allocation, the helper takes one directory snapshot of the session root and
 checks each older workspace entry once. A missing session root is treated as
 empty. An older workspace is eligible when the helper can inspect it, acquire
 its session lock exclusively without blocking, and confirm that staging does
-not protect it. A held lock means that the workspace is active and is skipped;
+not protect it and no unresolved child or producer depends on its inputs.
+A held lock means that the workspace is active and is skipped;
 a missing or non-file session lock represents incomplete lock creation and is
-handled as an abandoned workspace. The helper uses the closure and lease-aware
+handled as incomplete allocation only when dependent ownership can also be
+excluded; uncertain entries are retained. The helper uses the closure and
+lease-aware
 workspace-removal procedure for each safely eligible workspace and does not
 retry it during the same allocation.
 
@@ -1709,8 +1782,9 @@ If staging checks admission before closure, its shared lease protects the
 workspace until extraction finishes and successful staging completion is
 reported. If closure is
 already visible, staging rejects even when it opened the lease file earlier.
-Cleanup waits up to five seconds for exclusive ownership before removing the
-workspace; a timeout reports failure and leaves admission closed. A contended
+After dependent child/producer disposal is confirmed, cleanup waits up to five
+seconds for exclusive ownership before removing the workspace; a timeout reports
+failure and leaves admission closed. A contended
 lease affects only its own session. The existing `.session.lock` continues to
 track control-helper liveness for stale reclamation.
 
@@ -1740,84 +1814,71 @@ Standalone staging behavior and protocol framing remain coordinated through
 
 ## 39. Local Session Lifecycle
 
+The local operation alone owns dependent launch eligibility. Its conceptual
+phases are Opening, Active, Cancelling, and Ended. These roles apply to each
+dependent launch boundary, including GDB setup followed by an RTT client; an
+RTT phase transition does not reopen a cancelled operation.
+
 ```text
-prepare operation
-       |
-RemoteSession.prepare()
-       +-- deploy helper
-       |
-adopt coordinator, then RemoteSession.acquire()
-       |
-       +-- open the helper control channel
-       +-- stage files
-       +-- start OpenOCD
-       +-- observe each helper-reported pre-spawn argv while awaiting readiness
-       +-- wait for OpenOCD startup readiness
-       +-- establish required and best-effort forwarding
-       |
-session available to the local operation
-       |
-run the local client or relay operation output
-       |
-RemoteSession.close()
-       |
-stop owned processes and clean up resources
+prepare and adopt resource-free coordinator
+    -> acquire helper transport and session workspace
+    -> stage inputs; send immutable START
+    -> keep helper stdin open as controller lease
+    -> observe ATTEMPT diagnostics and remote READY
+    -> establish required forwarding
+    -> validate local launch eligibility at actual entry
+    -> run GDB / RTT / foreground server / one-shot result wait
+    -> commit local closure; close helper stdin
+    -> read final output/outcome and settle owned local transports
 ```
 
-`RemoteSession.open()` returns only after the helper, OpenOCD process, and
-required startup conditions are ready. In this document, a "usable" session
-means that those required lifecycle observations and required transport setup
-have completed; it does not assert end-to-end reachability of every service,
-successful connection by a local client, or continued OpenOCD liveness after
-the call returns. Best-effort forwards may still be unavailable and active
-components may fail later under their normal health checks. The local runner
-then starts the requested client or relays the operation output.
+The adapter owns the prepared coordinator before acquiring live resources and
+finalizes it from the same exception scope on success, failure, or interruption.
+The coordinator in turn owns helper and forwarding owners before acquisition.
+Existing pending-resource rollback for forwarding and RTT is retained. No
+live resource is handed through an unguarded return interval.
 
-Before acquisition returns, the session reconciles helper outcomes recorded
-during forwarding. A recorded helper failure rejects acquisition, and a
-recorded natural exit rejects startup when forwards were requested; a finite
-operation without forwards may retain its natural process result. The adapter
-checks recorded outcomes again immediately before GDB dispatch and after
-required RTT forwarding, before starting the RTT client. Even a natural status
-zero at either dependent-client boundary is premature termination. These checks
-account for recorded facts without guaranteeing continued process liveness.
+For a dependent launch the gate requires the local operation to remain Opening,
+remote READY to have been received for the current attempt, required forwarding
+to be established for this phase, and no committed cancellation or established
+fatal failure. Recorded terminal/fatal facts are accounted before publication
+of local usability or launch, including facts recorded during forwarding. Even
+natural child status zero is premature termination at a live-client boundary.
+A queued launch revalidates at actual execution entry; authorization before an
+asynchronous scheduling boundary is insufficient. A late READY after local
+cancellation cannot reactivate the gate. This checks known facts, without
+promising continued process liveness after the check.
 
-`RemoteSession.close()` performs one bounded local cleanup
-attempt and, while the helper control channel is usable, requests remote
-cleanup. After transport loss, helper-side cleanup proceeds independently.
+Flash waits for its genuine one-shot child result and infrastructure outcome;
+it need not receive READY. Debugserver establishes its required forwarding and
+supervises the foreground server without a GDB launch. RTT keeps its existing
+setup/client phases, configured port, separate socket and terminal ownership,
+and required/best-effort forwarding transition. GDB Ctrl-C retains stock
+interactive behavior rather than automatically committing local cancellation.
 
-The Zephyr adapter adopts a prepared coordinator before acquiring live session
-resources and guards instance acquisition, descriptor access, and operation
-execution in the same exception-handling scope. Finalization runs from `finally`
-for that owned coordinator, including when acquisition is interrupted before it
-returns or before the active operation begins. No acquired session is
-transferred to the adapter through a return value, and SIGINT remains unblocked
-during staging and readiness waits. Finalization preserves the
-primary-failure rules; interactive GDB continues using Zephyr's `run_client()`
-behavior rather than treating every Ctrl-C as runner cancellation.
+Local closure first commits cancellation where applicable and prevents further
+launch. It closes helper stdin once, retaining stdout/stderr readers for final
+output and SESSION_ENDED. A shared 15-second coordination budget covers waiting
+for terminal information and ordinary helper-transport exit. On expiry or
+transport failure, cleanup escalates only the owned local SSH process with finite
+termination/reaping budgets and closes its owned pipes/readers/drains. Forwarding
+and RTT cleanup are independently attempted even if helper coordination fails.
+This is bounded project-controlled effort, not a promise about OS blocking or
+remote detection latency.
 
-The helper reader distinguishes three local outcomes:
+The local owner records remote disposal confirmation, child result, and local
+helper/SSH status independently. Missing terminal information, including with
+zero SSH status, is infrastructure uncertainty and cannot establish remote
+cleanup success. A nonzero helper status after a valid remote snapshot remains
+an infrastructure failure without changing its child result. Local timeout may
+leave remote cleanup unconfirmed even after local SSH is reaped. External
+sharing masters are never terminated by session closure.
 
-- A received orderly session-close event is recorded according to
-  [protocol.md](protocol.md); only the contract-defined result-bearing form
-  supplies an OpenOCD result.
-- A received helper failure event ends the session. The caller sees the helper
-  error itself, not an event-stream failure, and no additional close event is
-  required by the architecture.
-- An event-stream, read, or validation failure is distinct from both events.
-  It includes malformed or out-of-order messages and transport loss without a
-  session-ending event, and is reported as a reader or transport failure.
-
-After an accepted helper failure event, the background reader stops without
-recording a reader failure. Cleanup still closes owned resources, but does not
-start another stop exchange, await another close event, or report the same
-helper failure again as a cleanup failure. If the active local client has not
-yet received the helper failure, `close()` reports it once; otherwise it
-reports only independent cleanup failures under the primary-failure rule.
-
-The public lifecycle does not require state enumeration. Flash and other
-operations may omit local-client work while retaining the same session
-acquisition and cleanup boundary.
+Repeated closure is harmless; cleanup errors do not require automatic retry.
+The established active-operation failure remains primary, with later shutdown
+and child-result diagnostics retained. During an interactive local client,
+fatal session facts are recorded and acted upon at the next defined status check
+after that client returns; asynchronous interruption of GDB is not required.
 
 ---
 
@@ -1866,7 +1927,7 @@ the configured prefix.
 The pre-spawn event's wire ordering and full-contract compatibility
 requirements are defined in [protocol.md](protocol.md). The architectural
 retry eligibility and attempt policy are defined in §38; the protocol document
-defines the event and control-observation ordering at that retry boundary.
+defines diagnostic admission and the intentional controller-termination races.
 Version compatibility is supplied by content-addressed deployment, which
 installs the matching helper revision automatically.
 
@@ -1898,20 +1959,31 @@ fatal helper outcome prevents the session from opening; best-effort
 unavailability with successful rollback produces a warning. The active RTT
 client must connect to establish end-to-end reachability.
 
-Generic processes with no required output markers are ready immediately. The
-nominal readiness deadline for OpenOCD startup is 30 seconds. The deadline is
-an observation, not cancellation of startup. At the deadline, the coordinator
-requests a final nonblocking scan by each existing input observer, continuing
-to consume queued facts while observers acknowledge that scan. It then checks
-leader exit/readiness before choosing a timeout. There is no competing reader
-or scheduling assumption about which coroutine runs first. Ready output or
-child exit visible at this cooperative final observation may be processed after
-the nominal deadline. Observer acknowledgment and final event dispatch have no
-specified wall-clock completion bound; `CHILD_POLL_INTERVAL` does not bound this
-phase. The coordinator continues observing and dispatching control termination,
-EOF, and protocol failures throughout startup. This preserves observation
-granularity rather than imposing a strict timestamp cutoff or requiring
-readiness polling.
+For a live process with no required markers, startup evidence is immediately
+satisfied, but READY still requires current ownership, final live-child
+validation, and writer admission. A one-shot operation may complete without READY.
+The nominal OpenOCD readiness deadline remains 30 seconds.
+
+Deadline expiry initiates a finite local determination, not automatic timeout.
+First account retained decoder/marker evidence, then consume already-read but
+undecoded bytes and perform one nonblocking scan of each owned child stream
+within a fixed 64 KiB per-stream byte budget. Already-read bytes precede kernel
+bytes in that stream and consume the same budget.
+Account EOF if observed within that scan, flush decoder state for actual EOF,
+and check current child exit without a blocking wait. Readers share their
+stream owner so ordinary observation cannot race a competing final reader.
+The budget is fixed at determination entry and is not replenished by new output;
+a noisy producer cannot extend the observation indefinitely. This policy may
+include bytes arriving during the scan and may exclude bytes beyond the finite
+cut; it is not a global timestamp guarantee.
+
+Complete marker evidence at that boundary can satisfy readiness, but a dead
+child cannot authorize live READY. Missing evidence commits startup failure
+unless the authority has already committed termination. EOF and the deadline
+may race with either initiating cause. No controller-observer checkpoint or ACK
+is part of the final scan. Observation still accounts fatal physical adapter
+failures without imposing Protocol v1 recognized-prefix ordering on controller
+EOF. Exact complete-line/EOF marker semantics belong in [protocol.md](protocol.md).
 
 ---
 
@@ -1948,9 +2020,10 @@ The protocol reader records facts and wakes waiters. It does not close the
 session, terminate forwarding, choose the primary failure, translate helper
 status into an OpenOCD status, or decide what the runner reports.
 
-`openocd_returncode` is populated only by the natural OpenOCD termination
-event. `check_openocd_exit()` is non-blocking, and
-`wait_for_openocd_exit()` waits for that event without implying cleanup.
+The OpenOCD result is populated only by genuine child observation carried in
+the structured terminal snapshot, independently of the shutdown trigger.
+Nonblocking status checks and waits for terminal information preserve the
+separation between result, remote disposal confirmation, and local cleanup.
 The runner checks forwarding status at the existing points in the active local
 operation and with bounded local polling while waiting. A best-effort failure
 produces a warning at the next forwarding status check. Interactive GDB has no
@@ -1972,13 +2045,21 @@ warnings.
 Cleanup failures affecting acquired resources remain fatal regardless of whether the
 service was required or best-effort. A later OpenOCD result or session failure
 is retained as diagnostic information when it cannot replace the primary
-failure. The helper includes retained exception notes in the existing Protocol v1
-`ERROR.message` string so remote callers receive secondary cleanup diagnostics
-without changing the primary failure or adding protocol fields.
+failure. The helper converts retained secondary details, including existing
+exception
+notes, into structured diagnostics before freezing SESSION_ENDED. Rendering
+exceptions at a caller boundary preserves that detail without making notes the
+canonical lifecycle result.
 Combining failures retains notes already attached to each secondary exception,
 including diagnostics from nested cleanup batches. Later cleanup composition
 preserves those details even when the secondary exception's summary was already
 attached to the primary failure.
+The following table applies to independently observed natural OpenOCD failures.
+A nonzero status observed after helper-requested child termination is retained
+with that provenance and does not by itself fail successful local client work.
+Cancellation, missing one-shot result, infrastructure failure, and unconfirmed
+required cleanup remain operation failures.
+
 The following table defines the required outcomes:
 
 | Active operation state | Later status check | Primary outcome |
@@ -2099,7 +2180,7 @@ physical hardware.
 
 ## 45. Architecture Decisions
 
-Selected for the current architecture:
+Selected for the target architecture:
 
 - board-agnostic custom runner;
 - no board/vendor-specific product behavior;
@@ -2135,9 +2216,14 @@ Selected for the current architecture:
 - single-use session acquisition through `RemoteSession.open()`;
 - no generic `SessionBackend`/`BackendSession` layer;
 - cleanup-only `RemoteSession.close()`;
-- OpenOCD result stored separately as `openocd_returncode`;
+- genuine child result stored separately from shutdown trigger and infrastructure status;
 - primary-failure selection by the active local operation;
-- condition-driven session-close synchronization;
+- condition-driven bounded local shutdown after controller-input half-close;
+- one remote phase-specific lifecycle authority with generation-tagged attempts;
+- local launch gate, revalidated at actual execution entry;
+- structured outcome and one immutable terminal snapshot;
+- finite child-stream final observation at readiness determination;
+- no controller-recognition fence for READY or retry;
 - bounded local forwarding-process health polling;
 - no persistent cross-session firmware or configuration cache;
 - local and remote cleanup are bounded after their respective loss
@@ -2145,3 +2231,20 @@ Selected for the current architecture:
   delegated to the SSH and operating-system layers.
 
 ---
+
+## 46. Redesign costs and retained complexity
+
+| Category | Architectural effect |
+| --- | --- |
+| Eliminated complexity | Post-START STOP parsing, controller-recognition success fences, controller checkpoint/ACK at retry and readiness, and split ERROR/SESSION_CLOSED result reconstruction disappear at cutover. |
+| Moved complexity | Cancellation safety belongs to the local launch gate; remote termination belongs to the remote authority. Exception-note result composition becomes structured outcomes and boundary rendering. |
+| Inherent complexity retained | Native acquisition/handoff interruption, process-group identity and reaping, actual producer settlement, stream final observation, staging exclusion, independently owned forwards/RTT, and bounded failure reporting remain. |
+| New costs | SSH directional-EOF qualification, phase-specific data and generation validation, revalidated queued launch, explicit residual-disposal evidence, structured terminal schema, and bounded final-scan policy need production implementation and regression coverage. |
+
+The controller-lease runtime experiment is design evidence, not a production
+implementation template. In particular, it does not authorize copying pidfd,
+`/proc`, or subreaper machinery beyond existing qualified process ownership.
+The [migration traceability](../traceability/verification.md#controller-lease-migration)
+records intentional differences and unimplemented acceptance obligations.
+Architectural review at this checkpoint precedes structured foundations; no
+production lifecycle or protocol cutover occurs in this documentation change.

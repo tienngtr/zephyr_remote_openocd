@@ -38,6 +38,16 @@ The implementation and user-facing documentation is board- and board-vendor-agno
 
 ---
 
+The lifecycle requirements below define the controller-lease redesign target.
+This normative-contract checkpoint changes documentation only: production still
+implements Protocol v1 until the coordinated client/helper cutover. Revised
+requirements are not claims of current implementation conformance; migration
+gaps and acceptance obligations are recorded in
+[verification.md](../traceability/verification.md#controller-lease-migration).
+The product YAML contract is unchanged.
+
+---
+
 ## 2. Terminology
 
 ### 2.1 Local host
@@ -96,9 +106,17 @@ For this specification, a compatible SSH client supports:
 
 - executing a remote command while carrying stdin to that command, relaying
   stdout and stderr, and returning its exit status;
+- directional EOF for the long-lived helper: closing local stdin causes EOF on
+  remote command stdin while leaving stdout and stderr usable until the remote
+  command exits;
 - local TCP forwarding with an OpenSSH-compatible `-L` option;
 - the runner-owned forwarding controls `ExitOnForwardFailure=yes` and
   `ClearAllForwardings=no` with their stated OpenSSH-compatible behavior.
+
+Wrappers that suppress stdin, close both directions on input closure, require
+PTY behavior that prevents directional EOF, or detach/reparent the helper so
+controller lifetime no longer owns the session are incompatible. A fallback
+shutdown command is not required for such wrappers.
 
 This capability definition does not require compatibility with the complete
 OpenSSH feature set.
@@ -118,24 +136,25 @@ An unprivileged per-user program executed on the remote host to:
 
 ### 2.10 Remote session
 
-The runner-managed lifetime containing:
+The runner-managed operation containing a remote helper, workspace, OpenOCD
+process and allocated address, and local SSH transports, forwarded services,
+and any dependent local client. Local operation, remote helper, forwarding,
+and RTT have separate ownership and failure domains; this term does not imply
+one global lifecycle authority.
 
-- the remote helper and its control channel;
-- the staged files and remote workspace;
-- the OpenOCD process;
-- the SSH transport;
-- the allocated remote loopback address;
-- the local forwarded services.
-
-SSH connection-sharing state is externally managed. The runner owns the SSH
-subprocesses it launches, but not a sharing master or forwarding state retained
-by an external multiplexing mechanism after those subprocesses exit.
+Each side owns the resources it acquires. SSH connection-sharing state is
+externally managed. The runner owns the SSH subprocesses it launches, but not
+a sharing master or forwarding state retained by an external multiplexing
+mechanism after those subprocesses exit.
 
 ### 2.11 Helper control channel
 
-The protocol connection between the local runner and the remote helper. It
-carries session commands, OpenOCD output events, startup status, and the final
-session result.
+The connection used to start a remote session, retain controller-input lifetime,
+and receive attempt diagnostics, OpenOCD output, startup readiness, and the
+terminal outcome. After startup is requested, input remains open while the
+local operation owns the session. Input EOF ends that lease; output may remain
+usable for final diagnostics and cleanup confirmation. A continuing command
+stream is not required. The wire grammar belongs in the protocol document.
 
 ### 2.12 Probe
 
@@ -212,7 +231,9 @@ prevent attempts at other applicable independent cleanup actions. The bound
 begins when that side starts cleanup. Observation or detection latency, and
 ordinary blocking behavior of individual operating-system or filesystem
 operations that the project does not wrap with a deadline, are outside this
-guarantee.
+guarantee. Timeout, cancellation, and an unsuccessful wait SHALL NOT establish
+that an acquisition producer has finished, that a process has been disposed of,
+or that remote cleanup succeeded. Unconfirmed disposal SHALL remain explicit.
 
 Note:
 
@@ -577,7 +598,9 @@ The runner SHALL make the exact effective remote OpenOCD argv available as
 diagnostic content before each spawn attempt, including attempts that later
 fail and each bind-collision retry. Spawn, readiness, or required-forwarding
 failure SHALL NOT suppress this diagnostic. Wire-event and framing details are
-defined in [protocol.md](../architecture/protocol.md).
+defined in [protocol.md](../architecture/protocol.md). The helper SHALL accept
+the complete diagnostic for delivery before attempting the spawn; inability to
+accept it SHALL prevent that attempt. Admission does not guarantee network delivery or peer receipt.
 
 ### REQ-FUNC-CONFIG-024
 
@@ -964,16 +987,27 @@ The OpenOCD GDB server SHALL execute remotely.
 
 ### REQ-FUNC-DEBUG-003
 
-The custom runner SHALL NOT launch local GDB until remote OpenOCD has reached
-the runner-generated startup-completion point and required local-to-remote GDB
-transport has been established. Any dependent local client SHALL NOT start
-until the runner has observed successful completion of its generated OpenOCD
-startup sequence. The runner SHALL apply a finite startup-readiness deadline.
-Expiration of that deadline SHALL initiate the startup-timeout determination;
-it need not constitute an immediate hard cutoff of observations already in
-progress. If OpenOCD exits, startup readiness cannot be established, or
-readiness remains unestablished after the deadline determination completes,
-the operation SHALL fail without starting a dependent local client.
+The custom runner SHALL NOT launch local GDB or another dependent local client
+until remote OpenOCD has reached the runner-generated startup-completion point
+and the required forwarding for that operation phase has been established.
+At actual execution entry, the local operation SHALL still permit that launch,
+with no committed cancellation or established fatal failure. If scheduling
+separates launch authorization from execution entry, eligibility SHALL be
+checked again at entry. A late readiness report SHALL NOT restore eligibility
+after cancellation. These checks do not promise continued process liveness.
+
+The runner SHALL apply a finite startup-readiness deadline. Expiration SHALL
+initiate a bounded final observation of startup sources owned by the helper,
+including retained decoded evidence, finitely available stream bytes, stream
+EOF, and current child exit state as applicable. The helper SHALL then choose
+readiness or startup failure. This is a finite local observation boundary, not
+a globally synchronized instant or an indefinitely extensible drain.
+
+For an operation requiring a live server, observed OpenOCD exit before readiness,
+unestablished readiness after final determination, or failed required forwarding
+SHALL fail startup without dependent client launch. A one-shot flash operation
+SHALL instead be evaluated from its genuine child result and infrastructure
+outcome; it does not require a live-server readiness report to succeed.
 
 ### REQ-FUNC-DEBUG-005
 
@@ -1209,6 +1243,9 @@ to asynchronously interrupt the local client solely because the loss was
 recorded. This local observation SHALL NOT be treated as evidence that the
 remote helper has observed control-channel loss or begun remote OpenOCD cleanup.
 
+A locally recorded fatal transport failure SHALL prevent subsequent dependent
+local launch, even if a remote readiness report arrives later.
+
 Local SSH-loss detection latency SHALL be delegated to the configured SSH
 client and the local operating system. This requirement does not impose an
 end-to-end bound from the underlying connection loss to local detection.
@@ -1221,7 +1258,9 @@ The runner SHALL NOT attempt transparent reconstruction of an interrupted debugg
 
 SSH connection sharing, including OpenSSH `ControlMaster`, SHALL remain managed
 by the configured client and the user. The runner SHALL NOT disable connection
-sharing or require OpenSSH-specific forwarding cancellation commands.
+sharing or require OpenSSH-specific forwarding cancellation commands. Closing
+a controller channel SHALL NOT terminate an externally managed sharing master;
+a shared channel must still satisfy the directional-EOF contract in §2.8.
 
 Any preferred-address optimization used by the runner SHALL be best effort. The
 remote helper SHALL remain authoritative for address leases and service-port
@@ -1276,41 +1315,49 @@ the Python 3.12+ standard library on the remote host.
 
 ### REQ-FUNC-HELP-005
 
-After the remote helper observes that its controlling SSH channel has ended,
-whether through EOF or a termination signal, it SHALL initiate the bounded
-process cleanup specified in REQ-FUNC-HELP-012. When termination and reaping
-of the owned OpenOCD process and descendants complete successfully within that
-cleanup attempt, the associated OpenOCD process SHALL be terminated. If
-termination fails or cannot be confirmed within the bound, the helper SHALL
-record a cleanup failure and report the unsuccessful termination as a
-helper/session failure when control output remains usable. Loss of the control
-channel MAY prevent delivery of that report. Remote SSH/operating-system
-detection latency is outside this requirement's bound. Local SSH-client
-detection SHALL NOT be treated as remote helper observation, and the project
-SHALL NOT bound the interval from local detection to remote OpenOCD termination.
-The helper SHALL continue observing control input while process readiness is
-pending, without waiting for readiness success, failure, or timeout.
+When the remote helper's lifecycle authority observes controller-input EOF or
+a termination signal, it SHALL initiate the bounded process cleanup specified
+in REQ-FUNC-HELP-012. If termination or disposal cannot be confirmed within that
+attempt, it SHALL record unsuccessful cleanup and report it when output remains
+usable. Transport loss MAY prevent delivery. Remote SSH/operating-system
+detection latency is outside the cleanup bound. Local detection SHALL NOT be
+treated as remote observation, and the interval between them is not bounded.
+
+The helper SHALL continue observing controller termination while readiness is
+pending. Bulk output backpressure SHALL NOT prevent controller or signal
+observation, child exit accounting, or cleanup progress. Readiness or a safe
+retry MAY precede remote handling of EOF, even if another observer has already
+recognized it. Once remote termination is committed, no new attempt or readiness
+may be authorized. Local cancellation independently prevents dependent launch.
 
 ### REQ-FUNC-HELP-006
 
-The client and helper SHALL validate the session control contract before
-acting on commands or events. The helper SHALL report readiness only after the
-configured process-readiness conditions are met. The helper SHALL preserve
-child-output ordering within each stream. Remote OpenOCD stdout and stderr
-SHALL be relayed incrementally while the child is running, so diagnostics,
-progress, and application console output, including long newline-free output,
-become locally visible without waiting for a newline or process termination
-while the control transport remains usable. This observable availability
-guarantee does not define chunking, UTF-8 decoding, framing, or cross-stream
-serialization; those details SHALL remain defined by the protocol and
-architecture documents. Orderly session closure and helper failure SHALL remain
-distinguishable, and either SHALL end the session. Loss of the control
-transport MAY prevent delivery of a final outcome.
+The client and helper SHALL independently validate their session-contract
+boundaries before acting on input. The helper SHALL report readiness only for
+the current owned live child after required startup evidence and final
+live-child validation. The helper SHALL NOT declare the session active if it
+cannot accept the readiness report for delivery. Readiness does not itself
+authorize a local client launch.
 
-The exact Protocol v1 messages, fields, framing, state transitions, ordering,
-validation rules, and frame-size limits SHALL be defined solely in
-[`protocol.md`](../architecture/protocol.md). Automatic helper deployment
-SHALL provide the helper revision matching the local client.
+Remote OpenOCD stdout/stderr SHALL be relayed incrementally while the child is
+running, including long newline-free output, while transport remains usable.
+Ordering SHALL be preserved within each stream; no total order between streams
+is required. Protocol and output memory SHALL remain bounded. Final retained
+output SHALL receive a finite drain opportunity after resource cleanup; drain
+failure SHALL NOT undo completed cleanup.
+
+The helper SHALL commit at most one immutable terminal outcome, independently
+representing the initiating trigger, genuine child result if observed,
+established primary failure, ordered secondary diagnostics, and cleanup or
+residual responsibility. Orderly closure and helper failure SHALL remain
+distinguishable in that outcome. Failure to deliver it SHALL NOT create another
+terminal outcome. Local diagnostics MAY grow after its wire snapshot is frozen.
+Loss of transport MAY prevent delivery of the final outcome.
+
+Exact message fields, framing, validation, and frame-size limits belong solely
+in [protocol.md](../architecture/protocol.md). Automatic deployment SHALL
+provide the helper revision matching the local client; a version value alone
+does not establish compatibility with the full contract.
 
 ### REQ-FUNC-HELP-007
 
@@ -1324,8 +1371,8 @@ deployment or affect the selected revision.
 
 Service configuration SHALL be validated before process startup. The client
 and helper SHALL independently validate the portions of the service contract
-available at their respective boundaries. The exact Protocol v1 request
-fields and validation rules are defined in
+available at their respective boundaries. The exact request fields and
+validation rules are defined in
 [`protocol.md`](../architecture/protocol.md).
 
 This validation applies to the runner-selected service and forwarding
@@ -1335,30 +1382,39 @@ Tcl.
 
 ### REQ-FUNC-HELP-009
 
-When the helper reports natural OpenOCD termination through the valid session
-helper protocol, the client SHALL preserve the reported integer
-exit status as the OpenOCD result. Helper-process status, SSH/control-
-transport status, forwarding-process status, protocol failures, and cleanup
-failures SHALL NOT be represented as OpenOCD exit statuses. Client-requested
-termination that completes without a natural OpenOCD termination result SHALL
-NOT synthesize an OpenOCD exit status.
+The client SHALL preserve a genuine OpenOCD child result reported through the
+valid helper protocol, independently of the initiating shutdown trigger.
+The result SHALL originate only from observing that child. Helper-process,
+SSH/control-transport, and forwarding-process statuses, protocol failures,
+cleanup failures, and timeouts SHALL NOT become OpenOCD exit statuses.
+Requested termination without an observed child result SHALL NOT synthesize one.
+Natural exit and controller termination MAY race, and either may initiate
+shutdown; the actual observed child result SHALL retain its provenance.
+Results from a retired retry attempt SHALL NOT become the final attempt's result.
+Observed status SHALL retain whether helper-requested child termination preceded
+its observation. Normal disposal of a server after successful local client work
+SHALL NOT fail that work solely because the disposed child has a nonzero status;
+an independent natural child failure or infrastructure failure remains significant.
 
 ### REQ-FUNC-HELP-010
 
-Closing a remote session SHALL make one bounded attempt to clean up all locally
-and remotely owned session resources as defined in §3.5. For ordinary
-coordinated shutdown, all applicable cleanup actions SHALL be attempted even
-when an earlier cleanup action fails. When SSH loss prevents coordinated
-shutdown, local and remote
-cleanup are independent: each side SHALL make one bounded attempt to clean up
-the resources it owns after that side observes the loss. These SSH-loss
-cleanup attempts follow §3.5. Repeated shutdown requests SHALL be
-harmless. Successful continuation or retry of a partially failed cleanup
-sequence SHALL NOT be required. Failure to terminate an owned process or to
-release an owned resource within the cleanup attempt is a cleanup failure and
-SHALL remain visible under REQ-FUNC-HELP-011. The remote helper SHALL report
-such an unsuccessful termination as a helper/session failure instead of a
-successful session close when its control output remains usable.
+Session shutdown SHALL be idempotent and attempt every independently owned
+cleanup action under the bounded policy in §3.5. Interruption or one cleanup
+failure SHALL NOT abandon other independently owned resources. Successful retry
+of a partially failed cleanup sequence is not required. Failure to release an
+owned resource SHALL remain visible under REQ-FUNC-HELP-011, with unconfirmed
+disposal and residual responsibility represented explicitly.
+
+Coordinated local shutdown SHALL prevent new dependent launch, close helper
+stdin, continue reading final output and outcome, and wait within a finite
+coordination budget for terminal information and owned SSH-process settlement.
+It SHALL escalate termination of the owned local transport if necessary.
+Transport/helper status SHALL remain independent of the remote outcome.
+A missing terminal outcome or a local shutdown timeout SHALL report infrastructure
+uncertainty, not remote cleanup success, even if the helper or SSH status is zero.
+
+After transport loss, each side SHALL attempt cleanup of its owned resources
+after its own observation. Local completion SHALL NOT certify remote disposal.
 
 Locally owned transport resources are the SSH subprocesses launched by the
 runner and their owned pipes, readers, and diagnostic drains. Forwarding state
@@ -1373,7 +1429,9 @@ OpenOCD supervision, and workspace cleanup remain runner-owned.
 When an operation failure has already been established, later cleanup
 failures, session/infrastructure failures, or OpenOCD-result observations
 SHALL NOT replace that failure. Later failures and relevant OpenOCD results
-SHOULD remain available as diagnostic information. When no earlier failure
+SHALL remain available as ordered diagnostic information, including nested
+secondary cleanup detail. No total ordering between unrelated failures is
+required before a primary failure has been established. When no earlier failure
 exists, helper, protocol, SSH/control, required-service forwarding, or
 required-shutdown failure SHALL fail the operation. Best-effort forwarding
 startup or runtime failure SHOULD produce a warning, provided
@@ -1397,8 +1455,8 @@ probing, are not session processes and are outside the scope of the session
 helper's owned-process supervision contract.
 
 The remote session helper SHALL own the OpenOCD process and its descendants for
-cleanup. Once the helper observes loss or termination of the controlling
-session, it SHALL begin a bounded cleanup attempt as defined in §3.5 for those
+cleanup. Once the helper's lifecycle authority observes controller termination,
+it SHALL begin a bounded cleanup attempt as defined in §3.5 for those
 owned processes and associated session resources. Cleanup SHALL attempt to
 terminate the owned OpenOCD process and descendants and release the OpenOCD
 leader and owned relay resources. Diagnosis of surviving descendants when
@@ -1411,6 +1469,11 @@ bounded cleanup attempt. Otherwise, the attempt is unsuccessful and
 conformance requires the cleanup-failure recording and reporting specified by
 REQ-FUNC-HELP-010 and REQ-FUNC-HELP-011; a failed attempt is not required to
 guarantee that every descendant has terminated.
+
+Acquired process and relay resources SHALL remain continuously reachable by a
+cleanup owner, including partial construction and interruption immediately
+before or after ownership transfer. Child leader exit SHALL NOT by itself
+establish settlement of descendants, descriptors, or acquisition producers.
 
 ### REQ-FUNC-HELP-013
 
@@ -1427,6 +1490,16 @@ SHALL NOT by itself cause the runner to cancel the operation or close the remote
 session. Independently observed session or transport failures SHALL still be
 handled under REQ-FUNC-HELP-011.
 
+### REQ-FUNC-HELP-014
+
+A startup retry SHALL require a classified safely repeatable failure, actual
+quiescence of the previous acquisition producer, and settlement of previous
+attempt resources sufficient for safe reuse. It SHALL NOT begin after remote
+termination has been committed. Timeout or cancellation SHALL NOT substitute
+for settlement. A stale attempt result SHALL NOT change current ownership,
+readiness, child result, or retry eligibility. Retry does not roll back target
+side effects and SHALL NOT assume arbitrary user Tcl is idempotent.
+
 ---
 
 ## 23. Session Data
@@ -1437,7 +1510,8 @@ Remote session files SHALL be protected from other ordinary remote users by file
 
 ### REQ-FUNC-DATA-003
 
-Normal session termination SHALL attempt to remove temporary session artifacts.
+Normal session termination SHALL attempt to remove temporary session artifacts
+once their dependent users have settled.
 Successful cleanup SHALL leave no temporary session artifacts. If removal
 fails, the failure SHALL be reported according to REQ-FUNC-HELP-010 and
 REQ-FUNC-HELP-011.
@@ -1447,9 +1521,13 @@ are validating or extracting their archives or reporting success. Once cleanup
 begins, new staging operations SHALL NOT use or recreate that workspace, even
 if cleanup fails or the workspace has been deleted. A stalled staging operation
 SHALL NOT prevent a bounded cleanup attempt as defined in §3.5 or prevent
-cleanup of other sessions. Cleanup failures SHALL remain visible and SHALL NOT
-permit new
-staging operations to resume use of the workspace.
+cleanup of independent process resources or other sessions. Inputs SHALL remain
+available while an existing staging operation, acquired child, or unresolved
+acquisition producer can legitimately use them. Workspace removal SHALL require
+confirmed dependent disposal and safe exclusion of staging. Unconfirmed child
+disposal SHALL retain dependent workspace data and report cleanup failure or
+residual responsibility. Cleanup failures SHALL remain visible and SHALL NOT
+permit new staging operations to resume use of the workspace.
 
 ### REQ-FUNC-DATA-005
 
