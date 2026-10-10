@@ -29,7 +29,6 @@ import time
 from collections import deque
 from collections.abc import Callable, Coroutine, Iterable, Iterator
 from contextlib import contextmanager, suppress
-from enum import Enum, auto
 from itertools import chain
 from pathlib import Path, PurePosixPath
 from types import FrameType
@@ -842,10 +841,6 @@ def _validate_preferred_address(address):
         raise ValueError("preferred address must be a usable address in 127.64.0.0/10")
 
 
-class StopRequest:
-    """Request representing the parameterless STOP command."""
-
-
 def _parse_required_paths(values):
     if not isinstance(values, list):
         raise ValueError("invalid required-path assertion")
@@ -1051,14 +1046,8 @@ class _ProtocolOutput:
 class _AsyncInput:
     """One cancellable raw observation path for an owned input descriptor."""
 
-    def __init__(
-        self,
-        descriptor: int,
-        *,
-        on_idle: Callable[[], Coroutine[Any, Any, None]] | None = None,
-    ):
+    def __init__(self, descriptor: int):
         self.descriptor = descriptor
-        self._on_idle = on_idle
         self._wake: asyncio.Future[None] | None = None
         self._checkpoint: asyncio.Future[None] | None = None
         self._scan_remaining = 0
@@ -1073,10 +1062,6 @@ class _AsyncInput:
     def _wake_reader(self) -> None:
         if self._wake is not None and not self._wake.done():
             self._wake.set_result(None)
-
-    def wake(self) -> None:
-        """Let the sole observer make progress without another descriptor reader."""
-        self._wake_reader()
 
     def checkpoint(self) -> asyncio.Future[None]:
         """Request a finite available-byte scan by the sole descriptor reader."""
@@ -1095,8 +1080,6 @@ class _AsyncInput:
                 chunk = os.read(self.descriptor, size)
             except BlockingIOError:
                 self._observed()
-                if self._on_idle is not None:
-                    await self._on_idle()
                 loop = asyncio.get_running_loop()
                 self._wake = loop.create_future()
                 loop.add_reader(self.descriptor, self._wake_reader)
@@ -1485,18 +1468,6 @@ class _ControlFrames:
             raise ValueError("protocol frame is missing its LF delimiter")
 
 
-class _State(Enum):
-    CREATED = auto()
-    STARTING = auto()
-    ACTIVE = auto()
-    TERMINATING = auto()
-    CLOSED = auto()
-
-
-class _ControlFrame(NamedTuple):
-    frame: bytes
-
-
 class _StartReceived(NamedTuple):
     request: StartRequest
 
@@ -1537,14 +1508,8 @@ class _GroupCleaned(NamedTuple):
     exception: BaseException | None
 
 
-class _ControlFence(NamedTuple):
-    observed: asyncio.Future[None]
-    resume: asyncio.Future[None]
-
-
 _Observation = (
-    _ControlFrame
-    | _StartReceived
+    _StartReceived
     | _ControlEOF
     | _ChildOutput
     | _ChildExited
@@ -1552,7 +1517,6 @@ _Observation = (
     | _SignalReceived
     | _ObservationFailed
     | _GroupCleaned
-    | _ControlFence
 )
 
 
@@ -1620,8 +1584,6 @@ class ControlSession:
         self._session_tasks: list[asyncio.Task[_ObservationFailed | None]] = []
         self._observation_failures: dict[asyncio.Task[Any], _ObservationFailed] = {}
         self._deadline_task: asyncio.Task[_ObservationFailed | None] | None = None
-        self._control_reader: _AsyncInput | None = None
-        self._control_task: asyncio.Task[_ObservationFailed | None] | None = None
         self._child_cleaning = False
         self._group_cleaned = False
         self._attempt_finished = False
@@ -1666,7 +1628,6 @@ class ControlSession:
     async def _observe_control(self) -> None:
         frames = _ControlFrames()
         reader = _AsyncInput(sys.stdin.buffer.fileno())
-        self._control_reader = reader
         started = False
         try:
             while True:
@@ -2249,7 +2210,7 @@ class ControlSession:
                 except BaseException as error:
                     self._failure(Trigger.OUTPUT_FAILURE, "SESSION_CREATED_ADMISSION", error)
                 signals.install(self.handle_signal)
-                self._control_task = self._observe("control", self._observe_control())
+                self._observe("control", self._observe_control())
                 self._observe("signal", self._observe_signals())
                 await self._coordinate()
             except BaseException as error:

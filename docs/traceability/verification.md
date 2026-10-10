@@ -8,7 +8,7 @@ been executed recently.
 
 Every SRS requirement is listed in either the baseline coverage matrix or the
 [controller-lease migration](#controller-lease-migration) matrix. At this
-client/helper cutover checkpoint, production implements Protocol v2. Migration
+Phase 5 checkpoint, production implements Protocol v2. Migration
 coverage below identifies the actual v2 authority and wire boundaries; historical
 Protocol v1 counts are comparison evidence. Passing a foundation test alone does
 not qualify its physical integration. **Documented** records
@@ -140,7 +140,8 @@ foundations without integrating the remote authority or local launch gate into
 the current runtime. Phase 3 adapts physical ownership and observation beneath
 the then-current Protocol v1 authority. Phase 4 integrates the canonical authority,
 shared local launch gate, directional EOF, and structured v2 terminal handling.
-Phase 5 removal of remaining unused migration definitions is deferred.
+Phase 5 removes the remaining unused migration definitions and control reader
+reconciliation hooks, retaining physical cleanup and final observation.
 
 ### Cutover boundary evidence
 
@@ -171,8 +172,31 @@ acceptance obligations below remain partial evidence for broader qualification.
 The cutover intentionally removes recognized-prefix STOP/EOF success precedence.
 Tests requiring that v1 order are replaced by explicit EOF/post-START-input and
 local-entry checks. Existing physical owner tests remain, and adapted coordinator
-regressions inspect canonical outcomes instead of exception identity. This does
-not begin Phase 5 deletion of unused migration definitions.
+regressions inspect canonical outcomes instead of exception identity.
+
+### Obsolete lifecycle machinery removal
+
+The Phase 5 checkpoint removes the unused STOP request, shadow state enum, raw
+control-frame and control-fence event types, control-observer fields, and raw
+reader idle-acknowledgment and external wake hooks. Their old controller-prefix
+and retry-fence callers were removed at cutover. The canonical remote lifecycle
+and shared local observations remain the transition authorities, with one
+structured session terminal result.
+
+The existing tests remain unchanged. [`test_remote_helper.py`](../../tests/unit/test_remote_helper.py)
+retains finite child-reader final scans, readiness deadlines, queued observer
+failures, native-signal commit boundaries, child acquisition, settlement, and
+workspace cleanup. [`test_remote_process.py`](../../tests/local_integration/test_remote_process.py)
+retains real controller EOF, unexpected post-START input, blocked output, and
+process-group cleanup. The child-reader checkpoint and fatal-observation registry
+remain active safety mechanisms rather than obsolete control reconciliation.
+
+Phase 5 validation passed all 787 ordinary tests on both Python 3.14 and Python
+3.12, all 12 configured SSH nodes, and repository static checks. SSH nodes were
+collected first and ran serially with required external execution and no skips;
+inspection after every node confirmed no new owned processes, forwards, or
+workspace residue. Zephyr and hardware suites were not repeated for this
+removal of unused machinery. Phase 6 integration qualification has not begun.
 
 ### Structured-foundation evidence
 

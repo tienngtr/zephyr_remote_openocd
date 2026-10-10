@@ -13,11 +13,12 @@
 
 This document describes the selected architecture for the Zephyr west runner
 for remote OpenOCD. The controller-lease lifecycle and Protocol v2 are the
-deployed client/helper behavior at the Phase 4 checkpoint. Structured remote and
-local lifecycle authorities consume the adapted physical owners. Broader removal
-of obsolete migration machinery remains the following phase;
-existing physical ownership mechanisms described here are retained or adapted,
-not replaced by experimental implementations. The implementation gaps are
+deployed client/helper behavior since the Phase 4 checkpoint. The Phase 5
+checkpoint removes the remaining unused Protocol v1 lifecycle definitions and
+hooks for control reconciliation. Structured remote and local lifecycle authorities
+consume the adapted physical owners. Existing physical ownership mechanisms
+described here are retained or adapted, not replaced by experimental
+implementations. The implementation gaps are
 tracked in [verification.md](../traceability/verification.md#controller-lease-migration).
 
 The SRS defines externally required behavior.
@@ -2448,7 +2449,17 @@ master is externally owned and is never a cleanup target. Native helper signals
 are failures, including signals after freeze; child disposal signals retain their
 separate result provenance.
 
-Broader removal of unused migration definitions is deferred to Phase 5. Tests
-whose old STOP ordering was intentionally removed are adapted or replaced at the
-cutover boundary; physical ownership, final observation, output, workspace,
-forwarding, and GDB interaction remain required regression evidence.
+At the Phase 5 checkpoint, the unused STOP request, shadow state enum, raw control
+frame and fence event types, and control-observer references are removed. The
+raw reader no longer exposes the unused idle-acknowledgment callback or external
+wake hook from controller reconciliation. Its sole-reader wake mechanism and
+finite child-stream checkpoint remain required for final readiness observation.
+Control reader cleanup stays in the observer's `finally` block, and its task
+remains owned by the session task group and cancellation ledger.
+
+Already-recorded fatal observation accounting, native-signal commit boundaries,
+physical settlement evidence, and local primary-failure arbitration remain
+required. Tests whose old STOP ordering was intentionally removed were adapted
+or replaced at cutover; physical ownership, final observation, output, workspace,
+forwarding, and GDB interaction remain required regression evidence. Broader
+integration qualification remains the next checkpoint.
