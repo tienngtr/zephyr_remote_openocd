@@ -58,6 +58,13 @@ error checks.
 
 ## Lifecycle Ownership and Publication
 
+The canonical architecture maintenance invariants and extension recipes are in
+[SAD §43.1](docs/architecture/SAD.md#431-architecture-maintenance-invariants)
+and [§43.2](docs/architecture/SAD.md#432-extension-recipes). Lifecycle- and
+resource-sensitive changes must follow those patterns. Do not introduce an
+alternate authority, ownership, effect-entry, settlement, failure-composition,
+or retry pattern without first updating the architecture.
+
 For every resource-bearing change, identify the acquisition point, its cleanup
 owner during partial initialization, and the exception/interruption rollback
 path. Transfer ownership without an unowned interval; cleanup independent
