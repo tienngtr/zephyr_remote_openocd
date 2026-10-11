@@ -12,9 +12,13 @@ that the selected remote has an executable `openocd_command`. Use
 do not put shell pipelines in the value. Path mappings
 must point to existing local inputs and normalized remote POSIX destinations.
 
-The helper deploys under the remote user's private runtime or cache directory.
-It removes session workspaces after confirmed process and staging cleanup on
-normal exit, failure, interruption, or loss of the SSH control connection.
+The helper bundle is installed under the remote user's
+`~/.local/libexec/zephyr_remote_openocd/protocol_v1/`. Session workspaces live
+under `$XDG_RUNTIME_DIR/zephyr_remote_openocd-sessions-v1/`, or
+`~/.cache/zephyr_remote_openocd/sessions-v1/` when `XDG_RUNTIME_DIR` does not
+identify an existing directory.
+The helper removes session workspaces after confirmed process and staging cleanup
+on normal exit, failure, interruption, or loss of the SSH control connection.
 A failure message containing a session workspace
 or forwarding endpoint is useful diagnostic evidence; do not remove another
 user's workspace.
