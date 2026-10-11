@@ -1703,13 +1703,15 @@ decoder. Normal decoding and the final startup scan share that ownership;
 there are no competing readiness readers. Their facts reach the authority
 independently of bulk-output delivery.
 
-The owned raw reader's checkpoint performs a finite available-byte scan. The
-same reader consumes until EOF, a would-block result, or a one-MiB byte budget;
-continuous arrivals cannot prolong determination indefinitely. This budget
-matches the maximum control frame and is an internal
-observation bound, independent of the startup timeout. Decoding and ordered
-publication remain on the normal observation path. The coordinator continues
-dispatching while checkpoint facts are published, then decides readiness from
+The owned raw reader's checkpoint performs a finite available-byte scan. Each
+stream's reader consumes until EOF, a would-block result, or a raw read budget
+of one MiB initialized when the checkpoint is requested; continuous arrivals cannot
+replenish that budget. This budget matches the maximum control frame and is an
+internal observation bound, independent of the startup timeout. Bytes read before
+the checkpoint request are not charged against its raw read budget.
+They retain their order ahead of later bytes in the same stream. Decoding and
+ordered publication remain on the normal observation path. The coordinator
+continues dispatching while checkpoint facts are published, then decides readiness from
 child status and retained evidence. Reader cancellation or close still
 settles the checkpoint. Readiness scans only child streams; controller
 input has no recognition fence or checkpoint acknowledgement.
@@ -2148,15 +2150,15 @@ marker/timeout fields remain validated but unused for readiness under that polic
 The nominal `live_server` OpenOCD readiness deadline remains 30 seconds.
 
 Deadline expiry initiates a finite local determination, not automatic timeout.
-First account retained decoder/marker evidence, then consume already-read but
-undecoded bytes and perform one nonblocking scan of each owned child stream
-within a fixed 64 KiB per-stream byte budget. Already-read bytes precede kernel
-bytes in that stream and consume the same budget.
+Retained decoder/marker evidence and already-read but undecoded chunks remain
+on the normal observation path. Each owned child stream receives the finite
+nonblocking checkpoint scan defined in [section 38.4](#384-child-physical-ownership),
+including its raw read budget and treatment of previously read chunks.
 Account EOF if observed within that scan, flush decoder state for actual EOF,
-and check current child exit without a blocking wait. Readers share their
-stream owner so ordinary observation cannot race a competing final reader.
-The budget is fixed at determination entry and is not replenished by new output;
-a noisy producer cannot extend the observation indefinitely. This policy may
+and check current child exit without a blocking wait. The same reader owns
+ordinary observation and the final scan, avoiding a competing final reader.
+The checkpoint budget is not replenished by new output;
+a noisy producer cannot extend the scan indefinitely. This policy may
 include bytes arriving during the scan and may exclude bytes beyond the finite
 cut; it is not a global timestamp guarantee.
 
