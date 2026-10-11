@@ -4,21 +4,89 @@ from __future__ import annotations
 
 import io
 import math
+import os
 import subprocess
+from typing import cast
+from unittest.mock import create_autospec
 
 import pytest
 from zephyr_remote_openocd.remote import preferred_address_cache
 from zephyr_remote_openocd.remote import ssh as ssh_module
 from zephyr_remote_openocd.remote.forwarding import ForwardStartError
+from zephyr_remote_openocd.remote.helper_client import _HelperClient
+from zephyr_remote_openocd.remote.outcome import Trigger
+from zephyr_remote_openocd.remote.protocol import encode_message
 from zephyr_remote_openocd.remote.session import SessionError
-from zephyr_remote_openocd.remote.ssh import SshCommand
+from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand
 
 from tests.forwarding_support import GDB, RTT, TCL, TELNET, ControlledSshCommand, ForwardingHarness
+from tests.protocol_support import terminal_snapshot
 
 
 @pytest.fixture
 def harness(monkeypatch):
     return ForwardingHarness(monkeypatch)
+
+
+@pytest.mark.parametrize("fact", ("terminal", "reader"))
+@pytest.mark.parametrize("during_cleanup", (False, True), ids=("before-close", "during-close"))
+def test_close_preserves_recorded_session_failure_over_forward_cleanup(
+    harness, monkeypatch, fact, during_cleanup
+):
+    session = harness.open((GDB,), ())
+    helper = _HelperClient(
+        harness.ssh, session.request.host, session.deployment, observations=session._observations
+    )
+    process = create_autospec(ManagedSshProcess, instance=True, spec_set=True)
+    read_fd, write_fd = os.pipe()
+    process.stdout = os.fdopen(read_fd, "rb", buffering=0)
+    process.stdin = io.BytesIO()
+    process.poll.return_value = 0
+    process.wait.return_value = 0
+    process.stderr_tail.return_value = b""
+    os.write(
+        write_fd,
+        encode_message(
+            "SESSION_CREATED", session_id="session", remote_workspace="/workspace", helper="fake"
+        ),
+    )
+    os.close(write_fd)
+    monkeypatch.setattr(
+        ControlledSshCommand, "popen", lambda *_args, **_kwargs: cast(ManagedSshProcess, process)
+    )
+    session._helper = helper
+    helper.acquire()
+    assert session.check_openocd_exit() is None
+    cleanup_error = RuntimeError("forward cleanup failed")
+    cleanup_error.add_note("nested forward cleanup detail")
+
+    def record_failure():
+        if fact == "terminal":
+            session._observations.record_terminal(
+                terminal_snapshot(
+                    Trigger.HELPER_FAILURE, code="FAILED", message="established failure"
+                )
+            )
+        else:
+            session._observations.record_reader_failure(RuntimeError("established failure"))
+
+    def fail_cleanup():
+        if during_cleanup:
+            record_failure()
+        raise cleanup_error
+
+    harness.ssh.process(GDB).mock.close_stderr.side_effect = fail_cleanup
+    if not during_cleanup:
+        record_failure()
+    with pytest.raises(SessionError) as raised:
+        session.close()
+    assert "established failure" in str(raised.value)
+    assert any(str(cleanup_error) in note for note in raised.value.__notes__)
+    assert any("nested forward cleanup detail" in note for note in raised.value.__notes__)
+    assert session.closed
+    assert process.stdin.closed and process.stdout.closed
+    assert harness.ssh.process(GDB).mock.close_stderr.call_count == 1
+    session.close()
 
 
 def test_required_start_failure_aborts_session(harness):

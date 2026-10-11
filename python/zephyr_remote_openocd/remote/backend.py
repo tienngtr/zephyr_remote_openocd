@@ -393,6 +393,15 @@ class RemoteSession:
             try:
                 self._forwards.close()
             except BaseException as error:
+                # A reader may establish the primary before or during forward
+                # disposal. Consult its authority before composing that failure
+                # with the physically earlier cleanup error.
+                try:
+                    session_error = self._observations.take_unreported_helper_error()
+                    if session_error is not None:
+                        errors.append(session_error)
+                except BaseException as observation_error:
+                    errors.append(observation_error)
                 errors.append(error)
 
             helper_error: BaseException | None = None
