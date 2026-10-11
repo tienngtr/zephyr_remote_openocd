@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 
-"""Protocol v2 remote helper, deployed with its canonical lifecycle modules."""
+"""Protocol v1 remote helper, deployed with its canonical lifecycle modules."""
 
 from __future__ import annotations
 
@@ -63,13 +63,12 @@ from zephyr_remote_openocd.remote.wire import (  # noqa: E402
     terminal_fields,
 )
 
-VERSION = 2
+VERSION = 1
 RANGE = ipaddress.IPv4Network("127.64.0.0/10")
 SESSION_LOCK = ".session.lock"
 UNCONFIRMED_CHILD = ".child-disposal-unconfirmed"
-# Storage format 2 requires residual-child markers. Keep it outside roots
-# scanned by legacy helpers, independently of the helper's wire version.
-WORKSPACE_STORAGE_VERSION = 2
+# Workspace storage retains residual-child markers and staging metadata.
+WORKSPACE_STORAGE_VERSION = 1
 STALE_SESSION_AGE = 24 * 60 * 60
 WORKSPACE_LEASE_TIMEOUT = 5
 WORKSPACE_LEASE_POLL_INTERVAL = 0.05
@@ -1111,8 +1110,7 @@ def _group_exit_waits(pid: int) -> Iterator[float]:
 class _ChildAcquisition:
     """Own spawn results before their adoption by the coordinator."""
 
-    def __init__(self, generation: int) -> None:
-        self.generation = generation
+    def __init__(self) -> None:
         self.process: subprocess.Popen[bytes] | None = None
         self.child: SupervisedChild | None = None
         self.producer_quiescent = False
@@ -1121,7 +1119,6 @@ class _ChildAcquisition:
 
 
 class _ChildSettlement(NamedTuple):
-    generation: int
     producer_quiescent: bool
     group_disposed: bool
     observers_settled: bool
@@ -1167,7 +1164,6 @@ class SupervisedChild:
         self.readers: dict[str, _AsyncInput] = {}
         self.tasks: list[asyncio.Task[_ObservationFailed | None]] = []
         self._observed_returncode: int | None = None
-        self.generation = 1
         self.group_disposed = False
         self.termination_requested = False
 
@@ -1370,7 +1366,7 @@ def _spawn_child(
     required_output_sentinels=(),
     ownership: _ChildAcquisition | None = None,
 ) -> SupervisedChild:
-    owner = ownership if ownership is not None else _ChildAcquisition(1)
+    owner = ownership if ownership is not None else _ChildAcquisition()
     try:
         owner.process = subprocess.Popen(
             argv,
@@ -1732,10 +1728,9 @@ class ControlSession:
         if not isinstance(state, Starting) or not isinstance(state.attempt, AuthorizedAttempt):
             return
         request = state.request
-        generation = state.attempt.generation
         allocated = allocate_service_address(
             [service.remote_port for service in request.services],
-            preferred_address=request.preferred_address if generation == 1 else None,
+            preferred_address=request.preferred_address,
         )
         self._address_lease = allocated.lease
         self.address = str(allocated)
@@ -1754,16 +1749,14 @@ class ControlSession:
         if not isinstance(self.lifecycle.state, Starting):
             return
         try:
-            emit("ATTEMPT", generation=generation, argv=list(argv))
+            emit("ATTEMPT", argv=list(argv))
         except BaseException as error:
             self._failure(Trigger.OUTPUT_FAILURE, "ATTEMPT_ADMISSION", error)
             return
-        if not self.lifecycle.enter_attempt(generation, admitted=True):
+        if not self.lifecycle.enter_attempt(admitted=True):
             return
-        owner = _ChildAcquisition(generation)
+        owner = _ChildAcquisition()
         self._child_acquisition = owner
-        self._child_settlement = None
-        self._child_cleaning = self._group_cleaned = self._attempt_finished = False
         try:
             (self.work / UNCONFIRMED_CHILD).touch(mode=0o600)
             self.child = _spawn_child(
@@ -1783,12 +1776,11 @@ class ControlSession:
         if self.child is None:
             if owner.process is not None and owner.process.returncode is not None:
                 if owner.termination_requested:
-                    self.lifecycle.record_child_termination(generation)
-                self.lifecycle.observe_child_exit(generation, owner.process.returncode)
+                    self.lifecycle.record_child_termination()
+                self.lifecycle.observe_child_exit(owner.process.returncode)
             return
-        self.child.generation = generation
         self.child.termination_requested |= owner.termination_requested
-        self.lifecycle.adopt_attempt(generation)
+        self.lifecycle.adopt_attempt()
         self._start_output_observers(self.child)
         self._observe("child exit", self._observe_exit(self.child), self.child)
         if request.completion_policy == CompletionPolicy.LIVE_SERVER and isinstance(
@@ -1816,14 +1808,19 @@ class ControlSession:
 
     def _record_exit(self, child: SupervisedChild, returncode: int) -> None:
         if child.termination_requested:
-            self.lifecycle.record_child_termination(child.generation)
-        if self.lifecycle.observe_child_exit(child.generation, returncode):
+            self.lifecycle.record_child_termination()
+        observed = self.lifecycle.observe_child_exit(returncode)
+        state = self.lifecycle.state
+        if (
+            observed
+            and isinstance(state, Starting)
+            and state.request.completion_policy == CompletionPolicy.LIVE_SERVER
+        ):
             # Even a genuine bind failure can follow opaque Tcl and target
             # initialization. Child status and output cannot certify replay.
-            self.lifecycle.classify_startup_failure(
-                child.generation,
+            self.lifecycle.terminate(
+                Trigger.STARTUP_FAILURE,
                 Diagnostic("STARTUP_EXIT", f"child exited before READY with status {returncode}"),
-                safely_repeatable=False,
             )
 
     def _ready(self) -> None:
@@ -1839,13 +1836,12 @@ class ControlSession:
         for marker in set(state.request.required_output_sentinels) - set(
             child.required_output_sentinels.unseen
         ):
-            self.lifecycle.observe_marker(child.generation, marker)
+            self.lifecycle.observe_marker(marker)
         state = self.lifecycle.state
         if (
             not isinstance(state, Starting)
             or not isinstance(state.attempt, OwnedAttempt)
             or state.attempt.child_result is not None
-            or state.provisional_failure is not None
             or not set(state.request.required_output_sentinels).issubset(state.evidence)
         ):
             return
@@ -1860,14 +1856,13 @@ class ControlSession:
             try:
                 emit(
                     "READY",
-                    generation=child.generation,
                     remote_address=self.address,
                     child_pid=child.pid,
                 )
             except BaseException as error:
                 self._failure(Trigger.OUTPUT_FAILURE, "READY_ADMISSION", error)
                 return
-            self.lifecycle.ready(child.generation, child_live=True, admitted=True)
+            self.lifecycle.ready(child_live=True, admitted=True)
         if self._deadline_task is not None:
             self._deadline_task.cancel()
 
@@ -1880,7 +1875,6 @@ class ControlSession:
                 try:
                     emit(
                         "CHILD_OUTPUT",
-                        generation=child.generation,
                         stream=fragment.stream,
                         payload=fragment.payload,
                         line_end=fragment.line_end,
@@ -1954,7 +1948,6 @@ class ControlSession:
         owner = self._child_acquisition
         assert owner is not None
         self._child_settlement = _ChildSettlement(
-            owner.generation,
             owner.producer_quiescent,
             child.group_disposed,
             all(task.done() for task in child.tasks),
@@ -1970,13 +1963,9 @@ class ControlSession:
             failure = Diagnostic(
                 "STARTUP_EXIT", f"child exited before READY with status {returncode}"
             )
-            self.lifecycle.classify_startup_failure(
-                child.generation, failure, safely_repeatable=False
-            )
+            self.lifecycle.terminate(Trigger.STARTUP_FAILURE, failure)
         if self._child_settlement.confirmed and self._address_lease is None:
-            self.lifecycle.settle_attempt(
-                child.generation, producer_quiescent=True, resources_disposed=True
-            )
+            self.lifecycle.settle_attempt(producer_quiescent=True, resources_disposed=True)
             self.child = None
         else:
             self._cleanup_failure(RuntimeError("child disposal remains unconfirmed"))
@@ -2154,7 +2143,6 @@ class ControlSession:
         )
         if self._child_disposed() and self._address_lease is None and owner is not None:
             self.lifecycle.settle_attempt(
-                owner.generation,
                 producer_quiescent=owner.producer_quiescent,
                 resources_disposed=True,
             )

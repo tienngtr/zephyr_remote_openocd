@@ -183,8 +183,8 @@ def test_sigint_during_helper_reader_start_keeps_one_owned_reader(monkeypatch):
     created = encode_message(
         "SESSION_CREATED", helper="test", session_id="session", remote_workspace="/workspace"
     )
-    ready = encode_message("ATTEMPT", generation=1, argv=["test-process"]) + encode_message(
-        "READY", generation=1, remote_address="127.64.0.1", child_pid=1
+    ready = encode_message("ATTEMPT", argv=["test-process"]) + encode_message(
+        "READY", remote_address="127.64.0.1", child_pid=1
     )
     closed = terminal_message(Trigger.CONTROLLER_EOF, returncode=None)
     code = (
@@ -250,8 +250,8 @@ def test_helper_close_allows_recorded_natural_exit_before_termination(
                 session_id="session",
                 remote_workspace="/workspace",
             ),
-            encode_message("ATTEMPT", generation=1, argv=["test-process"]),
-            encode_message("READY", generation=1, remote_address="127.64.0.1", child_pid=1),
+            encode_message("ATTEMPT", argv=["test-process"]),
+            encode_message("READY", remote_address="127.64.0.1", child_pid=1),
             terminal_message(Trigger.CHILD_EXIT, returncode=openocd_returncode),
         )
     )
@@ -1381,7 +1381,7 @@ helper['stage'](sys.argv[2])
 
         assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
         assert json.loads(result.stdout) == {
-            "version": 2,
+            "version": 1,
             "type": "STAGED",
             "byte_count": archive.byte_count,
             "sha256": archive.sha256,
@@ -1499,7 +1499,7 @@ helper['stage'](sys.argv[2])
         assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
         response = json.loads(result.stdout)
         assert response == {
-            "version": 2,
+            "version": 1,
             "type": "STAGED",
             "byte_count": len(b"firstsecond"),
             "sha256": hashlib.sha256(b"firstsecond").hexdigest(),
@@ -1565,7 +1565,7 @@ helper['stage'](sys.argv[2])
             ),
             json.dumps(
                 {
-                    "version": 2,
+                    "version": 1,
                     "byte_count": len(b"firmware"),
                     "sha256": hashlib.sha256(b"firmware").hexdigest(),
                     "files": ["firmware.bin"],
@@ -1700,11 +1700,10 @@ helper['stage'](sys.argv[2])
                 events = [json.loads(line) for line in read_lines(process.stdout)]
                 output = next(event for event in events if event["type"] == "CHILD_OUTPUT")
                 assert output == {
-                    "version": 2,
+                    "version": 1,
                     "type": "CHILD_OUTPUT",
                     "stream": "stdout",
                     "payload": "before_config",
-                    "generation": 1,
                     "line_end": True,
                 }
                 assert process.wait(timeout=5) == 0
@@ -1760,12 +1759,12 @@ helper['stage'](sys.argv[2])
         (
             pytest.param(b"not-json\n", False, id="malformed-json"),
             pytest.param(
-                b'{"version":2,"type":"STOP"}\n',
+                b'{"version":1,"type":"UNEXPECTED"}\n',
                 False,
-                id="unsupported-version",
+                id="unsupported-command",
             ),
             pytest.param(
-                b'{"version":2,"type":"STOP"}',
+                b'{"version":1,"type":"UNEXPECTED"}',
                 True,
                 id="missing-lf",
             ),
@@ -1955,7 +1954,6 @@ helper['stage'](sys.argv[2])
                 )
                 attempts = [event["argv"] for event in events if event["type"] == "ATTEMPT"]
                 assert len(attempts) == 1
-                assert attempts[0][2] == "127.64.0.7"
                 assert state.read_text().splitlines() == ["startup work"]
                 assert not any(event["type"] == "READY" for event in events)
                 snapshot = decode_terminal(events[-1])
@@ -1963,7 +1961,6 @@ helper['stage'](sys.argv[2])
                 assert snapshot.outcome.child_result.returncode == (
                     7 if failure == "diagnostic" else 1
                 )
-                assert snapshot.outcome.child_result.generation == 1
                 assert snapshot.cleanup.confirmed
                 process.stdin.close()
                 assert process.wait(timeout=8) == 1
@@ -2185,7 +2182,7 @@ helper['stage'](sys.argv[2])
             if close_input:
                 process.stdin.close()
             else:
-                process.stdin.write(encode_message("STOP"))
+                process.stdin.write(encode_message("UNEXPECTED"))
                 process.stdin.flush()
 
             events = [json.loads(line) for line in read_lines(process.stdout, timeout=10)]
@@ -2422,7 +2419,7 @@ helper['stage'](sys.argv[2])
             (terminal_message().decode().rstrip("\n"), 0, None, None),
             (
                 (
-                    encode_message("ATTEMPT", generation=1, argv=["child"])
+                    encode_message("ATTEMPT", argv=["child"])
                     + terminal_message(Trigger.CHILD_EXIT, returncode=0)
                 )
                 .decode()
@@ -2463,7 +2460,7 @@ import json
 import sys
 
 created = {{
-    "version": 2,
+    "version": 1,
     "type": "SESSION_CREATED",
     "helper": "test",
     "session_id": "id",
@@ -2513,15 +2510,14 @@ import sys
 
 events = (
     {{
-        "version": 2,
+        "version": 1,
         "type": "SESSION_CREATED",
         "helper": "test",
         "session_id": "id",
         "remote_workspace": "/workspace",
     }},
-    {{"version": 2, "type": "ATTEMPT", "generation": 1, "argv": ["test-process"]}},
-    {{"version": 2, "type": "READY", "generation": 1,
-     "remote_address": "127.64.0.1", "child_pid": 1}},
+    {{"version": 1, "type": "ATTEMPT", "argv": ["test-process"]}},
+    {{"version": 1, "type": "READY", "remote_address": "127.64.0.1", "child_pid": 1}},
     {json.loads(terminal_message(Trigger.CHILD_EXIT, returncode=0))!r},
 )
 for event in events:

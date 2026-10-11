@@ -428,8 +428,8 @@ def test_initial_forward_failure_consumes_session_close_event(monkeypatch):
             session_id="session",
             remote_workspace="/workspace",
         )
-        + encode_message("ATTEMPT", generation=1, argv=["test-process"])
-        + encode_message("READY", generation=1, remote_address="127.64.0.1", child_pid=1)
+        + encode_message("ATTEMPT", argv=["test-process"])
+        + encode_message("READY", remote_address="127.64.0.1", child_pid=1)
         + terminal_message(Trigger.CHILD_EXIT, returncode=SAMPLE_OPENOCD_EXIT_CODE)
     )
     helper.returncode = 0

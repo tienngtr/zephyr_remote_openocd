@@ -26,12 +26,12 @@ from pathlib import Path
 root = Path(__file__).parent
 command = sys.argv[-1]
 def emit(kind, **fields):
-    print(json.dumps(dict(version=2, type=kind, **fields)), flush=True)
+    print(json.dumps(dict(version=1, type=kind, **fields)), flush=True)
 if command.endswith(" control"):
     emit("SESSION_CREATED", helper="peer", session_id="session", remote_workspace="/workspace")
     request = json.loads(sys.stdin.buffer.readline())
-    emit("ATTEMPT", generation=1, argv=request["argv"])
-    emit("READY", generation=1, remote_address="127.64.0.1", child_pid=1)
+    emit("ATTEMPT", argv=request["argv"])
+    emit("READY", remote_address="127.64.0.1", child_pid=1)
     with (root / "gate").open("rb", buffering=0) as gate:
         assert gate.read(1) == b"x"
     ending = (root / "ending").read_text()
@@ -42,7 +42,7 @@ if command.endswith(" control"):
              if ending == "error" else None)
     emit("SESSION_ENDED", trigger="helper_failure" if error else "child_exit",
          primary_failure=error, diagnostics=[],
-         child_result=None if error else dict(generation=1, returncode=int(ending),
+         child_result=None if error else dict(returncode=int(ending),
                                              termination_requested=False),
          cleanup=dict(child_disposal="confirmed", workspace_disposal="confirmed",
                       residual_resources=[]))

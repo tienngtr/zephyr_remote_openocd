@@ -86,7 +86,7 @@ while True:
 """
 
 REMOTE_WORKSPACE_RECLAMATION = """
-import json, os, pathlib, runpy, sys, tempfile
+import json, os, runpy, sys, tempfile
 from contextlib import ExitStack
 
 helper = runpy.run_path(sys.argv[1], run_name='qualification')
@@ -103,13 +103,9 @@ with tempfile.TemporaryDirectory(prefix='zro qualification ') as directory:
                 (work / helper['UNCONFIRMED_CHILD']).touch()
             if name != 'active':
                 lock.close()
-        legacy_root = pathlib.Path(directory) / 'zephyr_remote_openocd'
-        legacy = legacy_root / 'old-session'
-        legacy.mkdir(parents=True)
-        (legacy / 'input.bin').write_bytes(b'legacy input')
-        for work in (*workspaces.values(), legacy):
+        for work in workspaces.values():
             os.utime(work, (1, 1))
-        _, current, lock = helper['new_workspace']()
+        _, _, lock = helper['new_workspace']()
         owners.enter_context(lock)
         inactive = workspaces['inactive']
         active_input = workspaces['active'] / 'staged' / 'input.bin'
@@ -119,8 +115,6 @@ with tempfile.TemporaryDirectory(prefix='zro qualification ') as directory:
             'active_retained': active_input.read_bytes() == b'required input',
             'unconfirmed_retained': unconfirmed_input.read_bytes() == b'required input',
             'inactive_removed': not any(p.exists() for p in (inactive, *inactive_metadata)),
-            'legacy_retained': (legacy / 'input.bin').read_bytes() == b'legacy input',
-            'separate_root': current.parent != legacy_root and legacy_root not in current.parents,
         }))
 """
 
@@ -144,6 +138,13 @@ def free_loopback_port() -> int:
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         return listener.getsockname()[1]
+
+
+def assert_no_loopback_listener(port: int) -> None:
+    """Reject a live listener while allowing settled connections in TIME_WAIT."""
+    with socket.socket() as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        probe.bind(("127.0.0.1", port))
 
 
 def wait_for_echo(port: int, payload: bytes, timeout: float):
@@ -227,8 +228,7 @@ class TestSshTransportIntegration:
                 manager.close()
             assert not manager.has_forwards
             if not occupied:
-                with socket.socket() as after_cleanup:
-                    after_cleanup.bind(("127.0.0.1", port))
+                assert_no_loopback_listener(port)
 
     def test_forwarding_and_session_lifecycle_use_configured_client(self):
         encoded = base64.b64encode(REMOTE_ECHO).decode("ascii")
@@ -288,7 +288,7 @@ class TestSshTransportIntegration:
         )
         assert failed.returncode == REMOTE_FAILURE_EXIT_CODE
 
-    def test_protocol_v2_helper_vertical_slice(self):
+    def test_protocol_v1_helper_vertical_slice(self):
         """Exercise the production transport path with an explicit test process."""
         first = deploy_helper(self.ssh, self.host)
         second = deploy_helper(self.ssh, self.host)
@@ -504,8 +504,6 @@ collision.listen()
                 "active_retained",
                 "unconfirmed_retained",
                 "inactive_removed",
-                "legacy_retained",
-                "separate_root",
             ),
             True,
         )
@@ -551,8 +549,7 @@ collision.listen()
             assert master.poll() is None
             if master.stdin is not None:
                 master.stdin.close()
-        with socket.socket() as after_cleanup:
-            after_cleanup.bind(("127.0.0.1", local_port))
+        assert_no_loopback_listener(local_port)
 
     def test_helper_ssh_loss_cleans_session(self):
         """Losing the helper SSH process cleans the session."""

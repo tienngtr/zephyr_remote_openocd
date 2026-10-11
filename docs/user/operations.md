@@ -147,10 +147,6 @@ That selected port is forwarded locally to the same remote port. For example,
 multi-target OpenOCD configuration. To move a single-target session to port 3334,
 set both options to 3334.
 
-Earlier remote runner versions used `--gdb-client-port` to remap a local port to
-the remote base listener. Invocations relying on that mapping must use the
-operation-specific options above. The YAML configuration contract is unchanged.
-
 ### RTT
 
 `west rtt -r remote_openocd --remote lab` requires an RTT-capable target and
@@ -218,15 +214,6 @@ have stopped, these remote locations may also be removed:
 
 ```text
 ~/.local/libexec/zephyr_remote_openocd/
-$XDG_RUNTIME_DIR/zephyr_remote_openocd-sessions-v2/
-~/.cache/zephyr_remote_openocd/sessions-v2/
-```
-
-Workspaces from older helper revisions remain in these legacy locations.
-Current helpers leave them alone; remove them only after confirming that their
-OpenOCD processes and staging operations have stopped:
-
-```text
-$XDG_RUNTIME_DIR/zephyr_remote_openocd/
-~/.cache/zephyr_remote_openocd/sessions/
+$XDG_RUNTIME_DIR/zephyr_remote_openocd-sessions-v1/
+~/.cache/zephyr_remote_openocd/sessions-v1/
 ```

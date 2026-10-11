@@ -184,9 +184,9 @@ class _SessionObservations:
                 raise error
             if self._closing or self._ending is not None:
                 raise SessionClosedError("operation no longer permits dependent launch")
-            generation = self._gate.prepare(required)
+            ticket = self._gate.prepare(required)
             self._gate.observe_forwarded(forwarded)
-            if not self._gate.enter(generation):
+            if not self._gate.enter(ticket):
                 raise SessionError("dependent launch requires READY and required forwarding")
 
     def wait_for_change(self, timeout: float | None) -> None:

@@ -13,7 +13,7 @@ from .services import validate_preferred_address
 from .wire import EventOrder as EventOrder  # pylint: disable=useless-import-alias
 from .wire import ProtocolError, decode_frame, encode_frame, validate_event
 
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 1
 # The deployed helper is self-contained; keep its matching bound in sync.
 MAX_CONTROL_FRAME_SIZE = 1024 * 1024
 SHA256_HEX_DIGEST_LENGTH = 64

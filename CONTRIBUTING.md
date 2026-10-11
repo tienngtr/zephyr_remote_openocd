@@ -63,7 +63,7 @@ Production code belongs under `python/zephyr_remote_openocd/` and must remain
 board/vendor-agnostic. Keep Zephyr 4.4.x-specific coupling in `zephyr44/runner.py`,
 use only the supported runner interface, and do not access private
 `OpenOcdBinaryRunner` members. Do not change the configuration schema or
-Protocol v2 unless the work explicitly requires it. When either changes, update
+Protocol v1 unless the work explicitly requires it. When either changes, update
 its specification, implementation, examples, and tests together. Version
 changes must reflect contract compatibility decisions.
 

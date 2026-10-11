@@ -13,7 +13,7 @@
 
 This document describes the deployed architecture for the Zephyr west runner
 for remote OpenOCD. Separate remote and local lifecycle authorities implement
-the controller lease and Protocol v2. Physical process, workspace, forwarding,
+the controller lease and Protocol v1. Physical process, workspace, forwarding,
 RTT, and transport owners retain cleanup responsibility throughout acquisition,
 adoption, and disposal.
 Maintained evidence, selected-profile qualification, and remaining acceptance
@@ -1275,9 +1275,9 @@ Deployment also uses the configured SSH command.
 
 The deployment computes the SHA-256 digest of the helper source and identifies
 the revision with a path of the form
-`protocol_v2/helper-<sha256>.py` beneath the per-user deployment directory.
+`protocol_v1/helper-<sha256>.py` beneath the per-user deployment directory.
 It acquires an exclusive `fcntl` lock on
-`protocol_v2/.deploy.lock` before checking, installing, refreshing, or
+`protocol_v1/.deploy.lock` before checking, installing, refreshing, or
 reclaiming revisions. An existing target is reused only when its content
 digest matches. Otherwise, deployment writes the helper to a mode-0600
 temporary file, flushes and synchronizes it, and atomically renames it to the
@@ -1292,7 +1292,7 @@ deployment fail; the selected target is never removed. The deployment lock is
 released before the session helper starts. Exact deployment response fields
 remain part of the wire contract defined in [protocol.md](protocol.md).
 
-Deployment uses the separate `protocol_v2` namespace. The
+Deployment uses the `protocol_v1` namespace. The
 content-addressed zip application includes the canonical outcome, lifecycle, and
 wire modules, using empty package initializers to retain standard-library-only
 remote execution. Its digest covers every bundled source, with no copied codec
@@ -1319,26 +1319,20 @@ and helper implement one strict matching contract.
 Preferred:
 
 ```text
-$XDG_RUNTIME_DIR/zephyr_remote_openocd-sessions-v2/<session-id>/
+$XDG_RUNTIME_DIR/zephyr_remote_openocd-sessions-v1/<session-id>/
 ```
 
 Fallback:
 
 ```text
-~/.cache/zephyr_remote_openocd/sessions-v2/<session-id>/
+~/.cache/zephyr_remote_openocd/sessions-v1/<session-id>/
 ```
 
-Workspace storage format 2 requires the residual-child marker described in
-§38.7. Its roots are separate from, rather than beneath, the legacy runtime
-`zephyr_remote_openocd/` and cache `sessions/` roots. Legacy helper revisions
-cannot scan storage-format-2 workspaces during reclamation. Storage-format-2
-helpers neither stage into nor reclaim legacy workspaces. Marker absence in a
-legacy workspace does not establish child disposal. Legacy data requires independent disposal
-evidence before manual removal. Helpers leave legacy storage untouched. This
-storage compatibility boundary is independent of the wire protocol version and
-content-addressed helper deployment. Future incompatible reclamation rules
-require another isolated storage format rather than interpreting older data
-optimistically.
+Workspace storage format 1 retains the residual-child marker described in
+§38.7 and staging lease/closure metadata. The isolated roots scope workspace
+ownership and conservative reclamation independently of content-addressed
+helper deployment. Marker absence alone does not establish child disposal;
+reclamation also requires positive inactivity evidence.
 
 Session workspaces and their storage root use owner-only directory
 permissions. Staging directories and associated session metadata remain
@@ -1534,8 +1528,8 @@ implements a pure transition authority with immutable phase and attempt records.
 Its read-only request role keeps the validated concrete request available to the
 coordinator without coupling the model to Zephyr or physical owners. Attempt
 entry and READY consume admission facts; child observation records the first
-genuine status and the preceding cleanup-signal context. Retry consumes safe
-classification and separate producer/resource settlement facts. Termination
+genuine status and the preceding cleanup-signal context. Settlement consumes
+separate producer/resource disposal facts. Termination
 prevents further entry or activation, including after a late acquisition result.
 Closure freezes one snapshot; later failures remain local diagnostics.
 
@@ -1545,8 +1539,7 @@ Its observers report immutable facts; physical cleanup facts stay with their
 owners. Physical adapters must validate eligibility before wire admission,
 retain immediate acquisition ownership, and establish the facts passed into the
 model. Boolean admission/liveness/settlement facts are not physical effects or
-proof of adapter correctness. Observers report facts directly to the authority
-without a controller-recognition fence.
+proof of adapter correctness. Observers report facts directly to the authority.
 
 [`remote/outcome.py`](../../python/zephyr_remote_openocd/remote/outcome.py)
 provides immutable diagnostics, child results, outcomes, disposal reports, and
@@ -1554,7 +1547,7 @@ terminal snapshots. Existing exception notes can be captured at a boundary as
 nested diagnostic values without mutating the source exception. The first
 failure stays primary and subsequent failures retain order and nested detail.
 Helper/SSH status is validated independently, and wire encoding is bounded.
-Flash and debug plans serialize explicit completion policy in Protocol v2 START.
+Flash and debug plans serialize explicit completion policy in Protocol v1 START.
 Flash starts its event reader immediately without waiting for READY; its genuine
 child exit is the operation result. Live operations wait for current READY.
 
@@ -1597,13 +1590,12 @@ admission. One-shot child exit drives its result even if it arrives before
 normal adoption completes; acquisition ownership and settlement still apply.
 
 An attempt progresses through authorization, production, ownership, and
-settlement. The deployed attempt has session-local generation 1. Facts identify
-their attempt; an obsolete generation
-cannot adopt current ownership, satisfy readiness, establish current result, or
-initiate retry. Rejecting a stale returned resource still invokes its physical
-cleanup owner; rejection is not disposal.
+settlement. One START admits at most one child attempt; the session supplies
+correlation. Queued child facts carry the owned child identity, and phase
+checks prevent late observations from reactivating a terminating session.
+Rejecting an observation does not establish physical disposal.
 
-At actual attempt entry, the authority validates phase and generation, admits
+At actual attempt entry, the authority validates the Starting phase, admits
 an immutable exact-argv ATTEMPT diagnostic, establishes acquisition ownership,
 and invokes spawn in the same effect boundary. There is no asynchronous effect
 command queue between that validation and spawn. Failed diagnostic admission
@@ -1625,16 +1617,8 @@ side-effect repeatability, so the helper neither classifies output as permission
 to retry nor restarts a spawned child. Startup exit is committed as a failure
 when observed; later cleanup failures remain diagnostics.
 
-The pure lifecycle model retains conditional replacement transitions and the
-client retains generation validation for the v2 contract. The deployed helper
-does not exercise replacement. Those semantic checks cannot certify physical
-repeatability; any future retry mechanism must establish that premise separately
-as well as actual producer quiescence and safe resource settlement.
-
-The authority revalidates Starting state, generation, and absence
-of its own terminal decision at entry. It may account an immediately available
-controller-termination fact first, but no controller-reader checkpoint, ACK,
-publication fence, or recognized-prefix drain is required before READY.
+The authority revalidates Starting state and absence of its own terminal
+decision at entry. It accounts already-recorded fatal facts before READY.
 EOF occurring, an adapter recognizing it, publishing it, and the authority
 handling it are distinct stages. READY can precede authority handling;
 after termination commits, READY cannot be newly authorized.
@@ -1647,11 +1631,10 @@ merely because a task is cancelled before queue publication. Already recorded
 fatal physical failures are accounted before READY or terminal
 publication, even if ordinary dispatch is pending. This local failure check
 requires neither future controller input nor recognized-EOF precedence.
-Physical ownership, producer settlement, and stale-generation validation remain
-mandatory.
+Physical ownership, producer settlement, and phase validation remain mandatory.
 
-READY admission requires `live_server` policy, Starting state, current
-generation, owned child, required evidence, and a final live-child check.
+READY admission requires `live_server` policy, Starting state, an owned child,
+required evidence, and a final live-child check.
 Failed admission causes termination rather than activation. Local receipt
 independently feeds the local launch gate. The bounded final readiness
 observation policy is specified in §40.
@@ -1707,8 +1690,8 @@ They retain their order ahead of later bytes in the same stream. Decoding and
 ordered publication remain on the normal observation path. The coordinator
 continues dispatching while checkpoint facts are published, then decides readiness from
 child status and retained evidence. Reader cancellation or close still
-settles the checkpoint. Readiness scans only child streams; controller
-input has no recognition fence or checkpoint acknowledgement.
+settles the checkpoint. Readiness scans only child streams; controller input is
+observed independently.
 
 ### 38.5 Output and outcome ownership
 
@@ -1735,7 +1718,7 @@ blocked interval after that commit. Terminal cleanup inspection precedes this
 boundary, so signals latched during inspection belong to the frozen outcome.
 Signal-handler, descriptor, workspace, and allocation rollback cleanup continues
 across `BaseException` failures while preserving the primary outcome and nested
-secondary diagnostics on the structured Protocol v2 boundary. Failed retirement
+secondary diagnostics on the structured Protocol v1 boundary. Failed retirement
 of an address lease fails cleanup and leaves its cleanup owner reachable.
 Address allocation likewise retains its reservation until all temporary TCP
 probes have closed and the return value can adopt it. A probe finalizer or return
@@ -1765,8 +1748,7 @@ The authority freezes at most one terminal snapshot after cleanup attempts and
 retained-output accounting. Admission or partial-write failure cannot create a
 second snapshot. Failures discovered after freezing extend local diagnostics
 only. Child status is recorded from actual child observation, including during
-shutdown; controller EOF does not imply a fabricated code. Retired-attempt
-results stay attempt diagnostics and cannot replace the final attempt's result.
+shutdown; controller EOF does not imply a fabricated code.
 Helper/SSH status is always separate infrastructure evidence. Child-result
 provenance also records whether the helper had requested child termination
 before observing the status. Before sending a cleanup signal, account any
@@ -1784,7 +1766,7 @@ not affect the group cleanup decision or success criterion; complete `/proc`
 enumeration is not required.
 
 The standalone helper connects its physical owners to the canonical remote
-lifecycle authority. A generation-scoped acquisition ticket is reachable before
+lifecycle authority. A session-owned acquisition ticket is reachable before
 `Popen`, retains the raw process through supervisor construction, and retains
 the supervisor through coordinator
 adoption. Both construction rollback and an interrupted return use this same
@@ -1793,12 +1775,11 @@ Native handlers latch facts throughout those synchronous effects.
 
 Physical settlement records producer return, verified group disappearance,
 joined observers, and closed pipes separately. Finishing a cleanup coroutine
-does not confirm disposal. Retry requires all those facts as well as the
-classified bind failure and the canonical lifecycle settlement transition. Before
-cleanup signalling,
+does not confirm disposal. The canonical lifecycle settlement transition requires
+these completed physical facts. Before cleanup signalling,
 the process owner observes genuine leader status without reaping its identity;
 delivered termination is recorded independently from that result. Group signals,
-finite escalation, reaping, and disappearance checks retain their existing OS
+finite escalation, reaping, and disappearance checks use native OS
 mechanisms, with independent cleanup attempts after interruption or failure.
 
 Terminal cleanup publishes staging closure before child settlement. Admitted
@@ -1958,8 +1939,9 @@ The launch model in
 [`remote/launch.py`](../../python/zephyr_remote_openocd/remote/launch.py) expresses
 local launch eligibility within the synchronized session observations. It
 requires observed readiness and phase-specific forwarding, preserves
-cancellation and fatal failure across boundaries, and rejects stale queued
-generations. Its pure tests establish these transition semantics.
+cancellation and fatal failure across boundaries, and rejects stale launch
+tickets when GDB setup is followed by RTT client execution. Its pure tests
+establish these transition semantics.
 
 The shared session observations lock serializes recorded terminal and
 reader failure facts with cancellation and actual dependent-work entry. The helper
@@ -2177,9 +2159,9 @@ cut; it is not a global timestamp guarantee.
 Complete marker evidence at that boundary can satisfy readiness, but a dead
 child cannot authorize live READY. Missing evidence commits startup failure
 unless the authority has already committed termination. EOF and the deadline
-may race with either initiating cause. No controller-observer checkpoint or ACK
-is part of the final scan. Observation accounts fatal physical adapter failures
-without requiring controller-EOF recognition ordering. Exact complete-line/EOF
+may race with either initiating cause. The final scan observes owned child
+streams and accounts recorded fatal physical adapter failures. Controller input
+is observed independently. Exact complete-line/EOF
 marker semantics belong in [protocol.md](protocol.md).
 
 ---
@@ -2417,11 +2399,10 @@ Selected architecture:
 - genuine child result stored separately from shutdown trigger and infrastructure status;
 - primary-failure selection by the active local operation;
 - condition-driven bounded local shutdown after controller-input half-close;
-- one remote phase-specific lifecycle authority with generation-tagged attempts;
+- one remote phase-specific lifecycle authority with a single child attempt;
 - local launch gate, revalidated at actual execution entry;
 - structured outcome and one immutable terminal snapshot;
 - finite child-stream final observation at readiness determination;
-- no controller-recognition fence for READY;
 - bounded local forwarding-process health polling;
 - no persistent cross-session firmware or configuration cache;
 - local and remote cleanup are bounded after their respective loss
@@ -2435,18 +2416,16 @@ Selected architecture:
 | Concern | Architectural decision and cost |
 | --- | --- |
 | Controller lifetime | Open controller stdin is the remote lease. Directional EOF ends the lease while reverse output remains available; configured SSH wrappers require qualification at this boundary. |
-| Separate authorities | The local launch gate owns dependent launch eligibility; the remote authority owns attempts, readiness, termination, and terminal freeze. Their decisions require no distributed recognition fence. |
+| Separate authorities | The local launch gate owns dependent launch eligibility; the remote authority owns attempts, readiness, termination, and terminal freeze. Each acts on its own observations. |
 | Continuous physical ownership | Acquisition and adoption must preserve cleanup reachability across interruption. Process groups, producers, staging exclusion, forwards, and RTT resources require independent settlement evidence. |
 | Bounded observation and reporting | Finite final observation, bounded frame and writer storage, and a finite terminal drain keep failure handling bounded. One structured snapshot preserves result provenance and nested diagnostics. |
-| Startup and residual storage | One child creation attempt avoids repeating opaque/user effects after startup failure. Generation validation rejects stale facts. Residual-child markers and isolated storage formats prevent uncertain cleanup from authorizing unsafe reclamation. |
+| Startup and residual storage | One child creation attempt avoids repeating opaque/user effects after startup failure. Phase checks reject invalid late observations. Residual-child markers and isolated storage formats prevent uncertain cleanup from authorizing unsafe reclamation. |
 
 The local session authority gates new forwarding work and public GDB/RTT launch. The remote
 coordinator accounts already-recorded observer and signal failures before
-publication. Retired generations contribute diagnostic output only.
+publication.
 The [lifecycle traceability](../traceability/verification.md#controller-lease-lifecycle)
-records maintained evidence and acceptance boundaries;
-[design rationale references](../traceability/verification.md#design-rationale-references)
-provide deeper analysis of authority separation and failure ordering.
+records maintained evidence and acceptance boundaries.
 
 The bounded writer owns partial writes and a 16-MiB queue. Each direction uses
 the canonical one-MiB frame codec; incremental rendering rejects excessive

@@ -29,7 +29,7 @@ class LaunchDenied(RuntimeError):
 class LaunchGate:
     """The local coordinator alone prepares, enters, cancels, and ends launches.
 
-    READY and forwarding are observations, not transitions. A generation scopes
+    READY and forwarding are observations, not transitions. A launch ticket scopes
     each boundary, including GDB setup followed by an RTT client. Scheduling
     authorization is not entry: the token must be checked at actual execution.
     This object owns no subprocess, transport, socket, or cleanup obligation.
@@ -37,7 +37,7 @@ class LaunchGate:
 
     def __init__(self) -> None:
         self._phase = LocalPhase.OPENING
-        self._generation: int | None = None
+        self._ticket: int | None = None
         self._required: frozenset[Service] = frozenset()
         self._forwarded: frozenset[Service] = frozenset()
         self._remote_ready = False
@@ -54,10 +54,10 @@ class LaunchGate:
     def prepare(self, required_services: Iterable[Service]) -> int:
         if self._phase in (LocalPhase.CANCELLING, LocalPhase.ENDED):
             raise LaunchDenied("operation no longer permits dependent launch")
-        self._generation = (self._generation or 0) + 1
+        self._ticket = (self._ticket or 0) + 1
         self._required = frozenset(required_services)
         self._phase = LocalPhase.OPENING
-        return self._generation
+        return self._ticket
 
     def observe_remote_ready(self) -> None:
         self._remote_ready = True
@@ -65,10 +65,10 @@ class LaunchGate:
     def observe_forwarded(self, services: Iterable[Service]) -> None:
         self._forwarded = frozenset(services)
 
-    def enter(self, generation: int) -> bool:
+    def enter(self, ticket: int) -> bool:
         if (
             self._phase != LocalPhase.OPENING
-            or self._generation != generation
+            or self._ticket != ticket
             or not self._remote_ready
             or not self._required.issubset(self._forwarded)
         ):

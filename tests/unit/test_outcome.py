@@ -95,11 +95,11 @@ def test_failure_trigger_cannot_represent_success(trigger: Trigger) -> None:
 
 
 def test_signal_failure_preserves_controller_trigger_and_child_zero() -> None:
-    result = Outcome(Trigger.CONTROLLER_EOF, child_result=ChildResult(1, 0, False)).with_failure(
+    result = Outcome(Trigger.CONTROLLER_EOF, child_result=ChildResult(0, False)).with_failure(
         Diagnostic("SIGNAL", "remote helper interrupted")
     )
     assert result.trigger == Trigger.CONTROLLER_EOF
-    assert result.child_result == ChildResult(1, 0, False)
+    assert result.child_result == ChildResult(0, False)
     assert result.operation_failed(CompletionPolicy.PROCESS_EXIT)
 
 
@@ -107,10 +107,10 @@ def test_signal_failure_preserves_controller_trigger_and_child_zero() -> None:
     ("result", "live_failed", "exit_failed"),
     (
         (None, False, True),
-        (ChildResult(1, 0, False), False, False),
-        (ChildResult(1, 7, False), True, True),
-        (ChildResult(1, -15, True), False, True),
-        (ChildResult(1, 0, True), False, True),
+        (ChildResult(0, False), False, False),
+        (ChildResult(7, False), True, True),
+        (ChildResult(-15, True), False, True),
+        (ChildResult(0, True), False, True),
     ),
 )
 def test_child_status_interpretation_uses_operation_policy_and_provenance(
@@ -122,19 +122,19 @@ def test_child_status_interpretation_uses_operation_policy_and_provenance(
 
 
 def test_child_observation_cannot_be_replaced_with_infrastructure_status() -> None:
-    result = ChildResult(2, -15, True)
+    result = ChildResult(-15, True)
     outcome = Outcome(Trigger.CONTROLLER_EOF).with_child_result(result)
     failed = outcome.with_failure(Diagnostic("SSH", "SSH exited with status 255"))
 
     assert failed.child_result == result
     with pytest.raises(ValueError):
-        failed.with_child_result(ChildResult(2, 255, True))
+        failed.with_child_result(ChildResult(255, True))
     assert Outcome(Trigger.HELPER_FAILURE, Diagnostic("SSH", "transport died")).child_result is None
 
 
 def test_unconfirmed_disposal_retains_dependencies_and_fails_zero_result() -> None:
     cleanup = CleanupReport("unconfirmed", "unconfirmed", ("child_group", "workspace"))
-    outcome = Outcome(Trigger.CONTROLLER_EOF, child_result=ChildResult(1, 0, False))
+    outcome = Outcome(Trigger.CONTROLLER_EOF, child_result=ChildResult(0, False))
     with pytest.raises(ValueError):
         TerminalSnapshot(outcome, cleanup)
 
@@ -149,12 +149,12 @@ def test_unconfirmed_disposal_retains_dependencies_and_fails_zero_result() -> No
 
 
 def test_terminal_cannot_claim_no_child_after_observed_exit() -> None:
-    outcome = Outcome(Trigger.CHILD_EXIT, child_result=ChildResult(1, 0, False))
+    outcome = Outcome(Trigger.CHILD_EXIT, child_result=ChildResult(0, False))
     with pytest.raises(ValueError):
         TerminalSnapshot(outcome, CleanupReport("not_acquired", "confirmed"))
 
 
-def test_completion_policy_is_explicit_in_protocol_v2() -> None:
+def test_completion_policy_is_explicit_in_protocol_v1() -> None:
     frames = []
     for policy in CompletionPolicy:
         process = RemoteProcess(("openocd",), completion_policy=policy)

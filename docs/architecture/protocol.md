@@ -1,11 +1,11 @@
-# Controller-Lease Remote Helper Contract (Protocol v2)
+# Controller-Lease Remote Helper Contract (Protocol v1)
 
 ## Compatibility
 
-The client and helper use numeric `version: 2` for session and standalone
+The client and helper use numeric `version: 1` for session and standalone
 operations. Compatibility requires the full contract, not version equality.
 There is no negotiation or dual-version session. Content-addressed deployment
-supplies matching revisions in the `protocol_v2` helper namespace.
+supplies matching revisions in the `protocol_v1` helper namespace.
 
 Configured SSH wrappers must deliver directional EOF: closing controller stdin
 leaves helper stdout/stderr readable until helper exit. A wrapper that cannot
@@ -20,7 +20,7 @@ qualification are recorded in
 The envelope is exactly the fields `version` and `type` plus the payload fields
 specified below. Each frame is one UTF-8 JSON object followed by LF. JSON
 whitespace other than LF may surround the object within its frame. Every frame object contains integer,
-non-Boolean `version: 2` and non-empty string `type`. All fields listed for a
+non-Boolean `version: 1` and non-empty string `type`. All fields listed for a
 frame or nested object are required, including fields whose values may be null.
 Unknown fields,
 duplicate object keys, invalid types/values, non-finite numbers, and invalid
@@ -42,7 +42,7 @@ After the one valid START, any additional input byte, including whitespace or
 another LF, is protocol failure; there is no post-START frame parser to await.
 A START followed by extra bytes in the same read still violates this rule.
 Already recorded validation/observer failures remain fatal and are accounted
-before success; no checkpoint to recognize future input is required.
+before success publication.
 
 ## Session creation and controller lease
 
@@ -71,7 +71,7 @@ sharing masters remain externally owned.
 The remote authority handles controller termination independently of the local
 operation. EOF occurrence, adapter recognition, publication, and authority
 handling are not one atomic boundary. READY may precede that handling;
-no distributed recognition fence or ACK is required. After remote termination
+each authority acts on its own observations. After remote termination
 commits, no new attempt or READY admission is permitted. Local cancellation
 independently revokes local launch eligibility, including for late READY.
 
@@ -134,7 +134,7 @@ address, while the ordinary string `"echo {address}"` stays literal.
 `parts: ["load_image ", {"tcl_word": [{"session": "workspace"}, "/staged/fw.hex"]}]`
 resolves and quotes a runner-owned staged firmware path.
 
-The helper materializes templates for each spawn attempt, checks required paths,
+The helper materializes templates before child creation, checks required paths,
 and starts the child in `<remote_workspace>/staged` with the helper environment
 overlaid by `environment`. Service `remote_port` values are unique by
 contract, and duplicate values are rejected during validation before startup.
@@ -142,44 +142,33 @@ contract, and duplicate values are rejected during validation before startup.
 ## Attempt admission and startup failure
 
 The helper allocates a leased address in `127.64.0.0/10` and validates requested
-service ports for collisions. It tries a non-null preferred address only for the
-initial attempt, then up to 32 randomized candidates if unavailable; null uses
-randomized candidates only. The preference does not bypass leasing or port
+service ports for collisions. Before ATTEMPT admission, it tries a non-null
+preferred address first, then up to 32 randomized candidates if unavailable;
+null uses randomized candidates only. The preference does not bypass leasing or port
 validation. Post-spawn bind failure ends the operation. OpenOCD owns
 its listeners; the helper does not probe connectability.
 
 After address allocation, template materialization, and required-path
-validation, the authority checks current startup state/generation, admits
+validation, the authority checks current startup state, admits
 ATTEMPT with the exact effective argv, establishes physical acquisition ownership,
 and invokes spawn. ATTEMPT contains exactly the envelope and:
 
 | Field | Constraint |
 | --- | --- |
-| `generation` | Integer in `1..32`; first attempt is 1, each replacement increments by 1. |
 | `argv` | Non-empty list of strings without NUL; first string non-empty, later strings may be empty. |
 
 ATTEMPT is diagnostic information, not a lifecycle transition or evidence of
-successful acquisition. Every actual spawn attempt has its own prior ATTEMPT,
+successful acquisition. The child creation call is preceded by ATTEMPT,
 including failed Popen. Required-path failure emits no ATTEMPT.
 Failed ATTEMPT admission prevents spawn. Admission means local bounded writer
-acceptance, not a completed pipe write or peer receipt; no receipt ACK is used.
+acceptance, not a completed pipe write or peer receipt.
 
-The deployed helper attempts child creation once per START and emits generation
-1 only. It cannot establish that post-spawn failure occurred before opaque/user
-work, so neither output diagnostics nor a genuine bind collision authorize replay.
-The wire representation and client validation retain replacement generations;
-their existence does not establish safe repeatability. A replacement would require
-`live_server` policy and a classified safely repeatable
-pre-readiness startup failure, previous producer quiescence, safe settlement
-of old process/relay/lease resources, current startup state, and no committed
-remote termination. Cancellation, timeout, or task-cancellation request is not
-settlement. At most 32 child attempts are permitted. Obsolete attempt facts
-cannot satisfy current readiness, adopt current ownership, provide current
-child result, or start retry. Retired-attempt results may be diagnostics but
-are not the terminal child result. Under `process_exit`, a spawned child's
-exit ends the operation rather than initiating a child retry. Pre-spawn
-address-candidate selection still applies to both policies. See SAD §38 for
-classification and ownership policy.
+The helper attempts child creation at most once per START. Opaque/user Tcl
+and target initialization may precede a bind failure, so neither output
+diagnostics nor a genuine bind collision authorize replay. Pre-spawn
+address-candidate selection applies to both completion policies.
+Cancellation and timeout do not establish producer or resource settlement.
+See SAD §38 for ownership and startup-failure policy.
 
 ## READY
 
@@ -187,15 +176,14 @@ READY contains exactly the envelope and:
 
 | Field | Constraint |
 | --- | --- |
-| `generation` | Current admitted ATTEMPT generation. |
 | `remote_address` | Canonical dotted-decimal IPv4 in `127.64.0.0/10`, excluding its first and last addresses. |
 | `child_pid` | Positive integer identifying the owned child leader. |
 
 READY is permitted only for `live_server`. It requires current startup
-state/generation, an owned child, all requested startup evidence, a final
+state, an owned child, all requested startup evidence, a final
 live-child validation, and successful protocol admission. Only then can the
 remote authority activate the attempt. Admission failure terminates the
-session. At most one READY is admitted per session; no retries follow it.
+session. At most one READY is admitted per session.
 READY alone never authorizes GDB or RTT launch: the local operation also
 validates required forwarding, cancellation, and established failures at
 actual execution entry.
@@ -222,22 +210,19 @@ CHILD_OUTPUT contains exactly the envelope and:
 
 | Field | Constraint |
 | --- | --- |
-| `generation` | An admitted ATTEMPT generation. |
 | `stream` | Exactly `stdout` or `stderr`. |
 | `payload` | String without LF. |
 | `line_end` | Boolean; true only for an actual child LF following the fragment, with that LF omitted. A false value requires non-empty payload. |
 
 A logical line may span several events. Newline-free fragments remain observable
 before child exit; UTF-8 decoding uses replacement for invalid bytes. Actual
-EOF flushes the decoder without inventing a newline. Markers and bind-failure
-classification inspect retained decoding evidence without requiring successful
+EOF flushes the decoder without inventing a newline. Markers
+inspect retained decoding evidence without requiring successful
 bulk-output delivery.
 
 Output is allowed during startup, activity, and termination, after its ATTEMPT
-and before SESSION_ENDED. Retained output from a retired generation is permitted
-and remains diagnostic only; it cannot update current readiness or result.
-Order is preserved within each attempt's stream. There is no total stdout/stderr
-write ordering promise. Bulk backpressure cannot block controller/signal
+and before SESSION_ENDED. Order is preserved within each stream. There is no
+total stdout/stderr write ordering promise. Bulk backpressure cannot block controller/signal
 observation, child exit accounting, or resource cleanup. Final retained output
 receives a finite drain opportunity under the bounded SAD policy; no event can
 follow the terminal frame.
@@ -252,7 +237,7 @@ It contains exactly the envelope and:
 | `trigger` | One of `controller_eof`, `signal`, `child_exit`, `startup_failure`, `protocol_failure`, `output_failure`, `helper_failure`; identifies the initiating cause, not a child result. |
 | `primary_failure` | Null or a Diagnostic object below. |
 | `diagnostics` | Ordered list of Diagnostic objects for secondary or informational details. |
-| `child_result` | Null or exactly `{generation, returncode, termination_requested}`: generation is the final non-retired admitted attempt's generation; returncode is an observed integer child status, including negative signal status; termination_requested is Boolean as defined below. |
+| `child_result` | Null or exactly `{returncode, termination_requested}`: returncode is an observed integer child status, including negative signal status; termination_requested is Boolean as defined below. |
 | `cleanup` | Exactly the Cleanup object below. |
 
 A Diagnostic is exactly `{code, message, diagnostics}`. `code` is a non-empty
@@ -323,7 +308,7 @@ work does not fail that work solely due to an observed nonzero cleanup status.
 An independently observed natural nonzero result remains operation failure;
 one-shot flash requires genuine completion rather than a shutdown-induced result.
 
-The terminal child result originates only from observing the final attempt's
+The terminal child result originates only from observing the session's owned
 child, including observation during requested termination. EOF-triggered closure
 can therefore include a genuine child result. Helper, SSH, forwarding, timeout,
 and cleanup statuses cannot be synthesized into it. No child observation means
@@ -351,40 +336,37 @@ cleanup cannot replace an already established local operation failure.
 ```text
 helper: SESSION_CREATED
 client: START, then no bytes; stdin remains open as lease
-helper: (ATTEMPT, CHILD_OUTPUT*)*; READY?; CHILD_OUTPUT*; SESSION_ENDED
+helper: ATTEMPT?; CHILD_OUTPUT*; READY?; CHILD_OUTPUT*; SESSION_ENDED
 client: input closure may occur at any point
 ```
 
-The compact grammar is illustrative: generation-tagged retained output may
-interleave, and any setup/startup failure can end before ATTEMPT or READY.
-SESSION_ENDED may be the first and only frame if creation failed. The client
-rejects duplicate creation, READY before ATTEMPT, mismatched READY generation,
-ATTEMPT after READY, READY under `process_exit`, child output/result for an
-unadmitted generation, noncontiguous/duplicate ATTEMPT generation, a duplicate
-terminal event, and any event after terminal. A successful `live_server`
-startup requires READY; pre-readiness failure/cancellation may end without it.
+The compact grammar is illustrative: setup/startup failure can end before
+ATTEMPT or READY. SESSION_ENDED may be the first and only frame if creation
+failed. The client rejects duplicate creation or ATTEMPT, READY before
+ATTEMPT, READY under `process_exit`, output or child result without ATTEMPT,
+duplicate terminal events, and any event after terminal. A successful
+`live_server` startup requires READY; pre-readiness failure/cancellation may end without it.
 Under `process_exit`, READY is forbidden and genuine process completion
 requires no readiness event. Failed spawn remains an admitted diagnostic
 attempt with no acquired process.
 
 Malformed JSON/UTF-8, non-object input, invalid version/schema, oversize input,
-unexpected post-START bytes (including STOP), or invalid state becomes protocol
-failure when handled by the authority and initiates cleanup. No session ERROR
-or SESSION_CLOSED frame exists in v2. Failed session creation, START validation,
-spawn, readiness, or output admission ends through the same outcome model if a
+unexpected post-START bytes, or invalid state becomes protocol
+failure when handled by the authority and initiates cleanup. Failed session
+creation, START validation, spawn, readiness, or output admission ends through the same outcome model if a
 terminal frame can be delivered. Unexpected transport loss is local failure;
 remote cleanup begins after remote authority observation of EOF/signal.
 
 Intentional benign races include late remote READY after local cancellation
 and natural exit versus controller termination selecting either initiating
 trigger. They are permitted only while
-local launch gating, current-attempt validation, result provenance, continuous
+local launch gating, single-attempt admission, result provenance, continuous
 cleanup reachability, and eventual bounded cleanup after authority observation
-remain satisfied. There is no global winner or controller-EOF recognition
-ordering contract.
+remain satisfied. Local and remote authorities observe controller loss
+independently.
 Already recorded fatal physical failures are accounted before success
 publication; they remain failures even if ordinary queue dispatch is pending.
-This local check does not wait for future controller input or fence EOF.
+This local check does not wait for future controller input.
 
 ## Standalone helper operations
 
@@ -445,7 +427,7 @@ OpenOCD and instead attempts session cleanup.
 --version` and emits `OPENOCD_VERSION` on success.
 
 The deployment bootstrap emits `DEPLOYED` on success. Helpers are installed
-atomically at `protocol_v2/helper-<sha256>.py`, and matching content is reused.
+atomically at `protocol_v1/helper-<sha256>.py`, and matching content is reused.
 Stale digest revisions older than 24 hours are eligible for opportunistic
 reclamation, excluding the selected revision. The bootstrap attempts each
 eligible removal and tolerates an individual stat or removal failure; such a
@@ -455,7 +437,7 @@ per-protocol lock so a concurrently selected revision cannot be removed from a
 stale observation.
 
 `ERROR` is a standalone failure response containing exactly the envelope,
-non-empty string `code`, and string `message`. It is not a v2 session event.
+non-empty string `code`, and string `message`. It is not a session event.
 
 After a valid `stage` or `openocd-version` helper invocation has been selected,
 an operation failure emits one `ERROR` frame and exits nonzero. Invocation

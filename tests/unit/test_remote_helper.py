@@ -140,7 +140,7 @@ if descendant == 0:
 @pytest.fixture
 def start_command():
     return {
-        "version": 2,
+        "version": 1,
         "type": "START",
         "completion_policy": "live_server",
         "argv": ["openocd", "{address}"],
@@ -338,7 +338,7 @@ def test_spawn_rollback_preserves_exited_leader_identity_until_group_signal(monk
     popen = remote_helper.subprocess.Popen
     killpg = remote_helper.os.killpg
     failure = RuntimeError("supervisor construction failed after child exit")
-    owner = remote_helper._ChildAcquisition(1)
+    owner = remote_helper._ChildAcquisition()
     signalled = []
 
     def exited_process(*args, **kwargs):
@@ -533,35 +533,28 @@ sys.stdin.buffer.read()
 
 
 @pytest.mark.parametrize("storage", ("runtime", "cache"))
-def test_workspace_storage_isolates_legacy_reclamation(tmp_path, monkeypatch, storage):
+def test_workspace_uses_isolated_first_format_root(tmp_path, monkeypatch, storage):
     monkeypatch.setattr(remote_helper.Path, "home", lambda: tmp_path / "home")
     if storage == "runtime":
         monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
-        legacy_root = tmp_path / "zephyr_remote_openocd"
+        expected_root = tmp_path / "zephyr_remote_openocd-sessions-v1"
     else:
         monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
-        legacy_root = tmp_path / "home/.cache/zephyr_remote_openocd/sessions"
-    legacy = legacy_root / "abandoned"
-    (legacy / "staged").mkdir(parents=True)
-    (legacy / remote_helper.SESSION_LOCK).touch()
-    inputs = legacy / "staged/child-input"
-    inputs.write_bytes(b"legacy child may still use this")
-    os.utime(legacy, (1.0, 1.0))
-
-    _session_id, workspace, owner_lock = remote_helper.new_workspace()
+        expected_root = tmp_path / "home/.cache/zephyr_remote_openocd/sessions-v1"
+    _session_id, workspace, lock = remote_helper.new_workspace()
     try:
-        root = workspace.parent
-        # Old reclaimers scan arbitrary directories beneath their own root.
-        assert root != legacy_root
-        assert legacy_root not in root.parents
-        assert root not in legacy_root.parents
-        assert tuple(legacy_root.iterdir()) == (legacy,)
-        assert inputs.read_bytes() == b"legacy child may still use this"
+        assert remote_helper.WORKSPACE_STORAGE_VERSION == 1
+        assert workspace.parent == expected_root
+        assert (workspace / "staged").is_dir()
+        unowned = tmp_path / "unowned-session"
+        unowned.mkdir()
         with pytest.raises(ValueError):
-            remote_helper.stage(legacy)
+            remote_helper.stage(unowned)
     finally:
-        owner_lock.close()
-        remote_helper.remove_workspace(workspace)
+        try:
+            remote_helper.remove_workspace(workspace)
+        finally:
+            lock.close()
 
 
 def test_new_workspace_reclaims_only_unlocked_stale_sessions(tmp_path, monkeypatch):
@@ -869,7 +862,7 @@ def _start_session_command(argv, sentinels=()):
     return (
         json.dumps(
             {
-                "version": 2,
+                "version": 1,
                 "type": "START",
                 "completion_policy": "live_server",
                 "argv": argv,
@@ -1301,7 +1294,7 @@ def test_decode_command_rejects_malformed_required_path_before_launch(start_comm
         remote_helper.decode_command(start_command)
 
 
-def test_decode_command_rejects_previous_textual_expansion_contract(start_command):
+def test_decode_command_requires_explicit_argument_templates(start_command):
     del start_command["argv_templates"]
     with pytest.raises(ValueError):
         remote_helper.decode_command(start_command)
@@ -1339,6 +1332,8 @@ def test_decode_command_rejects_tcl_quoting_in_a_filesystem_path(start_command):
 @pytest.mark.parametrize(
     ("field", "value"),
     (
+        pytest.param("version", 99, id="version-mismatch"),
+        pytest.param("version", True, id="boolean-version"),
         pytest.param("argv", [], id="empty-argv"),
         pytest.param("environment", {"BAD=NAME": "value"}, id="environment-name"),
         pytest.param("required_output_sentinels", [" READY "], id="untrimmed-marker"),
@@ -1383,7 +1378,7 @@ def test_decode_command_rejects_unknown_start_fields_and_unsupported_commands(st
     with pytest.raises(ValueError):
         remote_helper.decode_command(start_command)
     with pytest.raises(ValueError):
-        remote_helper.decode_command({"version": 2, "type": "STOP", "future": True})
+        remote_helper.decode_command({"version": 1, "type": "UNEXPECTED", "future": True})
 
 
 @pytest.mark.parametrize("suffix", ("lease", "closed"))
@@ -1436,7 +1431,7 @@ def _terminal_event(events):
     terminals = [fields for kind, fields in events if kind == "SESSION_ENDED"]
     assert len(terminals) == 1
     return decode_terminal(
-        json.loads(json.dumps(dict(version=2, type="SESSION_ENDED", **terminals[0])))
+        json.loads(json.dumps(dict(version=1, type="SESSION_ENDED", **terminals[0])))
     )
 
 
@@ -1450,7 +1445,7 @@ def _run_terminated(session, *, fails):
     assert isinstance(session.lifecycle.state, Closed)
 
 
-@pytest.mark.parametrize("suffix", (b"\n", b" ", b'{"version":2,"type":"STOP"}\n', b"junk"))
+@pytest.mark.parametrize("suffix", (b"\n", b" ", b'{"version":1,"type":"UNEXPECTED"}\n', b"junk"))
 def test_post_start_bytes_are_failure_even_in_same_read(coordinated_helper, suffix):
     session, writer, events, _children = coordinated_helper
     stream = io.BytesIO()
@@ -1468,7 +1463,7 @@ def test_post_start_bytes_are_failure_even_in_same_read(coordinated_helper, suff
 def test_controller_eof_before_start_has_explicit_result(coordinated_helper, partial):
     session, writer, events, _children = coordinated_helper
     if partial:
-        writer.write(b'{"version":2')
+        writer.write(b'{"version":1')
     writer.close()
     _run_terminated(session, fails=partial)
     snapshot = _terminal_event(events)
@@ -2186,7 +2181,7 @@ def test_cleanup_closes_admission_without_waiting_for_global_gate(tmp_path, monk
     def bounded_flock(stream, operation):
         nonlocal clock
         # Fail a blocking acquisition at the OS boundary instead of deadlocking
-        # the regression when the old global gate is held by a stopped owner.
+        # unrelated allocation must proceed while this owner is stopped.
         if operation == fcntl.LOCK_EX:
             raise AssertionError("cleanup attempted an unbounded lock acquisition")
         try:
@@ -2219,7 +2214,7 @@ def test_address_lease_cleanup_failure_preserves_startup_failure(coordinated_hel
 
     class FailedLease:
         def close(self):
-            raise OSError("old address lease remains owned")
+            raise OSError("address lease remains owned")
 
     def emit(kind, **fields):
         nonlocal lease
@@ -2245,8 +2240,7 @@ def test_address_lease_cleanup_failure_preserves_startup_failure(coordinated_hel
         _run_terminated(session, fails=True)
         snapshot = _terminal_event(events)
         assert len(children) == 1
-        assert [fields["generation"] for kind, fields in events if kind == "ATTEMPT"] == [1]
-        assert snapshot.outcome.child_result.generation == 1
+        assert sum(kind == "ATTEMPT" for kind, _fields in events) == 1
         assert snapshot.outcome.primary_failure is not None
         assert snapshot.outcome.primary_failure.code == "STARTUP_EXIT"
         assert "address_lease" in snapshot.cleanup.residual_resources

@@ -243,13 +243,12 @@ def test_forward_manager_rejects_a_service_already_forwarded(monkeypatch):
         manager.close()
 
 
-def test_failed_forward_batch_rolls_back_all_processes_and_allows_retry(monkeypatch):
+def test_failed_forward_batch_rolls_back_all_processes(monkeypatch):
     services = (Service("gdb", 32188, 3333), Service("tcl", 32199, 6333))
     failed_processes = (_ForwardProcess(None), _ForwardProcess(None))
-    retry_processes = (_ForwardProcess(None), _ForwardProcess(None))
-    command = _ForwardCommand(*failed_processes, *retry_processes)
+    command = _ForwardCommand(*failed_processes)
     manager = _ForwardManager(command, "host")
-    readiness = iter((True, False, True, True))
+    readiness = iter((True, False))
     monkeypatch.setattr(_ForwardManager, "_preflight", staticmethod(lambda _service: None))
     monkeypatch.setattr(
         _ForwardManager,
@@ -262,16 +261,10 @@ def test_failed_forward_batch_rolls_back_all_processes_and_allows_retry(monkeypa
 
     assert [process.terminate_calls for process in failed_processes] == [1, 1]
     assert [process.close_stderr_calls for process in failed_processes] == [1, 1]
-    has_forwards_after_failure = manager.has_forwards
-    assert not has_forwards_after_failure
-
-    manager.start(services, "127.64.0.1")
-    assert manager.has_forwards
+    assert not manager.has_forwards
     manager.close()
     assert [process.terminate_calls for process in failed_processes] == [1, 1]
-    assert [process.terminate_calls for process in retry_processes] == [1, 1]
     assert [process.close_stderr_calls for process in failed_processes] == [1, 1]
-    assert [process.close_stderr_calls for process in retry_processes] == [1, 1]
 
 
 def test_failed_forward_batch_keeps_startup_error_and_cleanup_diagnostics(monkeypatch):

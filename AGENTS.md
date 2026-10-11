@@ -42,7 +42,7 @@ and user docs together and state compatibility and required user updates.
 Hardware inventories have a separate schema. Never create schema versions
 merely to record development history.
 
-Protocol v2 requires full-contract support, not version equality alone.
+Protocol v1 requires full-contract support, not version equality alone.
 Change it only with explicit authorization, then
 update the protocol document, client, helper, fixtures, requirements, and
 compatibility tests together. Do not version development history. Helper
@@ -80,9 +80,9 @@ boundaries:
 3. For asynchronous facts, distinguish occurrence, recognition, blocked
    publication, queueing, and coordinator dispatch. Do not assume those stages
    are equivalent for ordering or precedence.
-4. Before publishing success, committing a retry, or launching dependent work,
-   account for earlier terminal facts that may already be recognized or queued
-   but not yet dispatched.
+4. Before publishing success, admitting an address candidate, or launching
+   dependent work, account for earlier terminal facts that may already be
+   recognized or queued but not yet dispatched.
 5. During cleanup, interruption or one cleanup failure must not abandon other
    independently owned resources that still require a cleanup attempt.
 6. When failures compose, preserve the established primary outcome and retain

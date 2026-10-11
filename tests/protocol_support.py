@@ -18,14 +18,11 @@ def terminal_snapshot(
     trigger: Trigger = Trigger.CONTROLLER_EOF,
     *,
     returncode: int | None = None,
-    generation: int = 1,
     termination_requested: bool = False,
     code: str | None = None,
     message: str = "controlled failure",
 ) -> TerminalSnapshot:
-    result = (
-        None if returncode is None else ChildResult(generation, returncode, termination_requested)
-    )
+    result = None if returncode is None else ChildResult(returncode, termination_requested)
     return TerminalSnapshot(
         Outcome(trigger, None if code is None else Diagnostic(code, message), child_result=result),
         CleanupReport("not_acquired" if result is None else "confirmed", "confirmed"),

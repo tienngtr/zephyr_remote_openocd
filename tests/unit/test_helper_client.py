@@ -214,16 +214,12 @@ def helper_client() -> Iterator[_HelperClient]:
         process.close_stderr()
 
 
-def test_helper_client_sends_preference_and_reports_attempts_before_startup_error():
+def test_helper_client_sends_preference_and_reports_attempt_before_startup_error():
     observed: list[tuple[str, ...]] = []
     first = ("openocd", "-c", "bindto 127.64.0.1", "")
-    retry = ("openocd", "-c", "bindto 127.64.0.2", "")
     client, helper_process = _open_helper_client_with_events(
-        encode_message("ATTEMPT", generation=1, argv=list(first)),
-        encode_message(
-            "CHILD_OUTPUT", generation=1, stream="stderr", payload="bind collision", line_end=True
-        ),
-        encode_message("ATTEMPT", generation=2, argv=list(retry)),
+        encode_message("ATTEMPT", argv=list(first)),
+        encode_message("CHILD_OUTPUT", stream="stderr", payload="bind collision", line_end=True),
         terminal_message(Trigger.HELPER_FAILURE, code="FAILED", message="startup failed"),
         process_start_handler=observed.append,
     )
@@ -232,7 +228,7 @@ def test_helper_client_sends_preference_and_reports_attempts_before_startup_erro
             client.start_process(RemoteProcess(("openocd",)), (), preferred_address="127.64.0.1")
         request = _decode_start(decode_message(bytes(helper_process.stdin.written)))
         assert request.preferred_address == "127.64.0.1"
-        assert observed == [first, retry]
+        assert observed == [first]
     finally:
         client.close()
 
@@ -489,8 +485,8 @@ def test_reported_startup_failure_is_not_replayed_during_close():
 @pytest.mark.timeout(10)
 def test_controller_eof_terminal_prevents_dependent_entry():
     helper_client, _process = _open_helper_client_with_events(
-        encode_message("ATTEMPT", generation=1, argv=["child"]),
-        encode_message("READY", generation=1, remote_address="127.64.0.1", child_pid=1),
+        encode_message("ATTEMPT", argv=["child"]),
+        encode_message("READY", remote_address="127.64.0.1", child_pid=1),
         terminal_message(Trigger.CONTROLLER_EOF, returncode=None),
     )
     helper_client.start_process(RemoteProcess(("child",)), ())
@@ -508,8 +504,8 @@ def test_controller_eof_terminal_prevents_dependent_entry():
 @pytest.mark.timeout(10)
 def test_observed_background_error_is_not_reported_again_on_close():
     helper_client, process = _open_helper_client_with_events(
-        encode_message("ATTEMPT", generation=1, argv=["child"]),
-        encode_message("READY", generation=1, remote_address="127.64.0.1", child_pid=1),
+        encode_message("ATTEMPT", argv=["child"]),
+        encode_message("READY", remote_address="127.64.0.1", child_pid=1),
         terminal_message(Trigger.HELPER_FAILURE, code="FAILED", message="background failed"),
     )
     helper_client.start_process(RemoteProcess(("child",)), ())
@@ -531,8 +527,8 @@ def test_observed_background_error_is_not_reported_again_on_close():
 @pytest.mark.timeout(10)
 def test_close_reports_unobserved_background_failure(monkeypatch, cleanup_fails):
     helper_client, process = _open_helper_client_with_events(
-        encode_message("ATTEMPT", generation=1, argv=["child"]),
-        encode_message("READY", generation=1, remote_address="127.64.0.1", child_pid=1),
+        encode_message("ATTEMPT", argv=["child"]),
+        encode_message("READY", remote_address="127.64.0.1", child_pid=1),
         terminal_message(Trigger.HELPER_FAILURE, code="FAILED", message="background failed"),
     )
     helper_client.start_process(RemoteProcess(("child",)), ())
@@ -589,12 +585,10 @@ def test_terminal_failure_stays_primary_after_trailing_protocol_failure(
         else terminal_message(Trigger.CHILD_EXIT, returncode=OPENOCD_FAILURE_RC)
     )
     corruption = (
-        b"not-json\n"
-        if trailing == "malformed"
-        else encode_message("ATTEMPT", generation=2, argv=["unadmitted"])
+        b"not-json\n" if trailing == "malformed" else encode_message("ATTEMPT", argv=["unadmitted"])
     )
     client, _process = _open_helper_client_with_events(
-        encode_message("ATTEMPT", generation=1, argv=["child"]), terminal, corruption
+        encode_message("ATTEMPT", argv=["child"]), terminal, corruption
     )
     try:
         client.start_process(
@@ -1072,12 +1066,11 @@ def test_helper_client_output_delivery_does_not_retain_event_history():
             session_id="session",
             remote_workspace="/workspace",
         ),
-        encode_message("ATTEMPT", generation=1, argv=["child"]),
-        encode_message("READY", generation=1, remote_address="127.64.0.1", child_pid=1),
+        encode_message("ATTEMPT", argv=["child"]),
+        encode_message("READY", remote_address="127.64.0.1", child_pid=1),
         *(
             encode_message(
                 "CHILD_OUTPUT",
-                generation=1,
                 stream="stdout" if index % 2 == 0 else "stderr",
                 payload=payload,
                 line_end=False,

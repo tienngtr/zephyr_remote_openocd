@@ -31,7 +31,7 @@ remote_command = sys.argv[-1]
 if remote_command.endswith(" control"):
     noisy_stderr(b"control-tail")
     print(json.dumps({
-        "version": 2,
+        "version": 1,
         "type": "SESSION_CREATED",
         "helper": "fake",
         "session_id": "session",
@@ -41,17 +41,15 @@ if remote_command.endswith(" control"):
         message = json.loads(line)
         if message["type"] == "START":
             print(json.dumps({
-                "version": 2,
-                "type": "ATTEMPT", "generation": 1,
-                "argv": ["test-process"],
+                "version": 1,
+                "type": "ATTEMPT", "argv": ["test-process"],
             }), flush=True)
             print(json.dumps({
-                "version": 2,
-                "type": "READY", "generation": 1,
-                "remote_address": "127.64.0.1",
+                "version": 1,
+                "type": "READY", "remote_address": "127.64.0.1",
                 "child_pid": 1,
             }), flush=True)
-    print(json.dumps(dict(version=2, type="SESSION_ENDED", trigger="controller_eof",
+    print(json.dumps(dict(version=1, type="SESSION_ENDED", trigger="controller_eof",
         primary_failure=None, diagnostics=[], child_result=None,
         cleanup=dict(child_disposal="not_acquired", workspace_disposal="confirmed",
                      residual_resources=[]))), flush=True)

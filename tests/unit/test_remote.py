@@ -109,12 +109,12 @@ class TestProtocol:
     def test_decode_single_frame_accepts_one_frame(self):
         response = encode_message("HELLO", value=3)
 
-        assert decode_single_frame(response) == {"version": 2, "type": "HELLO", "value": 3}
+        assert decode_single_frame(response) == {"version": 1, "type": "HELLO", "value": 3}
 
     def test_decode_single_frame_accepts_json_whitespace_around_object(self):
         body = encode_message("HELLO", value=3)[:-1]
         response = b" \t" + body + b" \t\r\n"
-        expected = {"version": 2, "type": "HELLO", "value": 3}
+        expected = {"version": 1, "type": "HELLO", "value": 3}
 
         assert decode_single_frame(response) == expected
         assert read_message(io.BytesIO(response)) == expected
@@ -130,22 +130,20 @@ class TestProtocol:
         for invalid in (
             b"not-json\n",
             b"[]\n",
-            b'{"version":1,"type":"HELLO"}\n',
+            b'{"version":99,"type":"HELLO"}\n',
             b'{"version":1.0,"type":"HELLO"}\n',
             b'{"version":true,"type":"HELLO"}\n',
         ):
             with pytest.raises(ProtocolError):
                 decode_message(invalid)
         with pytest.raises(ProtocolError):
-            encode_message("HELLO", version=2)
+            encode_message("HELLO", version=1)
 
     def test_event_order_is_enforced(self):
         order = EventOrder()
         with pytest.raises(ProtocolError):
             order.accept(
-                decode_message(
-                    encode_message("READY", generation=1, remote_address="127.64.1.1", child_pid=1)
-                )
+                decode_message(encode_message("READY", remote_address="127.64.1.1", child_pid=1))
             )
         order.accept(
             decode_message(
@@ -157,12 +155,11 @@ class TestProtocol:
                 )
             )
         )
-        order.accept(decode_message(encode_message("ATTEMPT", generation=1, argv=["openocd"])))
+        order.accept(decode_message(encode_message("ATTEMPT", argv=["openocd"])))
         order.accept(
             decode_message(
                 encode_message(
                     "CHILD_OUTPUT",
-                    generation=1,
                     stream="stdout",
                     payload="before-ready",
                     line_end=False,
@@ -170,9 +167,7 @@ class TestProtocol:
             )
         )
         order.accept(
-            decode_message(
-                encode_message("READY", generation=1, remote_address="127.64.1.1", child_pid=1)
-            )
+            decode_message(encode_message("READY", remote_address="127.64.1.1", child_pid=1))
         )
         for stream, payload in (
             ("stdout", "first"),
@@ -181,9 +176,7 @@ class TestProtocol:
         ):
             order.accept(
                 decode_message(
-                    encode_message(
-                        "CHILD_OUTPUT", generation=1, stream=stream, payload=payload, line_end=False
-                    )
+                    encode_message("CHILD_OUTPUT", stream=stream, payload=payload, line_end=False)
                 )
             )
         order.accept(decode_message(terminal_message(Trigger.CHILD_EXIT, returncode=0)))
@@ -192,7 +185,6 @@ class TestProtocol:
                 decode_message(
                     encode_message(
                         "CHILD_OUTPUT",
-                        generation=1,
                         stream="stderr",
                         payload="late",
                         line_end=False,
@@ -200,72 +192,10 @@ class TestProtocol:
                 )
             )
 
-    @pytest.mark.parametrize("activity", ("ready", "output"))
-    def test_ready_and_output_require_admitted_attempt(self, activity):
-        order = EventOrder()
-        order.accept(
-            decode_message(
-                encode_message(
-                    "SESSION_CREATED",
-                    helper="helper",
-                    session_id="session",
-                    remote_workspace="/workspace",
-                )
-            )
-        )
-        event = (
-            encode_message("READY", generation=1, remote_address="127.64.0.1", child_pid=1)
-            if activity == "ready"
-            else encode_message(
-                "CHILD_OUTPUT", generation=1, stream="stdout", payload="output", line_end=True
-            )
-        )
-        with pytest.raises(ProtocolError):
-            order.accept(decode_message(event))
-
     @pytest.mark.parametrize("argv", (None, [], [""], "openocd", ["openocd", None], [1]))
     def test_attempt_rejects_invalid_argv(self, argv):
         with pytest.raises(ProtocolError):
-            validate_helper_event(
-                decode_message(encode_message("ATTEMPT", generation=1, argv=argv))
-            )
-
-    def test_attempts_allow_retries_before_readiness_only(self):
-        order = EventOrder()
-        order.accept(
-            decode_message(
-                encode_message(
-                    "SESSION_CREATED",
-                    helper="helper",
-                    session_id="session",
-                    remote_workspace="/workspace",
-                )
-            )
-        )
-        for generation, address in enumerate(("127.64.0.1", "127.64.0.2"), 1):
-            order.accept(
-                decode_message(
-                    encode_message("ATTEMPT", generation=generation, argv=["openocd", "", address])
-                )
-            )
-            order.accept(
-                decode_message(
-                    encode_message(
-                        "CHILD_OUTPUT",
-                        generation=1,
-                        stream="stderr",
-                        payload="attempt",
-                        line_end=True,
-                    )
-                )
-            )
-        order.accept(
-            decode_message(
-                encode_message("READY", generation=2, remote_address="127.64.0.2", child_pid=1)
-            )
-        )
-        with pytest.raises(ProtocolError):
-            order.accept(decode_message(encode_message("ATTEMPT", generation=1, argv=["openocd"])))
+            validate_helper_event(decode_message(encode_message("ATTEMPT", argv=argv)))
 
     def test_start_serializers_use_validated_domain_models(self):
         stream = io.BytesIO()
@@ -321,7 +251,7 @@ class TestProtocol:
             pytest.param(
                 validate_staged_response,
                 {
-                    "version": 2,
+                    "version": 1,
                     "type": "STAGED",
                     "byte_count": 0,
                     "sha256": "0" * 64,
@@ -333,14 +263,14 @@ class TestProtocol:
             ),
             pytest.param(
                 validate_openocd_version_response,
-                {"version": 2, "type": "OPENOCD_VERSION", "output": "OpenOCD 0.12.0"},
+                {"version": 1, "type": "OPENOCD_VERSION", "output": "OpenOCD 0.12.0"},
                 {"output": None},
                 id="openocd-version",
             ),
             pytest.param(
                 validate_deployment_response,
                 {
-                    "version": 2,
+                    "version": 1,
                     "type": "DEPLOYED",
                     "status": "deployed",
                     "path": "/tmp/helper.py",
@@ -367,11 +297,6 @@ class TestProtocol:
             with pytest.raises(ProtocolError):
                 validator(response)
 
-    def test_protocol_v1_session_frames_are_rejected(self):
-        for kind in ("PROCESS_STARTING", "PROCESS_READY", "SESSION_CLOSED", "ERROR"):
-            with pytest.raises(ProtocolError):
-                validate_helper_event(decode_message(encode_message(kind)))
-
     @pytest.mark.parametrize("payload", ("line\nbreak", "line\n"))
     def test_child_output_payload_rejects_embedded_line_delimiters(self, payload):
         with pytest.raises(ProtocolError):
@@ -379,7 +304,6 @@ class TestProtocol:
                 decode_message(
                     encode_message(
                         "CHILD_OUTPUT",
-                        generation=1,
                         stream="stdout",
                         payload=payload,
                         line_end=False,
@@ -390,7 +314,6 @@ class TestProtocol:
     def test_child_output_requires_boundary_metadata(self):
         valid = encode_message(
             "CHILD_OUTPUT",
-            generation=1,
             stream="stdout",
             payload="fragment",
             line_end=False,
@@ -406,7 +329,6 @@ class TestProtocol:
                     decode_message(
                         encode_message(
                             "CHILD_OUTPUT",
-                            generation=1,
                             stream="stdout",
                             payload="fragment",
                             **fields,
@@ -418,9 +340,7 @@ class TestProtocol:
         with pytest.raises(ProtocolError):
             validate_helper_event(
                 decode_message(
-                    encode_message(
-                        "CHILD_OUTPUT", generation=1, stream="stdout", payload="", line_end=False
-                    )
+                    encode_message("CHILD_OUTPUT", stream="stdout", payload="", line_end=False)
                 )
             )
 
@@ -443,9 +363,7 @@ class TestProtocol:
         )
         with pytest.raises(ProtocolError):
             order.accept(
-                decode_message(
-                    encode_message("READY", generation=1, remote_address="127.64.1.1", child_pid=1)
-                )
+                decode_message(encode_message("READY", remote_address="127.64.1.1", child_pid=1))
             )
 
 
@@ -590,7 +508,7 @@ def test_helper_deployment_is_content_addressed_and_prunes_stale_revisions(tmp_p
 
 
 def test_helper_deployment_serializes_refresh_and_pruning(tmp_path):
-    helper_directory = tmp_path / ".local/libexec/zephyr_remote_openocd/protocol_v2"
+    helper_directory = tmp_path / ".local/libexec/zephyr_remote_openocd/protocol_v1"
     helper_directory.mkdir(parents=True)
     lock_path = helper_directory / ".deploy.lock"
     environment = os.environ.copy()

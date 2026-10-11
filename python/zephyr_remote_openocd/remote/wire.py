@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Bounded Protocol v2 framing and structured terminal transport.
+"""Bounded Protocol v1 framing and structured terminal transport.
 
 This module depends only on the result domain and the standard library so the
 same codec can be bundled with the remote helper.
@@ -24,7 +24,7 @@ from .outcome import (
     Trigger,
 )
 
-VERSION = 2
+VERSION = 1
 MAX_FRAME_SIZE = 1024 * 1024
 _RANGE = ipaddress.IPv4Network("127.64.0.0/10")
 _RESIDUALS = frozenset(
@@ -143,10 +143,6 @@ def _exact(value: Any, fields: set[str]) -> bool:
     return isinstance(value, dict) and set(value) == fields
 
 
-def _generation(value: Any) -> bool:
-    return integer(value, low=1, high=32)
-
-
 def _diagnostic(value: Any) -> Diagnostic:
     if (
         not _exact(value, {"code", "message", "diagnostics"})
@@ -164,8 +160,7 @@ def _child_result(value: Any) -> ChildResult | None:
     if value is None:
         return None
     if (
-        not _exact(value, {"generation", "returncode", "termination_requested"})
-        or not _generation(value["generation"])
+        not _exact(value, {"returncode", "termination_requested"})
         or not integer(value["returncode"])
         or not isinstance(value["termination_requested"], bool)
     ):
@@ -260,22 +255,16 @@ def validate_event(message: dict[str, Any]) -> None:
     elif kind == "ATTEMPT":
         argv = message["argv"]
         valid = (
-            _generation(message["generation"])
-            and isinstance(argv, list)
+            isinstance(argv, list)
             and bool(argv)
             and string(argv[0], nonempty=True, no_nul=True)
             and all(string(arg, no_nul=True) for arg in argv[1:])
         )
     elif kind == "READY":
-        valid = (
-            _generation(message["generation"])
-            and _valid_address(message["remote_address"])
-            and integer(message["child_pid"], low=1)
-        )
+        valid = _valid_address(message["remote_address"]) and integer(message["child_pid"], low=1)
     elif kind == "CHILD_OUTPUT":
         valid = (
-            _generation(message["generation"])
-            and isinstance(message["stream"], str)
+            isinstance(message["stream"], str)
             and message["stream"] in {"stdout", "stderr"}
             and string(message["payload"])
             and "\n" not in message["payload"]
@@ -290,20 +279,20 @@ def validate_event(message: dict[str, Any]) -> None:
 
 _FIELDS = {
     "SESSION_CREATED": {"helper", "session_id", "remote_workspace"},
-    "ATTEMPT": {"generation", "argv"},
-    "READY": {"generation", "remote_address", "child_pid"},
-    "CHILD_OUTPUT": {"generation", "stream", "payload", "line_end"},
+    "ATTEMPT": {"argv"},
+    "READY": {"remote_address", "child_pid"},
+    "CHILD_OUTPUT": {"stream", "payload", "line_end"},
     "SESSION_ENDED": {"trigger", "primary_failure", "diagnostics", "child_result", "cleanup"},
 }
 
 
 class EventOrder:
-    """Validate admitted attempt identity, operation policy, and terminal uniqueness."""
+    """Validate single-attempt admission, operation policy, and terminal uniqueness."""
 
     def __init__(self, policy: CompletionPolicy = CompletionPolicy.LIVE_SERVER) -> None:
         self.policy = policy
         self.created = False
-        self.generation = 0
+        self.attempted = False
         self.ready = False
         self.ended = False
 
@@ -317,23 +306,18 @@ class EventOrder:
                 raise ProtocolError("duplicate session creation")
             self.created = True
         elif kind == "ATTEMPT":
-            if self.ready or message["generation"] != self.generation + 1:
+            if self.attempted:
                 raise ProtocolError("invalid attempt sequence")
-            self.generation = message["generation"]
+            self.attempted = True
         elif kind == "READY":
-            if (
-                self.policy != CompletionPolicy.LIVE_SERVER
-                or self.ready
-                or not self.generation
-                or message["generation"] != self.generation
-            ):
+            if self.policy != CompletionPolicy.LIVE_SERVER or self.ready or not self.attempted:
                 raise ProtocolError("invalid readiness admission")
             self.ready = True
         elif kind == "CHILD_OUTPUT":
-            if message["generation"] > self.generation:
+            if not self.attempted:
                 raise ProtocolError("output from an unadmitted attempt")
         elif kind == "SESSION_ENDED":
             result = decode_terminal(message).outcome.child_result
-            if result is not None and result.generation != self.generation:
-                raise ProtocolError("terminal result is not from the final attempt")
+            if result is not None and not self.attempted:
+                raise ProtocolError("child result without an admitted attempt")
             self.ended = True

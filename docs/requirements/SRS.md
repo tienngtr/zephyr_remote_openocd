@@ -583,8 +583,8 @@ configured command arguments MAY appear in it.
 ### REQ-FUNC-CONFIG-023
 
 The runner SHALL make the exact effective remote OpenOCD argv available as
-diagnostic content before each spawn attempt, including attempts that later
-fail. Spawn, readiness, or required-forwarding
+diagnostic content before the child creation call, including a call that later
+fails. Spawn, readiness, or required-forwarding
 failure SHALL NOT suppress this diagnostic. Wire-event and framing details are
 defined in [protocol.md](../architecture/protocol.md). The helper SHALL accept
 the complete diagnostic for delivery before attempting the spawn; inability to
@@ -992,10 +992,9 @@ applicable. The helper SHALL then choose readiness or startup failure. This is
 a finite local observation boundary, not a globally synchronized instant or an
 indefinitely extensible drain.
 
-For an operation requiring a live server, OpenOCD exit before readiness that
-is not eligible for safe startup retry under REQ-FUNC-HELP-014, unestablished
-readiness after final determination, or failed required forwarding SHALL fail
-startup without dependent client launch. A one-shot flash operation SHALL
+For an operation requiring a live server, OpenOCD exit before readiness,
+unestablished readiness after final determination, or failed required forwarding
+SHALL fail startup without dependent client launch. A one-shot flash operation SHALL
 instead be evaluated from its genuine child result and infrastructure outcome.
 The process request SHALL explicitly distinguish these completion policies
 rather than infer them from markers or services. One-shot operations SHALL NOT
@@ -1400,7 +1399,6 @@ cleanup failures, and timeouts SHALL NOT become OpenOCD exit statuses.
 Requested termination without an observed child result SHALL NOT synthesize one.
 Natural exit and controller termination MAY race, and either may initiate
 shutdown; the actual observed child result SHALL retain its provenance.
-Results from a retired retry attempt SHALL NOT become the final attempt's result.
 Observed status SHALL retain whether helper-requested child termination preceded
 its observation. Normal disposal of a server after successful local client work
 SHALL NOT fail that work solely because the disposed child has a nonzero status;
@@ -1501,16 +1499,6 @@ session. Independently observed session or transport failures SHALL still be
 handled under REQ-FUNC-HELP-011.
 
 ### REQ-FUNC-HELP-014
-
-Child startup retry SHALL apply only to live-server startup; a one-shot child
-exit supplies the process result. A retry SHALL require a classified safely
-repeatable failure, actual quiescence of the previous acquisition producer,
-and settlement of previous attempt resources sufficient for safe reuse. It
-SHALL NOT begin after remote termination has been committed. Timeout or
-cancellation SHALL NOT substitute for settlement. A stale attempt result SHALL
-NOT change current ownership, readiness, child result, or retry eligibility.
-Retry does not roll back target side effects and SHALL NOT assume arbitrary
-user Tcl is idempotent.
 
 The deployed helper SHALL attempt child creation at most once per START. Neither
 a bind diagnostic nor a genuine post-spawn bind collision establishes safe

@@ -2,7 +2,7 @@
 
 """Immutable lifecycle results, independent of exceptions and transport status.
 
-The helper freezes these results for Protocol v2; the client preserves the
+The helper freezes these results for Protocol v1; the client preserves the
 child provenance independently of helper and transport status.
 """
 
@@ -56,7 +56,6 @@ class Diagnostic:
 class ChildResult:
     """Only child observation may supply this status and its signal context."""
 
-    generation: int
     returncode: int
     termination_requested: bool
 
