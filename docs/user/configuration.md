@@ -206,6 +206,15 @@ remotes:
 Do not use shell pipelines, redirections, or a command string. SSH
 authentication remains the configured client's responsibility.
 
+The command must pass local stdin to the remote command. Closing local stdin
+must deliver remote EOF while leaving stdout and stderr readable until the
+remote command exits. The runner uses this half-close to request normal session
+cleanup and receive its final result. Wrappers that suppress stdin, close both
+directions together, require remote pseudo-terminal behavior that prevents this
+half-close, or detach the remote helper from the controller channel are
+unsupported. Replace or reconfigure an incompatible wrapper; there is no
+alternate shutdown mode or YAML option for it.
+
 For local service forwards, the runner places `ExitOnForwardFailure=yes` and
 `ClearAllForwardings=no` before your fixed arguments. These mandatory settings
 override conflicting command options and SSH configuration, ensuring that the
@@ -230,10 +239,9 @@ or inaccessible storage is harmless to the allocation contract. Reuse may help
 a sharing client accept an already retained forward, but it is not guaranteed.
 See [connection-sharing troubleshooting](troubleshooting.md#ssh-connection-sharing).
 
-The current Protocol v1 requires a nullable `preferred_address` field. Automatic
-deployment supplies the matching helper; older clients or helpers missing this
-field's contract are incompatible despite using numeric version 1. User
-configuration retains the same schema and needs no migration.
+Automatic deployment supplies the helper matching the local runner revision.
+Update the module as a unit; manually mixing client and helper revisions is
+unsupported. The user configuration schema is unchanged.
 
 The executable need not be named `ssh`. A bare name is found through `PATH`,
 and an explicit path is preserved. For example, a Linux environment with an
@@ -331,8 +339,7 @@ text in your paths, inherited Tcl commands, or fixed command arguments.
 Configurations retain the same schema and need no format migration. If an older
 revision substituted those spellings in a mapping or Tcl command, use the
 intended literal remote path or supported runner options instead of relying on
-that substitution. Matching client and helper revisions are deployed together;
-the internal Protocol v1 representation changes without a numeric version bump.
+that substitution. Matching client and helper revisions are deployed together.
 
 The schema enforces the lexical forms above. Post-schema processing is limited
 to contextual semantics that cannot be expressed truthfully as string syntax:

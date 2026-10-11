@@ -13,8 +13,9 @@ do not put shell pipelines in the value. Path mappings
 must point to existing local inputs and normalized remote POSIX destinations.
 
 The helper deploys under the remote user's private runtime or cache directory.
-It removes session workspaces after normal exit, failure, interruption, or loss
-of the SSH control connection. A failure message containing a session workspace
+It removes session workspaces after confirmed process and staging cleanup on
+normal exit, failure, interruption, or loss of the SSH control connection.
+A failure message containing a session workspace
 or forwarding endpoint is useful diagnostic evidence; do not remove another
 user's workspace.
 
@@ -51,6 +52,25 @@ does not guarantee when remote cleanup begins, and the project does not bound
 that interval. Configure client-side keepalive or timeout behavior through
 `ssh_command` if different local detection behavior is required; it does not
 control remote detection timing.
+
+## Shutdown results
+
+If shutdown reports a missing final result or times out, the runner could not
+confirm the remote session outcome. This remains a failure even if the local
+SSH process exits zero; an SSH exit status is not an OpenOCD result or proof of
+remote cleanup. Keep the diagnostic output and any reported workspace path.
+
+Check that the configured SSH command supports the
+[stdin half-close contract](configuration.md#custom-ssh-arguments), and inspect
+its connection and stderr diagnostics. Reconnecting does not restore an
+interrupted GDB session. Before removing retained workspace data, independently
+confirm that the corresponding OpenOCD processes and staging operations have
+stopped. Age and helper exit alone do not establish safe removal.
+
+A remote helper terminated by SIGINT or SIGTERM reports session failure even
+when cleanup succeeds. This is separate from Ctrl-C used inside interactive
+GDB. A custom SSH client that exits on that Ctrl-C can still cause transport
+loss; the runner cannot guarantee that every wrapper preserves the connection.
 
 ## SSH connection sharing
 

@@ -113,13 +113,14 @@ runners.
 Run `west debug -r remote_openocd --remote lab`. The command starts remote
 OpenOCD, loads the ELF, and starts local GDB. Set breakpoints and use GDB as
 usual; the command cleans up the session when GDB exits. Debug does not promise
-fresh application output.
+fresh application output. Ctrl-C inside interactive GDB remains debugger
+interaction; exit GDB to end the runner operation.
 
 ### Attach
 
 Run `west attach -r remote_openocd --remote lab` to connect GDB to the running
 target without flashing or loading an image. Inspect the existing target state
-and detach when finished.
+and detach when finished. Interactive GDB has the same shutdown behavior as debug.
 
 ### Debug server
 
@@ -180,6 +181,14 @@ Remote sessions relay OpenOCD output locally. If the local SSH client detects
 loss, the runner fails the local operation and attempts local cleanup; the
 remote helper cleans up OpenOCD after it observes control-channel loss. Stop
 active west operations before removing the module.
+
+On normal completion, the runner requests remote cleanup while continuing to
+read final output and results. OpenOCD may exit naturally before that request
+arrives; its observed result is retained, and later shutdown failures do not
+replace an already-established operation failure. Termination performed solely
+to dispose of a live server does not turn successful local client work into a
+failure. Missing final results or unconfirmed remote disposal still fail the
+operation; see [shutdown troubleshooting](troubleshooting.md#shutdown-results).
 
 Delete the module copy and, if it is no longer needed, the configuration created
 by setup:

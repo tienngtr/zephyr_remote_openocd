@@ -88,7 +88,8 @@ ssh replace-with-ssh-host-or-alias \
 
 Both commands must succeed, and the first must report Python 3.12 or newer. If
 your SSH command needs fixed options, configure `ssh_command` and run the
-equivalent check with those options.
+equivalent check with those options. Custom wrappers must also support the
+[stdin half-close required for session cleanup](docs/user/configuration.md#custom-ssh-arguments).
 
 The runner is board-agnostic and works with builds that expose Zephyr's built-in
 `openocd` runner. `stm32f746g_disco` is a board that supports the `openocd`
