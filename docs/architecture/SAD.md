@@ -2339,6 +2339,132 @@ is more durable than a duplicate path sketch:
 
 Platform-specific SSH behavior, if any is eventually needed, shall remain inside the SSH transport layer rather than spread through runner logic.
 
+### 43.1 Architecture maintenance invariants
+
+Changes to lifecycle, concurrency, cleanup, transport, or resource ownership
+shall preserve these invariants:
+
+- Each lifecycle has one transition authority. Observers, signal handlers, reader
+  tasks, and physical adapters report facts; they do not independently choose
+  semantic lifecycle transitions.
+- Every acquired resource has a cleanup owner continuously from successful
+  acquisition through confirmed disposal or explicit residual responsibility.
+  Acquisition success, ownership adoption, publication, cancellation, and
+  settlement are distinct events.
+- Timeout, cancellation, requested termination, signal delivery, and an
+  unsuccessful wait do not establish physical settlement.
+- Remote READY is a remote fact, not local authorization to launch dependent
+  work. Local dependent work enters through the local session authority
+  immediately before its effect begins.
+- Local cancellation does not prove remote termination. Local and remote
+  authorities act on their own observations and retain uncertainty when the
+  other side cannot be observed.
+- An OpenOCD child result originates only from genuine child observation.
+  Helper, SSH, forwarding, timeout, protocol, and cleanup statuses never become
+  OpenOCD statuses.
+- Once a primary failure is established, later failures remain secondary
+  diagnostics. Cleanup attempts all independently owned resources even when an
+  earlier cleanup step fails.
+- An effect may be retried only when repeatability is established before the
+  effect executes and previous ownership is settled. A diagnostic observed
+  after partial execution is not evidence that replay is safe.
+- Physical adapters may retain state needed for ownership, idempotent effects,
+  and physical observations. They shall not duplicate or independently decide
+  semantic lifecycle state owned by the lifecycle authority.
+
+A design warrants reconsideration before implementation if it introduces:
+
+- a second flag or state value mirroring semantic states such as ready, failed,
+  terminating, or ended outside the lifecycle authority;
+- resource creation followed by later assignment to its cleanup owner, leaving
+  an acquisition-to-adoption interval without rollback ownership;
+- dependent work that bypasses local session entry;
+- success publication before already-recognized fatal facts are accounted;
+- timeout or cancellation as evidence of resource disposal;
+- independent exception-precedence logic in another subsystem;
+- retry justified by inspecting an error after the effect has already run;
+- an observer that directly chooses readiness, termination, or final outcome; or
+- an acknowledgement or fence whose purpose is to prove another observer has
+  seen all earlier events.
+
+### 43.2 Extension recipes
+
+The following patterns are the default way to extend lifecycle-sensitive code.
+A different pattern requires an architectural reason and corresponding SAD
+update.
+
+#### Add a remote resource
+
+Use continuous ownership around the physical effect:
+
+```text
+authorize effect
+    -> acquire into a temporary owner
+    -> validate or initialize
+    -> transfer ownership explicitly
+    -> normal owner retains cleanup reachability
+    -> establish physical settlement independently
+    -> report the resulting fact to the lifecycle authority
+```
+
+Review interruption and `BaseException` immediately before and after each
+ownership handoff. The resource must remain reachable by some cleanup owner at
+both points.
+
+#### Add an asynchronous observation
+
+Keep observation separate from semantic authority:
+
+```text
+physical observer
+    -> record or enqueue fact
+    -> coordinator receives fact
+    -> lifecycle authority assigns semantic meaning
+```
+
+The observer must not independently publish READY, select the terminal result,
+or choose the primary failure.
+
+#### Add local dependent work
+
+Use the same entry boundary as forwarding, GDB, and RTT:
+
+```text
+check relevant physical health
+    -> account already-recorded fatal facts
+    -> enter through the local session authority
+    -> immediately begin the effect
+```
+
+Authorization separated from actual execution by scheduling, blocking, or
+another asynchronous boundary must be revalidated at execution entry.
+
+#### Add a failure source
+
+Feed the failure into the existing composition path:
+
+```text
+observe failure
+    -> preserve an already-established primary
+    -> retain the new failure as ordered diagnostic information
+```
+
+Do not add independent precedence rules merely because the new failure belongs
+to another subsystem. If the existing session authority cannot express the new
+failure domain cleanly, reconsider or extract the local failure arbiter instead
+of adding another ad hoc precedence branch.
+
+#### Add retry behavior
+
+Before implementing retry, document:
+
+1. the effect that would be repeated;
+2. side effects that may have occurred before failure;
+3. evidence available before first execution that proves repetition safe; and
+4. settlement required before another attempt.
+
+Do not infer repeatability from a later error message or cleanup result.
+
 ---
 
 ## 44. Test Architecture

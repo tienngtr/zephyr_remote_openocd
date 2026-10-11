@@ -5,6 +5,13 @@ safety, and resistance to harmless refactoring. Tests should model stable
 contracts and meaningful state transitions rather than mirror implementation
 details.
 
+Production authority, ownership, effect-entry, settlement, and
+failure-composition patterns are defined in
+[SAD §43.1](../architecture/SAD.md#431-architecture-maintenance-invariants)
+and [§43.2](../architecture/SAD.md#432-extension-recipes). Lifecycle and
+concurrency tests should protect those architectural invariants rather than
+invent parallel test-only models.
+
 * Prefer real production objects over mocks or synthetic objects. If a
 collaborator is deterministic, inexpensive, and does not cross an external
 boundary, construct and use the real production object. A small graph of real
