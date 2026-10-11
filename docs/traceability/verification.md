@@ -10,7 +10,7 @@ Every SRS requirement is listed in either the implementation coverage matrix or
 [controller-lease lifecycle](#controller-lease-lifecycle) matrix. Production
 implements Protocol v2. The matrices identify maintained evidence at the actual
 production boundaries; [integration qualification](#integration-qualification)
-records selected external execution. Historical counts are comparison evidence.
+records selected external execution.
 Passing a pure lifecycle test alone does not qualify its physical integration.
 **Documented** records user documentation, **Failing** a maintained test failing
 in this environment, and **Unverified** a lack of maintained evidence.
@@ -102,7 +102,7 @@ protects the external sharing-master caller's primary failure and cleanup.
 | `REQ-FUNC-HELP-005` | Automated | [`TestRealProcessHelper.test_helper_eof_cleans_child_and_workspace`](../../tests/local_integration/test_remote_process.py); [`TestSshTransportIntegration.test_helper_ssh_loss_cleans_session`](../../tests/ssh_integration/test_ssh_integration.py); [`TestRealProcessHelper.test_helper_signal_cleans_child_and_workspace`](../../tests/local_integration/test_remote_process.py); [`test_helper_startup_retains_workspace_cleanup_ownership`](../../tests/local_integration/test_helper_startup.py) delivers SIGINT and SIGTERM with pipe acknowledgments after allocation, during construction, and during loop setup, verifying workspace/lease removal, lock release, and signal-handler restoration; setup exceptions exercise the same adoption boundary |
 | `REQ-FUNC-SSH-010`, `REQ-FUNC-SSH-011` | Automated | [`TestSshTransportIntegration.test_helper_ssh_loss_cleans_session`](../../tests/ssh_integration/test_ssh_integration.py); local SSH-loss tests |
 | `REQ-FUNC-HELP-009`, `REQ-FUNC-HELP-010`, `REQ-FUNC-HELP-011` | Automated | [`test_operation_primary_failure_rules`](../../tests/zephyr_integration/test_adapter.py), [`test_rtt_cleanup_failure_does_not_replace_observed_openocd_failure`](../../tests/zephyr_integration/test_adapter.py), and [`test_background_openocd_result_does_not_replace_active_operation_failure`](../../tests/zephyr_integration/test_adapter.py) protect local operation precedence. [`test_terminal_failure_stays_primary_after_trailing_protocol_failure`](../../tests/unit/test_helper_client.py) and [`test_close_preserves_terminal_failure_before_shutdown`](../../tests/unit/test_helper_client.py) retain local establishment order. [`test_nested_failure_detail_survives_cleanup_and_wire`](../../tests/unit/test_remote_helper.py) retains ordered nested secondary detail in the canonical terminal outcome. [`test_close_attempts_all_cleanup_once_and_preserves_first_failure`](../../tests/unit/test_backend.py), [`test_sigint_during_session_close_cleans_owned_transports`](../../tests/local_integration/test_remote_process.py), and [`test_coordinator_adoption_failure_attempts_lock_cleanup_after_workspace_failure`](../../tests/unit/test_remote_helper.py) preserve primary failure while independently attempting cleanup. |
-| `REQ-FUNC-HELP-013` | Reviewed | Partial automated support: [`test_interruption_during_session_acquisition_closes_owned_resources`](../../tests/zephyr_integration/test_adapter.py) interrupts staging or completed acquisition before it returns for flash, RTT, and debugserver, verifying session and acquired-forward cleanup through real session objects. [`test_interrupted_helper_acquisition_cleans_owned_control_process`](../../tests/local_integration/test_remote_process.py) covers interruption before control launch, pending SIGINT during transport adoption, before allocation acceptance, and after helper acquisition using the real helper and local control subprocess; the launch and completed-helper cases detect the pre-fix resource leak. [`test_sigint_during_launch_reaps_acquired_transport`](../../tests/unit/test_ssh.py) and [`test_auxiliary_start_interruption_or_unexpected_error_is_not_advisory`](../../tests/unit/test_forwarding_policy.py) cover transport and session startup rollback. [`test_sigint_during_session_close_cleans_owned_transports`](../../tests/local_integration/test_remote_process.py) injects real SIGINT at forwarding and helper cleanup entry, forwarding ownership release, and between forwarding cleanup attempts using real sessions, the real local helper, and managed transports; it verifies reaping, stream closure, workspace removal, completion before interrupt delivery, caller-mask preservation, and earlier cleanup-failure precedence. [`test_long_lived_ssh_preserves_terminal_prompts_and_survives_ctrl_c`](../../tests/local_integration/test_ssh_sigint.py) uses a synthetic child and a transport retaining inherited SIGINT blocking; it does not exercise the adapter or continued interactive GDB use. Design review: the adapter owns the coordinator before acquisition, and the coordinator owns the helper before control acquisition. [`test_active_operation_interrupt_closes_session_and_forwards`](../../tests/zephyr_integration/test_adapter.py) exercises cancellation at the GDB, RTT-client, and server-wait effect boundaries through real execution dispatch, session ownership, and forwarding cleanup. Helper/control and subprocess effects are controlled; terminal delivery to interactive GDB and continued GDB use after Ctrl-C remain hardware acceptance limits. [`test_helper_startup_retains_workspace_cleanup_ownership`](../../tests/local_integration/test_helper_startup.py) covers handled remote-helper startup signals before the coordinator loop exists, including continuous workspace/lease/lock ownership and previous-handler restoration |
+| `REQ-FUNC-HELP-013` | Reviewed | Partial automated support: [`test_interruption_during_session_acquisition_closes_owned_resources`](../../tests/zephyr_integration/test_adapter.py) interrupts staging or completed acquisition before it returns for flash, RTT, and debugserver, verifying session and acquired-forward cleanup through real session objects. [`test_interrupted_helper_acquisition_cleans_owned_control_process`](../../tests/local_integration/test_remote_process.py) covers interruption before control launch, pending SIGINT during transport adoption, before allocation acceptance, and after helper acquisition using the real helper and local control subprocess. [`test_sigint_during_launch_reaps_acquired_transport`](../../tests/unit/test_ssh.py) and [`test_auxiliary_start_interruption_or_unexpected_error_is_not_advisory`](../../tests/unit/test_forwarding_policy.py) cover transport and session startup rollback. [`test_sigint_during_session_close_cleans_owned_transports`](../../tests/local_integration/test_remote_process.py) injects real SIGINT at forwarding and helper cleanup entry, forwarding ownership release, and between forwarding cleanup attempts using real sessions, the real local helper, and managed transports; it verifies reaping, stream closure, workspace removal, completion before interrupt delivery, caller-mask preservation, and earlier cleanup-failure precedence. [`test_long_lived_ssh_preserves_terminal_prompts_and_survives_ctrl_c`](../../tests/local_integration/test_ssh_sigint.py) uses a synthetic child and a transport retaining inherited SIGINT blocking; it does not exercise the adapter or continued interactive GDB use. Design review: the adapter owns the coordinator before acquisition, and the coordinator owns the helper before control acquisition. [`test_active_operation_interrupt_closes_session_and_forwards`](../../tests/zephyr_integration/test_adapter.py) exercises cancellation at the GDB, RTT-client, and server-wait effect boundaries through real execution dispatch, session ownership, and forwarding cleanup. Helper/control and subprocess effects are controlled; terminal delivery to interactive GDB and continued GDB use after Ctrl-C remain hardware acceptance limits. [`test_helper_startup_retains_workspace_cleanup_ownership`](../../tests/local_integration/test_helper_startup.py) covers handled remote-helper startup signals before the coordinator loop exists, including continuous workspace/lease/lock ownership and previous-handler restoration |
 | `REQ-FUNC-DATA-002`, `REQ-FUNC-DATA-003`, `REQ-FUNC-DATA-005` | Automated | [`TestRealProcessHelper.test_helper_eof_cleans_child_and_workspace`](../../tests/local_integration/test_remote_process.py); staging and cleanup tests in [`tests/unit/test_remote_helper.py`](../../tests/unit/test_remote_helper.py) and [`tests/local_integration/test_remote_process.py`](../../tests/local_integration/test_remote_process.py); [`test_helper_startup_retains_workspace_cleanup_ownership`](../../tests/local_integration/test_helper_startup.py) verifies allocation-to-coordinator rollback artifacts and lock release before any OpenOCD child exists |
 | `REQ-NFUNC-PLAT-001`, `REQ-NFUNC-PLAT-002`, `REQ-NFUNC-TEST-001` | Both | Linux [Zephyr](../../tests/zephyr_integration/), [SSH](../../tests/ssh_integration/), and [real-hardware coverage](../../tests/hardware/); command-construction unit tests |
 | `REQ-FUNC-CONC-003` | Reviewed | [Probe contention design](../architecture/SAD.md#probe-contention) and production [`do_run()`](../../python/zephyr_remote_openocd/zephyr44/runner.py), [`RemoteSession`](../../python/zephyr_remote_openocd/remote/backend.py), and [helper supervision](../../python/zephyr_remote_openocd/remote_helper.py) expose per-session operations without a board admission registry, reservation service, or probe queue. The same-probe adapter concurrency regression provides partial automated support for independently progressing channels. |
@@ -120,7 +120,7 @@ OpenOCD support across every board/operation combination, actual same-probe
 independent channel acquisition and contention, and interactive GDB Ctrl-C with
 continued use still need suitable hardware validation. Synthetic child failures
 verify the runner's response, not OpenOCD's hardware diagnosis. Maintained RTT
-hardware profiles now cover standalone, debug, attach, and debugserver.
+hardware profiles cover standalone, debug, attach, and debugserver.
 
 ## Controller-lease lifecycle
 
@@ -128,11 +128,11 @@ The SRS, SAD, and [Protocol v2](../architecture/protocol.md) describe deployed
 behavior. The remote lifecycle and shared local session observations are the
 transition authorities. Physical acquisition, settlement, reader observation,
 output, staging, forwarding, and RTT owners remain independent where required.
-The table maps the revised clauses to current production-boundary evidence.
+The table maps lifecycle requirements to maintained production-boundary evidence.
 Coverage applies to the named histories; it does not imply exhaustive testing of
 all combinations or every external environment.
 
-| Requirements / revised clause | Status | Maintained evidence and limits |
+| Requirements / lifecycle contract | Status | Maintained evidence and limits |
 | --- | --- | --- |
 | SRS §2.8; `REQ-FUNC-SSH-001`, `REQ-FUNC-SSH-012`: directional EOF and sharing | Automated | [`test_protocol_v2_helper_vertical_slice`](../../tests/ssh_integration/test_ssh_integration.py) closes controller stdin and confirms remote workspace removal. [`test_preferred_address_reuses_forward_retained_by_external_master`](../../tests/ssh_integration/test_ssh_integration.py) verifies final reverse delivery and survival of a real test-owned sharing master. [Real process/helper-client shutdown tests](../../tests/local_integration/test_remote_process.py) retain terminal output after input EOF. |
 | SRS §§2.10–2.11; `REQ-FUNC-HELP-005`: authority-handled controller termination | Automated | [`test_pending_readiness_shutdown_cleans_child_and_workspace`](../../tests/local_integration/test_remote_process.py) and [`test_helper_cleans_up_while_protocol_output_pipe_is_full`](../../tests/local_integration/test_remote_process.py) exercise EOF during startup and backpressure. [`test_termination_blocks_authorized_entry_and_late_ready`](../../tests/unit/test_lifecycle.py) protects authority-committed termination. Physical EOF recognition is not a success fence. |
@@ -149,27 +149,19 @@ all combinations or every external environment.
 | `REQ-FUNC-HELP-014`: safe retry and stale attempts | Automated | [`test_safe_retry_classification_requires_observed_child_exit`](../../tests/unit/test_lifecycle.py), settlement/stale-generation cases in the same file, and [`test_address_lease_retirement_failure_forbids_collision_retry`](../../tests/unit/test_remote_helper.py) prohibit unsafe replacement. [`test_bind_collision_retries_before_establishing_forward`](../../tests/ssh_integration/test_ssh_integration.py) exercises actual post-spawn EADDRINUSE, exit, replacement address, and successful forwarding. |
 | `REQ-FUNC-FILE-001`, `REQ-FUNC-DATA-003`, `REQ-FUNC-DATA-005`: dependent workspace lifetime | Automated | [Staging/cleanup integration](../../tests/local_integration/test_remote_process.py) retains shared upload exclusion. [Helper workspace tests](../../tests/unit/test_remote_helper.py) cover early admission closure, unconfirmed child retention, real locks, explicit inspection errors, and legacy-root isolation. [`test_deployed_helper_reclaims_only_inactive_workspace_storage`](../../tests/ssh_integration/test_ssh_integration.py) executes conservative reclamation remotely. Helper-lock release alone is not proof of residual child disposal. |
 
-Pure semantic models remain in [`test_lifecycle.py`](../../tests/unit/test_lifecycle.py),
+Pure semantic models are covered by
+[`test_lifecycle.py`](../../tests/unit/test_lifecycle.py),
 [`test_outcome.py`](../../tests/unit/test_outcome.py), and
 [`test_launch.py`](../../tests/unit/test_launch.py). Their physical adapters are
-qualified separately by the tests above. The child-reader checkpoint and fatal
-observation registry remain active safety mechanisms. Controller-recognition
-fences, STOP parsing, split terminal reconstruction, shadow state, and unused
-reader reconciliation hooks have been removed without compatibility replacements.
-Legacy grammar rejection tests remain because strict v2 compatibility is a
-continuing contract, not migration-only behavior.
-
-Two parser-only tests for consuming multiple control frames were removed in
-Phase 7. The helper accepts one START. Retained real-helper regressions cover
-incomplete START at EOF, bounded input, and same-read post-START rejection;
-the general wire codec still covers per-frame bounds. Adapted tests with stale
-v1 names were renamed without changing their bodies or assertions.
+qualified separately by the tests above. The finite child-stream observation
+and fatal observation registry protect readiness publication. Strict grammar
+regressions verify one START, incomplete START at EOF, bounded input, and
+same-read post-START rejection; the general wire codec covers per-frame bounds.
 
 ### Integration qualification
 
-The Phase 6 checkpoint validates the deployed Protocol v2 path through the
-configured external environments. It adds maintained coverage at these physical
-boundaries:
+The selected external environments qualify the deployed Protocol v2 path at
+these maintained physical boundaries:
 
 | Boundary | Maintained qualification evidence |
 | --- | --- |
@@ -179,12 +171,12 @@ boundaries:
 | Configured environment and path mapping | Both staged and mapped variants of [`test_remote_openocd_config_consumes_forwarded_environment`](../../tests/ssh_integration/test_ssh_integration.py) run configured OpenOCD against a Tcl configuration whose path contains spaces. It consumes an allow-listed variable, then exits under the explicit process-exit policy. `PathPlanner` supplies the real staging/template or mapped-path checks. |
 | Attach with simultaneous RTT | The debug and attach variants of [`test_gdb_rtt_server_keeps_gdb_active`](../../tests/hardware/test_real_rtt.py) retain a live GDB client while RTT completes a bidirectional round trip. Attach uses a separately programmed precondition image; the attach operation does not load firmware. The existing adapter regression checks that command distinction. |
 
-Phase 6 qualification passed:
+The current selected-environment qualification results are:
 
 | Layer | Result |
 | --- | --- |
-| Ordinary unit and local-process suite, Python 3.14 | 787 passed |
-| Ordinary unit and local-process suite, Python 3.12 | 787 passed |
+| Ordinary unit and local-process suite, Python 3.14 | 785 passed |
+| Ordinary unit and local-process suite, Python 3.12 | 785 passed |
 | Zephyr 4.4 integration | 111 passed |
 | Configured SSH integration | 16 passed |
 | Available hardware profiles | 15 passed |
@@ -211,78 +203,47 @@ boundary by the ordinary tests listed above.
 These results qualify the selected environments and available profiles. They
 do not establish every board/operation combination, actual same-probe physical
 channel acquisition/contention, or continued interactive hardware GDB use after
-Ctrl-C. Those limits remain explicit rather than inferred from synthetic
-children or controlled adapter clients. These are remaining hardware acceptance
-limits, not missing Protocol v2 integration or a pending cutover.
+Ctrl-C. Synthetic children and controlled adapter clients do not qualify those
+hardware interactions. The combined one-shot acquisition/full-writer/drain
+profile is not maintained; separate regressions cover its component boundaries.
 
-### Documentation and cleanup checkpoint
-
-Phase 7 updates SSH-wrapper compatibility, normal shutdown races, missing final
-results, retained workspace safety, and signal troubleshooting. Architecture,
-protocol status, contributor guidance, and the matrices describe the deployed
-contract. Obsolete migration-only runtime machinery was already removed in the
-earlier phases; no compatibility replacement remains.
-
-Final Phase 7 validation passed 785 ordinary tests on each of Python 3.12 and
-3.14, all 111 Zephyr integration tests, all 16 SSH profiles, all 15 available
-hardware profiles, and repository static checks. The ordinary count is two
-lower than Phase 6 because only the obsolete multi-control-frame tests above
-were removed. External execution required all collected nodes, with no skips;
-serial SSH/hardware cleanup inspection found no new owned residue after any
-node. All 146 SRS requirements remain mapped, all 140 named test references
-resolve to maintained tests, and local documentation links and headings resolve.
-These changes leave runtime behavior and the product YAML schema unchanged.
-
-### Historical design and checkpoint evidence
-
-The Protocol v1 baseline passed 687 ordinary tests, 12 configured SSH nodes,
-and static checks. The final Phase 4 checkpoint passed 787 ordinary tests on
-Python 3.12 and 3.14 and 12 SSH nodes; its earlier cutover run passed 111 Zephyr
-and 14 hardware nodes. Those two external suites were not repeated for the
-final Phase 4 local failure-composition correction. Phase 5 passed 787 ordinary
-tests on each interpreter, 12 SSH nodes, and static checks; it did not repeat
-Zephyr or hardware for removal of unused machinery. Phase 6 results above
-supersede those counts for selected-profile qualification. External nodes were
-collected first, required execution with no skips, and received cleanup
-inspection before reuse.
+### Design rationale references
 
 The immutable
 [requirements audit](https://github.com/tienngtr/zephyr_remote_openocd/blob/a24823ed44a25be326b4899b441b8f4ae2120d3f/experiments/lifecycle/controller_lease_runtime/REQUIREMENTS_AUDIT.md)
 and
 [differential matrix](https://github.com/tienngtr/zephyr_remote_openocd/blob/a24823ed44a25be326b4899b441b8f4ae2120d3f/experiments/lifecycle/controller_lease_runtime/DIFFERENTIAL_MATRIX.md)
-compare corrected main `ce12b6a` with the runtime experiment. They are durable
-design-review evidence, not actual target/GDB/RTT qualification. Experiment
-branches remain preserved; no experimental code is merged or copied. Removed
-recognition-order tests required a Protocol v1 rule intentionally absent from
-v2; current regressions retain physical diagnostics, cleanup, final observation,
-and monotonic primary failure at the deployed boundary.
+are historical design-analysis records, not normative specifications or current
+acceptance evidence. They retain detailed failure histories and rationale for
+separate authorities, physical ownership, bounded final observation, and
+monotonic primary failure. Current requirements and acceptance evidence are
+specified by the SRS and the maintained matrices above.
 
 ### Differential acceptance decisions
 
-This table classifies selected behavior against corrected main and stock Zephyr.
-The linked experiment matrix supplies the detailed histories. The production
-cutover and Phase 6 selected-profile qualification are complete. Remaining
-hardware limits are listed above; passing these profiles does not establish
-every combined history on every external setup.
+This table classifies behavior to guide evaluation of future changes. Required
+equivalence refers to supported stock Zephyr command/client behavior; benign
+nondeterminism describes permitted lifecycle orderings. Qualification limits
+above still apply to combined histories and external environments.
 
 | Behavior | Classification | Contract decision / acceptance boundary |
 | --- | --- | --- |
-| Flash, debug, attach, debugserver, RTT, semihosting | Required equivalence | Preserve stock command/client behavior, supported options, structured RTT, and stdout/stderr console relay. The experiment's missing target/command integration is an implementation gap, not authorization to drop functionality. |
-| Late remote READY after local cancellation | Intentional improvement / benign nondeterminism | Permit remote READY until remote termination commits; local cancellation prevents actual dependent launch. |
-| Bind retry before remote EOF handling | Intentional improvement / benign nondeterminism | No recognition fence; safe classification and real old-attempt settlement remain mandatory. |
+| Flash, debug, attach, debugserver, RTT, semihosting | Required equivalence | Preserve stock command/client behavior, supported options, structured RTT, and stdout/stderr console relay. |
+| Late remote READY after local cancellation | Benign nondeterminism | Permit remote READY until remote termination commits; local cancellation prevents actual dependent launch. |
+| Bind retry before remote EOF handling | Benign nondeterminism | No recognition fence; safe classification and real old-attempt settlement remain mandatory. |
 | Natural child exit versus controller termination | Benign nondeterminism | Either initiating cause is valid; preserve genuine observed child status independently of that cause. |
-| Native termination signal delivered to helper | Intentional clarification | Signal is helper/session failure under both policies, including during EOF-initiated cleanup. Confirmed disposal or zero child/helper/SSH status cannot mask a valid signal failure; a signal accounted after snapshot freeze remains failure through helper status. Ordinary child-disposal signals and interactive GDB Ctrl-C keep their existing meanings. |
-| Explicit live-server versus one-shot completion | Intentional clarification / required equivalence | Operation-selected START policy makes live-server READY mandatory and forbids READY/readiness timeout for process-exit sessions; one-shot exit is the result, not a pre-readiness failure or child-retry trigger. |
-| Startup deadline boundary evidence | Required equivalence with explicit local policy | Finite final stream/decoder/EOF/exit observation replaces cooperative controller checkpoints; accept evidence within the defined cut, with live-child validation. |
-| STOP replaced by input EOF | Intentional improvement / unavoidable remote difference | Requires directional EOF, retains reverse output, and scopes sharing shutdown to the controller channel. Incompatible wrappers require reconfiguration, not fallback or YAML changes. |
-| Structured terminal outcome | Intentional improvement | One immutable snapshot distinguishes trigger, primary, nested diagnostics, genuine result, and disposal; failed delivery never commits another. |
+| Native termination signal delivered to helper | Required failure behavior | Signal is helper/session failure under both policies, including during EOF-initiated cleanup. Confirmed disposal or zero child/helper/SSH status cannot mask a valid signal failure; a signal accounted after snapshot freeze remains failure through helper status. Ordinary child-disposal signals and interactive GDB Ctrl-C keep their existing meanings. |
+| Explicit live-server versus one-shot completion | Required command behavior | Operation-selected START policy makes live-server READY mandatory and forbids READY/readiness timeout for process-exit sessions; one-shot exit is the result, not a pre-readiness failure or child-retry trigger. |
+| Startup deadline boundary evidence | Required equivalence with explicit local policy | Finite final stream/decoder/EOF/exit observation bounds readiness evidence; accept evidence within the defined cut, with live-child validation. |
+| Controller-input EOF | Required transport behavior | Requires directional EOF, retains reverse output, and scopes sharing shutdown to the controller channel. Incompatible wrappers require reconfiguration, not fallback or YAML changes. |
+| Structured terminal outcome | Required result semantics | One immutable snapshot distinguishes trigger, primary, nested diagnostics, genuine result, and disposal; failed delivery never commits another. |
 | Controller/transport loss and missing result | Unavoidable remote difference | Local and remote observations are separate; missing final result is infrastructure uncertainty. No instantaneous cancellation, guaranteed terminal delivery, or transparent debugger recovery. |
-| Staging/child workspace dependency and residual cleanup | Required safety / intentional clarification | Timeout is not disposal. Retain inputs for unconfirmed users; later reclamation needs positive inactivity evidence. |
-| Address leases, configured argv/environment, paths, helper revision protection, forwards and RTT | Required equivalence | Keep current physical ownership and validation boundaries; no experimental implementation transplant or merge of failure domains. |
+| Staging/child workspace dependency and residual cleanup | Required safety | Timeout is not disposal. Retain inputs for unconfirmed users; later reclamation needs positive inactivity evidence. |
+| Address leases, configured argv/environment, paths, helper revision protection, forwards and RTT | Required equivalence | Keep continuous physical ownership and validation boundaries within each independent failure domain. |
 
 A behavior contradicting a required equivalence or safety row is a regression.
 New differences require classification and review before acceptance. External
 qualification follows the configured testing layers,
 collects nodes first, runs destructive profiles serially, and inspects cleanup
-before target reuse. Foundation ordinary/static checks establish semantic model
-and baseline integrity; they are not SSH directional-EOF or v2 acceptance.
+before target reuse. Pure semantic tests and static checks complement physical
+production-boundary tests; they do not establish SSH or hardware qualification.

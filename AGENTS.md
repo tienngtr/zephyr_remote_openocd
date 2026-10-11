@@ -38,9 +38,9 @@ The product YAML contract is
 `resources/config.example.yaml` as its canonical template; unknown keys are
 errors. Do not add, remove, or relax keys without explicit authorization. An
 authorized change must update the schema, example, loader, tests, requirements,
-and user docs together and state compatibility and migration. Hardware
-inventories have a separate schema. Never create schema versions merely to
-record development history.
+and user docs together and state compatibility and required user updates.
+Hardware inventories have a separate schema. Never create schema versions
+merely to record development history.
 
 Protocol v2 requires full-contract support, not version equality alone.
 Change it only with explicit authorization, then

@@ -222,8 +222,7 @@ requested forward is accepted and a conflicting local bind fails startup. A
 connection-sharing client may reuse an existing forward with matching
 endpoints. Other fixed
 arguments retain their order and meaning; helper and staging commands use your
-configured arguments unchanged. No YAML keys change and no configuration
-migration is needed.
+configured arguments unchanged.
 
 SSH connection sharing, including `ControlMaster`, remains managed by your SSH
 client. The runner does not disable it or issue client-specific cancellation
@@ -241,7 +240,7 @@ See [connection-sharing troubleshooting](troubleshooting.md#ssh-connection-shari
 
 Automatic deployment supplies the helper matching the local runner revision.
 Update the module as a unit; manually mixing client and helper revisions is
-unsupported. The user configuration schema is unchanged.
+unsupported.
 
 The executable need not be named `ssh`. A bare name is found through `PATH`,
 and an explicit path is preserved. For example, a Linux environment with an
@@ -336,10 +335,6 @@ Mapping destinations and filenames are literal paths. `{workspace}` and
 `{address}` are not configuration placeholders or reserved spellings. The runner
 resolves its own session references separately, without substituting matching
 text in your paths, inherited Tcl commands, or fixed command arguments.
-Configurations retain the same schema and need no format migration. If an older
-revision substituted those spellings in a mapping or Tcl command, use the
-intended literal remote path or supported runner options instead of relying on
-that substitution. Matching client and helper revisions are deployed together.
 
 The schema enforces the lexical forms above. Post-schema processing is limited
 to contextual semantics that cannot be expressed truthfully as string syntax:

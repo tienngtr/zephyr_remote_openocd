@@ -36,17 +36,6 @@ application source tree.
 
 The implementation and user-facing documentation is board- and board-vendor-agnostic.
 
----
-
-The lifecycle requirements below describe the deployed controller-lease behavior.
-Production implements Protocol v2 with matching client and helper revisions.
-Maintained verification evidence, selected-environment qualification, and
-remaining acceptance limits are recorded in
-[verification.md](../traceability/verification.md).
-The product YAML contract is unchanged.
-
----
-
 ## 2. Terminology
 
 ### 2.1 Local host

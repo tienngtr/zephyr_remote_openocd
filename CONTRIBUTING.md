@@ -65,7 +65,7 @@ use only the supported runner interface, and do not access private
 `OpenOcdBinaryRunner` members. Do not change the configuration schema or
 Protocol v2 unless the work explicitly requires it. When either changes, update
 its specification, implementation, examples, and tests together. Version
-changes are compatibility decisions, not development-history labels.
+changes must reflect contract compatibility decisions.
 
 The packaged configuration schema is the sole source for the structural and
 lexical rules it expresses. Runtime configuration validation must use

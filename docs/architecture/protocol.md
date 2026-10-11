@@ -1,21 +1,19 @@
 # Controller-Lease Remote Helper Contract (Protocol v2)
 
-## Status and compatibility
+## Compatibility
 
-This is the deployed client/helper contract. Maintained wire, lifecycle, and
-physical-boundary evidence and selected external qualification are recorded in
+The client and helper use numeric `version: 2` for session and standalone
+operations. Compatibility requires the full contract, not version equality.
+There is no negotiation or dual-version session. Content-addressed deployment
+supplies matching revisions in the `protocol_v2` helper namespace.
+
+Configured SSH wrappers must deliver directional EOF: closing controller stdin
+leaves helper stdout/stderr readable until helper exit. A wrapper that cannot
+satisfy this contract requires replacement or reconfiguration.
+
+Maintained wire, lifecycle, and physical-boundary evidence and selected external
+qualification are recorded in
 [verification.md](../traceability/verification.md#controller-lease-lifecycle).
-The incompatible session grammar replaces
-[Protocol v1 at the baseline revision](https://github.com/tienngtr/zephyr_remote_openocd/blob/ce12b6a/docs/architecture/protocol.md).
-
-The session grammar uses numeric `version: 2`. There is no
-negotiation, dual-version session, or STOP fallback. Compatibility requires the
-full contract, not version equality. Matching content-addressed deployment
-uses the v2 helper namespace. The YAML schema, literal argument
-and explicit template semantics, service selection, staging security, and
-standalone operation shapes are preserved; standalone envelopes also use v2.
-No YAML migration is required. Configured SSH wrappers must satisfy directional
-EOF; incompatible wrappers must be replaced or reconfigured.
 
 ## Framing and validation
 

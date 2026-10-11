@@ -89,9 +89,8 @@ excluded. Both sets participate in persistent
 build and shared-cache identity, so changing toolchain selection cannot reuse
 stale CMake state.
 
-Existing inventories remain valid because the mapping is optional. If a build
-previously relied on ambient SDK, toolchain, or CMake variables, move those
-values into this mapping before running hardware tests.
+The mapping is optional. Declare any SDK, toolchain, or CMake variables needed
+by the build in this mapping before running hardware tests.
 
 `west_args` are inserted before the application and CMake separator;
 `cmake_args` are passed after `--`. Both are arrays in which each YAML item is
