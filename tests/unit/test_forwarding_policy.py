@@ -296,6 +296,43 @@ def test_required_exit_remains_fatal_on_repeated_health_checks(harness):
         session.close()
 
 
+@pytest.mark.parametrize("observation", ("same-poll", "later-poll", "close"))
+def test_multiple_required_forward_failures_retain_secondary_diagnostics(harness, observation):
+    session = harness.open((GDB, RTT), ())
+    gdb_forward = harness.ssh.process(GDB)
+    rtt_forward = harness.ssh.process(RTT)
+    gdb_forward.diagnostic = b"gdb transport failed"
+    rtt_forward.diagnostic = b"rtt transport failed"
+    gdb_forward.returncode = 13
+    try:
+        if observation == "later-poll":
+            with pytest.raises(SessionError) as first:
+                session.check_openocd_exit()
+        rtt_forward.returncode = 17
+        with pytest.raises(SessionError) as raised:
+            if observation == "close":
+                session.close()
+            else:
+                session.check_openocd_exit()
+        primary = raised.value
+        assert gdb_forward.diagnostic.decode() in str(primary)
+        notes = tuple(getattr(primary, "__notes__", ()))
+        assert sum(rtt_forward.diagnostic.decode() in note for note in notes) == 1
+        assert any(RTT.name in note and "17" in note for note in notes)
+        if observation == "later-poll":
+            assert primary is first.value
+        if observation != "close":
+            with pytest.raises(SessionError) as repeated:
+                session.check_openocd_exit()
+            assert repeated.value is primary
+            assert tuple(primary.__notes__) == notes
+        assert not harness.advisories
+    finally:
+        session.close()
+    assert gdb_forward.mock.close_stderr.call_count == 1
+    assert rtt_forward.mock.close_stderr.call_count == 1
+
+
 def test_simultaneous_forward_failures_preserve_required_failure_and_advisories(harness):
     session = harness.open()
     try:

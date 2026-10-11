@@ -329,6 +329,10 @@ class RemoteSession:
             if service in self._required_services:
                 if required_failure is None:
                     required_failure = error
+                elif service in new_failures:
+                    _add_failure_note(
+                        required_failure, "additional required forwarding failure", error
+                    )
             elif service not in self._warned_services:
                 self._advisory_handler(ForwardAdvisory(service, "runtime", error))
                 self._warned_services.add(service)
