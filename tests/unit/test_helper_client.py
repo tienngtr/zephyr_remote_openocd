@@ -42,7 +42,7 @@ OPENOCD_FAILURE_RC = 7
 # boundary.  _HelperClient owns the complete ManagedSshProcess lifecycle, so a
 # smaller production protocol would exist only for tests.  The process-shaped
 # doubles below inject behavior a real wrapper cannot express deterministically:
-# poll and wait failures, STOP/write races, termination and stderr-close
+# poll and wait failures, stdin-close and exit races, termination and stderr-close
 # failures, reader shutdown ordering, and partial event-stream delivery.  Tests
 # that do not need those faults use real ManagedSshProcess construction in the
 # local-integration layer.
@@ -417,7 +417,7 @@ def test_recorded_openocd_exit_is_available_while_reader_remains_alive(helper_cl
     assert not reader.is_alive()
 
 
-def test_close_waits_when_process_exit_wins_stop_race(monkeypatch, helper_client):
+def test_close_reaps_natural_exit_before_transport_cleanup(monkeypatch, helper_client):
     natural_exit_reaped = threading.Event()
 
     class Process(_ControlProcess):
@@ -468,7 +468,7 @@ def test_large_start_is_rejected_before_helper_write():
         helper_client.close()
 
 
-def test_startup_error_ends_session_without_stop_or_missing_close_failure():
+def test_reported_startup_failure_is_not_replayed_during_close():
     helper_client, process = _open_helper_client_with_events(
         terminal_message(Trigger.HELPER_FAILURE, code="FAILED", message="startup failed"),
     )
@@ -529,7 +529,7 @@ def test_observed_background_error_is_not_reported_again_on_close():
 
 @pytest.mark.parametrize("cleanup_fails", (False, True), ids=("clean", "cleanup-failure"))
 @pytest.mark.timeout(10)
-def test_close_reports_background_error_without_stop(monkeypatch, cleanup_fails):
+def test_close_reports_unobserved_background_failure(monkeypatch, cleanup_fails):
     helper_client, process = _open_helper_client_with_events(
         encode_message("ATTEMPT", generation=1, argv=["child"]),
         encode_message("READY", generation=1, remote_address="127.64.0.1", child_pid=1),
@@ -671,7 +671,7 @@ def test_close_preserves_terminal_failure_before_shutdown(
     assert process.stderr.closed
 
 
-def test_close_keeps_stop_failure_primary_when_forced_cleanup_also_fails(helper_client):
+def test_close_keeps_shutdown_failure_primary_when_forced_cleanup_also_fails(helper_client):
     graceful_stop_error = RuntimeError("graceful stop failed")
     forced_stop_error = RuntimeError("forced stop failed")
 

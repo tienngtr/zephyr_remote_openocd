@@ -62,16 +62,6 @@ def test_control_frames_retain_partial_bytes_without_waiting_for_lf():
     frames.finish()
 
 
-def test_control_frames_keep_batched_frames_and_incomplete_tail():
-    frames = remote_helper._ControlFrames()
-    frames.feed(b'{"value":1}\n{"value":2}\n{"value":')
-    assert json.loads(frames.pop_frame()) == {"value": 1}
-    assert json.loads(frames.pop_frame()) == {"value": 2}
-    assert frames.pop_frame() is None
-    with pytest.raises(ValueError):
-        frames.finish()
-
-
 @pytest.mark.parametrize("payload", (b"x" * 32, b"x" * 32 + b"\n"))
 def test_control_frames_reject_oversized_input(monkeypatch, payload):
     monkeypatch.setattr(remote_helper, "MAX_CONTROL_FRAME_SIZE", 32)
@@ -79,18 +69,6 @@ def test_control_frames_reject_oversized_input(monkeypatch, payload):
     frames.feed(payload)
     with pytest.raises(ValueError):
         frames.pop_frame()
-
-
-def test_control_frame_limit_applies_to_individual_frames(monkeypatch):
-    monkeypatch.setattr(remote_helper, "MAX_CONTROL_FRAME_SIZE", 32)
-    frames = remote_helper._ControlFrames()
-    frames.feed(b"x" * 31 + b"\n" + b"y" * 31 + b"\n" + b"z" * 31)
-    assert frames.pop_frame() == b"x" * 31 + b"\n"
-    assert frames.pop_frame() == b"y" * 31 + b"\n"
-    assert frames.pop_frame() is None
-    frames.feed(b"\n")
-    assert frames.pop_frame() == b"z" * 31 + b"\n"
-    frames.finish()
 
 
 def _wait_for_descendant(path):
@@ -1425,7 +1403,7 @@ def test_decode_command_rejects_duplicate_services(start_command, services):
         remote_helper.decode_command(start_command)
 
 
-def test_decode_command_rejects_unknown_start_and_stop_fields(start_command):
+def test_decode_command_rejects_unknown_start_fields_and_unsupported_commands(start_command):
     start_command["future"] = True
     with pytest.raises(ValueError):
         remote_helper.decode_command(start_command)

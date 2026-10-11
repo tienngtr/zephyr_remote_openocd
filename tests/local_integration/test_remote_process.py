@@ -1002,7 +1002,7 @@ class TestRttClient:
         ):
             run_rtt_client(5555, lambda: None, stdin=stream, stdout=stream)
 
-    def test_eof_drains_pending_session_closed_status(self):
+    def test_rtt_eof_accounts_recorded_terminal_status(self):
         class Connection:
             def recv(self, _size):
                 helper_client._dispatch(
@@ -2140,10 +2140,8 @@ helper['stage'](sys.argv[2])
                 if child_pidfd is not None:
                     os.close(child_pidfd)
 
-    @pytest.mark.parametrize("close_input", (True, False), ids=("eof", "stop"))
-    def test_helper_control_loss_during_readiness_cleans_child_and_workspace(
-        self, tmp_path, close_input
-    ):
+    @pytest.mark.parametrize("close_input", (True, False), ids=("eof", "unexpected-input"))
+    def test_pending_readiness_shutdown_cleans_child_and_workspace(self, tmp_path, close_input):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
         environment = os.environ.copy()
         environment["XDG_RUNTIME_DIR"] = str(tmp_path)

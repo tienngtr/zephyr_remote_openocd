@@ -201,7 +201,7 @@ class TestProtocol:
             )
 
     @pytest.mark.parametrize("activity", ("ready", "output"))
-    def test_version_one_helper_requires_pre_spawn_event(self, activity):
+    def test_ready_and_output_require_admitted_attempt(self, activity):
         order = EventOrder()
         order.accept(
             decode_message(
@@ -224,13 +224,13 @@ class TestProtocol:
             order.accept(decode_message(event))
 
     @pytest.mark.parametrize("argv", (None, [], [""], "openocd", ["openocd", None], [1]))
-    def test_process_starting_rejects_invalid_argv(self, argv):
+    def test_attempt_rejects_invalid_argv(self, argv):
         with pytest.raises(ProtocolError):
             validate_helper_event(
                 decode_message(encode_message("ATTEMPT", generation=1, argv=argv))
             )
 
-    def test_process_starting_supports_retries_before_readiness_only(self):
+    def test_attempts_allow_retries_before_readiness_only(self):
         order = EventOrder()
         order.accept(
             decode_message(
@@ -424,7 +424,7 @@ class TestProtocol:
                 )
             )
 
-    def test_error_is_session_ending_and_rejects_following_events(self):
+    def test_failing_terminal_rejects_following_events(self):
         order = EventOrder()
         order.accept(
             decode_message(
