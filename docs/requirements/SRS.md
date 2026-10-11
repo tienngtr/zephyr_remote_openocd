@@ -760,12 +760,12 @@ If `--serial` is omitted, the custom runner SHALL NOT invent a serial-selection 
 
 ### REQ-FUNC-OPT-004
 
-The runner SHALL support distinct:
-
-- remote OpenOCD GDB-server port;
-- local GDB-client port;
-
-where Zephyr exposes both.
+The runner SHALL preserve Zephyr's distinction between the OpenOCD GDB-server
+base port (`--gdb-port`) and the target listener selected by the GDB client
+(`--gdb-client-port`). For `debug`, `attach`, and `rtt`, forwarding SHALL connect
+the local client-selected port to the same remote port, including when it differs
+from the base port. For `debugserver`, forwarding SHALL expose the base port
+locally at the same port; the unused `--gdb-client-port` SHALL have no effect.
 
 ### REQ-FUNC-OPT-006
 

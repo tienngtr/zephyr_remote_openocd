@@ -778,17 +778,20 @@ the public debug-plan result.
 
 ## 23. GDB Port Model
 
-Structured runner state contains both the OpenOCD server and local client ports.
+Structured runner state retains Zephyr's OpenOCD GDB-server base port and
+client-selected target listener. OpenOCD receives `gdb_port <gdb-port>` in every
+session command. For `debug`, `attach`, and `rtt`, GDB connects to
+`127.0.0.1:<gdb-client-port>`, forwarded to
+`<remote-session-IP>:<gdb-client-port>`. A distinct client port can select another
+target listener, such as base + 1 in a multi-target configuration; it does not
+remap the base listener. When distinct, the base listener also participates in
+address-allocation preflight as a reserved service without a local forward.
 
-The mapping is deliberate:
-
-```text
-127.0.0.1:<gdb-client-port>
-              |
-              | SSH transport
-              v
-<remote-session-IP>:<gdb-server-port>
-```
+`debugserver` launches no GDB client and ignores `gdb-client-port`. It forwards
+`127.0.0.1:<gdb-port>` to `<remote-session-IP>:<gdb-port>` and reports that endpoint.
+Forward acquisition and cleanup use the existing session resource owners for
+both forms. The runner does not discover or forward every additional listener
+that arbitrary OpenOCD configuration may create.
 
 ---
 

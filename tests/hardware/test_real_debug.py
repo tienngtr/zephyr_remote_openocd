@@ -155,9 +155,9 @@ class TestRealOpenOcdDebug:
         assert observed != selected_bytes
 
     def _debugserver(self, fixture: DebugServerFixture, output_path: Path) -> None:
-        gdb_client_port, tcl_port, telnet_port = free_loopback_ports(3)
+        gdb_port, tcl_port, telnet_port = free_loopback_ports(3)
         extra_args = (
-            f"--gdb-client-port={gdb_client_port}",
+            f"--gdb-port={gdb_port}",
             f"--tcl-port={tcl_port}",
             f"--telnet-port={telnet_port}",
         )
@@ -206,7 +206,7 @@ class TestRealOpenOcdDebug:
                     "-batch",
                     str(fixture.target.elf_file),
                     "-ex",
-                    f"target extended-remote 127.0.0.1:{gdb_client_port}",
+                    f"target extended-remote 127.0.0.1:{gdb_port}",
                     "-ex",
                     "monitor halt",
                     "-ex",

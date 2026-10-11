@@ -159,21 +159,21 @@ class TestRealRtt:
     ) -> None:
         fixture = rtt_fixture
         port = fixture.operation.port
-        gdb_client_port = free_loopback_ports(1)[0]
+        gdb_port = free_loopback_ports(1)[0]
         release = tmp_path / "release-debugserver-gdb"
         with self._start(
             fixture,
             "debugserver",
             "--rtt-server",
             f"--rtt-port={port}",
-            f"--gdb-client-port={gdb_client_port}",
+            f"--gdb-port={gdb_port}",
         ) as server_owner:
             process = server_owner.process
             output = server_owner.capture_output()
             try:
                 try:
                     with self._connect_endpoint(
-                        gdb_client_port, timeout=SERVER_READY_TIMEOUT, process=process
+                        gdb_port, timeout=SERVER_READY_TIMEOUT, process=process
                     ):
                         pass
                 except AssertionError as error:
@@ -186,7 +186,7 @@ class TestRealRtt:
                         "-batch",
                         str(fixture.target.elf_file),
                         "-ex",
-                        f"target extended-remote 127.0.0.1:{gdb_client_port}",
+                        f"target extended-remote 127.0.0.1:{gdb_port}",
                         "-ex",
                         "load",
                         "-ex",

@@ -1301,38 +1301,77 @@ class TestDebugPlanning:
         assert plan.gdb_argv[0] == "/local tools/gdb"
         assert str(elf) in plan.gdb_argv
 
-    def test_disabled_services_and_distinct_gdb_ports(self):
-        with tempfile.TemporaryDirectory() as directory:
-            plan = build_debug_plan(
-                self.inputs(
-                    Path(directory),
-                    tcl_port="disabled",
-                    telnet_port="disabled",
-                    gdb_port="3344",
-                    gdb_client_port="3355",
-                ),
-                PathPlanner(()),
-            )
+    @pytest.mark.parametrize("command", ("debug", "attach", "rtt", "debugserver"))
+    def test_distinct_gdb_ports_preserve_target_selection(self, tmp_path: Path, command: str):
+        plan = build_debug_plan(
+            self.inputs(
+                tmp_path,
+                command=command,
+                tcl_port="disabled",
+                telnet_port="disabled",
+                gdb_port="3344",
+                gdb_client_port="3345",
+                rtt_address=0x20000000,
+            ),
+            PathPlanner(()),
+        )
+        assert "gdb_port 3344" in plan.process.argv
+        assert "tcl_port disabled" in plan.process.argv
+        assert "telnet_port disabled" in plan.process.argv
+        if command == "debugserver":
+            assert plan.services == (Service("gdb", 3344, 3344),)
+            assert plan.gdb_argv is None
+            assert not plan.reserved_services
+        else:
+            assert plan.services == (Service("gdb", 3345, 3345),)
             assert plan.gdb_argv is not None
-            assert plan.services == (Service("gdb", 3355, 3344),)
-            assert "target extended-remote 127.0.0.1:3355" in plan.gdb_argv
-            assert "tcl_port disabled" in plan.process.argv
-            with pytest.raises(DebugPlanError, match="gdb_port must be enabled"):
-                build_debug_plan(self.inputs(Path(directory), gdb_port="disabled"), PathPlanner(()))
+            assert "target extended-remote 127.0.0.1:3345" in plan.gdb_argv
+            assert Service("gdb_base", 3344, 3344) in plan.reserved_services
+            if command == "rtt":
+                assert plan.rtt_service in plan.reserved_services
+
+    @pytest.mark.parametrize("client_port", ("disabled", "invalid", 4444))
+    def test_debugserver_ignores_unused_gdb_client_port(self, tmp_path: Path, client_port):
+        plan = build_debug_plan(
+            self.inputs(tmp_path, command="debugserver", gdb_client_port=client_port),
+            PathPlanner(()),
+        )
+        assert next(service for service in plan.services if service.name == "gdb") == Service(
+            "gdb", 3333, 3333
+        )
+        assert plan.gdb_argv is None
+
+    def test_disabled_gdb_server_fails_during_planning(self, tmp_path: Path):
+        with pytest.raises(DebugPlanError):
+            build_debug_plan(self.inputs(tmp_path, gdb_port="disabled"), PathPlanner(()))
 
     @pytest.mark.parametrize(
-        ("changes", "message"),
+        "changes",
         (
-            ({"gdb_client_port": 4444}, "local service ports"),
-            ({"gdb_port": 4444}, "remote service ports"),
+            {"gdb_client_port": 4444},
+            {"gdb_port": 4444},
         ),
         ids=("local", "remote"),
     )
     def test_ordinary_service_port_collisions_fail_during_planning(
-        self, tmp_path: Path, changes: dict[str, int], message: str
+        self, tmp_path: Path, changes: dict[str, int]
     ):
-        with pytest.raises(DebugPlanError, match=message):
+        with pytest.raises(DebugPlanError):
             build_debug_plan(self.inputs(tmp_path, **changes), PathPlanner(()))
+
+    @pytest.mark.parametrize("rtt_port", (3333, 3334))
+    def test_rtt_cannot_conflict_with_base_or_selected_gdb_listener(self, tmp_path, rtt_port):
+        with pytest.raises(DebugPlanError):
+            build_debug_plan(
+                self.inputs(
+                    tmp_path,
+                    command="rtt",
+                    gdb_client_port=3334,
+                    rtt_address=0x20000000,
+                    rtt_port=rtt_port,
+                ),
+                PathPlanner(()),
+            )
 
     def test_version_parsing_and_thread_info_decision(self):
         old = parse_openocd_version("Open On-Chip Debugger 0.11.0")

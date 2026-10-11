@@ -1180,6 +1180,8 @@ def test_recording_runs_real_runner_integration_without_external_io(
             "--serial=probe",
             "--cmd-pre-init=echo test",
             "--gdb-init=monitor halt",
+            "--gdb-port=3333",
+            "--gdb-client-port=3334",
             "--rtt-port=19021",
             "--flash-address=0x20000000",
             "--cmd-load=flash write_image",
@@ -1220,12 +1222,13 @@ def test_recording_runs_real_runner_integration_without_external_io(
     if command == "flash":
         assert request["services"] == []
     else:
+        gdb_endpoint = 3333 if command == "debugserver" else 3334
         services = {item["name"]: item for item in request["services"]}
         assert services == {
             "gdb": {
                 "name": "gdb",
-                "local_port": 3333,
-                "remote_port": 3333,
+                "local_port": gdb_endpoint,
+                "remote_port": gdb_endpoint,
                 "criticality": "required",
             },
             "tcl": {
@@ -1253,10 +1256,19 @@ def test_recording_runs_real_runner_integration_without_external_io(
                 else {}
             ),
         }
+        assert "gdb_port 3333" in argv
+        if command == "debugserver":
+            assert result["local_gdb_argv"] is None
+            assert not request["reserved_services"]
+        else:
+            assert "target extended-remote 127.0.0.1:3334" in result["local_gdb_argv"]
+            assert {item["remote_port"] for item in request["reserved_services"]} == (
+                {3333, 19021} if command == "rtt" else {3333}
+            )
+            if command == "attach":
+                assert "load" not in result["local_gdb_argv"]
         assert result["thread_info"]["requested"] is thread_info
         assert result["thread_info"]["version_source"] == ("injected" if thread_info else None)
-        if command == "attach":
-            assert "load" not in result["local_gdb_argv"]
         if rtt_server:
             assert "rtt server start 19021 0" in argv
     if command == "rtt":

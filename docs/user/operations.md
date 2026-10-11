@@ -133,11 +133,23 @@ the build ELF, for example:
 target extended-remote 127.0.0.1:<printed-gdb-port>
 ```
 
-The local port is `--gdb-client-port` (3333 by default); `--gdb-port` selects
-the remote OpenOCD server port. For example,
-`west debugserver -r remote_openocd --remote lab --gdb-client-port=3334`
+For `debugserver`, `--gdb-port` selects both the remote OpenOCD base listener
+and its local forwarded port (3333 by default); `--gdb-client-port` has no effect.
+For example,
+`west debugserver -r remote_openocd --remote lab --gdb-port=3334`
 prints `127.0.0.1:3334` as the GDB endpoint. Stop the debugserver process after
 the client detaches.
+
+For `debug`, `attach`, and `rtt`, `--gdb-port` still configures the OpenOCD base
+listener, while `--gdb-client-port` selects the target listener GDB connects to.
+That selected port is forwarded locally to the same remote port. For example,
+`--gdb-port=3333 --gdb-client-port=3334` can select the second target in a
+multi-target OpenOCD configuration. To move a single-target session to port 3334,
+set both options to 3334.
+
+Earlier remote runner versions used `--gdb-client-port` to remap a local port to
+the remote base listener. Invocations relying on that mapping must use the
+operation-specific options above. The YAML configuration contract is unchanged.
 
 ### RTT
 

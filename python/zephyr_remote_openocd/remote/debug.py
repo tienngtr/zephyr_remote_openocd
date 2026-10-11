@@ -104,12 +104,13 @@ class DebugPlan:
 class DebugServicePlan:
     """Validated OpenOCD and optional RTT service allocation."""
 
-    remote_gdb: int
-    local_gdb: int
+    gdb_base_port: int
+    gdb_endpoint_port: int
     remote_tcl: int | None
     remote_telnet: int | None
     services: tuple[Service, ...]
     rtt_service: Service | None
+    reserved_services: tuple[Service, ...]
 
 
 def _port(value: int | str, name: str, *, required: bool = False) -> int | None:
@@ -136,18 +137,29 @@ def _validate_debug_inputs(inputs: DebugInputs) -> None:
 
 
 def _plan_debug_services(inputs: DebugInputs) -> DebugServicePlan:
-    remote_gdb = _port(inputs.gdb_port, "gdb_port", required=True)
-    local_gdb = _port(inputs.gdb_client_port, "gdb_client_port", required=True)
+    gdb_base_port = _port(inputs.gdb_port, "gdb_port", required=True)
+    gdb_endpoint_port = (
+        gdb_base_port
+        if inputs.command == "debugserver"
+        else _port(inputs.gdb_client_port, "gdb_client_port", required=True)
+    )
     remote_tcl = _port(inputs.tcl_port, "tcl_port")
     remote_telnet = _port(inputs.telnet_port, "telnet_port")
-    assert remote_gdb is not None and local_gdb is not None
-    services = [Service("gdb", local_gdb, remote_gdb)]
+    assert gdb_base_port is not None and gdb_endpoint_port is not None
+    services = [Service("gdb", gdb_endpoint_port, gdb_endpoint_port)]
+    # A different client port selects another target listener; it does not
+    # remap the base listener. Preflight both without forwarding the base.
+    reserved: tuple[Service, ...] = (
+        (Service("gdb_base", gdb_base_port, gdb_base_port),)
+        if gdb_endpoint_port != gdb_base_port
+        else ()
+    )
     if remote_tcl is not None:
         services.append(Service("tcl", remote_tcl, remote_tcl))
     if remote_telnet is not None:
         services.append(Service("telnet", remote_telnet, remote_telnet))
     try:
-        validated_services(services)
+        validated_services((*services, *reserved))
     except DuplicateServiceError as error:
         raise DebugPlanError(str(error)) from error
 
@@ -158,18 +170,21 @@ def _plan_debug_services(inputs: DebugInputs) -> DebugServicePlan:
             raise DebugPlanError("RTT control block not found")
         rtt_port = _port(inputs.rtt_port, "rtt_port", required=True)
         assert rtt_port is not None
-        if any(rtt_port in (service.local_port, service.remote_port) for service in services):
+        if any(service.remote_port == rtt_port for service in (*services, *reserved)):
             raise DebugPlanError("rtt_port conflicts with an enabled OpenOCD service port")
         rtt_service = Service("rtt", rtt_port, rtt_port)
         if inputs.command != "rtt":
             services.append(rtt_service)
+        else:
+            reserved += (rtt_service,)
     return DebugServicePlan(
-        remote_gdb,
-        local_gdb,
+        gdb_base_port,
+        gdb_endpoint_port,
         remote_tcl,
         remote_telnet,
         tuple(services),
         rtt_service,
+        reserved,
     )
 
 
@@ -234,7 +249,7 @@ def _client_argv(inputs: DebugInputs, services: DebugServicePlan) -> tuple[str, 
     if inputs.tui:
         client.append("-tui")
     client.extend(
-        ("-ex", f"target extended-remote 127.0.0.1:{services.local_gdb}", inputs.elf_file)
+        ("-ex", f"target extended-remote 127.0.0.1:{services.gdb_endpoint_port}", inputs.elf_file)
     )
     if inputs.command == "debug" and inputs.load:
         client.extend(("-ex", "load"))
@@ -267,7 +282,7 @@ def build_debug_plan(
         ArgumentTemplate(("bindto ", SessionValue.ADDRESS)),
         f"tcl_port {tcl_port}",
         f"telnet_port {telnet_port}",
-        f"gdb_port {services.remote_gdb}",
+        f"gdb_port {services.gdb_base_port}",
     )
     base = plan_openocd_base(
         inputs.executable,
@@ -303,5 +318,5 @@ def build_debug_plan(
         _rtt_setup(inputs),
         inputs.command == "rtt",
         tuple(service for service in services.services if service.name in {"tcl", "telnet"}),
-        (services.rtt_service,) if inputs.command == "rtt" and services.rtt_service else (),
+        services.reserved_services,
     )
