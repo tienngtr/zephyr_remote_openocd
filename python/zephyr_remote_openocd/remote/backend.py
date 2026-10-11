@@ -196,29 +196,6 @@ class RemoteSession:
         self._stage(self.request.staged_files)
         self._start_process(self.request.services)
 
-    @classmethod
-    def open(
-        cls,
-        request: RemoteSessionRequest,
-        *,
-        output_handler: Callable[[str, str, bool], None] | None = None,
-        advisory_handler: Callable[[ForwardAdvisory], None] | None = None,
-        process_start_handler: Callable[[tuple[str, ...]], None] | None = None,
-    ) -> RemoteSession:
-        session = cls.prepare(request, advisory_handler=advisory_handler)
-        try:
-            session.acquire(
-                output_handler=output_handler,
-                process_start_handler=process_start_handler,
-            )
-        except BaseException as error:
-            try:
-                session.close()
-            except BaseException as cleanup_error:
-                _add_failure_note(error, "startup failure cleanup also failed", cleanup_error)
-            raise
-        return session
-
     def _stage(self, files: Iterable[StagedEntry]):
         helper = self._helper_or_error()
         archive = build_archive(files)

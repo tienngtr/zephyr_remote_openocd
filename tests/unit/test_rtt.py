@@ -24,8 +24,8 @@ def connection_boundary(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     connection.send.side_effect = AssertionError("unexpected socket write")
     monkeypatch.setattr(
         rtt_module.socket,
-        "create_connection",
-        create_autospec(socket.create_connection, return_value=connection),
+        "socket",
+        create_autospec(socket.socket, return_value=connection),
     )
     monkeypatch.setattr(
         rtt_module.select,
@@ -65,27 +65,32 @@ def test_run_rtt_client_receives_after_transient_would_block(
     connection_boundary.close.assert_called_once()
 
 
-def test_connect_retries_refusal_until_startup_error(monkeypatch):
+def test_connect_retries_refusal_until_startup_error(monkeypatch, connection_boundary):
     port = 5566
     clock = [0.0]
     attempts = []
 
-    def refuse_connection(address, *, timeout):
-        attempts.append((address, timeout))
+    def refuse_connection(address):
+        attempts.append(address)
         raise ConnectionRefusedError("connection refused")
 
     def advance_clock(delay):
         clock[0] += delay
 
-    monkeypatch.setattr(rtt_module.socket, "create_connection", refuse_connection)
+    connection_boundary.connect.side_effect = refuse_connection
     monkeypatch.setattr(rtt_module.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(rtt_module.time, "sleep", advance_clock)
 
-    with pytest.raises(rtt_module.RttClientError) as raised:
-        rtt_module._connect(port, timeout=5.0)
+    with (
+        io.BytesIO() as stdin,
+        io.BytesIO() as stdout,
+        pytest.raises(rtt_module.RttClientError) as raised,
+    ):
+        rtt_module.run_rtt_client(port, lambda: None, stdin=stdin, stdout=stdout)
 
     assert len(attempts) > 1
-    assert all(address == ("127.0.0.1", port) for address, _ in attempts)
+    assert all(address == ("127.0.0.1", port) for address in attempts)
+    assert connection_boundary.close.call_count == len(attempts)
     assert raised.value.__cause__ is not None
     assert isinstance(raised.value.__cause__, ConnectionRefusedError)
     assert str(port) in str(raised.value)
@@ -101,13 +106,23 @@ def test_connection_closes_when_stdin_has_no_descriptor(connection_boundary: Mag
     connection_boundary.close.assert_called_once()
 
 
-@pytest.mark.parametrize("phase", ("initial-readiness", "client-adoption"))
+@pytest.mark.parametrize(
+    "phase",
+    ("socket-handoff", "connect", "initial-readiness", "acquire-return", "caller-resumption"),
+)
 @pytest.mark.parametrize("cleanup_fails", (False, True))
-def test_sigint_closes_socket_during_connection_adoption(monkeypatch, phase, cleanup_fails):
-    cleanup_error = OSError("RTT adoption socket cleanup failed")
-    interruption = KeyboardInterrupt("RTT connection adoption interrupted")
+def test_sigint_closes_owned_socket_at_acquisition_boundaries(monkeypatch, phase, cleanup_fails):
+    socket_type = socket.socket
+    cleanup_error = OSError("RTT acquisition socket cleanup failed")
+    interruption = KeyboardInterrupt("RTT connection acquisition interrupted")
 
     class Connection(socket.socket):
+        @override
+        def connect(self, address):
+            del address
+            if phase == "connect":
+                interrupt()
+
         @override
         def close(self):
             super().close()
@@ -118,6 +133,7 @@ def test_sigint_closes_socket_during_connection_adoption(monkeypatch, phase, cle
     connection = Connection(fileno=local.detach())
     previous_handler = signal.getsignal(signal.SIGINT)
     previous_trace = sys.gettrace()
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGUSR1})
     interrupted = False
 
     def interrupt():
@@ -133,26 +149,39 @@ def test_sigint_closes_socket_during_connection_adoption(monkeypatch, phase, cle
             interrupt()
         return [], [], []
 
-    def interrupt_after_adoption(frame: FrameType, event: str, _arg: object):
+    def interrupt_at_boundary(frame: FrameType, event: str, _arg: object):
         if (
-            event == "line"
+            phase == "acquire-return"
+            and event == "return"
+            and frame.f_code is rtt_module._RttConnection.acquire.__code__
+            and not interrupted
+        ):
+            interrupt()
+        owner = frame.f_locals.get("connection")
+        if (
+            phase == "caller-resumption"
+            and event == "line"
             and frame.f_code is rtt_module.run_rtt_client.__code__
-            and frame.f_locals.get("connection") is connection
+            and isinstance(owner, rtt_module._RttConnection)
+            and owner.socket is connection
             and "input_fd" not in frame.f_locals
             and not interrupted
         ):
             interrupt()
-        return interrupt_after_adoption
+        return interrupt_at_boundary
 
-    monkeypatch.setattr(
-        rtt_module.socket, "create_connection", lambda *_args, **_kwargs: connection
-    )
+    def acquire_socket():
+        if phase == "socket-handoff":
+            interrupt()
+        return connection
+
+    monkeypatch.setattr(rtt_module.socket, "socket", acquire_socket)
     monkeypatch.setattr(rtt_module.select, "select", readiness)
     signal.signal(signal.SIGINT, handle_interrupt)
     try:
         with io.BytesIO() as stdin, io.BytesIO() as stdout:
-            if phase == "client-adoption":
-                sys.settrace(interrupt_after_adoption)
+            if phase in ("acquire-return", "caller-resumption"):
+                sys.settrace(interrupt_at_boundary)
             try:
                 with pytest.raises(KeyboardInterrupt) as raised:
                     rtt_module.run_rtt_client(5566, lambda: None, stdin=stdin, stdout=stdout)
@@ -160,6 +189,7 @@ def test_sigint_closes_socket_during_connection_adoption(monkeypatch, phase, cle
                 sys.settrace(previous_trace)
         assert interrupted
         assert raised.value is interruption
+        assert signal.pthread_sigmask(signal.SIG_BLOCK, set()) == previous_mask | {signal.SIGUSR1}
         # Keep a reference and check closure before fallback cleanup can hide a leak.
         assert connection.fileno() == -1
         if cleanup_fails:
@@ -167,7 +197,8 @@ def test_sigint_closes_socket_during_connection_adoption(monkeypatch, phase, cle
     finally:
         sys.settrace(previous_trace)
         signal.signal(signal.SIGINT, previous_handler)
-        socket.socket.close(connection)
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+        socket_type.close(connection)
         peer.close()
 
 

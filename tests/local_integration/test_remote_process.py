@@ -25,7 +25,7 @@ from contextlib import suppress
 from pathlib import Path, PurePosixPath
 from types import FrameType
 from typing import Any, BinaryIO, override
-from unittest.mock import patch
+from unittest.mock import create_autospec, patch
 
 import pytest
 from zephyr_remote_openocd import remote_helper
@@ -62,7 +62,7 @@ from zephyr_remote_openocd.remote.ssh import (
 from zephyr_remote_openocd.remote.staging import build_archive
 from zephyr_remote_openocd.remote.wire import decode_terminal
 
-from tests.process_support import read_line, read_lines
+from tests.process_support import cleanup_on_exit, read_line, read_lines
 from tests.protocol_support import terminal_message
 from tests.support import ROOT
 
@@ -552,7 +552,9 @@ class TestForwardingLifecycle:
             ),
             pytest.raises(SessionError) as raised,
         ):
-            RemoteSession.open(RemoteSessionRequest("target", command, TEST_PROCESS))
+            session = RemoteSession.prepare(RemoteSessionRequest("target", command, TEST_PROCESS))
+            with cleanup_on_exit(session.close):
+                session.acquire()
 
         assert raised.value is startup_error
         assert any("process cleanup failed" in note for note in raised.value.__notes__)
@@ -873,17 +875,9 @@ class TestRttClient:
         os.close(output_read)
 
     def test_non_consuming_channel_does_not_block_session_poll(self):
-        class Connection:
-            def sendall(self, _payload):
-                raise AssertionError("blocking sendall must not be used")
-
-            def send(self, _payload):
-                raise AssertionError("socket was not writable")
-
-            def close(self):
-                pass
-
-        connection = Connection()
+        connection = create_autospec(socket.socket, instance=True, spec_set=True)
+        connection.sendall.side_effect = AssertionError("blocking sendall must not be used")
+        connection.send.side_effect = AssertionError("socket was not writable")
         input_read, input_write = os.pipe()
         os.write(input_write, b"pending input")
         os.close(input_write)
@@ -905,7 +899,6 @@ class TestRttClient:
         with (
             os.fdopen(input_read, "rb", buffering=0) as stdin,
             tempfile.TemporaryFile("w+b") as stdout,
-            patch.object(rtt_module, "_connect", return_value=(connection, b"")),
             patch.object(
                 rtt_module.select,
                 "select",
@@ -913,7 +906,7 @@ class TestRttClient:
             ) as select_call,
         ):
             input_fd = stdin.fileno()
-            assert run_rtt_client(5555, poll_session, stdin=stdin, stdout=stdout) == 0
+            assert rtt_module._RttRelay(connection, input_fd, stdout, poll_session).run() == 0
 
         assert observed_after_input
         select_call.assert_called_once_with((input_fd, connection), (), (), 0.1)
@@ -924,21 +917,17 @@ class TestRttClient:
         select_requests = []
         input_was_paused = False
 
-        class Connection:
-            def __init__(self):
-                self.sent = []
+        connection = create_autospec(socket.socket, instance=True, spec_set=True)
+        sent = []
 
-            def send(self, payload):
-                nonlocal input_forwarded_after_resume
-                self.sent.append(bytes(payload))
-                if input_resumed:
-                    input_forwarded_after_resume = True
-                return 2
+        def send(payload):
+            nonlocal input_forwarded_after_resume
+            sent.append(bytes(payload))
+            if input_resumed:
+                input_forwarded_after_resume = True
+            return 2
 
-            def close(self):
-                pass
-
-        connection = Connection()
+        connection.send.side_effect = send
         monkeypatch.setattr(rtt_module, "_INPUT_CHUNK_SIZE", 4)
         monkeypatch.setattr(rtt_module, "_MAX_PENDING_INPUT", 4)
         input_read, input_write = os.pipe()
@@ -955,7 +944,7 @@ class TestRttClient:
                 input_was_paused = True
             if input_was_paused and input_fd in _readable:
                 input_resumed = True
-            if not connection.sent:
+            if not sent:
                 if _writable:
                     return [], [connection], []
                 return [input_fd], [], []
@@ -967,14 +956,13 @@ class TestRttClient:
         ):
             input_fd = stdin.fileno()
             with (
-                patch.object(rtt_module, "_connect", return_value=(connection, b"")),
                 patch.object(
                     rtt_module.select,
                     "select",
                     side_effect=select_io,
                 ),
             ):
-                assert run_rtt_client(5555, poll_session, stdin=stdin, stdout=stdout) == 0
+                assert rtt_module._RttRelay(connection, input_fd, stdout, poll_session).run() == 0
 
         assert input_forwarded_after_resume
         assert any(input_fd in readable for readable, _ in select_requests)
@@ -984,52 +972,39 @@ class TestRttClient:
             if input_fd not in readable and connection in writable
         )
         assert any(input_fd in readable for readable, _ in select_requests[pause_index + 1 :])
-        assert connection.sent == [b"abcd", b"cdef"]
+        assert sent == [b"abcd", b"cdef"]
 
     def test_established_channel_closure_fails_while_session_is_running(self):
-        class Connection:
-            def recv(self, _size):
-                return b""
-
-            def close(self):
-                pass
-
-        connection = Connection()
+        connection = create_autospec(socket.socket, instance=True, spec_set=True)
+        connection.recv.return_value = b""
         with (
             tempfile.TemporaryFile("w+b") as stream,
-            patch.object(rtt_module, "_connect", return_value=(connection, b"connected")),
             patch.object(rtt_module.select, "select", return_value=([connection], [], [])),
             pytest.raises(RttClientError),
         ):
-            run_rtt_client(5555, lambda: None, stdin=stream, stdout=stream)
+            rtt_module._RttRelay(connection, stream.fileno(), stream, lambda: None).run()
 
     def test_rtt_eof_accounts_recorded_terminal_status(self):
-        class Connection:
-            def recv(self, _size):
-                helper_client._dispatch(
-                    json.loads(terminal_message(Trigger.CHILD_EXIT, returncode=0))
-                )
-                return b""
-
-            def close(self):
-                pass
+        def recv(_size):
+            helper_client._dispatch(json.loads(terminal_message(Trigger.CHILD_EXIT, returncode=0)))
+            return b""
 
         helper_client = _HelperClient(
             SshCommand(), "target", DeploymentResult("/helper.py", "digest", False)
         )
-        connection = Connection()
+        connection = create_autospec(socket.socket, instance=True, spec_set=True)
+        connection.recv.side_effect = recv
         with (
             tempfile.TemporaryFile("w+b") as stream,
-            patch.object(rtt_module, "_connect", return_value=(connection, b"connected")),
             patch.object(rtt_module.select, "select", return_value=([connection], [], [])),
         ):
             assert (
-                run_rtt_client(
-                    5555,
+                rtt_module._RttRelay(
+                    connection,
+                    stream.fileno(),
+                    stream,
                     helper_client.recorded_openocd_exit,
-                    stdin=stream,
-                    stdout=stream,
-                )
+                ).run()
                 == 0
             )
 
@@ -2336,13 +2311,13 @@ helper['stage'](sys.argv[2])
             request = RemoteSessionRequest("local", LocalCommand(), process=remote_process)
             deployment = DeploymentResult(str(helper), "digest", False)
             with patch.object(backend_module, "deploy_helper", return_value=deployment):
-                backend = RemoteSession.open(
-                    request,
+                backend = RemoteSession.prepare(request)
+            try:
+                backend.acquire(
                     output_handler=lambda stream, payload, line_end: output.append(
                         (stream, payload, line_end)
                     ),
                 )
-            try:
                 assert backend.descriptor is None
                 assert backend.wait_for_openocd_exit(5) == sample_openocd_exit_code
                 assert [

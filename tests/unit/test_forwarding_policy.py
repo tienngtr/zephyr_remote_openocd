@@ -20,6 +20,7 @@ from zephyr_remote_openocd.remote.session import SessionError
 from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand
 
 from tests.forwarding_support import GDB, RTT, TCL, TELNET, ControlledSshCommand, ForwardingHarness
+from tests.process_support import cleanup_on_exit
 from tests.protocol_support import terminal_snapshot
 
 
@@ -33,66 +34,78 @@ def harness(monkeypatch):
 def test_close_preserves_recorded_session_failure_over_forward_cleanup(
     harness, monkeypatch, fact, during_cleanup
 ):
-    session = harness.open((GDB,), ())
-    helper = _HelperClient(
-        harness.ssh, session.request.host, session.deployment, observations=session._observations
-    )
-    process = create_autospec(ManagedSshProcess, instance=True, spec_set=True)
-    read_fd, write_fd = os.pipe()
-    process.stdout = os.fdopen(read_fd, "rb", buffering=0)
-    process.stdin = io.BytesIO()
-    process.poll.return_value = 0
-    process.wait.return_value = 0
-    process.stderr_tail.return_value = b""
-    os.write(
-        write_fd,
-        encode_message(
-            "SESSION_CREATED", session_id="session", remote_workspace="/workspace", helper="fake"
-        ),
-    )
-    os.close(write_fd)
-    monkeypatch.setattr(
-        ControlledSshCommand, "popen", lambda *_args, **_kwargs: cast(ManagedSshProcess, process)
-    )
-    session._helper = helper
-    helper.acquire()
-    assert session.check_openocd_exit() is None
-    cleanup_error = RuntimeError("forward cleanup failed")
-    cleanup_error.add_note("nested forward cleanup detail")
+    session = harness.prepare((GDB,), ())
+    with cleanup_on_exit(session.close):
+        session.acquire()
+        helper = _HelperClient(
+            harness.ssh,
+            session.request.host,
+            session.deployment,
+            observations=session._observations,
+        )
+        process = create_autospec(ManagedSshProcess, instance=True, spec_set=True)
+        read_fd, write_fd = os.pipe()
+        process.stdout = os.fdopen(read_fd, "rb", buffering=0)
+        process.stdin = io.BytesIO()
+        process.poll.return_value = 0
+        process.wait.return_value = 0
+        process.stderr_tail.return_value = b""
+        os.write(
+            write_fd,
+            encode_message(
+                "SESSION_CREATED",
+                session_id="session",
+                remote_workspace="/workspace",
+                helper="fake",
+            ),
+        )
+        os.close(write_fd)
+        monkeypatch.setattr(
+            ControlledSshCommand,
+            "popen",
+            lambda *_args, **_kwargs: cast(ManagedSshProcess, process),
+        )
+        session._helper = helper
+        helper.acquire()
+        assert session.check_openocd_exit() is None
+        cleanup_error = RuntimeError("forward cleanup failed")
+        cleanup_error.add_note("nested forward cleanup detail")
 
-    def record_failure():
-        if fact == "terminal":
-            session._observations.record_terminal(
-                terminal_snapshot(
-                    Trigger.HELPER_FAILURE, code="FAILED", message="established failure"
+        def record_failure():
+            if fact == "terminal":
+                session._observations.record_terminal(
+                    terminal_snapshot(
+                        Trigger.HELPER_FAILURE, code="FAILED", message="established failure"
+                    )
                 )
-            )
-        else:
-            session._observations.record_reader_failure(RuntimeError("established failure"))
+            else:
+                session._observations.record_reader_failure(RuntimeError("established failure"))
 
-    def fail_cleanup():
-        if during_cleanup:
+        def fail_cleanup():
+            if during_cleanup:
+                record_failure()
+            raise cleanup_error
+
+        harness.ssh.process(GDB).mock.close_stderr.side_effect = fail_cleanup
+        if not during_cleanup:
             record_failure()
-        raise cleanup_error
-
-    harness.ssh.process(GDB).mock.close_stderr.side_effect = fail_cleanup
-    if not during_cleanup:
-        record_failure()
-    with pytest.raises(SessionError) as raised:
+        with pytest.raises(SessionError) as raised:
+            session.close()
+        assert "established failure" in str(raised.value)
+        assert any(str(cleanup_error) in note for note in raised.value.__notes__)
+        assert any("nested forward cleanup detail" in note for note in raised.value.__notes__)
+        assert session.closed
+        assert process.stdin.closed and process.stdout.closed
+        assert harness.ssh.process(GDB).mock.close_stderr.call_count == 1
         session.close()
-    assert "established failure" in str(raised.value)
-    assert any(str(cleanup_error) in note for note in raised.value.__notes__)
-    assert any("nested forward cleanup detail" in note for note in raised.value.__notes__)
-    assert session.closed
-    assert process.stdin.closed and process.stdout.closed
-    assert harness.ssh.process(GDB).mock.close_stderr.call_count == 1
-    session.close()
 
 
 def test_required_start_failure_aborts_session(harness):
     harness.ssh.process(GDB).ready = False
     with pytest.raises(ForwardStartError):
-        harness.open()
+        session = harness.prepare()
+        with cleanup_on_exit(session.close):
+            session.acquire()
     assert harness.helper.close_calls == 1
     assert harness.ssh.process(GDB).mock.close_stderr.call_count == 1
     assert not harness.advisories
@@ -100,8 +113,9 @@ def test_required_start_failure_aborts_session(harness):
 
 def test_required_forwarding_saves_preferred_address_after_using_cache(harness):
     preferred_address_cache.remember_preferred_address("host", harness.ssh, "127.64.0.9")
-    session = harness.open((GDB,), ())
+    session = harness.prepare((GDB,), ())
     try:
+        session.acquire()
         assert harness.helper.preferred_address == "127.64.0.9"
         assert preferred_address_cache.load_preferred_address("host", harness.ssh) == "127.64.0.1"
     finally:
@@ -112,24 +126,28 @@ def test_failed_required_forwarding_preserves_cached_preferred_address(harness):
     preferred_address_cache.remember_preferred_address("host", harness.ssh, "127.64.0.9")
     harness.ssh.process(GDB).ready = False
     with pytest.raises(ForwardStartError):
-        harness.open((GDB,), ())
+        session = harness.prepare((GDB,), ())
+        with cleanup_on_exit(session.close):
+            session.acquire()
     assert harness.helper.preferred_address == "127.64.0.9"
     assert preferred_address_cache.load_preferred_address("host", harness.ssh) == "127.64.0.9"
 
 
 @pytest.mark.parametrize("services", ((), (TCL,)), ids=("no-services", "best-effort-only"))
 def test_session_without_required_forwarding_does_not_save_preferred_address(harness, services):
-    session = harness.open(services, services)
+    session = harness.prepare(services, services)
     try:
+        session.acquire()
         assert preferred_address_cache.load_preferred_address("host", harness.ssh) is None
     finally:
         session.close()
 
 
 def test_deferred_required_forwarding_saves_preferred_address(harness):
-    session = harness.open((), ())
-    harness.ssh.process(RTT)
+    session = harness.prepare((), ())
     try:
+        session.acquire()
+        harness.ssh.process(RTT)
         session.forward((RTT,))
         assert preferred_address_cache.load_preferred_address("host", harness.ssh) == "127.64.0.1"
     finally:
@@ -141,18 +159,19 @@ def test_deferred_required_forwarding_saves_preferred_address(harness):
 def test_recorded_failure_or_cancellation_prevents_forward_entry(
     harness, monkeypatch, fact, required
 ):
-    session = harness.open((GDB,), ())
-    harness.ssh.process(RTT)
-
-    def forbidden_forward(*_args, **_kwargs):
-        pytest.fail("forward transport entered after a recorded fatal fact")
-
-    monkeypatch.setattr(ControlledSshCommand, "popen", forbidden_forward)
-    if fact == "reader":
-        session._observations.record_reader_failure(RuntimeError("earlier reader failure"))
-    else:
-        session._observations.cancel()
+    session = harness.prepare((GDB,), ())
     try:
+        session.acquire()
+        harness.ssh.process(RTT)
+
+        def forbidden_forward(*_args, **_kwargs):
+            pytest.fail("forward transport entered after a recorded fatal fact")
+
+        monkeypatch.setattr(ControlledSshCommand, "popen", forbidden_forward)
+        if fact == "reader":
+            session._observations.record_reader_failure(RuntimeError("earlier reader failure"))
+        else:
+            session._observations.cancel()
         with pytest.raises(SessionError) as raised:
             session.forward((RTT,), required=required)
         if fact == "reader":
@@ -167,8 +186,9 @@ def test_recorded_failure_or_cancellation_prevents_forward_entry(
 def test_auxiliary_start_failure_preserves_other_services(harness, failed_service):
     harness.ssh.process(failed_service).ready = False
     services = (GDB, TCL, TELNET, RTT)
-    session = harness.open(services, (TCL, TELNET, RTT))
+    session = harness.prepare(services, (TCL, TELNET, RTT))
     try:
+        session.acquire()
         assert session.forwarded_services == tuple(
             item for item in services if item != failed_service
         )
@@ -188,7 +208,9 @@ def test_best_effort_rollback_failure_remains_fatal(harness):
     cleanup_error = RuntimeError("rollback cleanup failed")
     failed.cleanup_error = cleanup_error
     with pytest.raises(ForwardStartError) as raised:
-        harness.open()
+        session = harness.prepare()
+        with cleanup_on_exit(session.close):
+            session.acquire()
     assert raised.value.service == TELNET
     assert raised.value.cleanup_errors == (cleanup_error,)
     assert not harness.advisories
@@ -233,11 +255,12 @@ def test_auxiliary_factory_rollback_outcome_is_preserved(harness, monkeypatch, c
     def fail_drain_start(_drain):
         raise startup_error
 
-    session = harness.open((GDB,), ())
-    monkeypatch.setattr(ControlledSshCommand, "popen", SshCommand.popen)
-    monkeypatch.setattr(ssh_module.subprocess, "Popen", lambda *_args, **_kwargs: acquired)
-    monkeypatch.setattr(ssh_module._StderrDrain, "start", fail_drain_start)
+    session = harness.prepare((GDB,), ())
     try:
+        session.acquire()
+        monkeypatch.setattr(ControlledSshCommand, "popen", SshCommand.popen)
+        monkeypatch.setattr(ssh_module.subprocess, "Popen", lambda *_args, **_kwargs: acquired)
+        monkeypatch.setattr(ssh_module._StderrDrain, "start", fail_drain_start)
         if cleanup_fails:
             with pytest.raises(ForwardStartError) as raised:
                 session.forward((TCL,), required=False)
@@ -262,7 +285,9 @@ def test_auxiliary_factory_rollback_outcome_is_preserved(harness, monkeypatch, c
 def test_auxiliary_start_interruption_or_unexpected_error_is_not_advisory(harness, error):
     harness.ssh.process(TCL).readiness_error = error
     with pytest.raises(type(error)) as raised:
-        harness.open()
+        session = harness.prepare()
+        with cleanup_on_exit(session.close):
+            session.acquire()
     assert raised.value is error
     assert not harness.advisories
     assert harness.helper.close_calls == 1
@@ -272,8 +297,9 @@ def test_auxiliary_start_interruption_or_unexpected_error_is_not_advisory(harnes
 
 @pytest.mark.parametrize("failed_service", (TCL, TELNET, RTT), ids=("tcl", "telnet", "rtt"))
 def test_auxiliary_exit_warns_once_without_failing_gdb(harness, failed_service):
-    session = harness.open((GDB, TCL, TELNET, RTT), (TCL, TELNET, RTT))
+    session = harness.prepare((GDB, TCL, TELNET, RTT), (TCL, TELNET, RTT))
     try:
+        session.acquire()
         harness.ssh.process(failed_service).returncode = 13
         assert session.check_openocd_exit() is None
         assert session.check_openocd_exit() is None
@@ -285,8 +311,9 @@ def test_auxiliary_exit_warns_once_without_failing_gdb(harness, failed_service):
 
 
 def test_required_exit_remains_fatal_on_repeated_health_checks(harness):
-    session = harness.open()
+    session = harness.prepare()
     try:
+        session.acquire()
         harness.ssh.process(GDB).returncode = 13
         for _ in range(2):
             with pytest.raises(SessionError):
@@ -298,13 +325,14 @@ def test_required_exit_remains_fatal_on_repeated_health_checks(harness):
 
 @pytest.mark.parametrize("observation", ("same-poll", "later-poll", "close"))
 def test_multiple_required_forward_failures_retain_secondary_diagnostics(harness, observation):
-    session = harness.open((GDB, RTT), ())
-    gdb_forward = harness.ssh.process(GDB)
-    rtt_forward = harness.ssh.process(RTT)
-    gdb_forward.diagnostic = b"gdb transport failed"
-    rtt_forward.diagnostic = b"rtt transport failed"
-    gdb_forward.returncode = 13
+    session = harness.prepare((GDB, RTT), ())
     try:
+        session.acquire()
+        gdb_forward = harness.ssh.process(GDB)
+        rtt_forward = harness.ssh.process(RTT)
+        gdb_forward.diagnostic = b"gdb transport failed"
+        rtt_forward.diagnostic = b"rtt transport failed"
+        gdb_forward.returncode = 13
         if observation == "later-poll":
             with pytest.raises(SessionError) as first:
                 session.check_openocd_exit()
@@ -334,8 +362,9 @@ def test_multiple_required_forward_failures_retain_secondary_diagnostics(harness
 
 
 def test_simultaneous_forward_failures_preserve_required_failure_and_advisories(harness):
-    session = harness.open()
+    session = harness.prepare()
     try:
+        session.acquire()
         for service in (GDB, TCL):
             harness.ssh.process(service).returncode = 13
         with pytest.raises(SessionError):
@@ -349,8 +378,9 @@ def test_simultaneous_forward_failures_preserve_required_failure_and_advisories(
 
 @pytest.mark.parametrize("unknown", (RTT, type(GDB)("gdb", 3334, 3333)))
 def test_mark_auxiliary_requires_owned_service(harness, unknown):
-    session = harness.open()
+    session = harness.prepare()
     try:
+        session.acquire()
         with pytest.raises(SessionError):
             session.mark_auxiliary((GDB, unknown))
         harness.ssh.process(GDB).returncode = 13
@@ -361,8 +391,9 @@ def test_mark_auxiliary_requires_owned_service(harness, unknown):
 
 
 def test_late_observed_gdb_exit_uses_current_rtt_forwarding_classification(harness):
-    session = harness.open()
+    session = harness.prepare()
     try:
+        session.acquire()
         harness.ssh.process(GDB).returncode = 13
         session.mark_auxiliary((GDB,))
         harness.ssh.process(RTT)
@@ -377,14 +408,16 @@ def test_late_observed_gdb_exit_uses_current_rtt_forwarding_classification(harne
 
 
 def test_owned_best_effort_cleanup_failure_is_fatal(harness):
-    session = harness.open()
-    cleanup_error = RuntimeError("owned best-effort cleanup failed")
-    harness.ssh.process(TCL).cleanup_error = cleanup_error
-    with pytest.raises(RuntimeError) as raised:
+    session = harness.prepare()
+    with cleanup_on_exit(session.close):
+        session.acquire()
+        cleanup_error = RuntimeError("owned best-effort cleanup failed")
+        harness.ssh.process(TCL).cleanup_error = cleanup_error
+        with pytest.raises(RuntimeError) as raised:
+            session.close()
+        assert raised.value is cleanup_error
+        assert harness.helper.close_calls == 1
+        for service in (GDB, TCL, TELNET):
+            assert harness.ssh.process(service).mock.close_stderr.call_count == 1
         session.close()
-    assert raised.value is cleanup_error
-    assert harness.helper.close_calls == 1
-    for service in (GDB, TCL, TELNET):
-        assert harness.ssh.process(service).mock.close_stderr.call_count == 1
-    session.close()
-    assert harness.ssh.process(TCL).mock.close_stderr.call_count == 1
+        assert harness.ssh.process(TCL).mock.close_stderr.call_count == 1

@@ -24,6 +24,7 @@ from zephyr_remote_openocd.remote.session import SessionClosedError, SessionErro
 from zephyr_remote_openocd.remote.ssh import SshCommand
 
 from tests.forwarding_support import ForwardingHarness
+from tests.process_support import cleanup_on_exit
 
 OPENOCD_FAILURE_RC = 7
 FORWARD_FAILURE_RC = 13
@@ -99,64 +100,14 @@ def _make_session() -> RemoteSession:
     return RemoteSession(request, deployment)
 
 
-@pytest.mark.parametrize("cleanup_fails", (False, True), ids=("clean", "nested-failure"))
-def test_open_rolls_back_once_and_preserves_startup_failure(monkeypatch, cleanup_fails):
-    request = RemoteSessionRequest("host", SshCommand(), RemoteProcess(("openocd",)))
-    deployment = DeploymentResult("/helper.py", "digest", False)
-    startup_error = RuntimeError("staging failed")
-    cleanup_error = RuntimeError("session cleanup failed")
-    cleanup_error.add_note("additional cleanup failure: forward cleanup failed")
-    cleanup_calls = 0
-
-    def deploy(_ssh_command, _host):
-        return deployment
-
-    def make_helper(
-        _ssh_command,
-        _host,
-        _deployment,
-        *,
-        output_handler=None,
-        process_start_handler=None,
-        observations=None,
-    ):
-        return _PreparedHelper()
-
-    monkeypatch.setattr(backend_module, "deploy_helper", deploy)
-
-    def fail_stage(_session, _files):
-        raise startup_error
-
-    def close(_session):
-        nonlocal cleanup_calls
-        cleanup_calls += 1
-        if cleanup_fails:
-            raise cleanup_error
-
-    monkeypatch.setattr(backend_module, "_HelperClient", make_helper)
-    monkeypatch.setattr(RemoteSession, "_stage", fail_stage)
-    monkeypatch.setattr(RemoteSession, "close", close)
-
-    with pytest.raises(RuntimeError) as raised:
-        RemoteSession.open(request)
-
-    assert raised.value is startup_error
-    assert cleanup_calls == 1
-    if cleanup_fails:
-        notes = raised.value.__notes__
-        assert any(str(cleanup_error) in note for note in notes)
-        assert any("forward cleanup failed" in note for note in notes)
-    else:
-        assert not getattr(raised.value, "__notes__", ())
-
-
 def test_session_validates_reserved_services_without_forwarding_them(monkeypatch):
     harness = ForwardingHarness(monkeypatch)
     gdb = Service("gdb", 3333, 3333)
     rtt = Service("rtt", 5566, 5566)
     request = replace(harness.request((gdb,), ()), reserved_services=(rtt,))
-    session = RemoteSession.open(request)
+    session = RemoteSession.prepare(request)
     try:
+        session.acquire()
         assert harness.helper.services == (gdb, rtt)
         assert session.forwarded_services == (gdb,)
     finally:
@@ -306,7 +257,9 @@ def test_staging_rejects_response_without_lf(monkeypatch):
     request = RemoteSessionRequest("target", ReplyCommand(), RemoteProcess(("openocd",)))
 
     with pytest.raises(SessionError):
-        RemoteSession.open(request)
+        session = RemoteSession.prepare(request)
+        with cleanup_on_exit(session.close):
+            session.acquire()
 
 
 def test_closed_session_exposes_only_cached_openocd_result():
@@ -576,10 +529,11 @@ def test_forward_uses_allocated_remote_address_and_requested_services(monkeypatc
         Service("gdb", 3333, 3333),
         Service("telnet", 4444, 4444),
     )
-    session = harness.open((), ())
-    for service in requested_services:
-        harness.ssh.process(service)
+    session = harness.prepare((), ())
     try:
+        session.acquire()
+        for service in requested_services:
+            harness.ssh.process(service)
         # The controlled SSH boundary checks the allocated destination address.
         session.forward(requested_services)
         assert session.forwarded_services == requested_services

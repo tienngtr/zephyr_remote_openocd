@@ -22,7 +22,8 @@ from tests.ssh_integration import test_ssh_integration as harness_module
 
 
 @pytest.mark.parametrize(
-    "failure", ("second-open", "second-close", "both-close", "assertion-and-close")
+    "failure",
+    ("second-prepare", "second-acquire", "second-close", "both-close", "assertion-and-close"),
 )
 def test_concurrent_ssh_harness_closes_every_acquired_session(monkeypatch, failure):
     ssh = SshCommand(("controlled-ssh",))
@@ -30,32 +31,37 @@ def test_concurrent_ssh_harness_closes_every_acquired_session(monkeypatch, failu
     sessions = [
         RemoteSession(request, DeploymentResult("/helper.py", "digest", False)) for _ in range(2)
     ]
-    for index, session in enumerate(sessions):
+    second_error = RuntimeError("second resource failed")
+    first_error = RuntimeError("first cleanup failed")
+    prepared: list[RemoteSession] = []
+    close = RemoteSession.close
+
+    def prepare_session(_request):
+        if prepared and failure == "second-prepare":
+            raise second_error
+        session = sessions[len(prepared)]
+        prepared.append(session)
+        return session
+
+    def acquire_session(session):
+        if session is sessions[1] and failure == "second-acquire":
+            raise second_error
+        index = sessions.index(session)
         session.descriptor = SessionDescriptor(
             SessionAllocation(str(index), f"/workspace/{index}"), f"127.64.0.{index + 1}"
         )
-    second_error = RuntimeError("second resource failed")
-    first_error = RuntimeError("first cleanup failed")
-    if failure == "assertion-and-close":
-        sessions[1].descriptor = sessions[0].descriptor
-    opened: list[RemoteSession] = []
-    close = RemoteSession.close
-
-    def open_session(_request):
-        if opened and failure == "second-open":
-            raise second_error
-        session = sessions[len(opened)]
-        opened.append(session)
-        return session
+        if session is sessions[1] and failure == "assertion-and-close":
+            session.descriptor = sessions[0].descriptor
 
     def close_session(session):
         close(session)
-        if session is sessions[1]:
+        if session is sessions[1] and failure != "second-acquire":
             raise second_error
         if failure == "both-close":
             raise first_error
 
-    monkeypatch.setattr(RemoteSession, "open", open_session)
+    monkeypatch.setattr(RemoteSession, "prepare", prepare_session)
+    monkeypatch.setattr(RemoteSession, "acquire", acquire_session)
     monkeypatch.setattr(RemoteSession, "close", close_session)
     ports = iter((12345, 12346))
     monkeypatch.setattr(harness_module, "free_loopback_port", lambda: next(ports))
@@ -64,8 +70,8 @@ def test_concurrent_ssh_harness_closes_every_acquired_session(monkeypatch, failu
     test.ssh = ssh
     with pytest.raises((RuntimeError, AssertionError)) as raised:
         test.test_concurrent_sessions_isolate_identical_remote_ports()
-    assert opened
-    assert all(session.closed for session in opened)
+    assert len(prepared) == (1 if failure == "second-prepare" else 2)
+    assert all(session.closed for session in prepared)
     if failure == "assertion-and-close":
         assert isinstance(raised.value, AssertionError)
         assert any(str(second_error) in note for note in raised.value.__notes__)

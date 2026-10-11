@@ -36,6 +36,7 @@ from zephyr_remote_openocd.remote.ssh import (
     _stop_process,
 )
 
+from tests.process_support import cleanup_on_exit
 from tests.protocol_support import terminal_message
 
 STREAM_CHILD_EXIT_CODE = 4
@@ -462,7 +463,9 @@ def test_initial_forward_failure_consumes_session_close_event(monkeypatch):
     monkeypatch.setattr(_ForwardManager, "start", fail_forwards)
 
     with pytest.raises(SessionError) as raised:
-        RemoteSession.open(request)
+        session = RemoteSession.prepare(request)
+        with cleanup_on_exit(session.close):
+            session.acquire()
 
     assert raised.value is forward_error
     assert any("remote process failed" in note for note in raised.value.__notes__)

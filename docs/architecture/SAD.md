@@ -1464,9 +1464,11 @@ runner-acquired local session resources, excluding externally retained sharing
 state as described in §32. `RemoteSession.prepare()` deploys the helper revision
 and returns a coordinator with no live session resources. The adapter adopts
 that coordinator before calling its instance `acquire()` operation, and
-releases it through cleanup-only `RemoteSession.close()`. `RemoteSession.open()`
-is a convenience for callers that need a usable returned session; it combines
-preparation and acquisition with startup rollback. The helper client and
+releases it through cleanup-only `RemoteSession.close()`. There is no factory
+returning an acquired session: the caller must own the resource-free coordinator
+and enter its cleanup scope before calling `acquire()`. A callee's rollback
+guard cannot cover interruption after returning a live object but before the
+caller adopts it. The helper client and
 forward manager own their respective resources and cleanup sequences beneath
 this boundary. The session stores a resource-free `_HelperClient` before calling
 its instance `acquire()`. The client briefly blocks SIGINT while launching and
@@ -1658,7 +1660,7 @@ not by cancelling its awaiter.
 | Observer tasks and protocol writer | Task-creation/setup scope | Register with session/attempt owner before publication; setup failure joins/cancels under bounded policy and retains unresolved obligations. |
 | Staging shared lease | Standalone staging scope | Held through validation, extraction, and success reporting; always released on failure/process exit, with no transfer to the controller. |
 | Forwarding transport | Forward manager's pending-resource owner | Keep rollback ownership through validation/adoption; independent failed forwards cannot orphan an acquired process or roll back another active forward. |
-| RTT socket and terminal mode | RTT connection/terminal scopes | Socket remains owned through connect/adoption; terminal restoration and socket closure are independently attempted on failure/interruption. |
+| RTT socket and terminal mode | Caller-owned resource-free connection scope and terminal scope | Raw socket creation and registration briefly block SIGINT; connect and initial observation populate the already-owned scope without returning a live socket. Terminal restoration and socket closure are independently attempted on failure/interruption. |
 
 A `SupervisedChild` owns the configured OpenOCD process-group resources and
 per-stream decoding state, which only the coordinator consumes. Process
@@ -2130,7 +2132,7 @@ listeners. Startup readiness does not wait for remote service sockets to become
 connectable. Tcl and telnet are compatibility endpoints, and their remote
 socket connectability is not a startup condition. Their configured local
 forwarding processes still start as independent best-effort attempts during
-`RemoteSession.open()` when their runner port options are enabled.
+session acquisition when their runner port options are enabled.
 Required-forward startup failure, failed startup rollback, or an already-recorded
 fatal helper outcome prevents the session from opening; best-effort
 unavailability with successful rollback produces a warning. The active RTT
@@ -2351,6 +2353,11 @@ shall preserve these invariants:
   acquisition through confirmed disposal or explicit residual responsibility.
   Acquisition success, ownership adoption, publication, cancellation, and
   settlement are distinct events.
+- When interruption safety is required, callers own resource-free coordinators
+  before acquisition begins and enter cleanup scopes before calling acquisition.
+  Acquisition populates that existing owner; it does not transfer a newly live
+  coordinator or connected socket through a return value. Protect raw physical
+  acquisition and registration together inside the already-owned scope.
 - Timeout, cancellation, requested termination, signal delivery, and an
   unsuccessful wait do not establish physical settlement.
 - Remote READY is a remote fact, not local authorization to launch dependent
@@ -2399,7 +2406,8 @@ Use continuous ownership around the physical effect:
 
 ```text
 authorize effect
-    -> acquire into a temporary owner
+    -> establish a resource-free owner and its cleanup scope
+    -> acquire into that owner under interruption-safe registration
     -> validate or initialize
     -> transfer ownership explicitly
     -> normal owner retains cleanup reachability
@@ -2409,7 +2417,9 @@ authorize effect
 
 Review interruption and `BaseException` immediately before and after each
 ownership handoff. The resource must remain reachable by some cleanup owner at
-both points.
+both points. A factory's guarded return is insufficient: interruption can occur
+after the callee gives up control and before caller adoption. Keep acquisition
+on an already-owned coordinator rather than returning a newly live resource.
 
 #### Add an asynchronous observation
 
@@ -2519,7 +2529,7 @@ Selected architecture:
 - structured RTT handling;
 - semihosting console via OpenOCD stdout/stderr;
 - one concrete local `RemoteSession` owner;
-- single-use session acquisition through `RemoteSession.open()`;
+- resource-free session preparation followed by single-use instance acquisition;
 - no generic `SessionBackend`/`BackendSession` layer;
 - cleanup-only `RemoteSession.close()`;
 - genuine child result stored separately from shutdown trigger and infrastructure status;

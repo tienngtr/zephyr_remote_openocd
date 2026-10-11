@@ -305,10 +305,12 @@ class TestSshTransportIntegration:
                 (StagedFile(source, PurePosixPath("nested/payload.bin")),),
                 (Service("gdb", local_port, 3333),),
             )
-            session = RemoteSession.open(request)
-            assert session.descriptor is not None
-            descriptor = session.descriptor
-            try:
+            session = RemoteSession.prepare(request)
+            with cleanup_on_exit(session.close):
+                session.acquire()
+                assert session.descriptor is not None
+                descriptor = session.descriptor
+                workspace = descriptor.remote_workspace
                 address = ipaddress.ip_address(descriptor.remote_address)
                 assert address in ipaddress.ip_network("127.64.0.0/10")
                 check = self.ssh.run(
@@ -326,9 +328,6 @@ class TestSshTransportIntegration:
                 assert check.returncode == 0, check.stderr.decode(errors="replace")
                 assert check.stdout.strip() == b"0o700 263"
                 wait_for_echo(local_port, b"helper_round_trip", 20)
-            finally:
-                workspace = descriptor.remote_workspace
-                session.close()
             gone = self.ssh.run(
                 self.host,
                 "python3 -c "
@@ -351,7 +350,7 @@ class TestSshTransportIntegration:
         while second_port == first_port:
             second_port = free_loopback_port()
         with ExitStack() as resources:
-            first = RemoteSession.open(
+            first = RemoteSession.prepare(
                 RemoteSessionRequest(
                     self.host,
                     self.ssh,
@@ -360,7 +359,8 @@ class TestSshTransportIntegration:
                 )
             )
             resources.enter_context(cleanup_on_exit(first.close))
-            second = RemoteSession.open(
+            first.acquire()
+            second = RemoteSession.prepare(
                 RemoteSessionRequest(
                     self.host,
                     self.ssh,
@@ -369,6 +369,7 @@ class TestSshTransportIntegration:
                 )
             )
             resources.enter_context(cleanup_on_exit(second.close))
+            second.acquire()
             assert first.descriptor is not None
             first_descriptor = first.descriptor
             second_descriptor = second.descriptor
@@ -412,11 +413,14 @@ collision.listen()
         attempts: list[tuple[str, ...]] = []
         output: list[str] = []
         with pytest.raises(SessionError):
-            RemoteSession.open(
-                RemoteSessionRequest(self.host, self.ssh, process, services=(service,)),
-                process_start_handler=attempts.append,
-                output_handler=lambda _stream, text, _line_end: output.append(text),
+            session = RemoteSession.prepare(
+                RemoteSessionRequest(self.host, self.ssh, process, services=(service,))
             )
+            with cleanup_on_exit(session.close):
+                session.acquire(
+                    process_start_handler=attempts.append,
+                    output_handler=lambda _stream, text, _line_end: output.append(text),
+                )
         assert len(attempts) == 1
         assert "".join(output).count("ZRO_TEST_STARTUP_WORK") == 1
         assert "address already in use" in "".join(output).casefold()
@@ -434,8 +438,9 @@ collision.listen()
             session_echo_process(),
             services=(Service("gdb", free_loopback_port(), 3333),),
         )
-        session = RemoteSession.open(request)
+        session = RemoteSession.prepare(request)
         with cleanup_on_exit(session.close), ExitStack() as resources:
+            session.acquire()
             bundle = io.BytesIO(_helper_source())
             with zipfile.ZipFile(bundle, "a") as archive:
                 archive.comment = uuid.uuid4().hex.encode("ascii")
@@ -533,16 +538,18 @@ collision.listen()
         with cleanup_on_exit(lambda: stop_and_close(master)):
             assert master.stdout is not None
             assert read_line(master.stdout).strip() == b"ZRO_MASTER_READY", master.stderr_tail()
-            first = RemoteSession.open(request)
+            first = RemoteSession.prepare(request)
             with cleanup_on_exit(first.close):
+                first.acquire()
                 assert first.descriptor is not None
                 address = first.descriptor.remote_address
                 wait_for_echo(local_port, b"first_session", 20)
             assert master.poll() is None
             with socket.create_connection(("127.0.0.1", local_port), timeout=20):
                 pass
-            second = RemoteSession.open(request)
+            second = RemoteSession.prepare(request)
             with cleanup_on_exit(second.close):
+                second.acquire()
                 assert second.descriptor is not None
                 assert second.descriptor.remote_address == address
                 wait_for_echo(local_port, b"reused_session", 20)
@@ -569,17 +576,15 @@ collision.listen()
 
         local_port = free_loopback_port()
         ssh = RecordingSshCommand(self.ssh_settings.ssh_command)
-        session = RemoteSession.open(
+        session = RemoteSession.prepare(
             RemoteSessionRequest(
-                self.host,
-                ssh,
-                session_echo_process(),
-                services=(Service("gdb", local_port, 3333),),
+                self.host, ssh, session_echo_process(), services=(Service("gdb", local_port, 3333),)
             )
         )
-        assert session.descriptor is not None
-        descriptor = session.descriptor
         try:
+            session.acquire()
+            assert session.descriptor is not None
+            descriptor = session.descriptor
             helper_process = ssh.helper_processes[0]
             helper_process.terminate()
             helper_process.wait(timeout=20)
@@ -614,17 +619,15 @@ collision.listen()
 
         local_port = free_loopback_port()
         ssh = RecordingSshCommand(self.ssh_settings.ssh_command)
-        session = RemoteSession.open(
+        session = RemoteSession.prepare(
             RemoteSessionRequest(
-                self.host,
-                ssh,
-                session_echo_process(),
-                services=(Service("gdb", local_port, 3333),),
+                self.host, ssh, session_echo_process(), services=(Service("gdb", local_port, 3333),)
             )
         )
-        assert session.descriptor is not None
-        descriptor = session.descriptor
         try:
+            session.acquire()
+            assert session.descriptor is not None
+            descriptor = session.descriptor
             forward = ssh.forwards[0]
             forward.terminate()
             forward.wait(timeout=20)
@@ -713,13 +716,13 @@ collision.listen()
                 tuple(planner.staged_files),
                 (),
             )
-            session = RemoteSession.open(
-                request,
-                output_handler=lambda stream, payload, line_end: output.append(
-                    (stream, payload, line_end)
-                ),
-            )
+            session = RemoteSession.prepare(request)
             try:
+                session.acquire(
+                    output_handler=lambda stream, payload, line_end: output.append(
+                        (stream, payload, line_end)
+                    )
+                )
                 assert session.wait_for_openocd_exit(timeout=30) == 0
             finally:
                 session.close()

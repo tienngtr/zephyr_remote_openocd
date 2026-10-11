@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import select
+import signal
 import socket
 import sys
 import termios
@@ -25,36 +26,50 @@ _INPUT_CHUNK_SIZE = 4096
 _MAX_PENDING_INPUT = 64 * 1024
 
 
-def _connect(port: int, timeout: float) -> tuple[socket.socket, bytes]:
-    deadline = time.monotonic() + timeout
-    last_error: OSError | None = None
-    while time.monotonic() < deadline:
-        connection = None
-        try:
-            connection = socket.create_connection(("127.0.0.1", port), timeout=0.5)
-            connection.setblocking(False)
-            readable, _, _ = select.select((connection,), (), (), 0.25)
-            if readable:
-                initial = connection.recv(4096)
-                if not initial:
-                    raise RttClientError("RTT forward could not open the remote channel")
-            else:
-                initial = b""
-            return connection, initial
-        except BaseException as error:
-            cleanup_failed = False
-            if connection is not None:
+class _RttConnection:
+    """Acquire into an already-owned scope, without returning a live socket."""
+
+    def __init__(self) -> None:
+        self.socket: socket.socket | None = None
+        self.initial = b""
+
+    def acquire(self, port: int, timeout: float) -> None:
+        deadline = time.monotonic() + timeout
+        last_error: OSError | None = None
+        while time.monotonic() < deadline:
+            try:
+                # Keep acquisition and registration together before a pending
+                # SIGINT can escape. Connection setup then remains interruptible.
+                previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
                 try:
-                    connection.close()
+                    self.socket = socket.socket()
+                finally:
+                    signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+                self.socket.settimeout(0.5)
+                self.socket.connect(("127.0.0.1", port))
+                self.socket.setblocking(False)
+                readable, _, _ = select.select((self.socket,), (), (), 0.25)
+                if readable:
+                    self.initial = self.socket.recv(4096)
+                    if not self.initial:
+                        raise RttClientError("RTT forward could not open the remote channel")
+                return
+            except OSError as error:
+                try:
+                    self.close()
                 except BaseException as cleanup_error:
                     _add_failure_note(error, "RTT socket cleanup failed", cleanup_error)
-                    cleanup_failed = True
-            if cleanup_failed or not isinstance(error, OSError):
+                else:
+                    last_error = error
+                    time.sleep(0.05)
+                    continue
                 raise
-            last_error = error
-            time.sleep(0.05)
-            continue
-    raise RttClientError(f"cannot connect to local RTT port 127.0.0.1:{port}") from last_error
+        raise RttClientError(f"cannot connect to local RTT port 127.0.0.1:{port}") from last_error
+
+    def close(self) -> None:
+        if self.socket is not None:
+            self.socket.close()
+            self.socket = None
 
 
 @contextmanager
@@ -168,24 +183,24 @@ def run_rtt_client(
     """Own the RTT socket and terminal scope until the relay or session exits."""
     input_stream = stdin or sys.stdin.buffer
     output_stream = stdout or sys.stdout.buffer
-    connection: socket.socket | None = None
+    connection = _RttConnection()
     primary_failure: BaseException | None = None
     try:
-        connection, initial = _connect(port, startup_timeout)
+        connection.acquire(port, startup_timeout)
+        assert connection.socket is not None
         input_fd = input_stream.fileno()
-        if initial:
-            output_stream.write(initial)
+        if connection.initial:
+            output_stream.write(connection.initial)
             output_stream.flush()
         with _terminal_mode(input_fd):
-            return _RttRelay(connection, input_fd, output_stream, poll_session).run()
+            return _RttRelay(connection.socket, input_fd, output_stream, poll_session).run()
     except BaseException as error:
         primary_failure = error
         raise
     finally:
-        if connection is not None:
-            try:
-                connection.close()
-            except BaseException as error:
-                if primary_failure is None:
-                    raise
-                _add_failure_note(primary_failure, "RTT socket cleanup failed", error)
+        try:
+            connection.close()
+        except BaseException as error:
+            if primary_failure is None:
+                raise
+            _add_failure_note(primary_failure, "RTT socket cleanup failed", error)

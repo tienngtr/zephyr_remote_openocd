@@ -208,12 +208,12 @@ class ForwardingHarness:
             auxiliary_services=auxiliary,
         )
 
-    def open(
+    def prepare(
         self,
         services: tuple[Service, ...] = (GDB, TCL, TELNET),
         auxiliary: tuple[Service, ...] = (TCL, TELNET),
     ) -> RemoteSession:
-        return RemoteSession.open(
+        return RemoteSession.prepare(
             self.request(services, auxiliary),
             advisory_handler=self.advisories.append,
         )
