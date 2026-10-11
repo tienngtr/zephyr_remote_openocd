@@ -383,19 +383,19 @@ class TestSshTransportIntegration:
             )
             assert result.returncode == 0, result.stderr.decode(errors="replace")
 
-    def test_bind_collision_retries_before_establishing_forward(self):
-        """A real post-spawn EADDRINUSE exit retries through the deployed helper."""
+    def test_post_spawn_bind_collision_fails_without_repeating_startup(self):
+        """Real EADDRINUSE cannot authorize replay through the deployed helper."""
         child = (
             """
 import pathlib, socket, sys
 
 state = pathlib.Path(sys.argv[3])
-if not state.exists():
-    state.write_text(sys.argv[1])
-if state.read_text() == sys.argv[1]:
-    collision = socket.socket()
-    collision.bind((sys.argv[1], int(sys.argv[2])))
-    collision.listen()
+with state.open("a") as side_effect:
+    side_effect.write("startup work")
+print("ZRO_TEST_STARTUP_WORK", flush=True)
+collision = socket.socket()
+collision.bind((sys.argv[1], int(sys.argv[2])))
+collision.listen()
 """
             + REMOTE_SESSION_ECHO
         )
@@ -411,18 +411,20 @@ if state.read_text() == sys.argv[1]:
         service = Service("gdb", free_loopback_port(), 3333)
         attempts: list[tuple[str, ...]] = []
         output: list[str] = []
-        session = RemoteSession.open(
-            RemoteSessionRequest(self.host, self.ssh, process, services=(service,)),
-            process_start_handler=attempts.append,
-            output_handler=lambda _stream, text, _line_end: output.append(text),
-        )
-        with cleanup_on_exit(session.close):
-            assert len(attempts) == 2
-            assert attempts[0][3] != attempts[1][3]
-            assert session.descriptor is not None
-            assert session.descriptor.remote_address == attempts[1][3]
-            assert "address already in use" in "".join(output).casefold()
-            wait_for_echo(service.local_port, b"retry_forward_round_trip", 20)
+        with pytest.raises(SessionError):
+            RemoteSession.open(
+                RemoteSessionRequest(self.host, self.ssh, process, services=(service,)),
+                process_start_handler=attempts.append,
+                output_handler=lambda _stream, text, _line_end: output.append(text),
+            )
+        assert len(attempts) == 1
+        assert "".join(output).count("ZRO_TEST_STARTUP_WORK") == 1
+        assert "address already in use" in "".join(output).casefold()
+        workspace = str(PurePosixPath(attempts[0][5]).parent)
+        result = self.ssh.run(self.host, f"test ! -e {shlex.quote(workspace)}", timeout=20)
+        assert result.returncode == 0, result.stderr.decode(errors="replace")
+        with socket.socket() as local_listener:
+            local_listener.bind(("127.0.0.1", service.local_port))
 
     def test_helper_revision_repair_preserves_active_session(self):
         """Deploy and repair a distinct bundle while the current revision is live."""

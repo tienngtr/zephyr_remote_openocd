@@ -60,6 +60,7 @@ from zephyr_remote_openocd.remote.ssh import (
     _stop_process,
 )
 from zephyr_remote_openocd.remote.staging import build_archive
+from zephyr_remote_openocd.remote.wire import decode_terminal
 
 from tests.process_support import read_line, read_lines
 from tests.protocol_support import terminal_message
@@ -1888,7 +1889,8 @@ helper['stage'](sys.argv[2])
         assert message["type"] == "OPENOCD_VERSION"
         assert "Python" in message["output"]
 
-    def test_helper_retries_an_openocd_address_collision(self, requires_loopback_listener):
+    @pytest.mark.parametrize("failure", ("diagnostic", "tcp-bind"))
+    def test_helper_does_not_repeat_spawned_startup_work(self, requires_loopback_listener, failure):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
@@ -1910,21 +1912,21 @@ helper['stage'](sys.argv[2])
                 output_sentinel = "ZRO_SENTINEL_collision"
                 child = Path(directory) / "collision_child.py"
                 child.write_text(
-                    "import os, pathlib, socket, sys, time\n"
+                    "import os, pathlib, socket, sys\n"
                     "state = pathlib.Path(os.environ['ZRO_COLLISION_STATE'])\n"
-                    "if not state.exists():\n"
-                    "    state.write_text(sys.argv[1])\n"
-                    "if state.read_text() == sys.argv[1]:\n"
+                    "with state.open('a') as side_effect:\n"
+                    "    side_effect.write('startup work\\n')\n"
+                    "if sys.argv[3] == 'diagnostic':\n"
                     "    print(\n"
                     "        'Error: could not bind: Address already in use',\n"
                     "        file=sys.stderr, flush=True\n"
                     "    )\n"
-                    "    raise SystemExit(1)\n"
+                    "    raise SystemExit(7)\n"
+                    "collision = socket.socket()\n"
+                    "collision.bind((sys.argv[1], int(sys.argv[2])))\n"
+                    "collision.listen()\n"
                     "listener = socket.socket()\n"
                     "listener.bind((sys.argv[1], int(sys.argv[2])))\n"
-                    "listener.listen()\n"
-                    "print(sys.argv[3], flush=True)\n"
-                    "time.sleep(30)\n"
                 )
                 process.stdin.write(
                     start_frame(
@@ -1933,33 +1935,38 @@ helper['stage'](sys.argv[2])
                             str(child),
                             REMOTE_ADDRESS_PLACEHOLDER,
                             str(remote_port),
-                            output_sentinel,
+                            failure,
                         ],
                         services=[{"name": "tcl", "remote_port": remote_port}],
                         environment={"ZRO_COLLISION_STATE": str(state)},
                         required_output_sentinels=(output_sentinel,),
-                        readiness_timeout=5,
                         argv_templates=[{"index": 2, "parts": [{"session": "address"}]}],
                         preferred_address="127.64.0.7",
                     )
                 )
                 process.stdin.flush()
                 events: list[dict[str, Any]] = []
-                while not any(event["type"] == "READY" for event in events):
+                while not any(event["type"] == "SESSION_ENDED" for event in events):
                     events.append(json.loads(read_line(process.stdout)))
                 assert any(
                     event["type"] == "CHILD_OUTPUT"
                     and "address already in use" in event["payload"].casefold()
                     for event in events
                 )
-                ready = next(event for event in events if event["type"] == "READY")
                 attempts = [event["argv"] for event in events if event["type"] == "ATTEMPT"]
-                assert len(attempts) >= 2
+                assert len(attempts) == 1
                 assert attempts[0][2] == "127.64.0.7"
-                assert attempts[0][2] != attempts[-1][2]
-                assert attempts[-1][2] == ready["remote_address"]
+                assert state.read_text().splitlines() == ["startup work"]
+                assert not any(event["type"] == "READY" for event in events)
+                snapshot = decode_terminal(events[-1])
+                assert snapshot.outcome.child_result is not None
+                assert snapshot.outcome.child_result.returncode == (
+                    7 if failure == "diagnostic" else 1
+                )
+                assert snapshot.outcome.child_result.generation == 1
+                assert snapshot.cleanup.confirmed
                 process.stdin.close()
-                assert process.wait(timeout=8) == 0
+                assert process.wait(timeout=8) == 1
             finally:
                 if process.poll() is None:
                     process.kill()

@@ -375,31 +375,6 @@ def test_spawn_rollback_preserves_exited_leader_identity_until_group_signal(monk
     assert owner.process.stdout.closed and owner.process.stderr.closed
 
 
-def test_bind_collision_detection_reassembles_same_stream_chunks_across_interleaving():
-    output = [
-        remote_helper._CapturedFragment("stderr", "Address already in", False),
-        remote_helper._CapturedFragment("stdout", "use", True),
-        remote_helper._CapturedFragment("stderr", " use", True),
-    ]
-
-    assert remote_helper.is_bind_collision(output)
-
-
-def test_bind_collision_detection_does_not_cross_lines_or_streams():
-    assert not remote_helper.is_bind_collision(
-        [
-            remote_helper._CapturedFragment("stderr", "Address already in", True),
-            remote_helper._CapturedFragment("stderr", " use", True),
-        ]
-    )
-    assert not remote_helper.is_bind_collision(
-        [
-            remote_helper._CapturedFragment("stderr", "Address already in", False),
-            remote_helper._CapturedFragment("stdout", " use", True),
-        ]
-    )
-
-
 @pytest.mark.parametrize("failure_type", (OSError, KeyboardInterrupt))
 def test_address_probe_finalizer_failure_rolls_back_every_socket(monkeypatch, failure_type):
     original_socket = socket.socket
@@ -2237,7 +2212,7 @@ def test_cleanup_closes_admission_without_waiting_for_global_gate(tmp_path, monk
     remote_helper.remove_workspace(first)
 
 
-def test_address_lease_retirement_failure_forbids_collision_retry(coordinated_helper, monkeypatch):
+def test_address_lease_cleanup_failure_preserves_startup_failure(coordinated_helper, monkeypatch):
     session, writer, events, children = coordinated_helper
     record = remote_helper.emit
     lease = None
@@ -2272,7 +2247,8 @@ def test_address_lease_retirement_failure_forbids_collision_retry(coordinated_he
         assert len(children) == 1
         assert [fields["generation"] for kind, fields in events if kind == "ATTEMPT"] == [1]
         assert snapshot.outcome.child_result.generation == 1
-        assert any(detail.code == "STARTUP_EXIT" for detail in snapshot.outcome.diagnostics)
+        assert snapshot.outcome.primary_failure is not None
+        assert snapshot.outcome.primary_failure.code == "STARTUP_EXIT"
         assert "address_lease" in snapshot.cleanup.residual_resources
         assert session.work.is_dir() and session.workspace_lock.closed
     finally:

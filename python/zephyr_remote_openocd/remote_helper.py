@@ -88,7 +88,6 @@ MAX_SESSION_ID_ATTEMPTS = 32
 MAX_ADDRESS_ALLOCATION_ATTEMPTS = 32
 # 18 random bytes provide 144 bits of entropy in a compact URL-safe ID.
 SESSION_ID_RANDOM_BYTES = 18
-MAX_CAPTURED_STARTUP_FRAGMENTS = 128
 MAX_PENDING_OBSERVATIONS = 64
 MAX_PROTOCOL_OUTPUT_BYTES = 16 * 1024 * 1024
 _protocol_output: contextvars.ContextVar[_ProtocolOutput | None] = contextvars.ContextVar(
@@ -516,21 +515,6 @@ class _OutputDecoder:
         if self.pending:
             fragment()
         return fragments
-
-
-def is_bind_collision(output: list[_CapturedFragment]):
-    """Recognize the POSIX EADDRINUSE diagnostic from OpenOCD startup."""
-    phrase = "address already in use"
-    lines: dict[str, str] = {}
-    for item in output:
-        stream = item.stream
-        payload = item.payload
-        line_end = item.line_end
-        line = lines.get(stream, "") + payload.casefold()
-        if phrase in line:
-            return True
-        lines[stream] = "" if line_end else line[-len(phrase) + 1 :]
-    return False
 
 
 def allocate_service_address(ports, preferred_address=None):
@@ -1175,7 +1159,6 @@ class SupervisedChild:
     ) -> None:
         self.process = process
         self.required_output_sentinels = _RequiredOutputSentinels(required_output_sentinels)
-        self.startup_output: list[_CapturedFragment] = []
         self.decoders = {
             name: _OutputDecoder(name, self.required_output_sentinels)
             for name in ("stdout", "stderr")
@@ -1834,24 +1817,13 @@ class ControlSession:
     def _record_exit(self, child: SupervisedChild, returncode: int) -> None:
         if child.termination_requested:
             self.lifecycle.record_child_termination(child.generation)
-        self.lifecycle.observe_child_exit(child.generation, returncode)
-        self._classify_collision(child)
-
-    def _classify_collision(self, child: SupervisedChild) -> None:
-        state = self.lifecycle.state
-        if (
-            isinstance(state, Starting)
-            and isinstance(state.attempt, OwnedAttempt)
-            and state.attempt.child_result is not None
-            and is_bind_collision(child.startup_output)
-        ):
+        if self.lifecycle.observe_child_exit(child.generation, returncode):
+            # Even a genuine bind failure can follow opaque Tcl and target
+            # initialization. Child status and output cannot certify replay.
             self.lifecycle.classify_startup_failure(
                 child.generation,
-                Diagnostic(
-                    "STARTUP_EXIT",
-                    f"bind collision before READY ({state.attempt.child_result.returncode})",
-                ),
-                safely_repeatable=True,
+                Diagnostic("STARTUP_EXIT", f"child exited before READY with status {returncode}"),
+                safely_repeatable=False,
             )
 
     def _ready(self) -> None:
@@ -1904,8 +1876,6 @@ class ControlSession:
         if child is not self.child:
             return
         for fragment in child.decoders[observation.stream].feed(observation.chunk):
-            child.startup_output.append(fragment)
-            del child.startup_output[:-MAX_CAPTURED_STARTUP_FRAGMENTS]
             if self._output_available:
                 try:
                     emit(
@@ -1920,7 +1890,6 @@ class ControlSession:
                     self._failure(Trigger.OUTPUT_FAILURE, "CHILD_OUTPUT_ADMISSION", error)
         if not observation.chunk:
             child.output_finished.add(observation.stream)
-        self._classify_collision(child)
         self._ready()
 
     async def _observe_final_readiness(self, child: SupervisedChild) -> None:
@@ -2001,9 +1970,8 @@ class ControlSession:
             failure = Diagnostic(
                 "STARTUP_EXIT", f"child exited before READY with status {returncode}"
             )
-            repeatable = is_bind_collision(child.startup_output) and not self.cleanup_errors
             self.lifecycle.classify_startup_failure(
-                child.generation, failure, safely_repeatable=repeatable
+                child.generation, failure, safely_repeatable=False
             )
         if self._child_settlement.confirmed and self._address_lease is None:
             self.lifecycle.settle_attempt(
@@ -2013,12 +1981,6 @@ class ControlSession:
         else:
             self._cleanup_failure(RuntimeError("child disposal remains unconfirmed"))
         self._attempt_finished = True
-        generation = self.lifecycle.retry(child.generation)
-        if generation is not None:
-            try:
-                self._start_attempt()
-            except BaseException as error:
-                self._failure(Trigger.STARTUP_FAILURE, "STARTUP_FAILURE", error)
 
     def _handle(self, observation: _Observation) -> None:
         if isinstance(observation, _StartReceived):

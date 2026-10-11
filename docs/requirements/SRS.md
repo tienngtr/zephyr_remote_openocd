@@ -584,7 +584,7 @@ configured command arguments MAY appear in it.
 
 The runner SHALL make the exact effective remote OpenOCD argv available as
 diagnostic content before each spawn attempt, including attempts that later
-fail and each bind-collision retry. Spawn, readiness, or required-forwarding
+fail. Spawn, readiness, or required-forwarding
 failure SHALL NOT suppress this diagnostic. Wire-event and framing details are
 defined in [protocol.md](../architecture/protocol.md). The helper SHALL accept
 the complete diagnostic for delivery before attempting the spawn; inability to
@@ -1329,8 +1329,8 @@ helper failure.
 
 The helper SHALL continue observing controller termination while readiness is
 pending. Bulk output backpressure SHALL NOT prevent controller or signal
-observation, child exit accounting, or cleanup progress. Readiness or a safe
-retry MAY precede remote handling of EOF, even if another observer has already
+observation, child exit accounting, or cleanup progress. Readiness MAY precede
+remote handling of EOF, even if another observer has already
 recognized it. Once remote termination is committed, no new attempt or readiness
 may be authorized. Local cancellation independently prevents dependent launch.
 
@@ -1506,6 +1506,12 @@ cancellation SHALL NOT substitute for settlement. A stale attempt result SHALL
 NOT change current ownership, readiness, child result, or retry eligibility.
 Retry does not roll back target side effects and SHALL NOT assume arbitrary
 user Tcl is idempotent.
+
+The deployed helper SHALL attempt child creation at most once per START. Neither
+a bind diagnostic nor a genuine post-spawn bind collision establishes safe
+repeatability: opaque/user Tcl and target initialization may already have run.
+Pre-spawn address selection and rejection MAY continue without executing child
+work again.
 
 ---
 

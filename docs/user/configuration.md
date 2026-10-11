@@ -139,7 +139,10 @@ west -v debugserver -r remote_openocd --remote lab
 
 The helper reports each effective command before attempting to spawn OpenOCD,
 so the trace remains available if spawning, startup readiness, or required
-forwarding fails. Bind-collision retries show each attempt's actual argv.
+forwarding fails. Startup executes once: a post-spawn bind failure is reported
+without restarting OpenOCD, because startup may already have changed target state
+or executed user Tcl. Address conflicts found before spawn can select another
+candidate without repeating that work.
 
 ## What is copied to the remote
 

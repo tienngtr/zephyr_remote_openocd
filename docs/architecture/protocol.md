@@ -42,7 +42,7 @@ After the one valid START, any additional input byte, including whitespace or
 another LF, is protocol failure; there is no post-START frame parser to await.
 A START followed by extra bytes in the same read still violates this rule.
 Already recorded validation/observer failures remain fatal and are accounted
-before success or retry; no checkpoint to recognize future input is required.
+before success; no checkpoint to recognize future input is required.
 
 ## Session creation and controller lease
 
@@ -70,7 +70,7 @@ sharing masters remain externally owned.
 
 The remote authority handles controller termination independently of the local
 operation. EOF occurrence, adapter recognition, publication, and authority
-handling are not one atomic boundary. READY or retry may precede that handling;
+handling are not one atomic boundary. READY may precede that handling;
 no distributed recognition fence or ACK is required. After remote termination
 commits, no new attempt or READY admission is permitted. Local cancellation
 independently revokes local launch eligibility, including for late READY.
@@ -96,7 +96,7 @@ The client selects `completion_policy` from the operation, explicitly:
 
 | Policy | Required behavior |
 | --- | --- |
-| `live_server` | Used for debug, attach, debugserver, and RTT. READY is required before successful server use or dependent local launch. Child exit before READY is startup failure unless eligible for a safely settled bind-collision retry. |
+| `live_server` | Used for debug, attach, debugserver, and RTT. READY is required before successful server use or dependent local launch. Child exit before READY is startup failure; the deployed helper does not restart it. |
 | `process_exit` | Used for one-shot flash. The helper never admits READY, waits for markers, or starts a readiness timer. Genuine child exit supplies the operation result; zero may succeed only with no operation/infrastructure failure and confirmed required cleanup, and nonzero fails. |
 
 Both policies validate the entire START request. Marker and timeout fields retain
@@ -139,13 +139,13 @@ and starts the child in `<remote_workspace>/staged` with the helper environment
 overlaid by `environment`. Service `remote_port` values are unique by
 contract, and duplicate values are rejected during validation before startup.
 
-## Attempt admission and retries
+## Attempt admission and startup failure
 
 The helper allocates a leased address in `127.64.0.0/10` and validates requested
 service ports for collisions. It tries a non-null preferred address only for the
 initial attempt, then up to 32 randomized candidates if unavailable; null uses
 randomized candidates only. The preference does not bypass leasing or port
-validation. Child bind-collision retries use randomized allocation. OpenOCD owns
+validation. Post-spawn bind failure ends the operation. OpenOCD owns
 its listeners; the helper does not probe connectability.
 
 After address allocation, template materialization, and required-path
@@ -160,11 +160,16 @@ and invokes spawn. ATTEMPT contains exactly the envelope and:
 
 ATTEMPT is diagnostic information, not a lifecycle transition or evidence of
 successful acquisition. Every actual spawn attempt has its own prior ATTEMPT,
-including failed Popen and bind retries. Required-path failure emits no ATTEMPT.
+including failed Popen. Required-path failure emits no ATTEMPT.
 Failed ATTEMPT admission prevents spawn. Admission means local bounded writer
 acceptance, not a completed pipe write or peer receipt; no receipt ACK is used.
 
-A replacement requires `live_server` policy and a classified safely repeatable
+The deployed helper attempts child creation once per START and emits generation
+1 only. It cannot establish that post-spawn failure occurred before opaque/user
+work, so neither output diagnostics nor a genuine bind collision authorize replay.
+The wire representation and client validation retain replacement generations;
+their existence does not establish safe repeatability. A replacement would require
+`live_server` policy and a classified safely repeatable
 pre-readiness startup failure, previous producer quiescence, safe settlement
 of old process/relay/lease resources, current startup state, and no committed
 remote termination. Cancellation, timeout, or task-cancellation request is not
@@ -370,14 +375,14 @@ spawn, readiness, or output admission ends through the same outcome model if a
 terminal frame can be delivered. Unexpected transport loss is local failure;
 remote cleanup begins after remote authority observation of EOF/signal.
 
-Intentional benign races include late remote READY after local cancellation,
-retry before controller EOF handling, and natural exit versus controller
-termination selecting either initiating trigger. They are permitted only while
+Intentional benign races include late remote READY after local cancellation
+and natural exit versus controller termination selecting either initiating
+trigger. They are permitted only while
 local launch gating, current-attempt validation, result provenance, continuous
 cleanup reachability, and eventual bounded cleanup after authority observation
 remain satisfied. There is no global winner or controller-EOF recognition
 ordering contract.
-Already recorded fatal physical failures are accounted before success or retry
+Already recorded fatal physical failures are accounted before success
 publication; they remain failures even if ordinary queue dispatch is pending.
 This local check does not wait for future controller input or fence EOF.
 

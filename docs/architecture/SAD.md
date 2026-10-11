@@ -916,14 +916,12 @@ For sessions selecting services, the local runner offers the last address
 remembered for the configured SSH argv prefix and host. The helper tries that
 preference first with the same address lease and initial/deferred port checks
 as random candidates. If it is unavailable, allocation falls back to up to 32
-random candidates. A child bind-collision retry uses random allocation without
-retrying the preference. A cached address conveys no ownership and cannot
+random candidates. A cached address conveys no ownership and cannot
 override another session's lease.
 
 The optional preferred candidate is additional to the 32-candidate random
 allocation budget. Exhausting that budget fails startup without launching a
-child for that allocation attempt. This candidate budget is distinct from the
-child startup-attempt limit described in §38.
+child. Candidate selection never restarts a spawned child (§38).
 
 The helper reserves each candidate address by binding a Linux abstract Unix
 socket whose name is keyed solely by that address. The kernel socket namespace
@@ -933,14 +931,14 @@ independent loopback networks and independent leases. The helper temporarily
 binds all initial and deferred service ports to check for collisions, then
 releases the probe sockets before starting OpenOCD. The address lease remains
 held until child cleanup completes, including when RTT forwarding is deferred;
-it is released before a retry selects a new address and during session cleanup.
+it is released during session cleanup.
 The kernel also releases it if the helper exits or is killed.
 
 OpenOCD owns the actual enabled GDB, Tcl, telnet, and RTT listeners on the
 allocated address; the helper neither creates nor probes those listeners.
 The lease excludes other cooperating helpers, while unrelated processes remain
-able to bind TCP ports. An OpenOCD bind failure remains an operation failure
-and may cause a fresh leased address to be selected for a startup retry.
+able to bind TCP ports. A post-spawn OpenOCD bind failure ends the operation;
+the helper does not restart OpenOCD on a different address.
 
 Flash requests no services and therefore creates no local forwards. `debug`,
 `attach`, and `debugserver` request GDB and each non-disabled Tcl/telnet
@@ -1542,7 +1540,7 @@ prevents further entry or activation, including after a late acquisition result.
 Closure freezes one snapshot; later failures remain local diagnostics.
 
 The deployed helper's coordinator uses this authority for START, attempt entry,
-adoption, marker evidence, readiness, observed exit, retry, termination, and freeze.
+adoption, marker evidence, readiness, observed exit, termination, and freeze.
 Its observers report immutable facts; physical cleanup facts stay with their
 owners. Physical adapters must validate eligibility before wire admission,
 retain immediate acquisition ownership, and establish the facts passed into the
@@ -1562,7 +1560,7 @@ child exit is the operation result. Live operations wait for current READY.
 
 One remote coordinator decides lifecycle transitions. Control-input, stream,
 child-exit, deadline, writer, and signal adapters report facts; none independently
-chooses shutdown, success, or retry. A standard-library asyncio structured task
+chooses shutdown or success. A standard-library asyncio structured task
 scope owns those observers and the writer. Its outer rollback scope retains
 workspace, signal-handler, and descriptor restoration responsibility during
 partial setup and after observer shutdown.
@@ -1577,8 +1575,7 @@ Lifecycle data is phase-specific, conceptually:
 
 ```text
 Created(workspace owner)
-Starting(immutable request, current attempt, readiness evidence,
-         provisional retry failure)
+Starting(immutable request, current attempt, readiness evidence)
 Active(owned child attempt)
 Terminating(attempt or residual owners, outcome)
 Closed(outcome, residual obligations, frozen terminal snapshot)
@@ -1600,8 +1597,8 @@ admission. One-shot child exit drives its result even if it arrives before
 normal adoption completes; acquisition ownership and settlement still apply.
 
 An attempt progresses through authorization, production, ownership, and
-settlement. Each authorized replacement has a new monotonically increasing
-session-local generation. Facts identify their attempt; an obsolete generation
+settlement. The deployed attempt has session-local generation 1. Facts identify
+their attempt; an obsolete generation
 cannot adopt current ownership, satisfy readiness, establish current result, or
 initiate retry. Rejecting a stale returned resource still invokes its physical
 cleanup owner; rejection is not disposal.
@@ -1614,43 +1611,40 @@ prevents spawn. Admission means bounded local writer acceptance, not peer receip
 Native signal-safe acquisition remains necessary even in a section with no
 `await`.
 
-### 38.3 Retry and readiness decisions
+### 38.3 Startup failure and readiness decisions
 
-Only a `live_server` child exiting before readiness with a classified safely
-repeatable bind/address failure is eligible for retry. A `process_exit`
-child's exit supplies the one-shot result and does not initiate child retry;
-pre-spawn address-candidate selection remains available for both policies.
-Preserve the current bounded startup-output classifier for the
-case-insensitive phrase `address already in use`; it is not a structured
-OpenOCD code or universal bind classifier. Other startup failures, probe
-contention, and exit after readiness do not retry. At most 32 child attempts,
-including the initial attempt, are permitted.
+The deployed coordinator attempts child creation at most once per START. A
+`live_server` child exiting before READY is a startup failure. A `process_exit`
+child's exit supplies the one-shot result. Pre-spawn address-candidate selection
+remains available for both policies.
 
-Before replacement, the prior acquisition producer must actually finish and
-its process-group, observer, stream, and address ownership must settle enough
-for safe reuse. A cancelled task or expired wait is not proof of producer
-quiescence. Release the old address lease before allocating and validating a
-fresh randomized address (§27). Cleanup failure prevents retry. A classified
-startup failure stays provisional while this safe retry remains possible. If
-retry is exhausted or settlement fails, startup fails; controller termination
-may instead initiate closure, retaining the old failure as attempt diagnostic.
-An established failure is never made provisional again. Restart does not
-roll back target effects or certify arbitrary user Tcl as idempotent.
+Output text has no trusted bind-failure provenance, and even genuine EADDRINUSE
+may follow opaque/user Tcl and adapter/target initialization. Repeating OpenOCD
+would repeat those effects. Cleanup settlement proves resource disposal, not
+side-effect repeatability, so the helper neither classifies output as permission
+to retry nor restarts a spawned child. Startup exit is committed as a failure
+when observed; later cleanup failures remain diagnostics.
 
-The authority revalidates Starting state, generation, settlement, and absence
+The pure lifecycle model retains conditional replacement transitions and the
+client retains generation validation for the v2 contract. The deployed helper
+does not exercise replacement. Those semantic checks cannot certify physical
+repeatability; any future retry mechanism must establish that premise separately
+as well as actual producer quiescence and safe resource settlement.
+
+The authority revalidates Starting state, generation, and absence
 of its own terminal decision at entry. It may account an immediately available
 controller-termination fact first, but no controller-reader checkpoint, ACK,
-publication fence, or recognized-prefix drain is required before retry or READY.
+publication fence, or recognized-prefix drain is required before READY.
 EOF occurring, an adapter recognizing it, publishing it, and the authority
-handling it are distinct stages. READY or retry can precede authority handling;
-after termination commits, neither can be newly authorized.
+handling it are distinct stages. READY can precede authority handling;
+after termination commits, READY cannot be newly authorized.
 
 Local cancellation revokes dependent launch, and remote handling of controller
 loss cleans all owned work. These separate authorities do not require a global
 recognition order. Fatal physical observer/writer errors become failures,
 and established primary failure is preserved; their reports must not be lost
 merely because a task is cancelled before queue publication. Already recorded
-fatal physical failures are accounted before READY, retry entry, or terminal
+fatal physical failures are accounted before READY or terminal
 publication, even if ordinary dispatch is pending. This local failure check
 requires neither future controller input nor recognized-EOF precedence.
 Physical ownership, producer settlement, and stale-generation validation remain
@@ -1676,7 +1670,7 @@ not by cancelling its awaiter.
 | --- | --- | --- |
 | Local SSH Popen | Configured transport launch guard | Managed process/drain adoption inside the guard; launch or mask-restoration failure terminates/reaps and closes owned streams. |
 | Workspace, lease metadata, session lock | Allocation rollback scope, including partially created artifacts | Remote coordinator adoption transfers all artifacts; setup failure attempts workspace and lock cleanup independently. |
-| Remote address lease | Current attempt acquisition scope | Transfer to child attempt only with continuous reachability; failed materialization/spawn releases it, retry releases old lease after child settlement. |
+| Remote address lease | Current attempt acquisition scope | Transfer to child attempt only with continuous reachability; failed materialization/spawn releases it, normal cleanup releases it after child settlement. |
 | Child Popen and its pipes | Native interruption-safe acquisition ticket | Child physical owner adopts inside rollback guard; interruption on either side disposes the group, reaps, and settles pipes. |
 | Observer tasks and protocol writer | Task-creation/setup scope | Register with session/attempt owner before publication; setup failure joins/cancels under bounded policy and retains unresolved obligations. |
 | Staging shared lease | Standalone staging scope | Held through validation, extraction, and success reporting; always released on failure/process exit, with no transfer to the controller. |
@@ -1742,13 +1736,12 @@ boundary, so signals latched during inspection belong to the frozen outcome.
 Signal-handler, descriptor, workspace, and allocation rollback cleanup continues
 across `BaseException` failures while preserving the primary outcome and nested
 secondary diagnostics on the structured Protocol v2 boundary. Failed retirement
-of an address lease prevents a replacement spawn and leaves its cleanup owner
-reachable.
+of an address lease fails cleanup and leaves its cleanup owner reachable.
 Address allocation likewise retains its reservation until all temporary TCP
 probes have closed and the return value can adopt it. A probe finalizer or return
 construction failure attempts every independent socket release and prevents
 candidate retry when cleanup remains unsuccessful. Ordinary pre-spawn candidate
-selection remains distinct from a post-spawn child retry.
+selection never repeats spawned child work.
 
 Bounded accumulation also applies before writer admission: raw-observation queues,
 per-stream decoding/marker capture, and structured diagnostic retention cannot
@@ -2102,14 +2095,14 @@ protocol's pre-spawn process event immediately before spawning. The client
 invokes the session's process-start observer while awaiting readiness; the
 adapter shell-escapes the reported elements without reconstructing expansion.
 This preserves the diagnostic on spawn, readiness, and required-forwarding
-failures, and reports each bind-collision retry with its actual workspace and
-allocated address. Only explicit runner-owned templates receive workspace or
+failures, with the actual workspace and allocated address. Only explicit
+runner-owned templates receive workspace or
 address values; all other arguments remain literal, and templates cannot target
 the configured prefix.
 
 The pre-spawn event's wire ordering and full-contract compatibility
 requirements are defined in [protocol.md](protocol.md). The architectural
-retry eligibility and attempt policy are defined in §38; the protocol document
+startup failure and attempt policy are defined in §38; the protocol document
 defines diagnostic admission and the intentional controller-termination races.
 Version compatibility is supplied by content-addressed deployment, which
 installs the matching helper revision automatically.
@@ -2192,8 +2185,9 @@ This includes:
 
 Application console output is not interpreted as application-level data or
 semantically rewritten. The helper does inspect output for configured complete
-startup-marker lines and the bind-collision diagnostic when making readiness and
-retry decisions. Relayed output is also represented through the protocol's
+startup-marker lines when making readiness decisions. Output diagnostics cannot
+authorize another child attempt. Relayed output is also represented through the
+protocol's
 incremental UTF-8 decoding with replacement and fragment rules, so the payload
 is not a byte-preserving channel.
 
@@ -2408,7 +2402,7 @@ Selected architecture:
 - local launch gate, revalidated at actual execution entry;
 - structured outcome and one immutable terminal snapshot;
 - finite child-stream final observation at readiness determination;
-- no controller-recognition fence for READY or retry;
+- no controller-recognition fence for READY;
 - bounded local forwarding-process health polling;
 - no persistent cross-session firmware or configuration cache;
 - local and remote cleanup are bounded after their respective loss
@@ -2425,11 +2419,11 @@ Selected architecture:
 | Separate authorities | The local launch gate owns dependent launch eligibility; the remote authority owns attempts, readiness, termination, and terminal freeze. Their decisions require no distributed recognition fence. |
 | Continuous physical ownership | Acquisition and adoption must preserve cleanup reachability across interruption. Process groups, producers, staging exclusion, forwards, and RTT resources require independent settlement evidence. |
 | Bounded observation and reporting | Finite final observation, bounded frame and writer storage, and a finite terminal drain keep failure handling bounded. One structured snapshot preserves result provenance and nested diagnostics. |
-| Retry and residual storage | Generation validation and old-attempt settlement constrain retry. Residual-child markers and isolated storage formats prevent uncertain cleanup from authorizing unsafe reclamation. |
+| Startup and residual storage | One child creation attempt avoids repeating opaque/user effects after startup failure. Generation validation rejects stale facts. Residual-child markers and isolated storage formats prevent uncertain cleanup from authorizing unsafe reclamation. |
 
 The local session authority gates public GDB and RTT launch. The remote
 coordinator accounts already-recorded observer and signal failures before
-publication and retry. Retired generations contribute diagnostic output only.
+publication. Retired generations contribute diagnostic output only.
 The [lifecycle traceability](../traceability/verification.md#controller-lease-lifecycle)
 records maintained evidence and acceptance boundaries;
 [design rationale references](../traceability/verification.md#design-rationale-references)
