@@ -319,11 +319,13 @@ class RemoteSession:
             raise SessionError("only owned forwards can become best-effort")
         self._required_services.difference_update(service_set)
 
-    def _check_forward_health(self) -> None:
-        for failure in self._forwards.check_health():
-            self._forward_failures[failure.service] = failure.as_error()
+    def _check_forward_health(self, *, new_only: bool = False) -> None:
+        new_failures = {
+            failure.service: failure.as_error() for failure in self._forwards.check_health()
+        }
+        self._forward_failures.update(new_failures)
         required_failure = None
-        for service, error in self._forward_failures.items():
+        for service, error in (new_failures if new_only else self._forward_failures).items():
             if service in self._required_services:
                 if required_failure is None:
                     required_failure = error
@@ -390,19 +392,25 @@ class RemoteSession:
         previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
         try:
             self._observations.cancel()
-            try:
-                self._forwards.close()
-            except BaseException as error:
-                # A reader may establish the primary before or during forward
-                # disposal. Consult its authority before composing that failure
-                # with the physically earlier cleanup error.
+            # Sample before disposal can erase already-exited SSH processes.
+            # Previously delivered failures remain with the operation caller.
+            for cleanup in (
+                lambda: self._check_forward_health(new_only=True),
+                self._forwards.close,
+            ):
                 try:
-                    session_error = self._observations.take_unreported_helper_error()
-                    if session_error is not None:
-                        errors.append(session_error)
-                except BaseException as observation_error:
-                    errors.append(observation_error)
-                errors.append(error)
+                    cleanup()
+                except BaseException as error:
+                    # A reader may establish the primary before or during forward
+                    # disposal. Consult its authority before composing that failure
+                    # with the physically earlier cleanup error.
+                    try:
+                        session_error = self._observations.take_unreported_helper_error()
+                        if session_error is not None:
+                            errors.append(session_error)
+                    except BaseException as observation_error:
+                        errors.append(observation_error)
+                    errors.append(error)
 
             helper_error: BaseException | None = None
             helper_cleanup_errors: tuple[BaseException, ...] = ()

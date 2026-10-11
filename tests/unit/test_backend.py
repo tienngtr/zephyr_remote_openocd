@@ -391,7 +391,8 @@ def test_check_openocd_exit_propagates_forward_failure_after_successful_openocd_
     assert raised.value is forwarding_error
 
 
-def test_close_attempts_all_cleanup_once_and_preserves_first_failure():
+@pytest.mark.parametrize("failure_phase", ("health", "disposal"))
+def test_close_attempts_all_cleanup_once_and_preserves_first_failure(failure_phase):
     session = _make_session()
     first_error = RuntimeError("forward cleanup failed")
     later_error = RuntimeError("helper cleanup failed")
@@ -400,9 +401,16 @@ def test_close_attempts_all_cleanup_once_and_preserves_first_failure():
 
     class Forwards(_BlockedForwards):
         @override
+        def check_health(self) -> tuple[ForwardFailure, ...]:
+            if failure_phase == "health":
+                raise first_error
+            return ()
+
+        @override
         def close(self) -> None:
             actions.append("forwards")
-            raise first_error
+            if failure_phase == "disposal":
+                raise first_error
 
     class Helper(_BlockedHelper):
         @override
@@ -432,6 +440,10 @@ def test_close_raises_helper_cleanup_only_error_after_closing_session():
     actions: list[str] = []
 
     class Forwards(_BlockedForwards):
+        @override
+        def check_health(self) -> tuple[ForwardFailure, ...]:
+            return ()
+
         @override
         def close(self) -> None:
             actions.append("forwards")

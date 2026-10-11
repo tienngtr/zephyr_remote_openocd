@@ -538,6 +538,41 @@ def test_session_failure_during_failed_rtt_forward_stays_primary_on_finalization
     assert all(process.returncode is not None for process in harness.ssh.processes.values())
 
 
+@pytest.mark.parametrize("failed_service", (GDB, TCL), ids=("required", "best-effort"))
+def test_observed_openocd_failure_retains_forward_exit_before_cleanup(
+    runner_api, monkeypatch, failed_service
+):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
+    harness = ForwardingHarness(monkeypatch)
+    session = harness.open()
+    harness.helper.openocd_returncode = OPENOCD_FAILURE_RC
+    observed_returncode = session.check_openocd_exit()
+    assert observed_returncode == OPENOCD_FAILURE_RC
+    forward = harness.ssh.process(failed_service)
+    forward.returncode = 13
+
+    with pytest.raises(RuntimeError) as raised:
+        runner_module._finalize_operation(session, None, observed_returncode)
+    assert not isinstance(raised.value, SessionError)
+    assert str(OPENOCD_FAILURE_RC) in str(raised.value)
+    if failed_service == GDB:
+        notes = "\n".join(raised.value.__notes__)
+        assert failed_service.name in notes
+        assert "13" in notes
+        assert forward.diagnostic.decode() in notes
+        assert not harness.advisories
+    else:
+        assert [advisory.service for advisory in harness.advisories] == [failed_service]
+        assert harness.advisories[0].phase == "runtime"
+    assert session.closed
+    assert harness.helper.close_calls == 1
+    assert all(
+        process.mock.close_stderr.call_count == 1 for process in harness.ssh.processes.values()
+    )
+    session.close()
+
+
 def test_operation_build_queries_version_without_session(runner_api, monkeypatch, tmp_path):
     from zephyr_remote_openocd.zephyr44 import runner as runner_module
 
