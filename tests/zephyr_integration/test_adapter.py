@@ -489,6 +489,55 @@ def test_terminal_during_batch_gdb_prevents_rtt_forward_and_preserves_failure(
     assert rtt_forward.returncode is None
 
 
+@pytest.mark.parametrize("ending", ("terminal", "reader"))
+def test_session_failure_during_failed_rtt_forward_stays_primary_on_finalization(
+    runner_api, monkeypatch, ending
+):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
+    harness = ForwardingHarness(monkeypatch)
+    session = harness.open((GDB,), ())
+    rtt_forward = harness.ssh.process(RTT)
+    rollback_error = OSError("forward rollback failure")
+    rollback_error.add_note("nested rollback diagnostic")
+    rtt_forward.cleanup_error = rollback_error
+    runner = create_autospec(runner_api[1], instance=True)
+    plan = _debug_plan(gdb_argv=("gdb", "--batch"), services=(GDB,), rtt_service=RTT)
+
+    def fail_forward(_process, _sentinel, _deadline):
+        if ending == "terminal":
+            session._observations.record_terminal(
+                terminal_snapshot(Trigger.HELPER_FAILURE, code="EARLIER_HELPER_FAILURE")
+            )
+        else:
+            session._observations.record_reader_failure(OSError("earlier reader failure"))
+        raise OSError("later RTT forward failure")
+
+    monkeypatch.setattr(
+        "zephyr_remote_openocd.remote.forwarding._ForwardManager._await_ready",
+        staticmethod(fail_forward),
+    )
+    client = Mock(side_effect=AssertionError("RTT client cannot enter a failed session"))
+    monkeypatch.setattr(runner_module, "run_rtt_client", client)
+    try:
+        with pytest.raises(SessionError) as raised:
+            runner_module._execute_rtt(runner, plan, session, Mock())
+        with pytest.raises(SessionError) as finalized:
+            runner_module._finalize_operation(session, raised.value, None)
+        assert finalized.value is raised.value
+        expected = "EARLIER_HELPER_FAILURE" if ending == "terminal" else "earlier reader failure"
+        assert expected in str(finalized.value)
+        notes = "\n".join(finalized.value.__notes__)
+        assert "later RTT forward failure" in notes
+        assert "forward rollback failure" in notes
+        assert "nested rollback diagnostic" in notes
+        client.assert_not_called()
+    finally:
+        session.close()
+    assert harness.helper.close_calls == 1
+    assert all(process.returncode is not None for process in harness.ssh.processes.values())
+
+
 def test_operation_build_queries_version_without_session(runner_api, monkeypatch, tmp_path):
     from zephyr_remote_openocd.zephyr44 import runner as runner_module
 

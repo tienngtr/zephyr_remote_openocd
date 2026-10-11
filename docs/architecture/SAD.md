@@ -2001,6 +2001,12 @@ acquisition or rollback; its resources remain with the forward manager and
 session cleanup owners. A later transaction must enter again. In particular,
 RTT forwarding after batch GDB cannot start when the helper terminal was already
 recorded during GDB, and a hypothetical later forward failure cannot displace it.
+If a committed forwarding transaction fails, its failure publication consults
+the same authority after rollback. An established terminal or reader failure
+remains primary, with the forward failure and its rollback diagnostics retained
+as secondary details. This applies to best-effort forwards too: an established
+session failure cannot become an advisory. The authority lock does not span
+blocking SSH acquisition or rollback.
 
 The local operation alone owns dependent launch eligibility. Its conceptual
 phases are Opening, Active, Cancelling, and Ended. These roles apply to each

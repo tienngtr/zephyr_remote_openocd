@@ -12,6 +12,7 @@ from typing import override
 
 import pytest
 from zephyr_remote_openocd.remote.backend import RemoteSession
+from zephyr_remote_openocd.remote.forwarding import _ForwardManager
 from zephyr_remote_openocd.remote.helper_client import _HelperClient
 from zephyr_remote_openocd.remote.model import RemoteProcess, RemoteSessionRequest, Service
 from zephyr_remote_openocd.remote.session import SessionError
@@ -34,6 +35,9 @@ if command.endswith(" control"):
     with (root / "gate").open("rb", buffering=0) as gate:
         assert gate.read(1) == b"x"
     ending = (root / "ending").read_text()
+    if ending == "reader":
+        print("invalid helper frame", flush=True)
+        sys.exit(0)
     error = (dict(code="CLEANUP_FAILED", message="failure during forwarding", diagnostics=[])
              if ending == "error" else None)
     emit("SESSION_ENDED", trigger="helper_failure" if error else "child_exit",
@@ -114,6 +118,69 @@ def test_acquisition_rejects_helper_termination_recorded_during_forwarding(
     assert session.closed
     assert all(process.poll() is not None for process in transports)
     assert not session.forwarded_services
+
+
+@pytest.mark.parametrize("ending", ("7", "error", "reader"))
+@pytest.mark.parametrize("required", (True, False), ids=("required", "best-effort"))
+def test_failure_recorded_during_forward_readiness_remains_primary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ending: str, required: bool
+):
+    peer = tmp_path / "peer.py"
+    peer.write_text(f"#!{sys.executable}\n" + PEER)
+    peer.chmod(0o700)
+    (tmp_path / "ending").write_text(ending)
+    os.mkfifo(tmp_path / "gate")
+    recorded = threading.Event()
+    drain = _HelperClient._drain_events
+
+    def drain_and_notify(client: _HelperClient) -> None:
+        try:
+            drain(client)
+        finally:
+            recorded.set()
+
+    monkeypatch.setattr(_HelperClient, "_drain_events", drain_and_notify)
+    transports: list[ManagedSshProcess] = []
+
+    def fail_readiness(process: ManagedSshProcess, _sentinel: str, _deadline: float) -> bool:
+        transports.append(process)
+        with (tmp_path / "gate").open("wb", buffering=0) as gate:
+            gate.write(b"x")
+        assert recorded.wait(30), "helper reader did not record the session failure"
+        error = OSError("later forward readiness failure")
+        error.add_note("forward diagnostic detail")
+        raise error
+
+    monkeypatch.setattr(_ForwardManager, "_await_ready", staticmethod(fail_readiness))
+    session = RemoteSession.prepare(
+        RemoteSessionRequest(
+            "controlled-host", SshCommand((str(peer),)), RemoteProcess(("openocd",))
+        )
+    )
+    try:
+        session.acquire()
+        with pytest.raises(SessionError) as raised:
+            session.forward((Service("rtt", 45678, 5555),), required=required)
+        if ending == "reader":
+            assert "READER_FAILURE" in str(raised.value)
+            assert raised.value.__cause__ is session._observations.snapshot().reader_failure
+        elif ending == "error":
+            assert "CLEANUP_FAILED" in str(raised.value)
+        else:
+            assert "7" in str(raised.value)
+        assert "later forward readiness failure" not in str(raised.value)
+        notes = "\n".join(raised.value.__notes__)
+        assert "later forward readiness failure" in notes
+        assert "forward diagnostic detail" in notes
+        assert not session.forwarded_services
+        assert transports and all(process.poll() is not None for process in transports)
+    finally:
+        if ending == "reader":
+            with pytest.raises(SessionError):
+                session.close()
+        else:
+            session.close()
+    assert session.closed
 
 
 @pytest.mark.parametrize("ending", ("0", "7", "error"))

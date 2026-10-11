@@ -156,6 +156,16 @@ class _SessionObservations:
                 self._error_reported = True
             return error
 
+    def arbitrate_failure(self, error: SessionError) -> SessionError:
+        """Keep an established session failure ahead of a failed effect."""
+        with self._changed:
+            primary = self._operation_error()
+            if primary is None:
+                return error
+            self._error_reported = True
+            _add_failure_note(primary, "later operation failure", error)
+            return primary
+
     def take_unreported_helper_error(self) -> SessionError | None:
         with self._changed:
             # Without a terminal, close must still compose disposal uncertainty

@@ -285,7 +285,7 @@ class RemoteSession:
             self._observations.enter(self._required_services, self._forwards.services)
             if not service_list:
                 return
-            self._forwards.start(service_list, self.descriptor.remote_address)
+            self._start_forward(service_list, self.descriptor.remote_address)
             self._required_services.update(service_list)
             remember_preferred_address(
                 self.request.host, self.request.ssh_command, self.descriptor.remote_address
@@ -294,11 +294,21 @@ class RemoteSession:
             for service in service_list:
                 self._observations.enter(self._required_services, self._forwards.services)
                 try:
-                    self._forwards.start((service,), self.descriptor.remote_address)
+                    self._start_forward((service,), self.descriptor.remote_address)
                 except ForwardStartError as error:
                     if error.cleanup_errors:
                         raise
                     self._advisory_handler(ForwardAdvisory(service, "startup", error))
+
+    def _start_forward(self, services: tuple[Service, ...], remote_address: str) -> None:
+        try:
+            self._forwards.start(services, remote_address)
+        except ForwardStartError as error:
+            primary = self._observations.arbitrate_failure(error)
+            if primary is error:
+                raise
+            # Preserve a reader failure's cause; forwarding remains a diagnostic.
+            raise primary from primary.__cause__
 
     def mark_auxiliary(self, services: Iterable[Service]) -> None:
         """Reclassify owned forwards after their required phase completes."""
