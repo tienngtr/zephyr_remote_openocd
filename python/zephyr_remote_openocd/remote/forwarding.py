@@ -12,7 +12,7 @@ import signal
 import socket
 import subprocess
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -233,17 +233,15 @@ class _ForwardManager:
                 raise ForwardStartError(active_service, error, tuple(cleanup_errors)) from error
             raise
 
-    def check_health(self) -> tuple[ForwardFailure, ...]:
-        """Report newly observed exits without classifying forwarding requirements."""
-        failures = []
+    def check_health(self, report: Callable[[ForwardFailure], None]) -> None:
+        """Publish each observed exit before polling another owned process."""
         for service, process in zip(self._services, self._processes, strict=True):
             if service in self._reported:
                 continue
             forward_status = process.poll()
             if forward_status is not None:
-                failures.append(ForwardFailure(service, forward_status, self._diagnostic(process)))
+                report(ForwardFailure(service, forward_status, self._diagnostic(process)))
                 self._reported.add(service)
-        return tuple(failures)
 
     def close(self) -> None:
         """Attempt to clean up every owned forward once."""

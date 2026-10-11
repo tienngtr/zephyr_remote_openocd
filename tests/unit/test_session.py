@@ -66,24 +66,24 @@ def test_queued_launch_rechecks_fatal_fact_at_execution_entry():
 def test_reported_terminal_failure_is_not_replayed_during_close():
     observations = _SessionObservations()
     observations.record_terminal(terminal_snapshot(Trigger.HELPER_FAILURE, code="FAILED"))
-    assert observations.helper_error_for_operation() is not None
-    assert observations.take_unreported_helper_error() is None
+    assert observations.failure_for_operation() is not None
+    assert observations.take_unreported_failure() is None
 
 
 def test_later_reader_detail_reopens_delivery_with_established_terminal_primary():
     observations = _SessionObservations()
     observations.record_terminal(terminal_snapshot(Trigger.STARTUP_FAILURE, code="STARTUP_FAILURE"))
-    first = observations.helper_error_for_operation()
+    first = observations.failure_for_operation()
     assert first is not None
     reader = RuntimeError("trailing protocol corruption")
     reader.add_note("retained reader detail")
     observations.record_reader_failure(reader)
 
-    combined = observations.take_unreported_helper_error()
+    combined = observations.take_unreported_failure()
     assert combined is not None and str(combined) == str(first)
     assert any("trailing protocol corruption" in note for note in combined.__notes__)
     assert any("retained reader detail" in note for note in combined.__notes__)
-    assert observations.take_unreported_helper_error() is None
+    assert observations.take_unreported_failure() is None
 
 
 @pytest.mark.timeout(10)
@@ -130,3 +130,57 @@ def test_integrated_entry_accounts_reader_fatal_after_preceding_helper_check(mon
         thread.join(5)
         session.close()
     assert not thread.is_alive()
+
+
+@pytest.mark.parametrize(
+    "first, second",
+    tuple(
+        (first, second)
+        for first in ("child", "terminal", "reader", "transport", "operation", "forward")
+        for second in ("child", "terminal", "reader", "transport", "operation", "forward")
+        if first != second and {first, second} != {"child", "terminal"}
+    ),
+)
+def test_all_failure_domains_preserve_one_primary_across_publication(first, second):
+    """Publish one failure, recognize another, then project status and enter."""
+    observations = _SessionObservations()
+    observations.record_ready()
+    later = RuntimeError(f"{second} failure")
+    later.add_note("nested secondary diagnostic")
+
+    def record(source, error):
+        if source == "child":
+            observations.record_terminal(terminal_snapshot(Trigger.CHILD_EXIT, returncode=7))
+        elif source == "terminal":
+            observations.record_terminal(
+                terminal_snapshot(Trigger.HELPER_FAILURE, code="HELPER_FAILURE")
+            )
+        elif source == "reader":
+            observations.record_reader_failure(error)
+        elif source == "transport":
+            observations.record_control_status(17)
+        else:
+            observations.record_failure(source.upper(), error)
+
+    record(first, RuntimeError(f"{first} failure"))
+    with pytest.raises(RuntimeError) as initial:
+        observations.operation_status()
+    record(second, later)
+    with pytest.raises(RuntimeError) as status:
+        observations.operation_status()
+    with pytest.raises(RuntimeError) as launch:
+        observations.enter((), ())
+    assert status.value is initial.value is launch.value
+    snapshot = observations.snapshot()
+    assert len(snapshot.diagnostics) == 2
+    if second in ("reader", "operation", "forward"):
+        assert any("nested secondary diagnostic" in note for note in status.value.__notes__)
+    if "child" in (first, second):
+        assert snapshot.ending is not None
+        assert snapshot.ending.outcome.child_result is not None
+        assert snapshot.ending.outcome.child_result.returncode == 7
+    notes = tuple(status.value.__notes__)
+    with pytest.raises(RuntimeError) as repeated:
+        observations.operation_status()
+    assert repeated.value is initial.value
+    assert tuple(repeated.value.__notes__) == notes

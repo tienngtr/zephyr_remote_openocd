@@ -467,8 +467,9 @@ def test_initial_forward_failure_consumes_session_close_event(monkeypatch):
         with cleanup_on_exit(session.close):
             session.acquire()
 
-    assert raised.value is forward_error
-    assert any("remote process failed" in note for note in raised.value.__notes__)
+    assert str(SAMPLE_OPENOCD_EXIT_CODE) in str(raised.value)
+    assert raised.value is not forward_error
+    assert close_seen.is_set()
 
 
 def test_drain_startup_error_is_primary_when_process_cleanup_fails(monkeypatch):

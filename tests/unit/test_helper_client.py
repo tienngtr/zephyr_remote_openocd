@@ -405,7 +405,8 @@ def test_recorded_openocd_exit_is_available_while_reader_remains_alive(helper_cl
     try:
         assert reader.is_alive()
         assert helper_client.openocd_returncode == OPENOCD_FAILURE_RC
-        assert helper_client.recorded_openocd_exit() == OPENOCD_FAILURE_RC
+        with pytest.raises(SessionError, match="exit status 7"):
+            helper_client.recorded_openocd_exit()
     finally:
         release_reader.set()
         reader.join(timeout=5)
@@ -570,7 +571,7 @@ def test_reader_failure_takes_precedence_over_known_openocd_result(helper_client
         helper_client.recorded_openocd_exit()
 
     assert raised.value.__cause__ is reader_error
-    assert any("remote process failed" in note for note in raised.value.__notes__)
+    assert any("remote OpenOCD failed" in note for note in raised.value.__notes__)
 
 
 @pytest.mark.parametrize("terminal_failure", ("startup", "child"))
@@ -605,7 +606,7 @@ def test_terminal_failure_stays_primary_after_trailing_protocol_failure(
             error = client.close().error
         assert isinstance(error, SessionError)
         assert (
-            "startup failed" if terminal_failure == "startup" else "remote process failed"
+            "startup failed" if terminal_failure == "startup" else "remote OpenOCD failed"
         ) in str(error)
         assert error.__cause__ is None
         assert any("helper event stream failed" in note for note in error.__notes__)
@@ -653,7 +654,7 @@ def test_close_preserves_terminal_failure_before_shutdown(
     result = helper_client.close()
 
     assert isinstance(result.error, SessionError)
-    assert ("startup failed" if terminal_failure == "startup" else "remote process failed") in str(
+    assert ("startup failed" if terminal_failure == "startup" else "remote OpenOCD failed") in str(
         result.error
     )
     assert any(str(shutdown_error) in note for note in result.error.__notes__)
@@ -691,12 +692,12 @@ def test_close_keeps_shutdown_failure_primary_when_forced_cleanup_also_fails(hel
 
     helper_client._process = cast(ManagedSshProcess, Process())
 
+    helper_client._observations.record_terminal(terminal_snapshot(Trigger.CONTROLLER_EOF))
     result = helper_client.close()
 
     assert result.error is graceful_stop_error
-    assert len(result.cleanup_errors) == 2
-    assert isinstance(result.cleanup_errors[0], subprocess.TimeoutExpired)
-    assert result.cleanup_errors[1] is forced_stop_error
+    assert result.cleanup_errors == (forced_stop_error,)
+    assert any("15.0" in note for note in graceful_stop_error.__notes__)
     assert any(str(forced_stop_error) in note for note in graceful_stop_error.__notes__)
 
 
@@ -718,6 +719,7 @@ def test_close_cleans_up_helper_when_initial_status_observation_fails(helper_cli
     process = Process()
     helper_client._process = cast(ManagedSshProcess, process)
 
+    helper_client._observations.record_terminal(terminal_snapshot(Trigger.CONTROLLER_EOF))
     result = helper_client.close()
 
     assert result.error is observation_error
@@ -755,7 +757,7 @@ def test_close_cleans_up_helper_when_reader_join_fails(helper_client):
 
     result = helper_client.close()
 
-    assert result.error is None
+    assert result.error is join_error
     assert result.cleanup_errors == (join_error,)
     assert process.stdin.closed
     assert process.stdout.closed
@@ -789,11 +791,11 @@ def test_close_preserves_cleanup_error_when_final_status_observation_fails(helpe
 
     result = helper_client.close()
 
-    assert result.error is status_error
+    assert result.error is cleanup_error
     assert result.cleanup_errors == (cleanup_error,)
     assert process.stdin.closed
     assert process.stdout.closed
-    assert any(str(cleanup_error) in note for note in status_error.__notes__)
+    assert any(str(status_error) in note for note in cleanup_error.__notes__)
 
 
 def test_close_closes_streams_when_reader_thread_does_not_start(monkeypatch, helper_client):
@@ -873,7 +875,7 @@ def test_close_forces_cleanup_after_helper_wait_failure(
     result = helper_client.close()
 
     assert result.error is (stdin_close_error if stdin_close_fails else wait_error)
-    assert result.cleanup_errors == ((wait_error,) if stdin_close_fails else ())
+    assert result.cleanup_errors == ()
     if stdin_close_fails:
         assert any(str(wait_error) in note for note in stdin_close_error.__notes__)
     if terminal_fails:
@@ -1160,3 +1162,35 @@ def test_helper_client_output_delivery_does_not_retain_event_history():
         assert helper_client.recorded_openocd_exit() == 0
     finally:
         assert helper_client.close().error is None
+
+
+@pytest.mark.parametrize("child_first", (True, False), ids=("child-first", "transport-first"))
+def test_child_and_control_status_use_one_persistent_arbitration_path(helper_client, child_first):
+    process = _ControlProcess()
+    helper_client._process = cast(ManagedSshProcess, process)
+    helper_client._observations.record_ready()
+    if child_first:
+        helper_client._dispatch(decode_message(terminal_message(Trigger.CHILD_EXIT, returncode=7)))
+    process.returncode = 1
+    with pytest.raises(SessionError) as initial:
+        helper_client.recorded_openocd_exit()
+    assert ("exit status 7" if child_first else "status 1") in str(initial.value)
+    with pytest.raises(SessionError) as first_gate:
+        helper_client._observations.enter((), ())
+    assert first_gate.value is initial.value
+    if not child_first:
+        helper_client._dispatch(decode_message(terminal_message(Trigger.CHILD_EXIT, returncode=7)))
+    with pytest.raises(SessionError) as later:
+        helper_client.recorded_openocd_exit()
+    assert later.value is initial.value
+    assert ("exit status 7" if child_first else "status 1") in str(initial.value)
+    assert any(
+        ("status 1" if child_first else "exit status 7") in note for note in initial.value.__notes__
+    )
+    assert helper_client.openocd_returncode == 7
+    with pytest.raises(SessionError) as gate:
+        helper_client._observations.enter((), ())
+    assert gate.value is initial.value
+    result = helper_client.close()
+    assert result.error is None  # All facts were already delivered; cleanup succeeds.
+    assert helper_client.openocd_returncode == 7

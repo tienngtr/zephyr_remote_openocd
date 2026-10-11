@@ -9,8 +9,10 @@ def _add_failure_note(
     secondary: BaseException,
 ) -> None:
     """Retain an exception and its existing diagnostics on another failure."""
+    if primary is secondary:
+        return
     primary.add_note(f"{prefix}: {secondary}")
-    for note in getattr(secondary, "__notes__", ()):
+    for note in tuple(getattr(secondary, "__notes__", ())):
         primary.add_note(f"{prefix} detail: {note}")
 
 

@@ -23,9 +23,13 @@ from zephyr_remote_openocd.remote.model import (
     Service,
     SessionAllocation,
 )
+from zephyr_remote_openocd.remote.outcome import Trigger
 from zephyr_remote_openocd.remote.protocol import decode_message, encode_message, write_start
+from zephyr_remote_openocd.remote.session import _SessionObservations
 from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand, SshLocalForward
 from zephyr_remote_openocd.remote_helper import decode_command, materialize_argv
+
+from tests.protocol_support import terminal_snapshot
 
 GDB = Service("gdb", 3333, 3333)
 TCL = Service("tcl", 6333, 6333)
@@ -70,7 +74,7 @@ class ControlledHelper:
     allocation = SessionAllocation("session", "/workspace")
 
     def __init__(self) -> None:
-        self.openocd_returncode: int | None = None
+        self.observations = _SessionObservations()
         self.services: tuple[Service, ...] = ()
         self.close_calls = 0
         self.on_wait: Callable[[], None] | None = None
@@ -104,8 +108,18 @@ class ControlledHelper:
         self.services = tuple(services)
         return "127.64.0.1"
 
-    def recorded_openocd_exit(self) -> int | None:
-        return self.openocd_returncode
+    @property
+    def openocd_returncode(self) -> int | None:
+        ending = self.observations.snapshot().ending
+        result = None if ending is None else ending.outcome.child_result
+        return None if result is None else result.returncode
+
+    @openocd_returncode.setter
+    def openocd_returncode(self, status: int) -> None:
+        self.observations.record_terminal(terminal_snapshot(Trigger.CHILD_EXIT, returncode=status))
+
+    def observe_status(self) -> None:
+        pass
 
     def wait_for_change(self, timeout: float | None) -> None:
         del timeout
@@ -182,7 +196,9 @@ class ForwardingHarness:
         monkeypatch.setattr(_ForwardManager, "_await_ready", staticmethod(self.await_ready))
         monkeypatch.setattr(_ForwardManager, "_preflight", staticmethod(lambda _service: None))
 
-    def make_helper(self, *_args, process_start_handler=None, **_kwargs):
+    def make_helper(self, *_args, process_start_handler=None, observations=None, **_kwargs):
+        assert observations is not None
+        self.helper.observations = observations
         self.helper.process_start_handler = process_start_handler
         return self.helper
 

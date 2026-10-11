@@ -15,7 +15,6 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import BinaryIO, cast
 
-from .cleanup import _add_failure_note
 from .deploy import DeploymentResult
 from .model import RemoteProcess, Service, SessionAllocation
 from .outcome import CompletionPolicy
@@ -40,15 +39,7 @@ HELPER_START_TIMEOUT = 10.0
 
 @dataclass(frozen=True)
 class _HelperCloseResult:
-    """Helper-local shutdown failures, separated for session arbitration."""
-
-    error: BaseException | None
-    cleanup_errors: tuple[BaseException, ...]
-
-
-@dataclass(frozen=True)
-class _ShutdownAttempt:
-    """Outcome of requesting graceful helper shutdown."""
+    """Pending authority delivery and failures of physical control disposal."""
 
     error: BaseException | None
     cleanup_errors: tuple[BaseException, ...]
@@ -77,6 +68,7 @@ class _HelperClient:
         self._process: ManagedSshProcess | None = None
         self._allocation: SessionAllocation | None = None
         self._order: EventOrder | None = None
+        self._closed = False
 
     @property
     def allocation(self) -> SessionAllocation:
@@ -90,6 +82,19 @@ class _HelperClient:
         return None if result is None else result.returncode
 
     def start_process(
+        self,
+        process: RemoteProcess,
+        services: Iterable[Service],
+        *,
+        preferred_address: str | None = None,
+    ) -> str | None:
+        try:
+            return self._start_process(process, services, preferred_address=preferred_address)
+        except BaseException as error:
+            primary = self._observations.arbitrate_failure(error)
+            raise primary from primary.__cause__
+
+    def _start_process(
         self,
         process: RemoteProcess,
         services: Iterable[Service],
@@ -114,15 +119,17 @@ class _HelperClient:
         self._start_event_drain()
         return address
 
-    def recorded_openocd_exit(self) -> int | None:
-        helper_error = self._observations.helper_error_for_operation()
-        if helper_error is not None:
-            raise helper_error
+    def observe_status(self) -> None:
+        """Record transport status without selecting or publishing a result."""
         if self._process is not None:
-            status = self._process.poll()
-            if status not in (None, 0):
-                raise SessionError(f"remote helper/SSH exited with status {status}")
-        return self.openocd_returncode
+            try:
+                self._observations.record_control_status(self._process.poll())
+            except BaseException as error:
+                self._observations.record_failure("CONTROL_OBSERVATION_FAILURE", error)
+
+    def recorded_openocd_exit(self) -> int | None:
+        self.observe_status()
+        return self._observations.operation_status()
 
     def wait_for_change(self, timeout: float | None) -> None:
         self._observations.wait_for_change(timeout)
@@ -132,70 +139,35 @@ class _HelperClient:
         return subprocess.TimeoutExpired(self._process_or_error().args, timeout)
 
     def close(self) -> _HelperCloseResult:
-        """Stop the helper without choosing the whole-session primary failure."""
-        if self._process is None:
+        """Settle physical resources; all failures belong to the shared authority."""
+        if self._closed or self._process is None:
             return _HelperCloseResult(None, ())
         helper = self._process_or_error()
-        logical_error: BaseException | None
-        try:
-            logical_error = self._observations.take_unreported_helper_error()
-        except BaseException as error:
-            logical_error = error
-        shutdown = self._request_shutdown(helper)
-        if shutdown.error is not None:
-            if logical_error is None:
-                logical_error = shutdown.error
-            else:
-                _add_failure_note(logical_error, "helper shutdown also failed", shutdown.error)
-        cleanup_errors = list(shutdown.cleanup_errors)
-        cleanup_errors.extend(self._cleanup_control_process(helper))
+        self._request_shutdown(helper)
+        cleanup_errors = self._cleanup_control_process(helper)
         self._emit_diagnostic()
-        try:
-            logical_error = self._resolve_shutdown_result(helper, logical_error)
-        except BaseException as error:
-            if logical_error is None:
-                logical_error = error
-            else:
-                _add_failure_note(logical_error, "helper status also failed", error)
+        self._resolve_shutdown_result()
+        self._closed = True
+        return _HelperCloseResult(self._observations.unreported_failure(), cleanup_errors)
 
-        if logical_error is not None:
-            for cleanup_error in cleanup_errors:
-                _add_failure_note(logical_error, "helper cleanup also failed", cleanup_error)
-        return _HelperCloseResult(logical_error, tuple(cleanup_errors))
-
-    def _request_shutdown(self, helper: ManagedSshProcess) -> _ShutdownAttempt:
+    def _request_shutdown(self, helper: ManagedSshProcess) -> None:
         """Half-close stdin while retaining reverse output for bounded shutdown."""
         self._observations.cancel()
-        errors: list[BaseException] = []
-        logical_error = None
         try:
             if self._reader_thread is None:
                 self._start_event_drain()
         except BaseException as error:
-            logical_error = error
+            self._observations.record_failure("READER_START_FAILURE", error)
         try:
             if helper.stdin is not None:
                 helper.stdin.close()
         except BaseException as error:
-            if logical_error is None:
-                logical_error = error
-            else:
-                errors.append(error)
+            self._observations.record_failure("CONTROL_CLOSE_FAILURE", error)
+        self.observe_status()
         try:
-            helper.poll()
+            self._observations.record_control_status(helper.wait(timeout=HELPER_STOP_TIMEOUT))
         except BaseException as error:
-            if logical_error is None:
-                logical_error = error
-            else:
-                errors.append(error)
-        try:
-            helper.wait(timeout=HELPER_STOP_TIMEOUT)
-        except BaseException as error:
-            if logical_error is None:
-                logical_error = error
-            else:
-                errors.append(error)
-        return _ShutdownAttempt(logical_error, tuple(errors))
+            self._observations.record_failure("HELPER_WAIT_FAILURE", error)
 
     def _cleanup_control_process(self, helper: ManagedSshProcess) -> tuple[BaseException, ...]:
         """Stop the reader and helper process without abandoning cleanup."""
@@ -203,11 +175,13 @@ class _HelperClient:
         try:
             reader_stopped = self._join_reader()
         except BaseException as error:
+            self._observations.record_failure("HELPER_CLEANUP_FAILURE", error)
             cleanup_errors.append(error)
             reader_stopped = False
         try:
             _stop_process(helper, close_streams=reader_stopped)
         except BaseException as error:
+            self._observations.record_failure("HELPER_CLEANUP_FAILURE", error)
             cleanup_errors.append(error)
 
         if self._reader_thread is not None:
@@ -215,42 +189,40 @@ class _HelperClient:
             try:
                 reader_stopped = self._join_reader()
             except BaseException as error:
+                self._observations.record_failure("HELPER_CLEANUP_FAILURE", error)
                 cleanup_errors.append(error)
                 reader_stopped = False
             if reader_stopped and not initially_stopped:
                 try:
                     _stop_process(helper, close_streams=True)
                 except BaseException as error:
+                    self._observations.record_failure("HELPER_CLEANUP_FAILURE", error)
                     cleanup_errors.append(error)
             if not reader_stopped:
-                cleanup_errors.append(SessionError("helper event reader did not stop"))
+                reader_error = SessionError("helper event reader did not stop")
+                self._observations.record_failure("HELPER_CLEANUP_FAILURE", reader_error)
+                cleanup_errors.append(reader_error)
         return tuple(cleanup_errors)
 
-    def _resolve_shutdown_result(
-        self,
-        helper: ManagedSshProcess,
-        logical_error: BaseException | None,
-    ) -> BaseException | None:
-        """Reconcile final helper observations into one logical failure."""
-        errors = []
-        terminal_error = self._observations.take_unreported_helper_error()
-        if terminal_error is not None:
-            errors.append(terminal_error)
-        snapshot = self._observations.snapshot()
-        if snapshot.ending is None:
-            errors.append(SessionError("helper shutdown did not produce SESSION_ENDED"))
-        helper_status = helper.poll()
-        if helper_status not in (0, None):
-            errors.append(SessionError(f"remote helper/SSH exited with status {helper_status}"))
-        for error in errors:
-            if logical_error is None:
-                logical_error = error
-            else:
-                _add_failure_note(logical_error, "helper shutdown also failed", error)
-        return logical_error
+    def _resolve_shutdown_result(self) -> None:
+        """Record missing terminal information independently of transport status."""
+        if self._observations.snapshot().ending is None:
+            self._observations.record_failure(
+                "MISSING_TERMINAL",
+                SessionError("helper shutdown did not produce SESSION_ENDED"),
+                key="missing_terminal",
+            )
+        self.observe_status()
 
     def acquire(self) -> None:
         """Acquire control resources; the owning caller must close on failure."""
+        try:
+            self._acquire()
+        except BaseException as error:
+            primary = self._observations.arbitrate_failure(error)
+            raise primary from primary.__cause__
+
+    def _acquire(self) -> None:
         command = f"python3 {shlex.quote(self._deployment.path)} control"
         # Mask only launch and adoption, not authentication/session readiness.
         # SshCommand.popen() preserves this mask until the returned transport
@@ -266,7 +238,7 @@ class _HelperClient:
         created = self._read_event(time.monotonic() + HELPER_START_TIMEOUT)
         if created["type"] == "SESSION_ENDED":
             self._dispatch(created)
-            error = self._observations.helper_error_for_operation()
+            error = self._observations.failure_for_operation()
             raise error or SessionError("helper ended before session creation")
         self._allocation = SessionAllocation(created["session_id"], created["remote_workspace"])
 
@@ -325,7 +297,7 @@ class _HelperClient:
             if event["type"] == "READY":
                 return event["remote_address"]
             if event["type"] == "SESSION_ENDED":
-                error = self._observations.helper_error_for_operation()
+                error = self._observations.failure_for_operation()
                 raise error or SessionError("remote process ended before READY")
 
     def _start_event_drain(self) -> None:

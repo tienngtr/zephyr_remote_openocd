@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import subprocess
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import replace
 from typing import override
 
@@ -19,12 +19,14 @@ from zephyr_remote_openocd.remote.model import (
     Service,
     SessionAllocation,
 )
+from zephyr_remote_openocd.remote.outcome import Trigger
 from zephyr_remote_openocd.remote.protocol import encode_message
 from zephyr_remote_openocd.remote.session import SessionClosedError, SessionError
 from zephyr_remote_openocd.remote.ssh import SshCommand
 
 from tests.forwarding_support import ForwardingHarness
 from tests.process_support import cleanup_on_exit
+from tests.protocol_support import terminal_snapshot
 
 OPENOCD_FAILURE_RC = 7
 FORWARD_FAILURE_RC = 13
@@ -53,8 +55,8 @@ class _BlockedHelper:
         del process, services, preferred_address
         raise AssertionError("start_process() is not expected")
 
-    def recorded_openocd_exit(self) -> int | None:
-        raise AssertionError("recorded_openocd_exit() is not expected")
+    def observe_status(self) -> None:
+        pass
 
     def wait_for_change(self, timeout: float | None) -> None:
         del timeout
@@ -87,7 +89,7 @@ class _BlockedForwards:
         del services, remote_address
         raise AssertionError("start() is not expected")
 
-    def check_health(self) -> tuple[ForwardFailure, ...]:
+    def check_health(self, report: Callable[[ForwardFailure], None]) -> None:
         raise AssertionError("check_health() is not expected")
 
     def close(self) -> None:
@@ -285,10 +287,14 @@ def test_closed_session_exposes_only_cached_openocd_result():
 
     completed = _make_session()
     completed.closed = True
-    completed._helper = Helper(OPENOCD_FAILURE_RC)
+    completed._observations.record_terminal(
+        terminal_snapshot(Trigger.CHILD_EXIT, returncode=OPENOCD_FAILURE_RC)
+    )
     assert completed.openocd_returncode == OPENOCD_FAILURE_RC
-    assert completed.check_openocd_exit() == OPENOCD_FAILURE_RC
-    assert completed.wait_for_openocd_exit() == OPENOCD_FAILURE_RC
+    with pytest.raises(SessionError):
+        completed.check_openocd_exit()
+    with pytest.raises(SessionError):
+        completed.wait_for_openocd_exit()
 
 
 def test_check_openocd_exit_propagates_helper_observation_failure():
@@ -296,7 +302,7 @@ def test_check_openocd_exit_propagates_helper_observation_failure():
 
     class Helper(_BlockedHelper):
         @override
-        def recorded_openocd_exit(self) -> int | None:
+        def observe_status(self) -> None:
             raise observation_error
 
     session = _make_session()
@@ -308,33 +314,21 @@ def test_check_openocd_exit_propagates_helper_observation_failure():
     assert raised.value is observation_error
 
 
-def test_check_openocd_exit_returns_completed_result_before_forward_health():
-    class Helper(_BlockedHelper):
-        @override
-        def recorded_openocd_exit(self) -> int | None:
-            return OPENOCD_FAILURE_RC
-
-    session = _make_session()
-    session._helper = Helper()
-    session._forwards = _BlockedForwards()
-
-    assert session.check_openocd_exit() == OPENOCD_FAILURE_RC
-
-
 def test_check_openocd_exit_propagates_forward_failure_after_successful_openocd_exit():
     forwarding_error = SessionError(f"SSH forwarding exited with status {FORWARD_FAILURE_RC}")
 
     class Helper(_BlockedHelper):
         @override
-        def recorded_openocd_exit(self) -> int | None:
-            return 0
+        def observe_status(self) -> None:
+            pass
 
     class Forwards(_BlockedForwards):
         @override
-        def check_health(self) -> tuple[ForwardFailure, ...]:
+        def check_health(self, report: Callable[[ForwardFailure], None]) -> None:
             raise forwarding_error
 
     session = _make_session()
+    session._observations.record_terminal(terminal_snapshot(Trigger.CHILD_EXIT, returncode=0))
     session._helper = Helper()
     session._forwards = Forwards()
 
@@ -354,10 +348,9 @@ def test_close_attempts_all_cleanup_once_and_preserves_first_failure(failure_pha
 
     class Forwards(_BlockedForwards):
         @override
-        def check_health(self) -> tuple[ForwardFailure, ...]:
+        def check_health(self, report: Callable[[ForwardFailure], None]) -> None:
             if failure_phase == "health":
                 raise first_error
-            return ()
 
         @override
         def close(self) -> None:
@@ -394,8 +387,8 @@ def test_close_raises_helper_cleanup_only_error_after_closing_session():
 
     class Forwards(_BlockedForwards):
         @override
-        def check_health(self) -> tuple[ForwardFailure, ...]:
-            return ()
+        def check_health(self, report: Callable[[ForwardFailure], None]) -> None:
+            return None
 
         @override
         def close(self) -> None:
@@ -431,8 +424,8 @@ def test_wait_for_openocd_exit_observes_forward_failure():
             return None
 
         @override
-        def recorded_openocd_exit(self) -> int | None:
-            return None
+        def observe_status(self) -> None:
+            pass
 
         @override
         def wait_for_change(self, timeout: float | None) -> None:
@@ -450,10 +443,9 @@ def test_wait_for_openocd_exit_observes_forward_failure():
             return True
 
         @override
-        def check_health(self) -> tuple[ForwardFailure, ...]:
+        def check_health(self, report: Callable[[ForwardFailure], None]) -> None:
             if self.failed:
                 raise SessionError(f"SSH forwarding exited with status {FORWARD_FAILURE_RC}")
-            return ()
 
     session = _make_session()
     forwards = Forwards()
@@ -484,8 +476,8 @@ def test_wait_for_openocd_exit_raises_helper_timeout_at_deadline(monkeypatch):
             return None
 
         @override
-        def recorded_openocd_exit(self) -> int | None:
-            return None
+        def observe_status(self) -> None:
+            pass
 
         @override
         def wait_for_change(self, timeout: float | None) -> None:
@@ -505,8 +497,8 @@ def test_wait_for_openocd_exit_raises_helper_timeout_at_deadline(monkeypatch):
             return False
 
         @override
-        def check_health(self) -> tuple[ForwardFailure, ...]:
-            return ()
+        def check_health(self, report: Callable[[ForwardFailure], None]) -> None:
+            return None
 
     helper = Helper()
     session = _make_session()

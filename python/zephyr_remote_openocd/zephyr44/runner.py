@@ -160,13 +160,6 @@ def _execute_operation(runner, command, request, plan):
         request,
         advisory_handler=lambda advisory: _report_forward_advisory(runner, advisory),
     )
-    operation_error = None
-    observed_returncode = None
-
-    def observe_openocd_exit(returncode):
-        nonlocal observed_returncode
-        observed_returncode = returncode
-
     try:
         session.acquire(
             output_handler=_write_output,
@@ -182,73 +175,21 @@ def _execute_operation(runner, command, request, plan):
                 descriptor.remote_workspace,
                 descriptor.remote_address,
             )
-        returncode = _execute_started_operation(
-            runner,
-            command,
-            plan,
-            session,
-            observe_openocd_exit,
-        )
-        if returncode is not None:
-            observe_openocd_exit(returncode)
+        _execute_started_operation(runner, command, plan, session)
     except BaseException as error:
-        operation_error = error
+        session.record_operation_failure(error)
     finally:
-        _finalize_operation(session, operation_error, observed_returncode)
+        _finalize_operation(session)
 
 
-def _finalize_operation(session, operation_error, observed_returncode):
-    """Close one session and apply the lifecycle primary-failure rules."""
-    if observed_returncode not in (None, 0):
-        openocd_error = _openocd_failure(observed_returncode)
-        if operation_error is not None:
-            _add_failure_diagnostic(
-                openocd_error,
-                "operation also failed after OpenOCD exit was observed",
-                operation_error,
-            )
-        operation_error = openocd_error
-
-    cleanup_error = None
-    try:
-        session.close()
-    except BaseException as error:
-        cleanup_error = error
-
-    openocd_returncode = session.openocd_failure_returncode
-    if operation_error is not None:
-        if cleanup_error is not None:
-            _add_failure_diagnostic(
-                operation_error,
-                "session cleanup also failed",
-                cleanup_error,
-            )
-        if openocd_returncode not in (None, 0) and openocd_returncode != observed_returncode:
-            operation_error.add_note(f"remote OpenOCD also exited with status {openocd_returncode}")
-        raise operation_error
-
-    if cleanup_error is not None:
-        if openocd_returncode not in (None, 0):
-            cleanup_error.add_note(f"remote OpenOCD also exited with status {openocd_returncode}")
-        raise cleanup_error
-
-    if openocd_returncode not in (None, 0):
-        raise _openocd_failure(openocd_returncode)
+def _finalize_operation(session):
+    """Publish the result selected by the session's single failure authority."""
+    session.finish()
 
 
-def _openocd_failure(returncode):
-    return RuntimeError(f"remote OpenOCD failed with exit status {returncode}")
-
-
-def _add_failure_diagnostic(primary, prefix, secondary):
-    primary.add_note(f"{prefix}: {secondary}")
-    for note in getattr(secondary, "__notes__", ()):
-        primary.add_note(f"{prefix} detail: {note}")
-
-
-def _execute_started_operation(runner, command, plan, session, observe_openocd_exit):
+def _execute_started_operation(runner, command, plan, session):
     if command == "rtt":
-        return _execute_rtt(runner, plan, session, observe_openocd_exit)
+        return _execute_rtt(runner, plan, session)
     _report_rtt_service(runner, plan, session)
     if command in {"debug", "attach"}:
         return _execute_gdb_client(runner, plan, session)
@@ -265,7 +206,7 @@ def _execute_gdb_client(runner, plan, session):
     return session.check_openocd_exit()
 
 
-def _execute_rtt(runner, plan, session, observe_openocd_exit):
+def _execute_rtt(runner, plan, session):
     assert plan is not None and plan.gdb_argv is not None
     assert plan.rtt_service is not None
     runner.require(plan.gdb_argv[0])
@@ -277,17 +218,11 @@ def _execute_rtt(runner, plan, session, observe_openocd_exit):
     session.forward((plan.rtt_service,), required=True)
     _report_rtt_service(runner, plan, session)
 
-    def check_openocd_exit():
-        returncode = session.check_openocd_exit()
-        if returncode is not None:
-            observe_openocd_exit(returncode)
-        return returncode
-
-    returncode = check_openocd_exit()
+    returncode = session.check_openocd_exit()
     if returncode is not None:
         raise RuntimeError(f"remote OpenOCD exited before RTT startup with status {returncode}")
     return session.run_dependent(
-        lambda: run_rtt_client(plan.rtt_service.local_port, check_openocd_exit)
+        lambda: run_rtt_client(plan.rtt_service.local_port, session.check_openocd_exit)
     )
 
 

@@ -7,7 +7,6 @@ from __future__ import annotations
 import threading
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Literal
 
 from .cleanup import _add_failure_note
 from .launch import LaunchGate
@@ -33,33 +32,50 @@ def _render_diagnostic(detail: Diagnostic) -> str:
 
 
 @dataclass(frozen=True, slots=True)
+class _FailureRecord:
+    error: BaseException
+    diagnostic: Diagnostic
+
+
+@dataclass(frozen=True, slots=True)
 class _SessionSnapshot:
     ending: TerminalSnapshot | None
     reader_failure: BaseException | None
     closing: bool
+    failure: BaseException | None
+    diagnostics: tuple[Diagnostic, ...]
 
 
 class _SessionObservations:
-    """Serialize recorded fatal facts, cancellation, and actual launch entry.
+    """One authority for failure recording, publication, and dependent entry.
 
-    Entry commits under the same lock used by the event reader. The caller then
-    invokes its synchronous launch without a scheduling boundary. The lock is
-    released before blocking dependent work so reverse output remains observable.
+    Physical owners report facts under this lock. The first fatal observation
+    remains primary across status checks, shutdown, and finalization. Delivery
+    acknowledgement never removes a recorded failure or its diagnostics.
     """
 
     def __init__(self) -> None:
         self._ending: TerminalSnapshot | None = None
         self._reader_failure: BaseException | None = None
-        self._primary_failure: Literal["terminal", "reader"] | None = None
+        self._failures: dict[object, _FailureRecord] = {}
         self._closing = False
         self._error_reported = False
         self._policy = CompletionPolicy.LIVE_SERVER
         self._gate = LaunchGate()
         self._changed = threading.Condition(threading.RLock())
 
+    def _failure(self) -> BaseException | None:
+        return next((record.error for record in self._failures.values()), None)
+
     def snapshot(self) -> _SessionSnapshot:
         with self._changed:
-            return _SessionSnapshot(self._ending, self._reader_failure, self._closing)
+            return _SessionSnapshot(
+                self._ending,
+                self._reader_failure,
+                self._closing,
+                self._failure(),
+                tuple(record.diagnostic for record in self._failures.values()),
+            )
 
     def set_policy(self, policy: CompletionPolicy) -> None:
         with self._changed:
@@ -70,13 +86,49 @@ class _SessionObservations:
             self._gate.observe_remote_ready()
             self._changed.notify_all()
 
+    def record_failure(self, code: str, error: BaseException, *, key: object | None = None) -> None:
+        """Record a fatal fact once, retaining the original exception and detail."""
+        with self._changed:
+            identity = (code, id(error)) if key is None else key
+            if identity in self._failures or any(
+                record.error is error for record in self._failures.values()
+            ):
+                return
+            diagnostic = Diagnostic.from_exception(code, error)
+            primary = self._failure()
+            self._failures[identity] = _FailureRecord(error, diagnostic)
+            if primary is not None:
+                _add_failure_note(primary, "later session failure", error)
+            self._error_reported = False
+            self._gate.fail(diagnostic)
+            self._changed.notify_all()
+
     def record_terminal(self, snapshot: TerminalSnapshot) -> None:
         with self._changed:
             self._ending = snapshot
             if snapshot.operation_failed(self._policy):
-                if self._primary_failure is None:
-                    self._primary_failure = "terminal"
-                self._error_reported = False
+                outcome = snapshot.outcome
+                details = tuple(
+                    _render_diagnostic(item)
+                    for item in (
+                        *(
+                            (outcome.primary_failure,)
+                            if outcome.primary_failure is not None
+                            else ()
+                        ),
+                        *outcome.diagnostics,
+                    )
+                )
+                result = outcome.child_result
+                message = "; ".join(details) or (
+                    f"remote OpenOCD failed with exit status {result.returncode}"
+                    if result is not None
+                    else "remote session ended without an operation result"
+                )
+                error = SessionError(message)
+                if details and result is not None:
+                    error.add_note(f"remote OpenOCD also exited with status {result.returncode}")
+                self.record_failure("TERMINAL_FAILURE", error, key="terminal")
             self._gate.end()
             self._changed.notify_all()
 
@@ -88,99 +140,64 @@ class _SessionObservations:
 
     def record_reader_failure(self, error: BaseException) -> None:
         with self._changed:
-            if self._reader_failure is None:
-                self._reader_failure = error
-                if self._primary_failure is None:
-                    self._primary_failure = "reader"
-                self._error_reported = False
-            self._gate.fail(Diagnostic.from_exception("READER_FAILURE", error))
-            self._changed.notify_all()
-
-    def _terminal_error(self, *, include_child_status: bool = True) -> SessionError | None:
-        ending = self._ending
-        if ending is None or not ending.operation_failed(self._policy):
-            return None
-        outcome = ending.outcome
-        result = outcome.child_result
-        if (
-            not include_child_status
-            and ending.cleanup.confirmed
-            and outcome.primary_failure is None
-            and result is not None
-            and not result.termination_requested
-        ):
-            return None
-        details = tuple(
-            _render_diagnostic(item)
-            for item in (
-                *((outcome.primary_failure,) if outcome.primary_failure is not None else ()),
-                *outcome.diagnostics,
-            )
-        )
-        result = outcome.child_result
-        message = "; ".join(details) or (
-            f"remote process failed ({result.returncode})"
-            if result is not None
-            else "remote session ended without an operation result"
-        )
-        return SessionError(message)
-
-    def _operation_error(self, *, include_child_status: bool = True) -> SessionError | None:
-        # A child status can be returned directly until stream corruption needs
-        # an exception. Once it does, an earlier failing status stays primary.
-        terminal = self._terminal_error(
-            include_child_status=include_child_status or self._reader_failure is not None
-        )
-        reader = None
-        if self._reader_failure is not None:
+            if self._reader_failure is not None:
+                return
+            self._reader_failure = error
             reader = SessionError(
                 "helper event stream failed: "
-                + _render_diagnostic(
-                    Diagnostic.from_exception("READER_FAILURE", self._reader_failure)
-                )
+                + _render_diagnostic(Diagnostic.from_exception("READER_FAILURE", error))
             )
-            reader.__cause__ = self._reader_failure
-        primary, secondary = (
-            (terminal, reader) if self._primary_failure == "terminal" else (reader, terminal)
-        )
-        if primary is None:
-            return secondary
-        if secondary is not None:
-            _add_failure_note(primary, "later session failure", secondary)
-        return primary
+            reader.__cause__ = error
+            self.record_failure("READER_FAILURE", reader, key="reader")
 
-    def helper_error_for_operation(self) -> SessionError | None:
+    def record_control_status(self, status: int | None) -> None:
+        if status not in (None, 0):
+            self.record_failure(
+                "CONTROL_PROCESS_FAILURE",
+                SessionError(f"remote helper/SSH exited with status {status}"),
+                key="control_status",
+            )
+
+    def failure_for_operation(self) -> BaseException | None:
         with self._changed:
-            error = self._operation_error(include_child_status=False)
+            error = self._failure()
             if error is not None:
                 self._error_reported = True
             return error
 
-    def arbitrate_failure(self, error: SessionError) -> SessionError:
-        """Keep an established session failure ahead of a failed effect."""
+    def operation_status(self) -> int | None:
+        """Project one coherent result; failed child status is never filtered out."""
         with self._changed:
-            primary = self._operation_error()
-            if primary is None:
-                return error
-            self._error_reported = True
-            _add_failure_note(primary, "later operation failure", error)
-            return primary
+            error = self.failure_for_operation()
+            if error is not None:
+                raise error
+            result = None if self._ending is None else self._ending.outcome.child_result
+            return None if result is None else result.returncode
 
-    def take_unreported_helper_error(self) -> SessionError | None:
+    def arbitrate_failure(self, error: BaseException) -> BaseException:
+        """Record a failed effect and publish the authority's selected failure."""
         with self._changed:
-            # Without a terminal, close must still compose disposal uncertainty
-            # behind the established reader failure instead of replacing it.
-            if self._error_reported and self._ending is not None:
-                return None
-            error = self._operation_error()
-            self._error_reported = error is not None
-            return error
+            self.record_failure("OPERATION_FAILURE", error)
+            return self.failure_for_operation() or error
+
+    def arbitrate_advisory(self, error: BaseException) -> BaseException | None:
+        """Retain advisory detail behind an established fatal outcome, if any."""
+        with self._changed:
+            return None if self._failure() is None else self.arbitrate_failure(error)
+
+    def take_unreported_failure(self) -> BaseException | None:
+        with self._changed:
+            return None if self._error_reported else self.failure_for_operation()
+
+    def unreported_failure(self) -> BaseException | None:
+        """Inspect pending delivery without acknowledging it for another owner."""
+        with self._changed:
+            return None if self._error_reported else self._failure()
 
     def enter(self, required: Iterable[Service], forwarded: Iterable[Service]) -> None:
         with self._changed:
-            error = self._operation_error()
+            error = self.failure_for_operation()
             if error is not None:
-                self._error_reported = True
                 raise error
             if self._closing or self._ending is not None:
                 raise SessionClosedError("operation no longer permits dependent launch")
@@ -191,5 +208,5 @@ class _SessionObservations:
 
     def wait_for_change(self, timeout: float | None) -> None:
         with self._changed:
-            if self._ending is None and self._reader_failure is None and not self._closing:
+            if self._ending is None and not self._failures and not self._closing:
                 self._changed.wait(timeout)

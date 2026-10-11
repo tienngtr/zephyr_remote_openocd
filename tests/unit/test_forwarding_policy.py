@@ -367,11 +367,15 @@ def test_simultaneous_forward_failures_preserve_required_failure_and_advisories(
         session.acquire()
         for service in (GDB, TCL):
             harness.ssh.process(service).returncode = 13
-        with pytest.raises(SessionError):
+        with pytest.raises(SessionError) as first:
             session.check_openocd_exit()
         assert [advisory.service for advisory in harness.advisories] == [TCL]
         harness.helper.openocd_returncode = 7
-        assert session.check_openocd_exit() == 7
+        with pytest.raises(SessionError) as later:
+            session.check_openocd_exit()
+        assert later.value is first.value
+        assert session.openocd_returncode == 7
+        assert any("exit status 7" in note for note in later.value.__notes__)
     finally:
         session.close()
 
@@ -421,3 +425,75 @@ def test_owned_best_effort_cleanup_failure_is_fatal(harness):
             assert harness.ssh.process(service).mock.close_stderr.call_count == 1
         session.close()
         assert harness.ssh.process(TCL).mock.close_stderr.call_count == 1
+
+
+def test_terminal_recorded_during_forward_health_collection_remains_primary(harness):
+    session = harness.prepare((GDB,), ())
+    try:
+        session.acquire()
+        process = harness.ssh.process(GDB)
+
+        def observe_forward_exit():
+            harness.helper.openocd_returncode = 7
+            return 13
+
+        process.mock.poll.side_effect = observe_forward_exit
+        with pytest.raises(SessionError, match="exit status 7") as first:
+            session.check_openocd_exit()
+        assert any("gdb" in note and "13" in note for note in first.value.__notes__)
+        with pytest.raises(SessionError) as later:
+            session.check_openocd_exit()
+        assert later.value is first.value
+        assert session.openocd_returncode == 7
+    finally:
+        # The health observation happened already; physical cleanup succeeds.
+        process.mock.poll.side_effect = lambda: process.returncode
+        session.close()
+
+
+def test_forward_exit_is_published_before_a_later_poll_failure(harness):
+    session = harness.prepare((GDB, TCL), ())
+    later_error = OSError("later Tcl poll failed")
+    later_error.add_note("poll diagnostic detail")
+    try:
+        session.acquire()
+        harness.ssh.process(GDB).returncode = 13
+        tcl = harness.ssh.process(TCL)
+        tcl.mock.poll.side_effect = later_error
+        with pytest.raises(SessionError) as first:
+            session.check_openocd_exit()
+        assert "gdb" in str(first.value) and "13" in str(first.value)
+        assert any(str(later_error) in note for note in first.value.__notes__)
+        assert any("poll diagnostic detail" in note for note in first.value.__notes__)
+        with pytest.raises(SessionError) as later:
+            session.check_openocd_exit()
+        assert later.value is first.value
+    finally:
+        tcl.mock.poll.side_effect = lambda: tcl.returncode
+        session.close()
+
+
+def test_best_effort_start_cannot_downgrade_an_established_forward_start_failure(harness):
+    session = harness.prepare((GDB,), ())
+    earlier = ForwardStartError(GDB, OSError("earlier required forward failure"), ())
+    try:
+        session.acquire()
+        process = harness.ssh.process(TCL)
+
+        def fail_readiness(_process, _sentinel, _deadline):
+            session.record_operation_failure(earlier)
+            raise OSError("later best-effort readiness failure")
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(
+                "zephyr_remote_openocd.remote.forwarding._ForwardManager._await_ready",
+                staticmethod(fail_readiness),
+            )
+            with pytest.raises(ForwardStartError) as raised:
+                session.forward((TCL,), required=False)
+        assert raised.value is earlier
+        assert any("later best-effort readiness failure" in note for note in earlier.__notes__)
+        assert not harness.advisories
+        assert process.returncode is not None
+    finally:
+        session.close()

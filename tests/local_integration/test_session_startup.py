@@ -110,11 +110,7 @@ def test_acquisition_rejects_helper_termination_recorded_during_forwarding(
             session.acquire()
         assert session.openocd_returncode == (None if ending == "error" else int(ending))
     finally:
-        if ending == "7":
-            with pytest.raises(SessionError):
-                session.close()
-        else:
-            session.close()
+        session.close()
     assert session.closed
     assert all(process.poll() is not None for process in transports)
     assert not session.forwarded_services

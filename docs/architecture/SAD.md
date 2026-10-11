@@ -1955,17 +1955,36 @@ committing execution entry. Regression coverage must synchronize the concurrent
 reader observation with launch entry to qualify this boundary; synchronous
 session closure during observation exercises only direct gate cancellation.
 
-The same authority records which local failure was established first. A failing
-terminal snapshot, including a genuine nonzero child result, stays primary when
-trailing protocol corruption is recorded later. A reader failure established
-first stays primary when a later terminal failure arrives. Boundary rendering
-retains the later fact as secondary detail without changing the remote snapshot.
-New secondary detail can reopen error delivery while retaining that primary.
-Before requesting helper shutdown, close captures any already-established,
-unreported operation failure. Later half-close, wait, and cleanup failures remain
-secondary to it. If no failure was established at shutdown entry, a shutdown
-failure can become primary, with terminal failure received during shutdown
-retained as secondary detail.
+The same authority records every fatal local observation: terminal outcome
+(including genuine nonzero child status), reader/protocol failure, helper/SSH
+status, required forwarding failure, failed acquisition or dependent work,
+local cancellation exceptions, and shutdown or cleanup failures. Each source
+records at recognition rather than independently projecting precedence through
+a return code or a cleanup result. The first recorded fatal observation remains
+primary. Later failures persist as ordered diagnostics, including their existing
+nested diagnostics; status checks and finalization cannot change that selection.
+Best-effort forwarding remains advisory unless its owned rollback fails or an
+already-established session failure requires retaining it as secondary detail.
+
+The immutable remote terminal snapshot remains factual provenance. The child
+return-code property exposes that fact without claiming operation success.
+Operation status instead raises the authority's selected failure, including a
+child-only failure; it never suppresses that failure to return a nonzero numeric
+status. Health collection records helper/SSH and all forwarding observations
+before a single synchronized status projection. Forwarding reports each exit
+before polling another process, so an exception in a later poll cannot discard
+or acknowledge an unpublished earlier exit. A terminal fact recorded during
+collection is accounted by that projection. Every recorded fatal observation
+also closes dependent-work admission.
+
+Delivery acknowledgement is separate from failure retention. Repeated cleanup
+does not replay an already-delivered failure unless newly recorded secondary
+information reopens delivery. Helper cleanup reports pending delivery without
+acknowledging it on behalf of the session. The session's finalization publishes
+the complete authority result after independently settling its owned resources,
+regardless of earlier delivery. The Zephyr adapter records local operation
+exceptions and asks the session to finalize; it does not reconstruct precedence
+from copied child status or choose between operation and cleanup exceptions.
 
 GDB/RTT entry checks helper and forwarding health, then commits eligibility under
 that shared authority before its immediate synchronous launch callback. It uses

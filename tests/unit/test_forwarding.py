@@ -17,7 +17,7 @@ import pytest
 from zephyr_remote_openocd.remote import forwarding as forwarding_module
 from zephyr_remote_openocd.remote.backend import RemoteSession
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
-from zephyr_remote_openocd.remote.forwarding import _ForwardManager
+from zephyr_remote_openocd.remote.forwarding import ForwardFailure, _ForwardManager
 from zephyr_remote_openocd.remote.model import RemoteProcess, RemoteSessionRequest, Service
 from zephyr_remote_openocd.remote.session import SessionError
 from zephyr_remote_openocd.remote.ssh import (
@@ -65,11 +65,14 @@ def test_forward_health_reports_service_identity_once(monkeypatch):
     manager.start(services, "127.64.0.1")
     for process in processes:
         process.returncode = FORWARD_FAILURE_RC
-    failures = manager.check_health()
+    failures: list[ForwardFailure] = []
+    manager.check_health(failures.append)
     assert tuple(failure.service for failure in failures) == services
     assert all(failure.returncode == FORWARD_FAILURE_RC for failure in failures)
     assert all(failure.diagnostic == "" for failure in failures)
-    assert manager.check_health() == ()
+    repeated: list[ForwardFailure] = []
+    manager.check_health(repeated.append)
+    assert not repeated
     assert manager.services == services
     manager.close()
     assert [process.close_stderr_calls for process in processes] == [1, 1]
@@ -411,7 +414,9 @@ def test_sigint_during_forward_start_preserves_cleanup_ownership(monkeypatch, ph
         assert sigmask(signal.SIG_BLOCK, set()) == expected_mask
         if phase == "commit-handoff":
             assert services_at_delivery == (service,)
-            assert manager.check_health() == ()
+            repeated: list[ForwardFailure] = []
+            manager.check_health(repeated.append)
+            assert not repeated
         else:
             assert services_at_delivery == ()
         manager.close()

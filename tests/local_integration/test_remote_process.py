@@ -303,7 +303,11 @@ def test_helper_close_allows_recorded_natural_exit_before_termination(
         helper.start_process(TEST_PROCESS, ())
         # EOF and protocol completion are observed while OS exit remains gated.
         assert helper._join_reader(timeout=5)
-        assert helper.recorded_openocd_exit() == openocd_returncode
+        if openocd_returncode:
+            with pytest.raises(SessionError) as observed:
+                helper.recorded_openocd_exit()
+        else:
+            assert helper.recorded_openocd_exit() == 0
         assert managed.poll() is None
         monkeypatch.setattr(process, "wait", gated_wait)
         monkeypatch.setattr(process, "terminate", observe_terminate)
@@ -314,13 +318,14 @@ def test_helper_close_allows_recorded_natural_exit_before_termination(
         assert terminated is transport_timeout
         assert managed.returncode is not None
         if transport_timeout:
-            assert isinstance(result.error, subprocess.TimeoutExpired)
+            if openocd_returncode:
+                assert result.error is observed.value
+                assert any("timed out" in note for note in result.error.__notes__)
+            else:
+                assert isinstance(result.error, subprocess.TimeoutExpired)
         else:
             assert managed.returncode == 0
-            if openocd_returncode:
-                assert isinstance(result.error, SessionError)
-            else:
-                assert result.error is None
+            assert result.error is None
         assert result.cleanup_errors == ()
         assert helper.openocd_returncode == openocd_returncode
         assert managed.stdin is not None and managed.stdin.closed
@@ -360,8 +365,8 @@ class _StagingHelper:
         del process, services, preferred_address
         raise AssertionError("start_process() is not expected in this test")
 
-    def recorded_openocd_exit(self) -> int | None:
-        raise AssertionError("recorded_openocd_exit() is not expected in this test")
+    def observe_status(self) -> None:
+        pass
 
     def wait_for_change(self, timeout: float | None) -> None:
         del timeout
@@ -2269,7 +2274,7 @@ helper['stage'](sys.argv[2])
                     if stream is not None and not stream.closed:
                         stream.close()
 
-    def test_backend_returns_child_status_and_relays_output(self):
+    def test_backend_publishes_child_failure_and_relays_output(self):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
@@ -2319,7 +2324,9 @@ helper['stage'](sys.argv[2])
                     ),
                 )
                 assert backend.descriptor is None
-                assert backend.wait_for_openocd_exit(5) == sample_openocd_exit_code
+                with pytest.raises(SessionError, match="exit status 6") as initial:
+                    backend.wait_for_openocd_exit(5)
+                assert backend.openocd_returncode == sample_openocd_exit_code
                 assert [
                     (payload, line_end)
                     for stream, payload, line_end in output
@@ -2331,8 +2338,12 @@ helper['stage'](sys.argv[2])
                     if stream == "stderr"
                 ] == []
             finally:
-                with pytest.raises(SessionError):
-                    backend.close()
+                with pytest.raises(SessionError) as final:
+                    backend.finish()
+            assert final.value is initial.value
+            assert any("status 1" in note for note in final.value.__notes__)
+            assert backend.closed
+            assert backend.openocd_returncode == sample_openocd_exit_code
 
     def test_backend_surfaces_helper_descendant_warning(self):
         helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
@@ -2676,5 +2687,11 @@ def _helper_client(request, deployment, output_handler=None):
 
 def _session_with_helper(request, deployment, output_handler=None):
     session = RemoteSession(request, deployment, output_handler)
-    session._helper = _helper_client(request, deployment, output_handler)
+    session._helper = _HelperClient(
+        request.ssh_command,
+        request.host,
+        deployment,
+        output_handler=output_handler,
+        observations=session._observations,
+    )
     return session
