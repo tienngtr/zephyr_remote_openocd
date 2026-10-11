@@ -2,19 +2,18 @@
 
 ## Status and compatibility
 
-This is the selected normative target for the controller-lease redesign.
-Production client, helper, and wire fixtures still implement
+This is the deployed client/helper contract. Maintained wire, lifecycle, and
+physical-boundary evidence and selected external qualification are recorded in
+[verification.md](../traceability/verification.md#controller-lease-lifecycle).
+The incompatible session grammar replaces
 [Protocol v1 at the baseline revision](https://github.com/tienngtr/zephyr_remote_openocd/blob/ce12b6a/docs/architecture/protocol.md).
-They move to v2 together at the protocol-cutover checkpoint, after structured
-foundations and physical-boundary adaptation. Foundation tests do not
-establish v2 conformance.
 
-The incompatible session grammar uses numeric `version: 2`. There is no
+The session grammar uses numeric `version: 2`. There is no
 negotiation, dual-version session, or STOP fallback. Compatibility requires the
 full contract, not version equality. Matching content-addressed deployment
-selects the v2 helper namespace at cutover. The YAML schema, literal argument
+uses the v2 helper namespace. The YAML schema, literal argument
 and explicit template semantics, service selection, staging security, and
-standalone operation shapes are preserved; standalone envelopes also become v2.
+standalone operation shapes are preserved; standalone envelopes also use v2.
 No YAML migration is required. Configured SSH wrappers must satisfy directional
 EOF; incompatible wrappers must be replaced or reconfigured.
 

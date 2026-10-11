@@ -5,7 +5,7 @@ Documentation is grouped by audience:
 - [`user/`](user/): installation, configuration, operations, and troubleshooting.
 - [`requirements/SRS.md`](requirements/SRS.md): normative product requirements.
 - [`architecture/SAD.md`](architecture/SAD.md): current design and rationale.
-- [`architecture/protocol.md`](architecture/protocol.md): Protocol v1 wire
+- [`architecture/protocol.md`](architecture/protocol.md): Protocol v2 wire
   format and behavior.
 - [`development/`](development/): contributor test and fixture guidance.
 - [`traceability/verification.md`](traceability/verification.md): direct

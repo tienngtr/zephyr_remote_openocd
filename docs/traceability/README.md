@@ -4,7 +4,8 @@ The maintained requirement-to-test verification matrix is
 [`verification.md`](verification.md). Normative requirements remain in
 [`../requirements/SRS.md`](../requirements/SRS.md).
 
-During the controller-lease redesign, the matrix distinguishes Protocol v1
-baseline coverage from [target migration obligations](verification.md#controller-lease-migration).
-Revised normative contracts do not imply that the production cutover or its
-acceptance tests have already completed.
+The matrix maps the deployed Protocol v2 path to maintained production-boundary
+tests. [Integration qualification](verification.md#integration-qualification)
+records actual selected-profile execution and its remaining hardware limits.
+Historical baseline and checkpoint counts are comparison evidence; a normative
+contract or a maintained test alone does not establish external acceptance.

@@ -11,16 +11,13 @@
 
 ## 1. Purpose
 
-This document describes the selected architecture for the Zephyr west runner
-for remote OpenOCD. The controller-lease lifecycle and Protocol v2 are the
-deployed client/helper behavior since the Phase 4 checkpoint. The Phase 5
-checkpoint removes the remaining unused Protocol v1 lifecycle definitions and
-hooks for control reconciliation. Phase 6 qualifies the configured integration
-and hardware profiles on the deployed path. Structured remote and local lifecycle
-authorities consume the adapted physical owners. Existing physical ownership
-mechanisms described here are retained or adapted, not replaced by experimental
-implementations. The implementation gaps are
-tracked in [verification.md](../traceability/verification.md#controller-lease-migration).
+This document describes the deployed architecture for the Zephyr west runner
+for remote OpenOCD. Separate remote and local lifecycle authorities implement
+the controller lease and Protocol v2 while retaining the physical process,
+workspace, forwarding, RTT, and transport owners. There is no dual-protocol
+runtime or migration-only lifecycle authority.
+Maintained evidence, selected-profile qualification, and remaining acceptance
+limits are recorded in [verification.md](../traceability/verification.md).
 
 The SRS defines externally required behavior.
 
@@ -1294,7 +1291,7 @@ deployment fail; the selected target is never removed. The deployment lock is
 released before the session helper starts. Exact deployment response fields
 remain part of the wire contract defined in [protocol.md](protocol.md).
 
-The cutover selects the separate `protocol_v2` deployment namespace. The
+Deployment uses the separate `protocol_v2` namespace. The
 content-addressed zip application includes the canonical outcome, lifecycle, and
 wire modules, using empty package initializers to retain standard-library-only
 remote execution. Its digest covers every bundled source, with no copied codec
@@ -1314,7 +1311,7 @@ The selected internal helper wire format and behavior are specified solely in
 [protocol.md](protocol.md). The SAD records the architectural consequences of
 that contract; it does not duplicate message fields, framing, state
 transitions, ordering, validation, or frame-size limits. The deployed client
-and helper must implement one strict matching contract at cutover.
+and helper implement one strict matching contract.
 
 ## 37. Remote Session Storage
 
@@ -1529,7 +1526,7 @@ remote OpenOCD termination.
 
 ### 38.2 Remote lifecycle authority
 
-The Phase 2 foundation in
+The lifecycle model in
 [`remote/lifecycle.py`](../../python/zephyr_remote_openocd/remote/lifecycle.py)
 implements a pure transition authority with immutable phase and attempt records.
 Its read-only request role keeps the validated concrete request available to the
@@ -1703,15 +1700,15 @@ decoder. Normal decoding and the final startup scan share that ownership;
 there are no competing readiness readers. Their facts reach the authority
 independently of bulk-output delivery.
 
-Phase 3 extends the owned raw reader's checkpoint from one read to a finite
-available-byte scan. The same reader consumes until EOF, a would-block result,
-or a one-MiB byte budget; continuous arrivals cannot prolong determination
-indefinitely. This budget matches the maximum control frame and is an internal
+The owned raw reader's checkpoint performs a finite available-byte scan. The
+same reader consumes until EOF, a would-block result, or a one-MiB byte budget;
+continuous arrivals cannot prolong determination indefinitely. This budget
+matches the maximum control frame and is an internal
 observation bound, not a timeout or a new product setting. Decoding and ordered
 publication remain on the normal observation path. The coordinator continues
 dispatching while checkpoint facts are published, then performs its existing
 child-status and retained-evidence decision. Reader cancellation or close still
-settles the checkpoint. At cutover, readiness scans only child streams; controller
+settles the checkpoint. Readiness scans only child streams; controller
 input has no recognition fence or checkpoint acknowledgement.
 
 ### 38.5 Output and outcome ownership
@@ -1726,10 +1723,10 @@ congested or failed output path, so reservation would not establish another
 required guarantee. This choice preserves bounded memory and cleanup progress;
 it must be qualified with actual blocked-pipe and capacity-failure regressions.
 
-Phase 3 retains that writer topology and capacity. Reader and writer descriptor
-mode acquisition now rolls back an effect that succeeds before constructor
-adoption fails, preserving the initiating exception and rollback detail. Writer
-close releases retained frames independently of mode-restoration failure. The
+Reader and writer descriptor mode acquisition rolls back an effect that succeeds
+before constructor adoption fails, preserving the initiating exception and
+rollback detail. Writer close releases retained frames independently of
+mode-restoration failure. The
 signal scope owns both installed handlers and a plain first-signal latch;
 handlers report facts without deciding transitions or mutating asyncio queues.
 READY admission/activation and terminal freeze block native SIGINT/SIGTERM
@@ -1788,10 +1785,10 @@ sending `SIGKILL`. Failure or a race during this best-effort diagnostic does
 not affect the group cleanup decision or success criterion; complete `/proc`
 enumeration is not required.
 
-Phase 3 adapted the standalone helper's physical boundaries; Phase 4 connects
-those owners to the canonical remote lifecycle authority. A generation-scoped
-acquisition ticket is reachable before `Popen`, retains the raw process through
-supervisor construction, and retains the supervisor through coordinator
+The standalone helper connects its physical owners to the canonical remote
+lifecycle authority. A generation-scoped acquisition ticket is reachable before
+`Popen`, retains the raw process through supervisor construction, and retains
+the supervisor through coordinator
 adoption. Both construction rollback and an interrupted return use this same
 cleanup reachability; partially adopted streams still receive owned observers.
 Native handlers latch facts throughout those synchronous effects.
@@ -1959,14 +1956,14 @@ Standalone staging behavior and protocol framing remain coordinated through
 
 ## 39. Local Session Lifecycle
 
-The Phase 2 foundation in
-[`remote/launch.py`](../../python/zephyr_remote_openocd/remote/launch.py) models
-local launch eligibility. Phase 4 integrates it into the synchronized session
-observations. It requires observed readiness and phase-specific forwarding,
-preserves cancellation and fatal failure across boundaries, and rejects stale queued
+The launch model in
+[`remote/launch.py`](../../python/zephyr_remote_openocd/remote/launch.py) expresses
+local launch eligibility within the synchronized session observations. It
+requires observed readiness and phase-specific forwarding, preserves
+cancellation and fatal failure across boundaries, and rejects stale queued
 generations. Its pure tests establish these transition semantics.
 
-At cutover, the shared session observations lock serializes recorded terminal and
+The shared session observations lock serializes recorded terminal and
 reader failure facts with cancellation and actual launch entry. The helper
 reader can record a fatal fact after a session check returns but before gate
 entry. Checking the helper and then entering an independent gate does not
@@ -2363,7 +2360,7 @@ physical hardware.
 
 ## 45. Architecture Decisions
 
-Selected for the target architecture:
+Selected architecture:
 
 - board-agnostic custom runner;
 - no board/vendor-specific product behavior;
@@ -2419,17 +2416,16 @@ Selected for the target architecture:
 
 | Category | Architectural effect |
 | --- | --- |
-| Eliminated complexity | Post-START STOP parsing, controller-recognition success fences, controller checkpoint/ACK at retry and readiness, and split ERROR/SESSION_CLOSED result reconstruction disappear at cutover. |
+| Eliminated complexity | Post-START STOP parsing, controller-recognition success fences, controller checkpoint/ACK at retry and readiness, and split ERROR/SESSION_CLOSED result reconstruction are removed. |
 | Moved complexity | Cancellation safety belongs to the local launch gate; remote termination belongs to the remote authority. Exception-note result composition becomes structured outcomes and boundary rendering. |
 | Inherent complexity retained | Native acquisition/handoff interruption, process-group identity and reaping, actual producer settlement, stream final observation, staging exclusion, independently owned forwards/RTT, and bounded failure reporting remain. |
-| New costs | SSH directional-EOF qualification, phase-specific data and generation validation, revalidated queued launch, explicit residual-disposal evidence, structured terminal schema, and bounded final-scan policy need production implementation and regression coverage. |
+| New costs | SSH directional-EOF qualification, phase-specific data and generation validation, revalidated queued launch, explicit residual-disposal evidence, structured terminal schema, and bounded final-scan policy require maintained production regression coverage. |
 
 The controller-lease runtime experiment is design evidence, not a production
 implementation template. In particular, it does not authorize copying pidfd,
 `/proc`, or subreaper machinery beyond existing qualified process ownership.
-The [migration traceability](../traceability/verification.md#controller-lease-migration)
-records intentional differences and unimplemented acceptance obligations.
-The Phase 4 checkpoint deploys the client/helper cutover together. The local
+The [lifecycle traceability](../traceability/verification.md#controller-lease-lifecycle)
+records maintained acceptance evidence and intentional differences. The local
 session authority gates public GDB and RTT launch; controller stdin lifetime
 replaces STOP, and one structured terminal snapshot replaces split terminal
 reconstruction. The remote coordinator accounts already-recorded observer and
@@ -2450,22 +2446,19 @@ master is externally owned and is never a cleanup target. Native helper signals
 are failures, including signals after freeze; child disposal signals retain their
 separate result provenance.
 
-At the Phase 5 checkpoint, the unused STOP request, shadow state enum, raw control
-frame and fence event types, and control-observer references are removed. The
-raw reader no longer exposes the unused idle-acknowledgment callback or external
-wake hook from controller reconciliation. Its sole-reader wake mechanism and
+The removed STOP request, shadow state enum, raw control-frame/fence types,
+control-observer references, and reader reconciliation hooks have no runtime
+compatibility replacements. The raw reader's sole-reader wake mechanism and
 finite child-stream checkpoint remain required for final readiness observation.
 Control reader cleanup stays in the observer's `finally` block, and its task
 remains owned by the session task group and cancellation ledger.
 
 Already-recorded fatal observation accounting, native-signal commit boundaries,
 physical settlement evidence, and local primary-failure arbitration remain
-required. Tests whose old STOP ordering was intentionally removed were adapted
-or replaced at cutover; physical ownership, final observation, output, workspace,
-forwarding, and GDB interaction remain required regression evidence. The Phase 6
-checkpoint qualifies the available Zephyr, SSH, and hardware profiles, including
-attach with RTT, revision repair during a live session, conservative reclamation,
-real bind-collision retry, and configured staged/mapped paths. Validation passes
-on Python 3.12 and 3.14. Selected-profile results and remaining hardware limits
-are recorded in [verification.md](../traceability/verification.md#integration-qualification).
-The following documentation and cleanup phase has not begun.
+required. Physical ownership, final observation, output, workspace, forwarding,
+and GDB interaction remain regression obligations. The configured Zephyr, SSH,
+and hardware profiles are qualified, including attach with RTT, revision repair
+during a live session, conservative reclamation, real bind-collision retry, and
+configured staged/mapped paths. Selected-profile results and remaining hardware
+limits are recorded in
+[verification.md](../traceability/verification.md#integration-qualification).

@@ -42,8 +42,8 @@ and user docs together and state compatibility and migration. Hardware
 inventories have a separate schema. Never create schema versions merely to
 record development history.
 
-Protocol v1 is fixed during development and requires full-contract support,
-not version equality alone. Change it only with explicit authorization, then
+Protocol v2 requires full-contract support, not version equality alone.
+Change it only with explicit authorization, then
 update the protocol document, client, helper, fixtures, requirements, and
 compatibility tests together. Do not version development history. Helper
 stdout is JSON-only; relay child output as events.

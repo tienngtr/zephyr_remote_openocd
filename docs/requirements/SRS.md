@@ -38,14 +38,11 @@ The implementation and user-facing documentation is board- and board-vendor-agno
 
 ---
 
-The lifecycle requirements below define the controller-lease design.
-Production implements Protocol v2 after the coordinated client/helper cutover.
-The remote lifecycle authority consumes the adapted physical owners, and the
-local launch gate shares the client/session authority for fatal observations
-and execution entry. Broader qualification remains pending.
-Revised requirements are not claims of current implementation conformance; migration
-gaps and acceptance obligations are recorded in
-[verification.md](../traceability/verification.md#controller-lease-migration).
+The lifecycle requirements below describe the deployed controller-lease behavior.
+Production implements Protocol v2 with matching client and helper revisions.
+Maintained verification evidence, selected-environment qualification, and
+remaining acceptance limits are recorded in
+[verification.md](../traceability/verification.md).
 The product YAML contract is unchanged.
 
 ---
