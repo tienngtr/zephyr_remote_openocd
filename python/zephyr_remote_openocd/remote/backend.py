@@ -275,12 +275,16 @@ class RemoteSession:
         return self.descriptor
 
     def forward(self, services: Iterable[Service], *, required: bool = True) -> None:
-        if self.closed or self._observations.snapshot().closing:
+        """Commit forwarding entry through the shared session authority."""
+        if self.closed:
             raise SessionClosedError("remote session is closed")
         if self.descriptor is None:
             raise SessionError("remote session is not ready for additional forwarding")
         service_list = tuple(services)
-        if required and service_list:
+        if required:
+            self._observations.enter(self._required_services, self._forwards.services)
+            if not service_list:
+                return
             self._forwards.start(service_list, self.descriptor.remote_address)
             self._required_services.update(service_list)
             remember_preferred_address(
@@ -288,6 +292,7 @@ class RemoteSession:
             )
         elif not required:
             for service in service_list:
+                self._observations.enter(self._required_services, self._forwards.services)
                 try:
                     self._forwards.start((service,), self.descriptor.remote_address)
                 except ForwardStartError as error:

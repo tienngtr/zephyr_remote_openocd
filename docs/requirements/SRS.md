@@ -1237,7 +1237,12 @@ recorded. This local observation SHALL NOT be treated as evidence that the
 remote helper has observed control-channel loss or begun remote OpenOCD cleanup.
 
 A locally recorded fatal transport failure SHALL prevent subsequent dependent
-local launch, even if a remote readiness report arrives later.
+local launch and entry into new forwarding work, even if a remote readiness
+report arrives later. New forwarding entry SHALL account for already-recorded
+terminal outcomes, reader failure, and committed local cancellation through the
+same local authority as dependent-client entry. A forward whose entry has
+committed MAY finish acquisition or rollback if a terminal fact races with it;
+that does not authorize further forwarding work.
 
 Local SSH-loss detection latency SHALL be delegated to the configured SSH
 client and the local operating system. This requirement does not impose an

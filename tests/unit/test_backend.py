@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 from collections.abc import Iterable
+from dataclasses import replace
 from typing import override
 
 import pytest
@@ -17,11 +18,12 @@ from zephyr_remote_openocd.remote.model import (
     RemoteSessionRequest,
     Service,
     SessionAllocation,
-    SessionDescriptor,
 )
 from zephyr_remote_openocd.remote.protocol import encode_message
 from zephyr_remote_openocd.remote.session import SessionClosedError, SessionError
 from zephyr_remote_openocd.remote.ssh import SshCommand
+
+from tests.forwarding_support import ForwardingHarness
 
 OPENOCD_FAILURE_RC = 7
 FORWARD_FAILURE_RC = 13
@@ -148,59 +150,17 @@ def test_open_rolls_back_once_and_preserves_startup_failure(monkeypatch, cleanup
         assert not getattr(raised.value, "__notes__", ())
 
 
-def test_start_process_validates_reserved_services_without_forwarding_them():
+def test_session_validates_reserved_services_without_forwarding_them(monkeypatch):
+    harness = ForwardingHarness(monkeypatch)
     gdb = Service("gdb", 3333, 3333)
     rtt = Service("rtt", 5566, 5566)
-
-    class Helper(_BlockedHelper):
-        def __init__(self) -> None:
-            self.started_services: tuple[Service, ...] | None = None
-
-        @property
-        @override
-        def allocation(self) -> SessionAllocation:
-            return SessionAllocation("session", "/workspace")
-
-        @override
-        def start_process(self, process, services, *, preferred_address=None):
-            del process, preferred_address
-            self.started_services = tuple(services)
-            return "127.64.1.1"
-
-        @override
-        def recorded_openocd_exit(self) -> int | None:
-            return None
-
-        @override
-        def close(self) -> _HelperCloseResult:
-            return _HelperCloseResult(None, ())
-
-    class Forwards(_BlockedForwards):
-        def __init__(self) -> None:
-            self.started: list[tuple[Service, ...]] = []
-
-        @override
-        def start(self, services, remote_address):
-            del remote_address
-            self.started.append(tuple(services))
-
-    request = RemoteSessionRequest(
-        "host",
-        SshCommand(),
-        RemoteProcess(("openocd",)),
-        services=(gdb,),
-        reserved_services=(rtt,),
-    )
-    session = RemoteSession(request, DeploymentResult("/helper.py", "digest", False))
-    helper = Helper()
-    forwards = Forwards()
-    session._helper = helper
-    session._forwards = forwards
-
-    session._start_process(request.services)
-
-    assert helper.started_services == (gdb, rtt)
-    assert forwards.started == [(gdb,)]
+    request = replace(harness.request((gdb,), ()), reserved_services=(rtt,))
+    session = RemoteSession.open(request)
+    try:
+        assert harness.helper.services == (gdb, rtt)
+        assert session.forwarded_services == (gdb,)
+    finally:
+        session.close()
 
 
 def test_version_query_reports_ssh_failure_status_and_diagnostic(monkeypatch):
@@ -598,28 +558,18 @@ def test_wait_for_openocd_exit_raises_helper_timeout_at_deadline(monkeypatch):
     assert all(0 < wait <= requested_timeout for wait in helper.wait_timeouts)
 
 
-def test_forward_uses_allocated_remote_address_and_requested_services():
-    remote_address = "127.0.0.7"
+def test_forward_uses_allocated_remote_address_and_requested_services(monkeypatch):
+    harness = ForwardingHarness(monkeypatch)
     requested_services = (
         Service("gdb", 3333, 3333),
         Service("telnet", 4444, 4444),
     )
-
-    class Forwards(_BlockedForwards):
-        def __init__(self) -> None:
-            self.forwarded: tuple[tuple[Service, ...], str] | None = None
-
-        @override
-        def start(self, services: Iterable[Service], remote_address: str) -> None:
-            self.forwarded = (tuple(services), remote_address)
-
-    session = _make_session()
-    session.descriptor = SessionDescriptor(
-        SessionAllocation("session-id", "/tmp/session"), remote_address
-    )
-    forwards = Forwards()
-    session._forwards = forwards
-
-    session.forward(requested_services)
-
-    assert forwards.forwarded == (requested_services, remote_address)
+    session = harness.open((), ())
+    for service in requested_services:
+        harness.ssh.process(service)
+    try:
+        # The controlled SSH boundary checks the allocated destination address.
+        session.forward(requested_services)
+        assert session.forwarded_services == requested_services
+    finally:
+        session.close()

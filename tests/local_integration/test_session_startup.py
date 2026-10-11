@@ -17,6 +17,8 @@ from zephyr_remote_openocd.remote.model import RemoteProcess, RemoteSessionReque
 from zephyr_remote_openocd.remote.session import SessionError
 from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand, SshLocalForward
 
+from tests.process_support import cleanup_on_exit
+
 PEER = r'''
 import hashlib, json, re, sys
 from pathlib import Path
@@ -112,3 +114,55 @@ def test_acquisition_rejects_helper_termination_recorded_during_forwarding(
     assert session.closed
     assert all(process.poll() is not None for process in transports)
     assert not session.forwarded_services
+
+
+@pytest.mark.parametrize("ending", ("0", "7", "error"))
+@pytest.mark.parametrize("required", (True, False), ids=("required", "best-effort"))
+def test_recorded_terminal_prevents_new_forward_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ending: str, required: bool
+):
+    peer = tmp_path / "peer.py"
+    peer.write_text(f"#!{sys.executable}\n" + PEER)
+    peer.chmod(0o700)
+    (tmp_path / "ending").write_text(ending)
+    os.mkfifo(tmp_path / "gate")
+    recorded = threading.Event()
+    drain = _HelperClient._drain_events
+
+    def drain_and_notify(client: _HelperClient) -> None:
+        try:
+            drain(client)
+        finally:
+            recorded.set()
+
+    monkeypatch.setattr(_HelperClient, "_drain_events", drain_and_notify)
+    forward_entries: list[SshLocalForward] = []
+
+    class Command(SshCommand):
+        @override
+        def popen(
+            self, host: str, remote_command: str, *, local_forward: SshLocalForward | None = None
+        ) -> ManagedSshProcess:
+            if local_forward is not None:
+                forward_entries.append(local_forward)
+                raise OSError("later forward creation failure")
+            return super().popen(host, remote_command)
+
+    session = RemoteSession.prepare(
+        RemoteSessionRequest("controlled-host", Command((str(peer),)), RemoteProcess(("openocd",)))
+    )
+    with cleanup_on_exit(session.close):
+        session.acquire()
+        with (tmp_path / "gate").open("wb", buffering=0) as gate:
+            gate.write(b"x")
+        assert recorded.wait(30), "helper reader did not record the terminal event"
+        with pytest.raises(SessionError) as raised:
+            session.forward((Service("rtt", 45678, 5555),), required=required)
+        assert not forward_entries
+        assert not session.forwarded_services
+        assert "later forward creation failure" not in str(raised.value)
+        if ending == "error":
+            assert "failure during forwarding" in str(raised.value)
+        elif ending == "7":
+            assert "7" in str(raised.value)
+    assert session.closed

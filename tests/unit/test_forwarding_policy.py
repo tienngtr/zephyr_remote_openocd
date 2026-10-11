@@ -68,6 +68,33 @@ def test_deferred_required_forwarding_saves_preferred_address(harness):
         session.close()
 
 
+@pytest.mark.parametrize("fact", ("reader", "cancel"))
+@pytest.mark.parametrize("required", (True, False))
+def test_recorded_failure_or_cancellation_prevents_forward_entry(
+    harness, monkeypatch, fact, required
+):
+    session = harness.open((GDB,), ())
+    harness.ssh.process(RTT)
+
+    def forbidden_forward(*_args, **_kwargs):
+        pytest.fail("forward transport entered after a recorded fatal fact")
+
+    monkeypatch.setattr(ControlledSshCommand, "popen", forbidden_forward)
+    if fact == "reader":
+        session._observations.record_reader_failure(RuntimeError("earlier reader failure"))
+    else:
+        session._observations.cancel()
+    try:
+        with pytest.raises(SessionError) as raised:
+            session.forward((RTT,), required=required)
+        if fact == "reader":
+            assert "earlier reader failure" in str(raised.value)
+        assert session.forwarded_services == (GDB,)
+        assert not harness.advisories
+    finally:
+        session.close()
+
+
 @pytest.mark.parametrize("failed_service", (TCL, TELNET, RTT), ids=("tcl", "telnet", "rtt"))
 def test_auxiliary_start_failure_preserves_other_services(harness, failed_service):
     harness.ssh.process(failed_service).ready = False

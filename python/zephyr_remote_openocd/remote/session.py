@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Local lifecycle authority shared by the helper reader and launch entry."""
+"""Local lifecycle authority shared by the helper reader and dependent work."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ class _SessionObservations:
 
     Entry commits under the same lock used by the event reader. The caller then
     invokes its synchronous launch without a scheduling boundary. The lock is
-    released before blocking client work so reverse output remains observable.
+    released before blocking dependent work so reverse output remains observable.
     """
 
     def __init__(self) -> None:

@@ -1962,7 +1962,7 @@ cancellation and fatal failure across boundaries, and rejects stale queued
 generations. Its pure tests establish these transition semantics.
 
 The shared session observations lock serializes recorded terminal and
-reader failure facts with cancellation and actual launch entry. The helper
+reader failure facts with cancellation and actual dependent-work entry. The helper
 reader can record a fatal fact after a session check returns but before gate
 entry. Checking the helper and then entering an independent gate does not
 account for that already-recorded fact at actual execution entry. The
@@ -1989,9 +1989,22 @@ Zephyr's `run_client`, including native interactive SIGINT handling. Cleanup
 ownership and the SIGINT-masked cleanup scope protect interruption rollback.
 Controller input EOF ends the remote lease.
 
+New forwarding work uses the same synchronized authority entry as GDB/RTT.
+Immediately before starting a required forwarding batch or each best-effort
+forward, the session accounts recorded terminal/reader failures, cancellation,
+current READY, and the already-required forwarding for the current phase. The
+new services become required only after successful acquisition; entry does not
+require them to exist yet. Authority rejection propagates as the session outcome,
+including for best-effort services, rather than being reduced to a forward advisory.
+A terminal fact racing after committed entry may let that transaction finish
+acquisition or rollback; its resources remain with the forward manager and
+session cleanup owners. A later transaction must enter again. In particular,
+RTT forwarding after batch GDB cannot start when the helper terminal was already
+recorded during GDB, and a hypothetical later forward failure cannot displace it.
+
 The local operation alone owns dependent launch eligibility. Its conceptual
 phases are Opening, Active, Cancelling, and Ended. These roles apply to each
-dependent launch boundary, including GDB setup followed by an RTT client; an
+dependent-work boundary, including forwarding, GDB setup, and an RTT client; an
 RTT phase transition does not reopen a cancelled operation.
 
 ```text
@@ -2000,7 +2013,7 @@ prepare and adopt resource-free coordinator
     -> stage inputs; send immutable START
     -> keep helper stdin open as controller lease
     -> observe ATTEMPT diagnostics and remote READY
-    -> establish required forwarding
+    -> validate forwarding entry; establish required forwarding
     -> validate local launch eligibility at actual entry
     -> run GDB / RTT / foreground server / one-shot result wait
     -> commit local closure; close helper stdin
@@ -2421,7 +2434,7 @@ Selected architecture:
 | Bounded observation and reporting | Finite final observation, bounded frame and writer storage, and a finite terminal drain keep failure handling bounded. One structured snapshot preserves result provenance and nested diagnostics. |
 | Startup and residual storage | One child creation attempt avoids repeating opaque/user effects after startup failure. Generation validation rejects stale facts. Residual-child markers and isolated storage formats prevent uncertain cleanup from authorizing unsafe reclamation. |
 
-The local session authority gates public GDB and RTT launch. The remote
+The local session authority gates new forwarding work and public GDB/RTT launch. The remote
 coordinator accounts already-recorded observer and signal failures before
 publication. Retired generations contribute diagnostic output only.
 The [lifecycle traceability](../traceability/verification.md#controller-lease-lifecycle)

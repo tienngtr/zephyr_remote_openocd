@@ -34,12 +34,14 @@ from zephyr_remote_openocd.remote.model import (
     SessionAllocation,
     SessionDescriptor,
 )
+from zephyr_remote_openocd.remote.outcome import Trigger
 from zephyr_remote_openocd.remote.paths import PathPlanner
 from zephyr_remote_openocd.remote.session import SessionError
 from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand
 
 from tests.concurrency_support import ConcurrentSessions
 from tests.forwarding_support import GDB, RTT, TCL, TELNET, ForwardingHarness
+from tests.protocol_support import terminal_snapshot
 from tests.support import ROOT, env_path
 
 pytestmark = pytest.mark.zephyr
@@ -443,6 +445,48 @@ def test_recorded_termination_during_rtt_forward_prevents_rtt_client_launch(
     client.assert_not_called()
     assert harness.helper.close_calls == 1
     assert all(process.returncode is not None for process in harness.ssh.processes.values())
+
+
+@pytest.mark.parametrize("ending", (0, OPENOCD_FAILURE_RC, "error"))
+def test_terminal_during_batch_gdb_prevents_rtt_forward_and_preserves_failure(
+    runner_api, monkeypatch, ending
+):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
+    harness = ForwardingHarness(monkeypatch)
+    session = harness.open((GDB,), ())
+    rtt_forward = harness.ssh.process(RTT)
+    rtt_forward.creation_error = OSError("later RTT forward failure")
+    runner = create_autospec(runner_api[1], instance=True)
+    plan = _debug_plan(gdb_argv=("gdb", "--batch"), services=(GDB,), rtt_service=RTT)
+
+    def finish_gdb(_argv):
+        session._observations.record_terminal(
+            terminal_snapshot(Trigger.HELPER_FAILURE, code="EARLIER_HELPER_FAILURE")
+            if ending == "error"
+            else terminal_snapshot(Trigger.CHILD_EXIT, returncode=ending)
+        )
+
+    runner.run_client.side_effect = finish_gdb
+    client = Mock(side_effect=AssertionError("RTT client cannot enter an ended session"))
+    monkeypatch.setattr(runner_module, "run_rtt_client", client)
+    try:
+        with pytest.raises(SessionError) as raised:
+            runner_module._execute_rtt(runner, plan, session, Mock())
+        if ending == "error":
+            assert "EARLIER_HELPER_FAILURE" in str(raised.value)
+        elif ending == OPENOCD_FAILURE_RC:
+            assert str(OPENOCD_FAILURE_RC) in str(raised.value)
+        assert "later RTT forward failure" not in str(raised.value)
+        assert RTT not in session.forwarded_services
+        client.assert_not_called()
+        with pytest.raises(SessionError) as finalized:
+            runner_module._finalize_operation(session, raised.value, None)
+        assert finalized.value is raised.value
+    finally:
+        session.close()
+    assert harness.helper.close_calls == 1
+    assert rtt_forward.returncode is None
 
 
 def test_operation_build_queries_version_without_session(runner_api, monkeypatch, tmp_path):
