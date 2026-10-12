@@ -22,6 +22,7 @@ from zephyr_remote_openocd.controller.deployment import DeploymentResult
 from zephyr_remote_openocd.controller.helper_connection import HelperConnection
 from zephyr_remote_openocd.controller.paths import PathPlanner
 from zephyr_remote_openocd.controller.ssh import ManagedSshProcess, SshCommand, SshForwardSpec
+from zephyr_remote_openocd.openocd.flash import FlashInputs, build_flash_plan
 from zephyr_remote_openocd.protocol.arguments import (
     ArgumentTemplate,
     SessionValue,
@@ -33,7 +34,6 @@ from zephyr_remote_openocd.protocol.commands import decode_command, write_start
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy, Trigger
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.protocol.wire import ProtocolError, decode_frame, encode_frame
-from zephyr_remote_openocd.remote.flash import FlashInputs, build_flash_plan
 
 from tests.protocol_support import terminal_message, terminal_snapshot
 

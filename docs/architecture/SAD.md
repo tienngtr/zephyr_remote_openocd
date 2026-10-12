@@ -573,7 +573,7 @@ It does not own:
 - helper protocol.
 
 The Zephyr adapter passes `--serial` as structured probe-selection state to
-the shared OpenOCD command planner in `remote/openocd_plan.py`, used by flash,
+the shared OpenOCD command planner in `openocd/command.py`, used by flash,
 debug, attach, debugserver, and RTT. When supplied, the planner emits
 `-c "set _ZEPHYR_BOARD_SERIAL <serial>"` before the board configuration `-f`
 arguments, so those configurations can consume the variable while loading.
@@ -2381,7 +2381,7 @@ is more durable than a duplicate path sketch:
 - `config.py` owns configuration loading, schema validation, and selection
   resolution.
 - `zephyr44/runner.py` adapts Zephyr runner state to board-independent plans.
-- `remote/openocd_plan.py`, `debug.py`, and `flash.py` construct OpenOCD
+- `openocd/command.py`, `debug.py`, and `flash.py` construct OpenOCD
   commands without owning their execution.
 - `controller/paths.py` classifies required paths, and `controller/staging.py` builds
   staging manifests and local archives; the backend and remote helper carry

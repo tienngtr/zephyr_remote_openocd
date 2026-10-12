@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Explicit runner-owned dynamic arguments, separate from literal strings."""
+"""Planning of Tcl path words with explicit runtime substitutions."""
 
 from __future__ import annotations
 

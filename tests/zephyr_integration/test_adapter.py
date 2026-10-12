@@ -29,15 +29,15 @@ from zephyr_remote_openocd.controller.model import Service, SessionAllocation, S
 from zephyr_remote_openocd.controller.paths import PathPlanner
 from zephyr_remote_openocd.controller.session import SessionController
 from zephyr_remote_openocd.controller.ssh import SshCommand
-from zephyr_remote_openocd.protocol.arguments import ArgumentTemplate, SessionValue
-from zephyr_remote_openocd.protocol.outcome import Trigger
-from zephyr_remote_openocd.protocol.process import ProcessSpec
-from zephyr_remote_openocd.remote.debug import (
+from zephyr_remote_openocd.openocd.debug import (
     DebugInputs,
     DebugPlan,
     OpenOcdVersion,
     build_debug_plan,
 )
+from zephyr_remote_openocd.protocol.arguments import ArgumentTemplate, SessionValue
+from zephyr_remote_openocd.protocol.outcome import Trigger
+from zephyr_remote_openocd.protocol.process import ProcessSpec
 
 from tests.concurrency_support import ConcurrentSessions
 from tests.forwarding_support import GDB, RTT, TCL, TELNET, ForwardingHarness

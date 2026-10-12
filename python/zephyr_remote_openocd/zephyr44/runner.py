@@ -26,13 +26,13 @@ from zephyr_remote_openocd.controller.paths import PathPlanner, PathPlanningErro
 from zephyr_remote_openocd.controller.rtt import run_rtt_client
 from zephyr_remote_openocd.controller.session import SessionController, query_remote_openocd_version
 from zephyr_remote_openocd.controller.ssh import SshCommand
-from zephyr_remote_openocd.remote.debug import (
+from zephyr_remote_openocd.openocd.debug import (
     DebugInputs,
     DebugPlanError,
     build_debug_plan,
     parse_openocd_version,
 )
-from zephyr_remote_openocd.remote.flash import FlashInputs, FlashPlanError, build_flash_plan
+from zephyr_remote_openocd.openocd.flash import FlashInputs, FlashPlanError, build_flash_plan
 
 
 class RemoteOpenOcdBinaryRunner(OpenOcdBinaryRunner):

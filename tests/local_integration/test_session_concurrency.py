@@ -19,8 +19,8 @@ from zephyr_remote_openocd.controller.model import SessionPlan
 from zephyr_remote_openocd.controller.paths import PathPlanner
 from zephyr_remote_openocd.controller.session import SessionController
 from zephyr_remote_openocd.controller.ssh import ManagedSshProcess, SshCommand, SshForwardSpec
+from zephyr_remote_openocd.openocd.flash import FlashInputs, build_flash_plan
 from zephyr_remote_openocd.protocol.process import ProcessSpec
-from zephyr_remote_openocd.remote.flash import FlashInputs, build_flash_plan
 
 from tests.concurrency_support import ConcurrentSessions
 from tests.process_support import cleanup_on_exit
