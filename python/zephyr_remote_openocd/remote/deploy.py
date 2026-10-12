@@ -11,7 +11,9 @@ import zipfile
 from dataclasses import dataclass
 from importlib.resources import files
 
-from .protocol import ProtocolError, decode_single_frame, validate_deployment_response
+from zephyr_remote_openocd.protocol.responses import validate_deployment_response
+from zephyr_remote_openocd.protocol.wire import ProtocolError, decode_frame
+
 from .ssh import SshCommand
 
 BOOTSTRAP = r'''import fcntl,hashlib,json,os,pathlib,sys,tempfile,time
@@ -75,10 +77,15 @@ def _helper_source() -> bytes:
             "zephyr_remote_openocd/__init__.py": b"",
             "zephyr_remote_openocd/remote/__init__.py": b"",
         }
-        for module in ("outcome", "lifecycle", "wire"):
+        for module in ("lifecycle",):
             entries[f"zephyr_remote_openocd/remote/{module}.py"] = package.joinpath(
                 "remote", f"{module}.py"
             ).read_bytes()
+        for source_module in package.joinpath("protocol").iterdir():
+            if source_module.name.endswith(".py"):
+                entries[f"zephyr_remote_openocd/protocol/{source_module.name}"] = (
+                    source_module.read_bytes()
+                )
         # Python executes a zip application regardless of filename extension.
         # Fixed metadata makes its digest depend only on canonical source bytes.
         output = io.BytesIO()
@@ -100,7 +107,7 @@ def deploy_helper(ssh: SshCommand, host: str, *, source: bytes | None = None) ->
         diagnostic = result.stderr.decode("utf-8", "replace").strip()
         raise DeploymentError(f"helper deployment failed ({result.returncode}): {diagnostic}")
     try:
-        message = decode_single_frame(result.stdout)
+        message = decode_frame(result.stdout)
         validate_deployment_response(message)
         path = message["path"]
         digest = message["sha256"]

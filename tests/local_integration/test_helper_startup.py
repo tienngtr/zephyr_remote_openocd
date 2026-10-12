@@ -13,9 +13,10 @@ import sys
 from pathlib import Path
 
 import pytest
-from zephyr_remote_openocd.remote.arguments import ArgumentTemplate
-from zephyr_remote_openocd.remote.model import RemoteProcess
-from zephyr_remote_openocd.remote.protocol import EventOrder, decode_single_frame, write_start
+from zephyr_remote_openocd.protocol.arguments import ArgumentTemplate
+from zephyr_remote_openocd.protocol.commands import write_start
+from zephyr_remote_openocd.protocol.process import ProcessSpec
+from zephyr_remote_openocd.protocol.wire import EventOrder, decode_frame
 
 from tests.process_support import managed_process, read_line
 from tests.support import ROOT
@@ -73,7 +74,7 @@ def test_helper_startup_retains_workspace_cleanup_ownership(tmp_path, boundary, 
 
 
 def test_empty_materialized_executable_fails_without_invalid_start_event(tmp_path):
-    request = RemoteProcess(
+    request = ProcessSpec(
         (sys.executable,),
         literal_prefix=0,
         argv_templates=((0, ArgumentTemplate(("",))),),
@@ -88,7 +89,7 @@ def test_empty_materialized_executable_fails_without_invalid_start_event(tmp_pat
         stderr=subprocess.PIPE,
     ) as owner:
         stdout, _stderr = owner.process.communicate(input=wire.getvalue(), timeout=30)
-    events = [decode_single_frame(line) for line in stdout.splitlines(keepends=True)]
+    events = [decode_frame(line) for line in stdout.splitlines(keepends=True)]
     order = EventOrder()
     for event in events:
         order.accept(event)

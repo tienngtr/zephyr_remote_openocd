@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Protocol
 
-from .outcome import (
+from zephyr_remote_openocd.protocol.outcome import (
     ChildResult,
     CleanupReport,
     CompletionPolicy,

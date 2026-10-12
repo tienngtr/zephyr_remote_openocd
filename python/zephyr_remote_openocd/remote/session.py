@@ -8,10 +8,11 @@ import threading
 from collections.abc import Iterable
 from dataclasses import dataclass
 
+from zephyr_remote_openocd.protocol.outcome import CompletionPolicy, Diagnostic, TerminalSnapshot
+
 from .cleanup import _add_failure_note
 from .launch import LaunchGate
 from .model import Service
-from .outcome import CompletionPolicy, Diagnostic, TerminalSnapshot
 
 
 class SessionError(RuntimeError):

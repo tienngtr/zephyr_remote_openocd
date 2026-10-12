@@ -5,8 +5,8 @@
 import io
 
 import pytest
-from zephyr_remote_openocd.remote.model import RemoteProcess
-from zephyr_remote_openocd.remote.outcome import (
+from zephyr_remote_openocd.protocol.commands import write_start
+from zephyr_remote_openocd.protocol.outcome import (
     ChildResult,
     CleanupReport,
     CompletionPolicy,
@@ -15,7 +15,7 @@ from zephyr_remote_openocd.remote.outcome import (
     TerminalSnapshot,
     Trigger,
 )
-from zephyr_remote_openocd.remote.protocol import write_start
+from zephyr_remote_openocd.protocol.process import ProcessSpec
 
 
 def test_established_failure_retains_ordered_nested_diagnostics() -> None:
@@ -157,7 +157,7 @@ def test_terminal_cannot_claim_no_child_after_observed_exit() -> None:
 def test_completion_policy_is_explicit_in_protocol_v1() -> None:
     frames = []
     for policy in CompletionPolicy:
-        process = RemoteProcess(("openocd",), completion_policy=policy)
+        process = ProcessSpec(("openocd",), completion_policy=policy)
         stream = io.BytesIO()
         write_start(stream, process, ())
         frames.append(stream.getvalue())

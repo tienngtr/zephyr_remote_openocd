@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Literal Tcl-word quoting for planning previews."""
+"""Canonical Tcl-word quoting for serialized runtime templates and previews."""
 
 
 def tcl_quote(value: str, *, shield_placeholders: bool = True) -> str:

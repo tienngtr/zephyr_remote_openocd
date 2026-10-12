@@ -5,8 +5,8 @@
 import threading
 
 import pytest
+from zephyr_remote_openocd.protocol.outcome import Trigger
 from zephyr_remote_openocd.remote.model import Service
-from zephyr_remote_openocd.remote.outcome import Trigger
 from zephyr_remote_openocd.remote.session import SessionError, _SessionObservations
 
 from tests.protocol_support import terminal_snapshot

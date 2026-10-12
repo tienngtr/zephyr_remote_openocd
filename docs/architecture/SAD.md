@@ -1559,7 +1559,7 @@ retain immediate acquisition ownership, and establish the facts passed into the
 model. Boolean admission/liveness/settlement facts are not physical effects or
 proof of adapter correctness. Observers report facts directly to the authority.
 
-[`remote/outcome.py`](../../python/zephyr_remote_openocd/remote/outcome.py)
+[`protocol/outcome.py`](../../python/zephyr_remote_openocd/protocol/outcome.py)
 provides immutable diagnostics, child results, outcomes, disposal reports, and
 terminal snapshots. Existing exception notes can be captured at a boundary as
 nested diagnostic values without mutating the source exception. The first

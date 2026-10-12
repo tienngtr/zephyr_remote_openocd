@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import io
 import ipaddress
 import json
 import os
@@ -18,6 +17,11 @@ from typing import Any, BinaryIO, override
 
 import pytest
 from zephyr_remote_openocd.config import PathMapping
+from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
+from zephyr_remote_openocd.protocol.process import ProcessSpec, RequiredPathSpec
+from zephyr_remote_openocd.protocol.wire import (
+    encode_frame,
+)
 from zephyr_remote_openocd.remote import deploy as deploy_module
 from zephyr_remote_openocd.remote import flash as flash_module
 from zephyr_remote_openocd.remote.debug import (
@@ -33,29 +37,15 @@ from zephyr_remote_openocd.remote.flash import (
     build_flash_plan,
 )
 from zephyr_remote_openocd.remote.model import (
-    RemotePathCheck,
-    RemoteProcess,
     RemoteSessionRequest,
     Service,
     StagedDirectory,
     StagedFile,
 )
-from zephyr_remote_openocd.remote.outcome import CompletionPolicy
 from zephyr_remote_openocd.remote.paths import (
     REMOTE_ADDRESS_PLACEHOLDER,
     PathPlanner,
     PathPlanningError,
-)
-from zephyr_remote_openocd.remote.protocol import (
-    ProtocolError,
-    decode_message,
-    encode_message,
-    read_message,
-    validate_deployment_response,
-    validate_helper_event,
-    validate_openocd_version_response,
-    validate_staged_response,
-    write_start,
 )
 from zephyr_remote_openocd.remote.services import (
     LOOPBACK_RANGE,
@@ -68,205 +58,7 @@ from zephyr_remote_openocd.remote.staging import StagingError, build_archive
 from tests.elf_fixtures import ELF_ENTRY_POINT, elf_memory_witness_bytes
 from tests.process_support import managed_process, read_line
 
-TEST_PROCESS = RemoteProcess(("test-process",))
-
-
-class TestProtocol:
-    @pytest.mark.parametrize("frame_size", (1_048_576, 1_048_577))
-    def test_start_control_frame_size_includes_lf(self, frame_size):
-        template = io.BytesIO()
-        write_start(template, RemoteProcess(("child", "")), ())
-        argument = "x" * (frame_size - len(template.getvalue()))
-        process = RemoteProcess(("child", argument))
-        stream = io.BytesIO()
-
-        if frame_size == 1_048_576:
-            write_start(stream, process, ())
-            assert len(stream.getvalue()) == frame_size
-            assert stream.getvalue().endswith(b"\n")
-            assert decode_message(stream.getvalue())["argv"] == ["child", argument]
-        else:
-            with pytest.raises(ProtocolError):
-                write_start(stream, process, ())
-            assert stream.getvalue() == b""
-
-    def test_read_message_consumes_one_frame_at_a_time_and_reports_eof(self):
-        stream = io.BytesIO(encode_message("HELLO", value=3) + encode_message("HELLO", value=4))
-        assert read_message(stream)["value"] == 3
-        assert read_message(stream)["value"] == 4
-        with pytest.raises(EOFError):
-            read_message(stream)
-
-    def test_read_message_rejects_frame_without_lf(self):
-        frame = encode_message("HELLO", value=3).rstrip(b"\n")
-
-        with pytest.raises(ProtocolError):
-            read_message(io.BytesIO(frame))
-
-    @pytest.mark.parametrize("argv", (None, [], [""], "openocd", ["openocd", None], [1]))
-    def test_attempt_rejects_invalid_argv(self, argv):
-        with pytest.raises(ProtocolError):
-            validate_helper_event(decode_message(encode_message("ATTEMPT", argv=argv)))
-
-    def test_start_serializers_use_validated_domain_models(self):
-        from zephyr_remote_openocd.remote_helper import decode_command
-
-        stream = io.BytesIO()
-        process = RemoteProcess(
-            ("openocd", "--fixed", ""),
-            environment=(("ZRO_TEST", "value"),),
-            required_paths=(RemotePathCheck("/firmware.elf", "file"),),
-            required_output_sentinels=("INIT COMPLETE", "READY FOR START"),
-            readiness_timeout=47.5,
-            literal_prefix=2,
-            completion_policy=CompletionPolicy.PROCESS_EXIT,
-        )
-        services = (Service("gdb", 12345, 3333), Service("rtt", 12346, 5566))
-        write_start(stream, process, services, preferred_address="127.64.0.7")
-        request = decode_command(decode_message(stream.getvalue()))
-        assert request.argv == process.argv
-        assert request.environment == process.environment
-        assert [(check.path, check.kind) for check in request.required_paths] == [
-            (check.path, check.kind) for check in process.required_paths
-        ]
-        assert [(service.name, service.remote_port) for service in request.services] == [
-            (service.name, service.remote_port) for service in services
-        ]
-        assert request.literal_prefix == process.literal_prefix
-        assert request.completion_policy == process.completion_policy
-        assert request.required_output_sentinels == process.required_output_sentinels
-        assert request.readiness_timeout == process.readiness_timeout
-        assert request.preferred_address == "127.64.0.7"
-
-    def test_start_preferred_address_reaches_helper_validation(self):
-        from zephyr_remote_openocd import remote_helper
-
-        stream = io.BytesIO()
-        write_start(stream, RemoteProcess(("child",)), (), preferred_address="127.64.0.7")
-        request = remote_helper.decode_command(decode_message(stream.getvalue()))
-        assert request.preferred_address == "127.64.0.7"
-
-    @pytest.mark.parametrize(
-        "address", ("127.0.0.1", "127.64.0.0", "127.127.255.255", "::1", "bad")
-    )
-    def test_start_rejects_invalid_preference_before_writing(self, address: str):
-        stream = io.BytesIO()
-        with pytest.raises(ValueError):
-            write_start(stream, RemoteProcess(("child",)), (), preferred_address=address)
-        assert not stream.getvalue()
-
-    def test_helper_event_unknown_fields_are_rejected(self):
-        with pytest.raises(ProtocolError):
-            validate_helper_event(
-                decode_message(
-                    encode_message(
-                        "SESSION_CREATED",
-                        helper="helper",
-                        session_id="id",
-                        remote_workspace="/work",
-                        future=True,
-                    )
-                )
-            )
-
-    @pytest.mark.parametrize(
-        ("validator", "valid", "mistyped_field"),
-        (
-            pytest.param(
-                validate_staged_response,
-                {
-                    "version": 1,
-                    "type": "STAGED",
-                    "byte_count": 0,
-                    "sha256": "0" * 64,
-                    "files": [],
-                    "directories": [],
-                },
-                {"byte_count": "0"},
-                id="staged",
-            ),
-            pytest.param(
-                validate_openocd_version_response,
-                {"version": 1, "type": "OPENOCD_VERSION", "output": "OpenOCD 0.12.0"},
-                {"output": None},
-                id="openocd-version",
-            ),
-            pytest.param(
-                validate_deployment_response,
-                {
-                    "version": 1,
-                    "type": "DEPLOYED",
-                    "status": "deployed",
-                    "path": "/tmp/helper.py",
-                    "sha256": "0" * 64,
-                },
-                {"sha256": 0},
-                id="deployment",
-            ),
-        ),
-    )
-    def test_one_shot_response_validators_require_exact_typed_fields(
-        self, validator, valid, mistyped_field
-    ):
-        validator(valid)
-
-        missing_type = dict(valid)
-        missing_type.pop("type")
-        malformed = (
-            missing_type,
-            {**valid, "unexpected": True},
-            {**valid, **mistyped_field},
-        )
-        for response in malformed:
-            with pytest.raises(ProtocolError):
-                validator(response)
-
-    @pytest.mark.parametrize("payload", ("line\nbreak", "line\n"))
-    def test_child_output_payload_rejects_embedded_line_delimiters(self, payload):
-        with pytest.raises(ProtocolError):
-            validate_helper_event(
-                decode_message(
-                    encode_message(
-                        "CHILD_OUTPUT",
-                        stream="stdout",
-                        payload=payload,
-                        line_end=False,
-                    )
-                )
-            )
-
-    def test_child_output_requires_boundary_metadata(self):
-        valid = encode_message(
-            "CHILD_OUTPUT",
-            stream="stdout",
-            payload="fragment",
-            line_end=False,
-        )
-        validate_helper_event(decode_message(valid))
-        for fields in (
-            {},
-            {"line_end": 1},
-            {"line_end": False, "unexpected": True},
-        ):
-            with pytest.raises(ProtocolError):
-                validate_helper_event(
-                    decode_message(
-                        encode_message(
-                            "CHILD_OUTPUT",
-                            stream="stdout",
-                            payload="fragment",
-                            **fields,
-                        )
-                    )
-                )
-
-    def test_child_output_boundary_states_are_unambiguous(self):
-        with pytest.raises(ProtocolError):
-            validate_helper_event(
-                decode_message(
-                    encode_message("CHILD_OUTPUT", stream="stdout", payload="", line_end=False)
-                )
-            )
+TEST_PROCESS = ProcessSpec(("test-process",))
 
 
 def test_missing_packaged_remote_helper_is_actionable(monkeypatch, tmp_path):
@@ -320,7 +112,7 @@ def test_deployment_wraps_invalid_utf8_response():
 
 def test_deployment_rejects_response_without_lf():
     source = b"helper source"
-    response = encode_message(
+    response = encode_frame(
         "DEPLOYED",
         status="deployed",
         path="/home/test/helper.py",
@@ -345,7 +137,7 @@ def test_deployment_reports_nonzero_ssh_status_and_diagnostic():
 def test_deployment_rejects_digest_that_differs_from_source():
     source = b"helper source"
     different_source_digest = hashlib.sha256(b"different helper source").hexdigest()
-    response = encode_message(
+    response = encode_frame(
         "DEPLOYED",
         status="deployed",
         path="/home/test/helper.py",
@@ -579,7 +371,7 @@ class TestRemoteModels:
     )
     def test_remote_process_rejects_scalar_output_sentinel_container(self, sentinels):
         with pytest.raises(ValueError):
-            RemoteProcess(("openocd",), required_output_sentinels=sentinels)
+            ProcessSpec(("openocd",), required_output_sentinels=sentinels)
 
     @pytest.mark.parametrize(
         "changes",
@@ -605,7 +397,7 @@ class TestRemoteModels:
     def test_remote_process_rejects_invalid_domain_values(self, changes):
         fields = {"argv": ("openocd",), **changes}
         with pytest.raises(ValueError):
-            RemoteProcess(**fields)
+            ProcessSpec(**fields)
 
     @pytest.mark.parametrize(
         ("path", "kind"),
@@ -617,7 +409,7 @@ class TestRemoteModels:
     )
     def test_remote_path_check_rejects_invalid_values(self, path, kind):
         with pytest.raises(ValueError):
-            RemotePathCheck(path, kind)
+            RequiredPathSpec(path, kind)
 
     @pytest.mark.parametrize(
         "arguments",

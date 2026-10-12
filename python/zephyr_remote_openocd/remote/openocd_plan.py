@@ -7,7 +7,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from .arguments import ArgumentTemplate
+from zephyr_remote_openocd.protocol.arguments import ArgumentTemplate
+
 from .paths import PathPlanner, PlannedPath
 
 

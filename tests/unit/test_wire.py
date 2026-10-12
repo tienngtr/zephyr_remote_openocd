@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 import pytest
-from zephyr_remote_openocd.remote.outcome import (
+from zephyr_remote_openocd.protocol.outcome import (
     ChildResult,
     CleanupReport,
     CompletionPolicy,
@@ -14,7 +14,7 @@ from zephyr_remote_openocd.remote.outcome import (
     TerminalSnapshot,
     Trigger,
 )
-from zephyr_remote_openocd.remote.wire import (
+from zephyr_remote_openocd.protocol.wire import (
     MAX_FRAME_SIZE,
     EventOrder,
     ProtocolError,

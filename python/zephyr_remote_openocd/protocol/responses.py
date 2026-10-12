@@ -1,95 +1,19 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""JSON-lines protocol shared by the client and remote helper."""
+"""Validation of standalone helper responses and staging manifests."""
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from pathlib import PurePosixPath
-from typing import Any, BinaryIO
+from typing import Any
 
-from .model import RemoteProcess, Service
-from .services import validate_preferred_address
-from .wire import EventOrder as EventOrder  # pylint: disable=useless-import-alias
-from .wire import ProtocolError, decode_frame, encode_frame, validate_event
+from zephyr_remote_openocd.protocol.wire import ProtocolError
 
-PROTOCOL_VERSION = 1
-# The deployed helper is self-contained; keep its matching bound in sync.
-MAX_CONTROL_FRAME_SIZE = 1024 * 1024
 SHA256_HEX_DIGEST_LENGTH = 64
 _ENVELOPE_FIELDS = frozenset(("version", "type"))
-
-
-def is_protocol_version(value: Any) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value == PROTOCOL_VERSION
-
-
-def encode_message(message_type: str, **fields: Any) -> bytes:
-    return encode_frame(message_type, **fields)
-
-
-def decode_message(line: bytes | str) -> dict[str, Any]:
-    return decode_frame(line)
-
-
-def decode_single_frame(frame: bytes | str) -> dict[str, Any]:
-    return decode_frame(frame)
-
-
-def read_message(stream: BinaryIO) -> dict[str, Any]:
-    line = stream.readline(MAX_CONTROL_FRAME_SIZE + 1)
-    if not line:
-        raise EOFError("helper control channel closed")
-    return decode_single_frame(line)
-
-
-def _write_frame(stream: BinaryIO, message_type: str, **fields: Any) -> None:
-    frame = encode_message(message_type, **fields)
-    if len(frame) > MAX_CONTROL_FRAME_SIZE:
-        raise ProtocolError(
-            f"control frame exceeds maximum size of {MAX_CONTROL_FRAME_SIZE} bytes including LF"
-        )
-    stream.write(frame)
-    stream.flush()
-
-
-def write_start(
-    stream: BinaryIO,
-    process: RemoteProcess,
-    services: Iterable[Service],
-    *,
-    preferred_address: str | None = None,
-) -> None:
-    """Serialize a validated process and service model as the START command."""
-
-    validate_preferred_address(preferred_address)
-    _write_frame(
-        stream,
-        "START",
-        completion_policy=process.completion_policy.value,
-        preferred_address=preferred_address,
-        argv=list(process.argv),
-        environment=dict(process.environment),
-        required_paths=[
-            {
-                "kind": check.kind,
-                "path": check.path
-                if check.template is None
-                else {"parts": check.template.wire_parts()},
-            }
-            for check in process.required_paths
-        ],
-        services=[
-            {"name": service.name, "remote_port": service.remote_port} for service in services
-        ],
-        required_output_sentinels=list(process.required_output_sentinels),
-        readiness_timeout=process.readiness_timeout,
-        literal_prefix=process.literal_prefix,
-        argv_templates=[
-            {"index": index, "parts": template.wire_parts()}
-            for index, template in process.argv_templates
-        ],
-    )
+_STAGED_FIELDS = frozenset(("byte_count", "sha256", "files", "directories"))
+_OPENOCD_VERSION_FIELDS = frozenset(("output",))
+_DEPLOYMENT_FIELDS = frozenset(("status", "path", "sha256"))
 
 
 def _non_empty_string(value: Any) -> bool:
@@ -98,15 +22,6 @@ def _non_empty_string(value: Any) -> bool:
 
 def _has_exact_fields(message: dict[str, Any], fields: frozenset[str]) -> bool:
     return set(message) == _ENVELOPE_FIELDS | fields
-
-
-_STAGED_FIELDS = frozenset(("byte_count", "sha256", "files", "directories"))
-_OPENOCD_VERSION_FIELDS = frozenset(("output",))
-_DEPLOYMENT_FIELDS = frozenset(("status", "path", "sha256"))
-
-
-def validate_helper_event(message: dict[str, Any]) -> None:
-    validate_event(message)
 
 
 def validate_error_response(message: dict[str, Any]) -> None:

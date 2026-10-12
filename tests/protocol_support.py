@@ -2,7 +2,7 @@
 
 """Construct complete terminal frames at controlled helper transport boundaries."""
 
-from zephyr_remote_openocd.remote.outcome import (
+from zephyr_remote_openocd.protocol.outcome import (
     ChildResult,
     CleanupReport,
     Diagnostic,
@@ -10,8 +10,7 @@ from zephyr_remote_openocd.remote.outcome import (
     TerminalSnapshot,
     Trigger,
 )
-from zephyr_remote_openocd.remote.protocol import encode_message
-from zephyr_remote_openocd.remote.wire import terminal_fields
+from zephyr_remote_openocd.protocol.wire import encode_frame, terminal_fields
 
 
 def terminal_snapshot(
@@ -33,4 +32,4 @@ def terminal_snapshot(
 
 
 def terminal_message(*args, **kwargs) -> bytes:
-    return encode_message("SESSION_ENDED", **terminal_fields(terminal_snapshot(*args, **kwargs)))
+    return encode_frame("SESSION_ENDED", **terminal_fields(terminal_snapshot(*args, **kwargs)))

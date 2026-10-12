@@ -29,6 +29,9 @@ from unittest.mock import create_autospec, patch
 
 import pytest
 from zephyr_remote_openocd import remote_helper
+from zephyr_remote_openocd.protocol.outcome import CompletionPolicy, Trigger
+from zephyr_remote_openocd.protocol.process import ProcessSpec
+from zephyr_remote_openocd.protocol.wire import decode_terminal, encode_frame
 from zephyr_remote_openocd.remote import backend as backend_module
 from zephyr_remote_openocd.remote import forwarding as forwarding_module
 from zephyr_remote_openocd.remote import helper_client as helper_client_module
@@ -41,16 +44,13 @@ from zephyr_remote_openocd.remote.deploy import DeploymentResult
 from zephyr_remote_openocd.remote.forwarding import _ForwardManager
 from zephyr_remote_openocd.remote.helper_client import _HelperClient
 from zephyr_remote_openocd.remote.model import (
-    RemoteProcess,
     RemoteSessionRequest,
     Service,
     SessionAllocation,
     StagedDirectory,
     StagedFile,
 )
-from zephyr_remote_openocd.remote.outcome import CompletionPolicy, Trigger
 from zephyr_remote_openocd.remote.paths import REMOTE_ADDRESS_PLACEHOLDER, PathPlanner
-from zephyr_remote_openocd.remote.protocol import encode_message
 from zephyr_remote_openocd.remote.rtt import RttClientError, run_rtt_client
 from zephyr_remote_openocd.remote.session import SessionError, _SessionObservations
 from zephyr_remote_openocd.remote.ssh import (
@@ -60,13 +60,12 @@ from zephyr_remote_openocd.remote.ssh import (
     _stop_process,
 )
 from zephyr_remote_openocd.remote.staging import build_archive
-from zephyr_remote_openocd.remote.wire import decode_terminal
 
 from tests.process_support import cleanup_on_exit, local_transport, read_line, read_lines
 from tests.protocol_support import terminal_message
 from tests.support import ROOT
 
-TEST_PROCESS = RemoteProcess(("test-process",))
+TEST_PROCESS = ProcessSpec(("test-process",))
 OPENOCD_FAILURE_RC = 7
 HELPER_FAILURE_RC = 9
 
@@ -166,10 +165,10 @@ def test_interrupted_helper_acquisition_cleans_owned_control_process(tmp_path, m
 
 
 def test_sigint_during_helper_reader_start_keeps_one_owned_reader(monkeypatch):
-    created = encode_message(
+    created = encode_frame(
         "SESSION_CREATED", helper="test", session_id="session", remote_workspace="/workspace"
     )
-    ready = encode_message("ATTEMPT", argv=["test-process"]) + encode_message(
+    ready = encode_frame("ATTEMPT", argv=["test-process"]) + encode_frame(
         "READY", remote_address="127.64.0.1", child_pid=1
     )
     closed = terminal_message(Trigger.CONTROLLER_EOF, returncode=None, child_acquired=True)
@@ -231,14 +230,14 @@ def test_helper_close_allows_recorded_natural_exit_before_termination(
     exit_read, exit_write = os.pipe()
     events = b"".join(
         (
-            encode_message(
+            encode_frame(
                 "SESSION_CREATED",
                 helper="test",
                 session_id="session",
                 remote_workspace="/workspace",
             ),
-            encode_message("ATTEMPT", argv=["test-process"]),
-            encode_message("READY", remote_address="127.64.0.1", child_pid=1),
+            encode_frame("ATTEMPT", argv=["test-process"]),
+            encode_frame("READY", remote_address="127.64.0.1", child_pid=1),
             terminal_message(Trigger.CHILD_EXIT, returncode=openocd_returncode),
         )
     )
@@ -342,7 +341,7 @@ class _StagingHelper:
 
     def start_process(
         self,
-        process: RemoteProcess,
+        process: ProcessSpec,
         services: Iterable[Service],
         *,
         preferred_address: str | None = None,
@@ -385,7 +384,7 @@ def start_frame(
     preferred_address=None,
     completion_policy="live_server",
 ):
-    return encode_message(
+    return encode_frame(
         "START",
         completion_policy=completion_policy,
         argv=list(argv),
@@ -714,7 +713,7 @@ def test_sigint_during_session_close_cleans_owned_transports(
         RemoteSessionRequest(
             "target",
             LocalCommand(),
-            RemoteProcess(
+            ProcessSpec(
                 (
                     sys.executable,
                     "-c",
@@ -1554,7 +1553,7 @@ helper['stage'](sys.argv[2])
     @pytest.mark.parametrize(
         "response",
         (
-            encode_message(
+            encode_frame(
                 "STAGED",
                 byte_count=999,
                 sha256=hashlib.sha256(b"firmware").hexdigest(),
@@ -1594,7 +1593,7 @@ helper['stage'](sys.argv[2])
 
     def test_backend_rejects_staging_confirmation_with_wrong_digest(self, tmp_path):
         different_payload_digest = hashlib.sha256(b"different firmware").hexdigest()
-        response = encode_message(
+        response = encode_frame(
             "STAGED",
             byte_count=len(b"firmware"),
             sha256=different_payload_digest,
@@ -1621,7 +1620,7 @@ helper['stage'](sys.argv[2])
     def test_backend_reports_nonzero_staging_command_and_closes_archive(self):
         diagnostic = "staging destination is unavailable"
         staging_ssh_exit_status = 23
-        response = encode_message("ERROR", code="HELPER_ERROR", message=diagnostic)
+        response = encode_frame("ERROR", code="HELPER_ERROR", message=diagnostic)
 
         class LocalCommand(_BlockedSshCommand):
             stream: BinaryIO | None = None
@@ -2180,7 +2179,7 @@ helper['stage'](sys.argv[2])
             if close_input:
                 process.stdin.close()
             else:
-                process.stdin.write(encode_message("UNEXPECTED"))
+                process.stdin.write(encode_frame("UNEXPECTED"))
                 process.stdin.flush()
 
             events = [json.loads(line) for line in read_lines(process.stdout, timeout=10)]
@@ -2320,7 +2319,7 @@ helper['stage'](sys.argv[2])
 
             output = []
             sample_openocd_exit_code = 6
-            remote_process = RemoteProcess(
+            remote_process = ProcessSpec(
                 (
                     sys.executable,
                     "-c",
@@ -2388,7 +2387,7 @@ helper['stage'](sys.argv[2])
                 "    print(sys.argv[2], flush=True)\n"
                 "    time.sleep(30)\n"
             )
-            remote_process = RemoteProcess(
+            remote_process = ProcessSpec(
                 (sys.executable, "-c", child_code, str(descendant_ready), "ZRO_DESCENDANT_READY"),
                 required_output_sentinels=("ZRO_DESCENDANT_READY",),
             )
@@ -2417,7 +2416,7 @@ helper['stage'](sys.argv[2])
             (terminal_message().decode().rstrip("\n"), 0, None, None),
             (
                 (
-                    encode_message("ATTEMPT", argv=["child"])
+                    encode_frame("ATTEMPT", argv=["child"])
                     + terminal_message(Trigger.CHILD_EXIT, returncode=0)
                 )
                 .decode()
@@ -2597,7 +2596,7 @@ sys.exit({HELPER_FAILURE_RC})
                 "print(sys.argv[1], flush=True);"
                 "time.sleep(30)"
             )
-            remote_process = RemoteProcess(
+            remote_process = ProcessSpec(
                 (sys.executable, "-c", child_code, output_sentinel, str(child_pid_path)),
                 required_output_sentinels=(output_sentinel,),
             )
@@ -2653,7 +2652,7 @@ sys.exit({HELPER_FAILURE_RC})
                         check=False,
                     )
 
-            remote_process = RemoteProcess(
+            remote_process = ProcessSpec(
                 (
                     sys.executable,
                     "-c",

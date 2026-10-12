@@ -21,9 +21,11 @@ from unittest.mock import Mock, create_autospec
 import pytest
 import yaml
 from zephyr_remote_openocd.config import ConfigError, PathMapping, ResolvedRemote
+from zephyr_remote_openocd.protocol.arguments import ArgumentTemplate, SessionValue
+from zephyr_remote_openocd.protocol.outcome import Trigger
+from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.remote import RemoteSession
 from zephyr_remote_openocd.remote import backend as backend_module
-from zephyr_remote_openocd.remote.arguments import ArgumentTemplate, SessionValue
 from zephyr_remote_openocd.remote.debug import (
     DebugInputs,
     DebugPlan,
@@ -32,13 +34,7 @@ from zephyr_remote_openocd.remote.debug import (
 )
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
 from zephyr_remote_openocd.remote.forwarding import ForwardStartError
-from zephyr_remote_openocd.remote.model import (
-    RemoteProcess,
-    RemoteSessionRequest,
-    Service,
-    SessionAllocation,
-)
-from zephyr_remote_openocd.remote.outcome import Trigger
+from zephyr_remote_openocd.remote.model import RemoteSessionRequest, Service, SessionAllocation
 from zephyr_remote_openocd.remote.paths import PathPlanner
 from zephyr_remote_openocd.remote.session import SessionError
 from zephyr_remote_openocd.remote.ssh import SshCommand
@@ -51,7 +47,7 @@ from tests.support import ROOT, env_path
 
 pytestmark = pytest.mark.zephyr
 
-TEST_PROCESS = RemoteProcess(("test-process",))
+TEST_PROCESS = ProcessSpec(("test-process",))
 OPENOCD_FAILURE_RC = 7
 
 
@@ -62,7 +58,7 @@ def _debug_plan(
     rtt_service: Service | None = None,
 ) -> DebugPlan:
     return DebugPlan(
-        RemoteProcess(("openocd",)),
+        ProcessSpec(("openocd",)),
         (),
         services,
         gdb_argv,
@@ -152,7 +148,7 @@ def test_runner_logs_effective_remote_argv(
     runner = remote.create(
         cfg, parser_for(remote).parse_args(["--cmd-pre-init=echo {workspace}/generated.cfg"])
     )
-    processes: list[RemoteProcess] = []
+    processes: list[ProcessSpec] = []
     start_process = harness.helper.start_process
 
     def capture_start(process, services, *, preferred_address=None):
@@ -241,7 +237,7 @@ def test_runner_logs_effective_argv_when_remote_startup_fails(
     request = RemoteSessionRequest(
         "local",
         LocalHelperCommand(),
-        RemoteProcess(
+        ProcessSpec(
             (*fixed, "{workspace}/generated file", "{address}"),
             required_output_sentinels=("missing-startup-marker",),
             literal_prefix=len(fixed),

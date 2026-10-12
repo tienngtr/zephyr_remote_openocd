@@ -6,8 +6,8 @@ import json
 import subprocess
 import sys
 
+from zephyr_remote_openocd.protocol.wire import VERSION
 from zephyr_remote_openocd.remote.deploy import _helper_source
-from zephyr_remote_openocd.remote.protocol import PROTOCOL_VERSION
 
 
 def test_helper_bundle_is_deterministic_and_runs_without_local_package(tmp_path):
@@ -23,6 +23,6 @@ def test_helper_bundle_is_deterministic_and_runs_without_local_package(tmp_path)
         check=True,
     )
     response = json.loads(result.stdout)
-    assert response["version"] == PROTOCOL_VERSION == 1
+    assert response["version"] == VERSION == 1
     assert response["type"] == "OPENOCD_VERSION"
     assert "Python" in response["output"]

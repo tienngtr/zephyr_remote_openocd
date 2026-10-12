@@ -14,7 +14,6 @@ import fcntl
 import hashlib
 import io
 import ipaddress
-import math
 import os
 import secrets
 import shutil
@@ -39,16 +38,16 @@ from typing import IO, Any, Literal, NamedTuple
 if Path(__file__).name == "remote_helper.py":
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from zephyr_remote_openocd.remote.lifecycle import (  # noqa: E402
-    AuthorizedAttempt,
-    Closed,
-    Created,
-    OwnedAttempt,
-    RemoteLifecycle,
-    Starting,
-    Terminating,
+from zephyr_remote_openocd.protocol.arguments import (  # noqa: E402
+    materialize_argv,
+    materialize_path,
 )
-from zephyr_remote_openocd.remote.outcome import (  # noqa: E402
+from zephyr_remote_openocd.protocol.commands import (  # noqa: E402
+    StartRequest,
+    decode_command,
+    validate_argv,
+)
+from zephyr_remote_openocd.protocol.outcome import (
     CleanupReport,
     CompletionPolicy,
     Diagnostic,
@@ -57,10 +56,20 @@ from zephyr_remote_openocd.remote.outcome import (  # noqa: E402
     TerminalSnapshot,
     Trigger,
 )
-from zephyr_remote_openocd.remote.wire import (  # noqa: E402
+from zephyr_remote_openocd.protocol.wire import (
+    ControlFrameBuffer,  # noqa: E402
     decode_frame,
     encode_frame,
     terminal_fields,
+)
+from zephyr_remote_openocd.remote.lifecycle import (  # noqa: E402
+    AuthorizedAttempt,
+    Closed,
+    Created,
+    OwnedAttempt,
+    RemoteLifecycle,
+    Starting,
+    Terminating,
 )
 
 VERSION = 1
@@ -79,10 +88,10 @@ CHILD_GROUP_EXIT_TIMEOUT = 1
 CHILD_RELAY_JOIN_TIMEOUT = 2
 RELAY_CHUNK_SIZE = 64 * 1024
 # Keep in sync with remote/protocol.py; this file is deployed standalone.
-MAX_CONTROL_FRAME_SIZE = 1024 * 1024
+MAX_FRAME_SIZE = 1024 * 1024
 # A startup cut can inspect one maximum control frame's worth per raw source.
 # Continuously arriving bytes cannot keep the final scan open indefinitely.
-MAX_FINAL_OBSERVATION_BYTES = MAX_CONTROL_FRAME_SIZE
+MAX_FINAL_OBSERVATION_BYTES = MAX_FRAME_SIZE
 MAX_SESSION_ID_ATTEMPTS = 32
 MAX_ADDRESS_ALLOCATION_ATTEMPTS = 32
 # 18 random bytes provide 144 bits of entropy in a compact URL-safe ID.
@@ -592,188 +601,6 @@ def openocd_version(argv):
     emit("OPENOCD_VERSION", output=output)
 
 
-def _protocol_kind(message):
-    if (
-        not isinstance(message, dict)
-        or not isinstance(message.get("version"), int)
-        or isinstance(message.get("version"), bool)
-        or message["version"] != VERSION
-    ):
-        raise ValueError("incompatible or missing protocol version")
-    kind = message.get("type")
-    if not isinstance(kind, str) or not kind:
-        raise ValueError("missing protocol command type")
-    return kind
-
-
-def _valid_service(item):
-    return (
-        isinstance(item, dict)
-        and set(item) == {"name", "remote_port"}
-        and isinstance(item.get("name"), str)
-        and bool(item.get("name"))
-        and isinstance(item.get("remote_port"), int)
-        and not isinstance(item.get("remote_port"), bool)
-        and 1 <= item["remote_port"] <= 65535
-    )
-
-
-def _parse_services(services, label):
-    if not isinstance(services, list):
-        raise ValueError(f"{label} services are invalid")
-    if not all(_valid_service(item) for item in services):
-        raise ValueError(f"{label} services are invalid")
-    ports = [item["remote_port"] for item in services]
-    names = [item["name"] for item in services]
-    if len(ports) != len(set(ports)):
-        raise ValueError(f"{label} services must use unique remote ports")
-    if len(names) != len(set(names)):
-        raise ValueError(f"{label} services must use unique names")
-    return tuple(ServiceRequest(item["name"], item["remote_port"]) for item in services)
-
-
-def _validate_argv(argv):
-    if not isinstance(argv, list) or not argv:
-        raise ValueError("START requires a non-empty string argv")
-    if not isinstance(argv[0], str) or not argv[0]:
-        raise ValueError("START requires a non-empty string argv")
-    if not all(isinstance(arg, str) and "\0" not in arg for arg in argv):
-        raise ValueError("START requires a non-empty string argv")
-
-
-def _validate_environment(environment):
-    if not isinstance(environment, dict):
-        raise ValueError("START environment must contain valid string values")
-    for key, value in environment.items():
-        if (
-            not isinstance(key, str)
-            or not key
-            or "=" in key
-            or "\0" in key
-            or not isinstance(value, str)
-            or "\0" in value
-        ):
-            raise ValueError("START environment must contain valid string values")
-
-
-def _validate_required_output_sentinels(sentinels):
-    if not isinstance(sentinels, list) or not all(
-        isinstance(sentinel, str)
-        and sentinel
-        and sentinel == sentinel.strip()
-        and "\0" not in sentinel
-        and "\n" not in sentinel
-        and "\r" not in sentinel
-        for sentinel in sentinels
-    ):
-        raise ValueError("START required output markers are invalid")
-    if len(sentinels) != len(set(sentinels)):
-        raise ValueError("START required output markers must be unique")
-
-
-def _validate_timeout(timeout):
-    if (
-        not isinstance(timeout, (int, float))
-        or isinstance(timeout, bool)
-        or not math.isfinite(timeout)
-        or timeout <= 0
-    ):
-        raise ValueError("START readiness options are invalid")
-
-
-def _validate_literal_prefix(literal_prefix, argv_length):
-    if (
-        isinstance(literal_prefix, bool)
-        or not isinstance(literal_prefix, int)
-        or not 0 <= literal_prefix <= argv_length
-    ):
-        raise ValueError("START readiness options are invalid")
-
-
-def _validate_options(sentinels, timeout, literal_prefix, argv_length):
-    _validate_required_output_sentinels(sentinels)
-    _validate_timeout(timeout)
-    _validate_literal_prefix(literal_prefix, argv_length)
-
-
-class SessionValue(NamedTuple):
-    name: str
-
-
-class TclWord(NamedTuple):
-    parts: tuple[str | SessionValue, ...]
-
-
-class ArgumentTemplate(NamedTuple):
-    parts: tuple[str | SessionValue | TclWord, ...]
-
-
-def _parse_template_parts(values, *, allow_tcl=True):
-    if not isinstance(values, list) or not values:
-        raise ValueError("invalid argument template parts")
-    parts: list[str | SessionValue | TclWord] = []
-    for value in values:
-        if isinstance(value, str) and "\0" not in value:
-            parts.append(value)
-        elif isinstance(value, dict) and set(value) == {"session"}:
-            if value["session"] not in ("workspace", "address"):
-                raise ValueError("invalid argument template session value")
-            parts.append(SessionValue(value["session"]))
-        elif allow_tcl and isinstance(value, dict) and set(value) == {"tcl_word"}:
-            parts.append(TclWord(_parse_template_parts(value["tcl_word"], allow_tcl=False)))
-        else:
-            raise ValueError("invalid argument template part")
-    return tuple(parts)
-
-
-def _parse_argv_templates(values, argv_length, literal_prefix):
-    if not isinstance(values, list):
-        raise ValueError("invalid argv templates")
-    templates = []
-    seen = set()
-    for value in values:
-        if not isinstance(value, dict) or set(value) != {"index", "parts"}:
-            raise ValueError("invalid argv template")
-        index = value["index"]
-        if (
-            isinstance(index, bool)
-            or not isinstance(index, int)
-            or not literal_prefix <= index < argv_length
-            or index in seen
-        ):
-            raise ValueError("invalid argv template index")
-        seen.add(index)
-        templates.append((index, ArgumentTemplate(_parse_template_parts(value["parts"]))))
-    return tuple(templates)
-
-
-def _tcl_quote(value):
-    # Keep the literal-word quoting rule in sync with remote/tcl.py. The helper
-    # is deployed standalone and cannot import the local package.
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-    for character in "$[]{}":
-        escaped = escaped.replace(character, "\\" + character)
-    return '"' + escaped + '"'
-
-
-def _render_parts(parts, replacements):
-    result = []
-    for part in parts:
-        if isinstance(part, str):
-            result.append(part)
-        elif isinstance(part, SessionValue):
-            result.append(replacements[part.name])
-        else:
-            result.append(_tcl_quote(_render_parts(part.parts, replacements)))
-    return "".join(result)
-
-
-def materialize_path(value, *, workspace, address):
-    if isinstance(value, str):
-        return value
-    return _render_parts(value.parts, {"workspace": workspace, "address": address})
-
-
 def _check_required_paths(checks, replacements):
     for check in checks:
         path = materialize_path(check.path, **replacements)
@@ -783,121 +610,6 @@ def _check_required_paths(checks, replacements):
         valid = candidate.is_file() if check.kind == "file" else candidate.is_dir()
         if not valid:
             raise ValueError(f"required remote {check.kind} is missing: {candidate}")
-
-
-class ServiceRequest(NamedTuple):
-    """Validated service data from one START request."""
-
-    name: str
-    remote_port: int
-
-
-class RequiredPath(NamedTuple):
-    kind: str
-    path: str | ArgumentTemplate
-
-
-class StartRequest(NamedTuple):
-    completion_policy: CompletionPolicy
-    argv: tuple[str, ...]
-    environment: tuple[tuple[str, str], ...]
-    required_paths: tuple[RequiredPath, ...]
-    services: tuple[ServiceRequest, ...]
-    required_output_sentinels: tuple[str, ...]
-    readiness_timeout: float
-    literal_prefix: int
-    argv_templates: tuple[tuple[int, ArgumentTemplate], ...]
-    preferred_address: str | None
-
-
-def _validate_preferred_address(address):
-    if address is None:
-        return
-    if not isinstance(address, str):
-        raise ValueError("preferred address must be a string or null")
-    parsed = ipaddress.IPv4Address(address)
-    if (
-        str(parsed) != address
-        or parsed not in RANGE
-        or parsed in (RANGE.network_address, RANGE.broadcast_address)
-    ):
-        raise ValueError("preferred address must be a usable address in 127.64.0.0/10")
-
-
-def _parse_required_paths(values):
-    if not isinstance(values, list):
-        raise ValueError("invalid required-path assertion")
-    return tuple(_parse_required_path(item) for item in values)
-
-
-def _parse_required_path(item):
-    if (
-        not isinstance(item, dict)
-        or set(item) != {"kind", "path"}
-        or item.get("kind") not in ("file", "directory")
-    ):
-        raise ValueError("invalid required-path assertion")
-    path = item["path"]
-    if isinstance(path, str):
-        if not path or "\0" in path:
-            raise ValueError("invalid required-path assertion")
-    elif isinstance(path, dict) and set(path) == {"parts"}:
-        path = ArgumentTemplate(_parse_template_parts(path["parts"], allow_tcl=False))
-    else:
-        raise ValueError("invalid required-path assertion")
-    return RequiredPath(item["kind"], path)
-
-
-def _decode_start(message):
-    fields = {
-        "version",
-        "type",
-        "argv",
-        "environment",
-        "required_paths",
-        "services",
-        "required_output_sentinels",
-        "readiness_timeout",
-        "literal_prefix",
-        "argv_templates",
-        "preferred_address",
-        "completion_policy",
-    }
-    if set(message) != fields:
-        raise ValueError("START fields are invalid")
-    argv = message["argv"]
-    environment = message["environment"]
-    sentinels = message["required_output_sentinels"]
-    timeout = message["readiness_timeout"]
-    literal_prefix = message["literal_prefix"]
-    _validate_argv(argv)
-    _validate_environment(environment)
-    _validate_options(sentinels, timeout, literal_prefix, len(argv))
-    services = _parse_services(message["services"], "START")
-    checks = _parse_required_paths(message["required_paths"])
-    templates = _parse_argv_templates(message["argv_templates"], len(argv), literal_prefix)
-    preferred_address = message["preferred_address"]
-    _validate_preferred_address(preferred_address)
-    return StartRequest(
-        CompletionPolicy(message["completion_policy"]),
-        tuple(argv),
-        tuple(environment.items()),
-        checks,
-        services,
-        tuple(sentinels),
-        float(timeout),
-        literal_prefix,
-        templates,
-        preferred_address,
-    )
-
-
-def decode_command(message):
-    """Decode and validate one control command into an immutable request."""
-    kind = _protocol_kind(message)
-    if kind == "START":
-        return _decode_start(message)
-    raise ValueError("only START is valid on controller input")
 
 
 async def _readable(descriptor: int) -> None:
@@ -1413,58 +1125,10 @@ def _spawn_child(
         owner.producer_quiescent = True
 
 
-def materialize_argv(
-    argv: Iterable[str],
-    *,
-    workspace: str,
-    address: str,
-    literal_prefix: int = 0,
-    argv_templates: Iterable[tuple[int, ArgumentTemplate]] = (),
-) -> tuple[str, ...]:
-    """Resolve only explicit runner-owned templates, preserving all literal text.
-
-    The helper reports this exact argv before spawning each child attempt so
-    diagnostics never reconstruct session expansion independently.
-    """
-    replacements = {"workspace": workspace, "address": address}
-    templates = dict(argv_templates)
-    return tuple(
-        _render_parts(templates[index].parts, replacements)
-        if index >= literal_prefix and index in templates
-        else arg
-        for index, arg in enumerate(argv)
-    )
-
-
 def _child_environment(request):
     environment = os.environ.copy()
     environment.update(dict(request.environment))
     return environment
-
-
-class _ControlFrames:
-    """Incrementally frame bounded LF-delimited control input."""
-
-    def __init__(self):
-        self._buffer = bytearray()
-
-    def feed(self, chunk: bytes) -> None:
-        self._buffer.extend(chunk)
-
-    def pop_frame(self) -> bytes | None:
-        delimiter = self._buffer.find(b"\n")
-        size = delimiter + 1 if delimiter >= 0 else len(self._buffer) + 1
-        if size > MAX_CONTROL_FRAME_SIZE:
-            raise ValueError("protocol frame exceeds maximum size")
-        if delimiter < 0:
-            return None
-        frame = bytes(self._buffer[: delimiter + 1])
-        del self._buffer[: delimiter + 1]
-        return frame
-
-    def finish(self) -> None:
-        if self._buffer:
-            raise ValueError("protocol frame is missing its LF delimiter")
 
 
 class _StartReceived(NamedTuple):
@@ -1624,7 +1288,7 @@ class ControlSession:
         await self._events.put(_SignalReceived(await self._signals.get()))
 
     async def _observe_control(self) -> None:
-        frames = _ControlFrames()
+        frames = ControlFrameBuffer()
         started = False
         with _AsyncInput(sys.stdin.buffer.fileno()) as reader:
             while True:
@@ -1639,7 +1303,7 @@ class ControlSession:
                 frame = frames.pop_frame()
                 if frame is not None:
                     request = decode_command(decode_frame(frame))
-                    if frames._buffer:
+                    if frames.has_pending_bytes:
                         raise ValueError("unexpected input after START")
                     started = True
                     await self._events.put(_StartReceived(request))
@@ -1748,7 +1412,7 @@ class ControlSession:
             return
         request = state.request
         allocated = allocate_service_address(
-            [service.remote_port for service in request.services],
+            [service.remote_port for service in request.listeners],
             preferred_address=request.preferred_address,
         )
         self._address_lease = allocated.lease
@@ -1760,7 +1424,7 @@ class ControlSession:
             literal_prefix=request.literal_prefix,
             argv_templates=request.argv_templates,
         )
-        _validate_argv(list(argv))
+        validate_argv(list(argv))
         _check_required_paths(
             request.required_paths, {"workspace": str(self.work), "address": self.address}
         )

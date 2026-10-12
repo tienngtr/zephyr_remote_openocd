@@ -8,9 +8,9 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from zephyr_remote_openocd.config import PathMapping
-
-from .arguments import ArgumentTemplate, SessionValue
-from .model import RemotePathCheck, StagedDirectory, StagedEntry, StagedFile
+from zephyr_remote_openocd.protocol.arguments import ArgumentTemplate, SessionValue
+from zephyr_remote_openocd.protocol.process import RequiredPathSpec
+from zephyr_remote_openocd.remote.model import StagedDirectory, StagedEntry, StagedFile
 
 WORKSPACE_PLACEHOLDER = "{workspace}"
 REMOTE_ADDRESS_PLACEHOLDER = "{address}"
@@ -35,7 +35,7 @@ class PathPlanner:
             sorted(mappings, key=lambda item: len(item.local.parts), reverse=True)
         )
         self.staged_files: list[StagedEntry] = []
-        self.remote_checks: list[RemotePathCheck] = []
+        self.remote_checks: list[RequiredPathSpec] = []
         self._staged_roots: list[tuple[Path, PurePosixPath]] = []
         self._destinations: dict[PurePosixPath, str] = {}
 
@@ -77,7 +77,7 @@ class PathPlanner:
         if mapped:
             mapping, relative = mapped
             remote = str(mapping.remote.joinpath(*relative.parts))
-            self.remote_checks.append(RemotePathCheck(remote, "directory"))
+            self.remote_checks.append(RequiredPathSpec(remote, "directory"))
             return PlannedPath(source, remote, "directory", True)
         existing = self._existing_staged(source)
         if existing:
@@ -97,7 +97,7 @@ class PathPlanner:
         if mapped:
             mapping, relative = mapped
             remote = str(mapping.remote.joinpath(*relative.parts))
-            self.remote_checks.append(RemotePathCheck(remote, "file"))
+            self.remote_checks.append(RequiredPathSpec(remote, "file"))
             return PlannedPath(source, remote, "file", True)
         existing = self._existing_staged(source)
         if existing:

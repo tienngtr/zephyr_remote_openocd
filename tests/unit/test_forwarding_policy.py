@@ -10,12 +10,12 @@ from typing import cast
 from unittest.mock import create_autospec
 
 import pytest
+from zephyr_remote_openocd.protocol.outcome import Trigger
+from zephyr_remote_openocd.protocol.wire import encode_frame
 from zephyr_remote_openocd.remote import preferred_address_cache
 from zephyr_remote_openocd.remote import ssh as ssh_module
 from zephyr_remote_openocd.remote.forwarding import ForwardStartError
 from zephyr_remote_openocd.remote.helper_client import _HelperClient
-from zephyr_remote_openocd.remote.outcome import Trigger
-from zephyr_remote_openocd.remote.protocol import encode_message
 from zephyr_remote_openocd.remote.session import SessionError
 from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand
 
@@ -52,7 +52,7 @@ def test_close_preserves_recorded_session_failure_over_forward_cleanup(
         process.stderr_tail.return_value = b""
         os.write(
             write_fd,
-            encode_message(
+            encode_frame(
                 "SESSION_CREATED",
                 session_id="session",
                 remote_workspace="/workspace",

@@ -14,11 +14,12 @@ from types import FrameType, SimpleNamespace
 from typing import IO, Any, cast, override
 
 import pytest
+from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.remote import forwarding as forwarding_module
 from zephyr_remote_openocd.remote.backend import RemoteSession
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
 from zephyr_remote_openocd.remote.forwarding import ForwardFailure, _ForwardManager
-from zephyr_remote_openocd.remote.model import RemoteProcess, RemoteSessionRequest, Service
+from zephyr_remote_openocd.remote.model import RemoteSessionRequest, Service
 from zephyr_remote_openocd.remote.session import SessionError
 from zephyr_remote_openocd.remote.ssh import (
     SSH_STDERR_TAIL_BYTES,
@@ -587,7 +588,7 @@ def test_sigint_at_forward_rollback_entry_keeps_both_transports_owned(monkeypatc
             return process
 
     session = RemoteSession(
-        RemoteSessionRequest("target", Command(), RemoteProcess(("unused",))),
+        RemoteSessionRequest("target", Command(), ProcessSpec(("unused",))),
         DeploymentResult("/helper.py", "digest", False),
     )
     manager = session._forwards

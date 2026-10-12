@@ -11,7 +11,8 @@ import tempfile
 from contextlib import suppress
 from pathlib import Path
 
-from .services import validate_preferred_address
+from zephyr_remote_openocd.protocol.addresses import validate_preferred_address
+
 from .ssh import SshCommand
 
 

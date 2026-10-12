@@ -7,16 +7,13 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 from zephyr_remote_openocd.config import PathMapping
-from zephyr_remote_openocd.remote.model import (
-    RemotePathCheck,
-    RemoteProcess,
-    StagedDirectory,
-    StagedFile,
-)
+from zephyr_remote_openocd.protocol.arguments import materialize_argv, materialize_path
+from zephyr_remote_openocd.protocol.commands import decode_command, write_start
+from zephyr_remote_openocd.protocol.process import ProcessSpec, RequiredPathSpec
+from zephyr_remote_openocd.protocol.wire import decode_frame
+from zephyr_remote_openocd.remote.model import StagedDirectory, StagedFile
 from zephyr_remote_openocd.remote.openocd_plan import plan_openocd_base, plan_support_paths
 from zephyr_remote_openocd.remote.paths import PathPlanner, PathPlanningError
-from zephyr_remote_openocd.remote.protocol import decode_message, write_start
-from zephyr_remote_openocd.remote_helper import _decode_start, materialize_argv, materialize_path
 
 
 @pytest.mark.parametrize("mapped", (False, True), ids=("staged", "mapped"))
@@ -34,7 +31,7 @@ def test_search_tree_token_text_remains_literal_through_helper_materialization(
     stream = io.BytesIO()
     write_start(
         stream,
-        RemoteProcess(
+        ProcessSpec(
             base.argv,
             required_paths=tuple(planner.remote_checks),
             literal_prefix=base.literal_prefix,
@@ -42,7 +39,7 @@ def test_search_tree_token_text_remains_literal_through_helper_materialization(
         ),
         (),
     )
-    request = _decode_start(decode_message(stream.getvalue()))
+    request = decode_command(decode_frame(stream.getvalue()))
     workspace = "/runtime/{address}/{workspace}/session"
     argv = materialize_argv(
         request.argv,
@@ -100,7 +97,7 @@ def test_relative_config_uses_first_search_root(
     assert [path.remote for path in search] == expected_search
     assert [path.remote for path in configs] == [expected_search[0] + "/interface/example.cfg"]
     if mapped:
-        assert RemotePathCheck(configs[0].remote, "file") in planner.remote_checks
+        assert RequiredPathSpec(configs[0].remote, "file") in planner.remote_checks
         assert not planner.staged_files
     else:
         staged = [item for item in planner.staged_files if isinstance(item, StagedFile)]
@@ -152,7 +149,7 @@ def test_direct_config_takes_precedence_over_search_roots(
 
     if mapped:
         assert [path.remote for path in configs] == ["/remote/example.cfg"]
-        assert RemotePathCheck("/remote/example.cfg", "file") in planner.remote_checks
+        assert RequiredPathSpec("/remote/example.cfg", "file") in planner.remote_checks
     else:
         staged_configs = [
             item

@@ -5,8 +5,8 @@
 import asyncio
 
 import pytest
+from zephyr_remote_openocd.protocol.outcome import Diagnostic
 from zephyr_remote_openocd.remote.launch import LaunchDenied, LaunchGate
-from zephyr_remote_openocd.remote.outcome import Diagnostic
 
 from tests.forwarding_support import GDB, RTT
 

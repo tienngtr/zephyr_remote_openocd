@@ -11,11 +11,12 @@ from pathlib import Path
 from typing import override
 
 import pytest
+from zephyr_remote_openocd.protocol.process import ProcessSpec
+from zephyr_remote_openocd.protocol.wire import ProtocolError
 from zephyr_remote_openocd.remote.backend import RemoteSession
 from zephyr_remote_openocd.remote.forwarding import _ForwardManager
 from zephyr_remote_openocd.remote.helper_client import _HelperClient
-from zephyr_remote_openocd.remote.model import RemoteProcess, RemoteSessionRequest, Service
-from zephyr_remote_openocd.remote.protocol import ProtocolError
+from zephyr_remote_openocd.remote.model import RemoteSessionRequest, Service
 from zephyr_remote_openocd.remote.session import SessionError
 from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand, SshLocalForward
 
@@ -101,7 +102,7 @@ def test_acquisition_rejects_helper_termination_recorded_during_forwarding(
         RemoteSessionRequest(
             "controlled-host",
             Command((str(peer),)),
-            RemoteProcess(("openocd",)),
+            ProcessSpec(("openocd",)),
             services=(service,),
             auxiliary_services=(service,) if auxiliary else (),
         )
@@ -150,9 +151,7 @@ def test_failure_recorded_during_forward_readiness_remains_primary(
 
     monkeypatch.setattr(_ForwardManager, "_await_ready", staticmethod(fail_readiness))
     session = RemoteSession.prepare(
-        RemoteSessionRequest(
-            "controlled-host", SshCommand((str(peer),)), RemoteProcess(("openocd",))
-        )
+        RemoteSessionRequest("controlled-host", SshCommand((str(peer),)), ProcessSpec(("openocd",)))
     )
     try:
         session.acquire()
@@ -213,7 +212,7 @@ def test_recorded_terminal_prevents_new_forward_entry(
             return super().popen(host, remote_command)
 
     session = RemoteSession.prepare(
-        RemoteSessionRequest("controlled-host", Command((str(peer),)), RemoteProcess(("openocd",)))
+        RemoteSessionRequest("controlled-host", Command((str(peer),)), ProcessSpec(("openocd",)))
     )
     with cleanup_on_exit(session.close):
         session.acquire()

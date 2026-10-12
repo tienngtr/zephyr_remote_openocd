@@ -19,23 +19,21 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 from zephyr_remote_openocd.config import PathMapping
+from zephyr_remote_openocd.protocol.arguments import ArgumentTemplate, SessionValue
+from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
+from zephyr_remote_openocd.protocol.process import ProcessSpec
+from zephyr_remote_openocd.protocol.responses import validate_openocd_version_response
+from zephyr_remote_openocd.protocol.wire import decode_frame
 from zephyr_remote_openocd.remote import (
-    RemoteProcess,
     RemoteSession,
     RemoteSessionRequest,
     Service,
     SessionError,
     StagedFile,
 )
-from zephyr_remote_openocd.remote.arguments import ArgumentTemplate, SessionValue
 from zephyr_remote_openocd.remote.deploy import _helper_source, deploy_helper
 from zephyr_remote_openocd.remote.forwarding import _ForwardManager
-from zephyr_remote_openocd.remote.outcome import CompletionPolicy
 from zephyr_remote_openocd.remote.paths import PathPlanner
-from zephyr_remote_openocd.remote.protocol import (
-    decode_single_frame,
-    validate_openocd_version_response,
-)
 from zephyr_remote_openocd.remote.ssh import (
     SshCommand,
     SshLocalForward,
@@ -117,8 +115,8 @@ with tempfile.TemporaryDirectory(prefix='zro qualification ') as directory:
 """
 
 
-def session_echo_process() -> RemoteProcess:
-    return RemoteProcess(
+def session_echo_process() -> ProcessSpec:
+    return ProcessSpec(
         ("python3", "-c", REMOTE_SESSION_ECHO, "{address}", "3333"),
         required_output_sentinels=("ZRO_TEST_READY",),
         literal_prefix=3,
@@ -393,7 +391,7 @@ collision.listen()
 """
             + REMOTE_SESSION_ECHO
         )
-        process = RemoteProcess(
+        process = ProcessSpec(
             ("python3", "-c", child, "{address}", "3333", "{workspace}/first-address"),
             required_output_sentinels=("ZRO_TEST_READY",),
             literal_prefix=3,
@@ -483,7 +481,7 @@ collision.listen()
                 timeout=20,
             )
             assert response.returncode == 0, response.stderr.decode(errors="replace")
-            event = decode_single_frame(response.stdout)
+            event = decode_frame(response.stdout)
             validate_openocd_version_response(event)
             assert event["type"] == "OPENOCD_VERSION"
             wait_for_echo(request.services[0].local_port, b"active_revision_survived", 20)
@@ -691,7 +689,7 @@ collision.listen()
             planner = PathPlanner(mappings)
             planned = planner.plan_file(config, "environment")
             output = []
-            process = RemoteProcess(
+            process = ProcessSpec(
                 (*openocd_command, "-f", planned.remote),
                 (("ZRO_CONFIG_VALUE", "channel_1"),),
                 required_paths=tuple(planner.remote_checks),

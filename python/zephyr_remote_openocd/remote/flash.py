@@ -8,10 +8,12 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from .arguments import ArgumentTemplate, SessionValue, TclPathArgument
-from .model import RemoteProcess
+from zephyr_remote_openocd.protocol.arguments import ArgumentTemplate, SessionValue
+from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
+from zephyr_remote_openocd.protocol.process import ProcessSpec
+from zephyr_remote_openocd.remote.arguments import TclPathArgument
+
 from .openocd_plan import OpenOcdBasePlan, plan_openocd_base
-from .outcome import CompletionPolicy
 from .paths import PathPlanner
 
 
@@ -50,7 +52,7 @@ class FlashInputs:
 
 @dataclass(frozen=True)
 class FlashPlan:
-    process: RemoteProcess
+    process: ProcessSpec
     staged_files: tuple
     image: str
 
@@ -274,7 +276,7 @@ def build_flash_plan(
         )
 
     arguments = _flash_argv(inputs, base, image, erase_commands)
-    process = RemoteProcess(
+    process = ProcessSpec(
         tuple(arg.render() if isinstance(arg, TclPathArgument) else arg for arg in arguments),
         environment,
         tuple(planner.remote_checks),

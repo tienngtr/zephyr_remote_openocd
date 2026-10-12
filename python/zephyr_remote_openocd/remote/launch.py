@@ -11,8 +11,9 @@ itself owns no synchronization.
 from collections.abc import Iterable
 from enum import Enum, auto
 
+from zephyr_remote_openocd.protocol.outcome import Diagnostic
+
 from .model import Service
-from .outcome import Diagnostic
 
 
 class LocalPhase(Enum):

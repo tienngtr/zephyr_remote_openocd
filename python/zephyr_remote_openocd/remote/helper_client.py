@@ -14,19 +14,22 @@ import time
 from collections.abc import Callable, Iterable
 from typing import BinaryIO, cast
 
-from .deploy import DeploymentResult
-from .model import RemoteProcess, Service, SessionAllocation
-from .outcome import CompletionPolicy
-from .protocol import (
+from zephyr_remote_openocd.protocol.commands import write_start
+from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
+from zephyr_remote_openocd.protocol.process import ProcessSpec
+from zephyr_remote_openocd.protocol.wire import (
+    MAX_FRAME_SIZE,
     EventOrder,
     ProtocolError,
-    decode_single_frame,
+    decode_frame,
+    decode_terminal,
     read_message,
-    write_start,
 )
+from zephyr_remote_openocd.remote.model import Service, SessionAllocation
+
+from .deploy import DeploymentResult
 from .session import SessionError, _SessionObservations
 from .ssh import ManagedSshProcess, SshCommand, _stop_process
-from .wire import MAX_FRAME_SIZE, decode_terminal
 
 # The helper gives a supervised child five seconds to exit after SIGTERM,
 # followed by up to four seconds joining its relay threads and workspace
@@ -68,7 +71,7 @@ class _HelperClient:
 
     def start_process(
         self,
-        process: RemoteProcess,
+        process: ProcessSpec,
         services: Iterable[Service],
         *,
         preferred_address: str | None = None,
@@ -81,7 +84,7 @@ class _HelperClient:
 
     def _start_process(
         self,
-        process: RemoteProcess,
+        process: ProcessSpec,
         services: Iterable[Service],
         *,
         preferred_address: str | None = None,
@@ -94,7 +97,10 @@ class _HelperClient:
         if helper.stdin is None:
             raise SessionError("helper stdin was not captured")
         write_start(
-            cast(BinaryIO, helper.stdin), process, service_list, preferred_address=preferred_address
+            cast(BinaryIO, helper.stdin),
+            process,
+            (service.listener for service in service_list),
+            preferred_address=preferred_address,
         )
         address = (
             self._await_process_ready()
@@ -259,7 +265,7 @@ class _HelperClient:
                 if len(pending) > MAX_FRAME_SIZE:
                     raise ProtocolError("protocol frame exceeds the size limit")
                 if chunk == b"\n":
-                    return decode_single_frame(bytes(pending))
+                    return decode_frame(bytes(pending))
         finally:
             selector.close()
 

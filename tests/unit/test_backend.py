@@ -9,18 +9,14 @@ from dataclasses import replace
 from typing import override
 
 import pytest
+from zephyr_remote_openocd.protocol.outcome import Trigger
+from zephyr_remote_openocd.protocol.process import ProcessSpec
+from zephyr_remote_openocd.protocol.wire import ProtocolError, encode_frame
 from zephyr_remote_openocd.remote import backend as backend_module
 from zephyr_remote_openocd.remote.backend import RemoteSession, query_remote_openocd_version
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
 from zephyr_remote_openocd.remote.forwarding import ForwardFailure
-from zephyr_remote_openocd.remote.model import (
-    RemoteProcess,
-    RemoteSessionRequest,
-    Service,
-    SessionAllocation,
-)
-from zephyr_remote_openocd.remote.outcome import Trigger
-from zephyr_remote_openocd.remote.protocol import ProtocolError, encode_message
+from zephyr_remote_openocd.remote.model import RemoteSessionRequest, Service, SessionAllocation
 from zephyr_remote_openocd.remote.session import SessionClosedError, SessionError
 from zephyr_remote_openocd.remote.ssh import SshCommand
 
@@ -43,7 +39,7 @@ class _BlockedHelper:
 
     def start_process(
         self,
-        process: RemoteProcess,
+        process: ProcessSpec,
         services: Iterable[Service],
         *,
         preferred_address: str | None = None,
@@ -93,7 +89,7 @@ class _BlockedForwards:
 
 
 def _make_session() -> RemoteSession:
-    request = RemoteSessionRequest("host", SshCommand(), RemoteProcess(("openocd",)))
+    request = RemoteSessionRequest("host", SshCommand(), ProcessSpec(("openocd",)))
     deployment = DeploymentResult("/helper.py", "digest", False)
     return RemoteSession(request, deployment)
 
@@ -124,7 +120,7 @@ def test_session_validates_reserved_services_without_forwarding_them(monkeypatch
         ),
         pytest.param(
             HELPER_FAILURE_RC,
-            encode_message("ERROR", code="HELPER_ERROR", message="version probe failed"),
+            encode_frame("ERROR", code="HELPER_ERROR", message="version probe failed"),
             b"",
             (str(HELPER_FAILURE_RC), "HELPER_ERROR", "version probe failed"),
             id="helper-error",
@@ -138,7 +134,7 @@ def test_session_validates_reserved_services_without_forwarding_them(monkeypatch
         ),
         pytest.param(
             0,
-            encode_message("OPENOCD_VERSION", output="OpenOCD 0.12.0").rstrip(b"\n"),
+            encode_frame("OPENOCD_VERSION", output="OpenOCD 0.12.0").rstrip(b"\n"),
             b"",
             (),
             id="missing-lf",
@@ -175,7 +171,7 @@ def test_version_query_rejects_failed_or_malformed_response(
 
 
 def test_staging_rejects_response_without_lf(monkeypatch):
-    response = encode_message(
+    response = encode_frame(
         "STAGED", byte_count=0, sha256=hashlib.sha256(b"").hexdigest(), files=[], directories=[]
     ).rstrip(b"\n")
     deployment = DeploymentResult("/helper.py", "digest", False)
@@ -215,7 +211,7 @@ def test_staging_rejects_response_without_lf(monkeypatch):
         lambda _ssh_command, _host: deployment,
     )
     monkeypatch.setattr(backend_module, "_HelperClient", make_helper)
-    request = RemoteSessionRequest("target", ReplyCommand(), RemoteProcess(("openocd",)))
+    request = RemoteSessionRequest("target", ReplyCommand(), ProcessSpec(("openocd",)))
 
     with pytest.raises(SessionError) as raised:
         session = RemoteSession.prepare(request)

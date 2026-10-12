@@ -12,9 +12,10 @@ import ipaddress
 import json
 import math
 from dataclasses import asdict
-from typing import Any
+from typing import Any, BinaryIO
 
-from .outcome import (
+from zephyr_remote_openocd.protocol.addresses import LOOPBACK_RANGE
+from zephyr_remote_openocd.protocol.outcome import (
     ChildResult,
     CleanupReport,
     CompletionPolicy,
@@ -26,7 +27,6 @@ from .outcome import (
 
 VERSION = 1
 MAX_FRAME_SIZE = 1024 * 1024
-_RANGE = ipaddress.IPv4Network("127.64.0.0/10")
 _RESIDUALS = frozenset(
     (
         "child_producer",
@@ -234,8 +234,8 @@ def _valid_address(value: Any) -> bool:
         return False
     return (
         str(address) == value
-        and address in _RANGE
-        and address not in (_RANGE.network_address, _RANGE.broadcast_address)
+        and address in LOOPBACK_RANGE
+        and address not in (LOOPBACK_RANGE.network_address, LOOPBACK_RANGE.broadcast_address)
     )
 
 
@@ -330,3 +330,44 @@ class EventOrder:
             ) and snapshot.cleanup.child_disposal == "not_acquired":
                 raise ProtocolError("observed child reported as not acquired")
             self.ended = True
+
+
+def is_protocol_version(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value == VERSION
+
+
+def read_message(stream: BinaryIO) -> dict[str, Any]:
+    line = stream.readline(MAX_FRAME_SIZE + 1)
+    if not line:
+        raise EOFError("helper control channel closed")
+    return decode_frame(line)
+
+
+class ControlFrameBuffer:
+    """Incrementally frame bounded LF-delimited control input."""
+
+    def __init__(self) -> None:
+        self._buffer = bytearray()
+
+    @property
+    def has_pending_bytes(self) -> bool:
+        """Report trailing input without exposing the mutable frame storage."""
+        return bool(self._buffer)
+
+    def feed(self, chunk: bytes) -> None:
+        self._buffer.extend(chunk)
+
+    def pop_frame(self) -> bytes | None:
+        delimiter = self._buffer.find(b"\n")
+        size = delimiter + 1 if delimiter >= 0 else len(self._buffer) + 1
+        if size > MAX_FRAME_SIZE:
+            raise ValueError("protocol frame exceeds maximum size")
+        if delimiter < 0:
+            return None
+        frame = bytes(self._buffer[: delimiter + 1])
+        del self._buffer[: delimiter + 1]
+        return frame
+
+    def finish(self) -> None:
+        if self._buffer:
+            raise ValueError("protocol frame is missing its LF delimiter")

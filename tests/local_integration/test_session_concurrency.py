@@ -15,9 +15,10 @@ from types import FrameType
 from typing import override
 
 import pytest
+from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.remote import RemoteSession
 from zephyr_remote_openocd.remote.flash import FlashInputs, build_flash_plan
-from zephyr_remote_openocd.remote.model import RemoteProcess, RemoteSessionRequest
+from zephyr_remote_openocd.remote.model import RemoteSessionRequest
 from zephyr_remote_openocd.remote.paths import PathPlanner
 from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand, SshLocalForward
 
@@ -44,7 +45,7 @@ def test_interruption_after_session_acquisition_cleans_helper_and_child(tmp_path
             transports.append(process)
             return process
 
-    child = RemoteProcess(
+    child = ProcessSpec(
         (
             sys.executable,
             "-c",

@@ -12,17 +12,14 @@ from typing import BinaryIO, cast, override
 from unittest.mock import Mock, create_autospec
 
 import pytest
+from zephyr_remote_openocd.protocol.commands import write_start
+from zephyr_remote_openocd.protocol.process import ProcessSpec
+from zephyr_remote_openocd.protocol.wire import decode_frame, encode_frame
 from zephyr_remote_openocd.remote import backend as backend_module
 from zephyr_remote_openocd.remote.backend import RemoteSession
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
 from zephyr_remote_openocd.remote.forwarding import ForwardAdvisory, _ForwardManager
-from zephyr_remote_openocd.remote.model import (
-    RemoteProcess,
-    RemoteSessionRequest,
-    Service,
-    SessionAllocation,
-)
-from zephyr_remote_openocd.remote.protocol import decode_message, encode_message, write_start
+from zephyr_remote_openocd.remote.model import RemoteSessionRequest, Service, SessionAllocation
 from zephyr_remote_openocd.remote.session import _SessionObservations
 from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand, SshLocalForward
 from zephyr_remote_openocd.remote_helper import decode_command, materialize_argv
@@ -91,7 +88,7 @@ class ControlledHelper:
 
     def start_process(
         self,
-        process: RemoteProcess,
+        process: ProcessSpec,
         services: Iterable[Service],
         *,
         preferred_address: str | None = None,
@@ -100,7 +97,7 @@ class ControlledHelper:
         if self.process_start_handler is not None:
             stream = io.BytesIO()
             write_start(stream, process, (), preferred_address=preferred_address)
-            request = decode_command(decode_message(stream.getvalue()))
+            request = decode_command(decode_frame(stream.getvalue()))
             self.process_start_handler(
                 materialize_argv(
                     process.argv,
@@ -162,7 +159,7 @@ class ControlledSshCommand(SshCommand):
         return subprocess.CompletedProcess(
             (),
             0,
-            encode_message(
+            encode_frame(
                 "STAGED",
                 files=[],
                 directories=[],
@@ -214,7 +211,7 @@ class ForwardingHarness:
         return RemoteSessionRequest(
             "host",
             self.ssh,
-            RemoteProcess(("openocd",)),
+            ProcessSpec(("openocd",)),
             services=services,
             auxiliary_services=auxiliary,
         )

@@ -24,11 +24,11 @@ from typing import IO
 from unittest.mock import create_autospec
 
 import pytest
+from zephyr_remote_openocd.protocol.commands import write_start
+from zephyr_remote_openocd.protocol.outcome import CompletionPolicy, Trigger
+from zephyr_remote_openocd.protocol.process import ProcessSpec, RequiredPathSpec
+from zephyr_remote_openocd.protocol.wire import decode_terminal
 from zephyr_remote_openocd.remote.lifecycle import Closed
-from zephyr_remote_openocd.remote.model import RemotePathCheck, RemoteProcess
-from zephyr_remote_openocd.remote.outcome import CompletionPolicy, Trigger
-from zephyr_remote_openocd.remote.protocol import write_start
-from zephyr_remote_openocd.remote.wire import decode_terminal
 
 from tests.support import ROOT
 
@@ -49,26 +49,6 @@ def control_pipe(monkeypatch):
     with os.fdopen(read_fd, "rb") as reader, os.fdopen(write_fd, "wb", buffering=0) as writer:
         monkeypatch.setattr(remote_helper.sys, "stdin", SimpleNamespace(buffer=reader))
         yield reader, writer
-
-
-def test_control_frames_retain_partial_bytes_without_waiting_for_lf():
-    frames = remote_helper._ControlFrames()
-    frames.feed(b'{"value":"\xc3')
-    assert frames.pop_frame() is None
-    frames.feed(b'\xa9"}')
-    assert frames.pop_frame() is None
-    frames.feed(b"\n")
-    assert json.loads(frames.pop_frame()) == {"value": "é"}
-    frames.finish()
-
-
-@pytest.mark.parametrize("payload", (b"x" * 32, b"x" * 32 + b"\n"))
-def test_control_frames_reject_oversized_input(monkeypatch, payload):
-    monkeypatch.setattr(remote_helper, "MAX_CONTROL_FRAME_SIZE", 32)
-    frames = remote_helper._ControlFrames()
-    frames.feed(payload)
-    with pytest.raises(ValueError):
-        frames.pop_frame()
 
 
 def _wait_for_descendant(path):
@@ -213,14 +193,6 @@ def test_relay_waits_for_each_complete_sentinel_across_streams(monkeypatch, firs
     )
 
     assert required_output_sentinels.ready
-
-
-def test_decode_start_accepts_full_output_lines_with_internal_spaces(start_command):
-    start_command["required_output_sentinels"] = ["READY FOR START"]
-
-    request = remote_helper.decode_command(start_command)
-
-    assert request.required_output_sentinels == ("READY FOR START",)
 
 
 @pytest.mark.parametrize(
@@ -447,27 +419,6 @@ def test_preferred_address_with_occupied_service_port_falls_back(monkeypatch):
             reused.lease.close()
         finally:
             allocated.lease.close()
-
-
-@pytest.mark.parametrize("address", (None, "127.64.0.7"))
-def test_decode_start_accepts_address_preference(start_command, address):
-    start_command["preferred_address"] = address
-    assert remote_helper.decode_command(start_command).preferred_address == address
-
-
-def test_decode_start_requires_address_preference_field(start_command):
-    del start_command["preferred_address"]
-    with pytest.raises(ValueError):
-        remote_helper.decode_command(start_command)
-
-
-@pytest.mark.parametrize(
-    "address", (False, 1, [], "", "127.0.0.1", "127.64.0.0", "127.127.255.255", "::1")
-)
-def test_decode_start_rejects_invalid_address_preference(start_command, address):
-    start_command["preferred_address"] = address
-    with pytest.raises(ValueError):
-        remote_helper.decode_command(start_command)
 
 
 @pytest.mark.parametrize("termination", ("exit", "kill"))
@@ -1288,66 +1239,6 @@ def test_supervised_child_cleanup_uses_finite_budgets_after_failures(monkeypatch
     assert any("reap failed" in note for note in raised.value.__notes__)
 
 
-def test_decode_command_rejects_malformed_required_path_before_launch(start_command):
-    start_command["required_paths"] = [{"kind": "socket", "path": "not-valid"}]
-    with pytest.raises(ValueError):
-        remote_helper.decode_command(start_command)
-
-
-def test_decode_command_requires_explicit_argument_templates(start_command):
-    del start_command["argv_templates"]
-    with pytest.raises(ValueError):
-        remote_helper.decode_command(start_command)
-
-
-@pytest.mark.parametrize(
-    "templates",
-    (
-        None,
-        [{"index": True, "parts": ["text"]}],
-        [{"index": 0, "parts": ["cannot override configured prefix"]}],
-        [{"index": 2, "parts": ["outside argv"]}],
-        [{"index": 1, "parts": []}],
-        [{"index": 1, "parts": ["nul\0"]}],
-        [{"index": 1, "parts": [{"session": "unknown"}]}],
-        [{"index": 1, "parts": [{"session": "address", "extra": True}]}],
-        [{"index": 1, "parts": [{"tcl_word": [{"tcl_word": ["nested"]}]}]}],
-        [{"index": 1, "parts": ["first"]}, {"index": 1, "parts": ["duplicate"]}],
-    ),
-)
-def test_decode_command_rejects_malformed_owned_substitutions(start_command, templates):
-    start_command["argv_templates"] = templates
-    with pytest.raises(ValueError):
-        remote_helper.decode_command(start_command)
-
-
-def test_decode_command_rejects_tcl_quoting_in_a_filesystem_path(start_command):
-    start_command["required_paths"] = [
-        {"kind": "file", "path": {"parts": [{"tcl_word": ["not a path template"]}]}}
-    ]
-    with pytest.raises(ValueError):
-        remote_helper.decode_command(start_command)
-
-
-@pytest.mark.parametrize(
-    ("field", "value"),
-    (
-        pytest.param("version", 99, id="version-mismatch"),
-        pytest.param("version", True, id="boolean-version"),
-        pytest.param("argv", [], id="empty-argv"),
-        pytest.param("environment", {"BAD=NAME": "value"}, id="environment-name"),
-        pytest.param("required_output_sentinels", [" READY "], id="untrimmed-marker"),
-        pytest.param("required_output_sentinels", ["READY", "READY"], id="duplicate-marker"),
-        pytest.param("readiness_timeout", 0, id="zero-timeout"),
-        pytest.param("literal_prefix", 3, id="prefix-outside-argv"),
-    ),
-)
-def test_decode_command_rejects_invalid_start_values(start_command, field, value):
-    start_command[field] = value
-    with pytest.raises(ValueError):
-        remote_helper.decode_command(start_command)
-
-
 @pytest.mark.parametrize(
     "services",
     (
@@ -1371,14 +1262,6 @@ def test_decode_command_rejects_duplicate_services(start_command, services):
     start_command["services"] = services
     with pytest.raises(ValueError):
         remote_helper.decode_command(start_command)
-
-
-def test_decode_command_rejects_unknown_start_fields_and_unsupported_commands(start_command):
-    start_command["future"] = True
-    with pytest.raises(ValueError):
-        remote_helper.decode_command(start_command)
-    with pytest.raises(ValueError):
-        remote_helper.decode_command({"version": 1, "type": "UNEXPECTED", "future": True})
 
 
 @pytest.mark.parametrize("suffix", ("lease", "closed"))
@@ -1449,7 +1332,7 @@ def _run_terminated(session, *, fails):
 def test_post_start_bytes_are_failure_even_in_same_read(coordinated_helper, suffix):
     session, writer, events, _children = coordinated_helper
     stream = io.BytesIO()
-    write_start(stream, RemoteProcess((sys.executable, "-c", "import signal;signal.pause()")), ())
+    write_start(stream, ProcessSpec((sys.executable, "-c", "import signal;signal.pause()")), ())
     writer.write(stream.getvalue() + suffix)
     _run_terminated(session, fails=True)
     snapshot = _terminal_event(events)
@@ -1480,7 +1363,7 @@ def test_missing_required_path_fails_before_attempt_admission(coordinated_helper
     missing = session.work / "staged" / "missing"
     write_start(
         writer,
-        RemoteProcess((sys.executable,), required_paths=(RemotePathCheck(str(missing), kind),)),
+        ProcessSpec((sys.executable,), required_paths=(RequiredPathSpec(str(missing), kind),)),
         (),
     )
     _run_terminated(session, fails=True)
@@ -1507,7 +1390,7 @@ def test_completion_policy_controls_readiness(coordinated_helper, monkeypatch, p
         if policy == CompletionPolicy.PROCESS_EXIT
         else "import signal;print('ready',flush=True);signal.pause()"
     )
-    write_start(writer, RemoteProcess((sys.executable, "-c", code), completion_policy=policy), ())
+    write_start(writer, ProcessSpec((sys.executable, "-c", code), completion_policy=policy), ())
     _run_terminated(session, fails=False)
     kinds = [kind for kind, _ in events]
     assert ("READY" in kinds) == (policy == CompletionPolicy.LIVE_SERVER)
@@ -1541,7 +1424,7 @@ def test_admission_failure_does_not_publish_success_or_repeat_terminal(
             writer.close()
 
     monkeypatch.setattr(remote_helper, "emit", emit)
-    write_start(writer, RemoteProcess((sys.executable, "-c", "import signal;signal.pause()")), ())
+    write_start(writer, ProcessSpec((sys.executable, "-c", "import signal;signal.pause()")), ())
     _run_terminated(session, fails=True)
     assert attempts.count("SESSION_ENDED") == 1
     assert len(children) == (0 if admission == "ATTEMPT" else 1)
@@ -1577,7 +1460,7 @@ def test_signal_capture_and_spawn_handoff_keep_cleanup_reachable(
     monkeypatch.setattr(remote_helper, "_spawn_child", acquire)
     if boundary == "wrapper_failure":
         monkeypatch.setattr(remote_helper, "SupervisedChild", construct)
-    write_start(writer, RemoteProcess((sys.executable, "-c", "import signal;signal.pause()")), ())
+    write_start(writer, ProcessSpec((sys.executable, "-c", "import signal;signal.pause()")), ())
     _run_terminated(session, fails=True)
     snapshot = _terminal_event(events)
     assert snapshot.outcome.primary_failure is not None
@@ -1622,7 +1505,7 @@ def test_cleanup_task_setup_failure_still_disposes_child_and_independent_resourc
 
     monkeypatch.setattr(asyncio.TaskGroup, "create_task", create)
     monkeypatch.setattr(remote_helper, "emit", emit)
-    write_start(writer, RemoteProcess((sys.executable, "-c", "import signal;signal.pause()")), ())
+    write_start(writer, ProcessSpec((sys.executable, "-c", "import signal;signal.pause()")), ())
     _run_terminated(session, fails=True)
 
     snapshot = _terminal_event(events)
@@ -1685,7 +1568,7 @@ def test_nested_failure_detail_survives_cleanup_and_wire(coordinated_helper, mon
                 writer.close()
 
         monkeypatch.setattr(remote_helper, "emit", emit)
-    write_start(writer, RemoteProcess((sys.executable, "-c", "import signal;signal.pause()")), ())
+    write_start(writer, ProcessSpec((sys.executable, "-c", "import signal;signal.pause()")), ())
     _run_terminated(session, fails=True)
     snapshot = _terminal_event(events)
     detail = snapshot.outcome.primary_failure
@@ -2072,7 +1955,7 @@ def test_unconfirmed_disposal_retains_inputs_but_settles_independent_owners(
     monkeypatch.setattr(remote_helper, "emit", emit)
     if cleanup_failure == "group":
         monkeypatch.setattr(remote_helper.SupervisedChild, "terminate", uncertain)
-    write_start(writer, RemoteProcess((sys.executable, "-c", "import signal;signal.pause()")), ())
+    write_start(writer, ProcessSpec((sys.executable, "-c", "import signal;signal.pause()")), ())
     try:
         _run_terminated(session, fails=True)
         snapshot = _terminal_event(events)
@@ -2108,9 +1991,7 @@ def test_latched_signal_before_commit_is_accounted(coordinated_helper, monkeypat
             return result
 
         monkeypatch.setattr(remote_helper.SupervisedChild, "poll", poll_then_signal)
-        write_start(
-            writer, RemoteProcess((sys.executable, "-c", "import signal;signal.pause()")), ()
-        )
+        write_start(writer, ProcessSpec((sys.executable, "-c", "import signal;signal.pause()")), ())
     else:
         cleanup_report = session._cleanup_report
 
@@ -2146,9 +2027,7 @@ def test_native_signal_delivery_linearizes_after_blocked_commit(
             emit(kind, **fields)
 
         monkeypatch.setattr(remote_helper, "emit", signal_then_emit)
-        write_start(
-            writer, RemoteProcess((sys.executable, "-c", "import signal;signal.pause()")), ()
-        )
+        write_start(writer, ProcessSpec((sys.executable, "-c", "import signal;signal.pause()")), ())
     else:
         freeze = session.lifecycle.freeze
 
@@ -2373,7 +2252,7 @@ def test_address_lease_cleanup_failure_preserves_startup_failure(coordinated_hel
     monkeypatch.setattr(remote_helper, "emit", emit)
     write_start(
         writer,
-        RemoteProcess(
+        ProcessSpec(
             (
                 sys.executable,
                 "-c",

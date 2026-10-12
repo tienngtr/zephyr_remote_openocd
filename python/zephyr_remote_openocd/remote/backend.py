@@ -12,6 +12,21 @@ import time
 from collections.abc import Callable, Iterable
 from typing import Protocol
 
+from zephyr_remote_openocd.protocol.process import ProcessSpec
+from zephyr_remote_openocd.protocol.responses import (
+    validate_error_response,
+    validate_openocd_version_response,
+    validate_staged_response,
+)
+from zephyr_remote_openocd.protocol.wire import ProtocolError, decode_frame
+from zephyr_remote_openocd.remote.model import (
+    RemoteSessionRequest,
+    Service,
+    SessionAllocation,
+    SessionDescriptor,
+    StagedEntry,
+)
+
 from .deploy import DeploymentResult, deploy_helper
 from .forwarding import (
     FORWARD_HEALTH_INTERVAL,
@@ -21,22 +36,7 @@ from .forwarding import (
     _ForwardManager,
 )
 from .helper_client import _HelperClient
-from .model import (
-    RemoteProcess,
-    RemoteSessionRequest,
-    Service,
-    SessionAllocation,
-    SessionDescriptor,
-    StagedEntry,
-)
 from .preferred_address_cache import load_preferred_address, remember_preferred_address
-from .protocol import (
-    ProtocolError,
-    decode_single_frame,
-    validate_error_response,
-    validate_openocd_version_response,
-    validate_staged_response,
-)
 from .session import SessionClosedError, SessionError, _SessionObservations
 from .ssh import SshCommand
 from .staging import build_archive
@@ -58,7 +58,7 @@ def _one_shot_failure_detail(stdout: bytes, stderr: bytes) -> str:
     """Decode a helper ERROR frame, falling back to transport diagnostics."""
     if stdout:
         try:
-            message = decode_single_frame(stdout)
+            message = decode_frame(stdout)
             validate_error_response(message)
             if message["type"] == "ERROR":
                 return f"{message['code']}: {message['message']}"
@@ -81,7 +81,7 @@ def query_remote_openocd_version(
         detail = _one_shot_failure_detail(result.stdout, result.stderr)
         raise SessionError(f"remote OpenOCD version query failed ({result.returncode}): " + detail)
     try:
-        message = decode_single_frame(result.stdout)
+        message = decode_frame(result.stdout)
         validate_openocd_version_response(message)
         return message["output"]
     except (KeyError, ProtocolError, ValueError) as error:
@@ -98,7 +98,7 @@ class _SessionHelper(Protocol):
 
     def start_process(
         self,
-        process: RemoteProcess,
+        process: ProcessSpec,
         services: Iterable[Service],
         *,
         preferred_address: str | None = None,
@@ -215,7 +215,7 @@ class RemoteSession:
                 + _one_shot_failure_detail(result.stdout, result.stderr)
             )
         try:
-            message = decode_single_frame(result.stdout)
+            message = decode_frame(result.stdout)
             validate_staged_response(message)
             if tuple(message.get("files", ())) != archive.files:
                 raise ValueError("remote staged-file confirmation differs from manifest")

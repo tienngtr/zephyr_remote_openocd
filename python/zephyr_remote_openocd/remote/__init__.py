@@ -2,11 +2,8 @@
 
 """Board-independent remote session API."""
 
-from .backend import RemoteSession, query_remote_openocd_version
-from .forwarding import ForwardAdvisory
-from .model import (
-    RemotePathCheck,
-    RemoteProcess,
+from zephyr_remote_openocd.protocol.process import ProcessSpec, RequiredPathSpec
+from zephyr_remote_openocd.remote.model import (
     RemoteSessionRequest,
     Service,
     SessionAllocation,
@@ -15,12 +12,15 @@ from .model import (
     StagedEntry,
     StagedFile,
 )
+
+from .backend import RemoteSession, query_remote_openocd_version
+from .forwarding import ForwardAdvisory
 from .session import SessionClosedError, SessionError
 
 __all__ = [
     "ForwardAdvisory",
-    "RemotePathCheck",
-    "RemoteProcess",
+    "RequiredPathSpec",
+    "ProcessSpec",
     "RemoteSession",
     "RemoteSessionRequest",
     "Service",

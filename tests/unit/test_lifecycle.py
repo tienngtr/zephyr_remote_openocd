@@ -3,6 +3,14 @@
 """Semantic transitions on real lifecycle objects, without physical adapters."""
 
 import pytest
+from zephyr_remote_openocd.protocol.outcome import (
+    ChildResult,
+    CleanupReport,
+    CompletionPolicy,
+    Diagnostic,
+    Trigger,
+)
+from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.remote.lifecycle import (
     Active,
     Closed,
@@ -11,31 +19,23 @@ from zephyr_remote_openocd.remote.lifecycle import (
     Starting,
     Terminating,
 )
-from zephyr_remote_openocd.remote.model import RemoteProcess
-from zephyr_remote_openocd.remote.outcome import (
-    ChildResult,
-    CleanupReport,
-    CompletionPolicy,
-    Diagnostic,
-    Trigger,
-)
 
 CONFIRMED = CleanupReport("confirmed", "confirmed")
 
 
 def _starting(
     *, markers: tuple[str, ...] = (), policy: CompletionPolicy = CompletionPolicy.LIVE_SERVER
-) -> RemoteLifecycle[RemoteProcess]:
-    lifecycle = RemoteLifecycle[RemoteProcess]()
+) -> RemoteLifecycle[ProcessSpec]:
+    lifecycle = RemoteLifecycle[ProcessSpec]()
     lifecycle.start(
-        RemoteProcess(("openocd",), required_output_sentinels=markers, completion_policy=policy)
+        ProcessSpec(("openocd",), required_output_sentinels=markers, completion_policy=policy)
     )
     return lifecycle
 
 
 def _owned(
     *, markers: tuple[str, ...] = (), policy: CompletionPolicy = CompletionPolicy.LIVE_SERVER
-) -> RemoteLifecycle[RemoteProcess]:
+) -> RemoteLifecycle[ProcessSpec]:
     lifecycle = _starting(markers=markers, policy=policy)
     assert lifecycle.enter_attempt(admitted=True)
     assert lifecycle.adopt_attempt()
@@ -136,7 +136,7 @@ def test_termination_blocks_authorized_entry_and_late_ready() -> None:
     assert not lifecycle.enter_attempt(admitted=True)
     assert not lifecycle.ready(child_live=True, admitted=True)
     with pytest.raises(LifecycleError):
-        lifecycle.start(RemoteProcess(("openocd",)))
+        lifecycle.start(ProcessSpec(("openocd",)))
 
 
 @pytest.mark.parametrize("exit_before_signal", (False, True))

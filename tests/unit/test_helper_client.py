@@ -16,23 +16,24 @@ from typing import Any, BinaryIO, cast, override
 
 import pytest
 from zephyr_remote_openocd.config import PathMapping
+from zephyr_remote_openocd.protocol.arguments import (
+    ArgumentTemplate,
+    SessionValue,
+    TclWord,
+    materialize_argv,
+    materialize_path,
+)
+from zephyr_remote_openocd.protocol.commands import decode_command, write_start
+from zephyr_remote_openocd.protocol.outcome import CompletionPolicy, Trigger
+from zephyr_remote_openocd.protocol.process import ProcessSpec
+from zephyr_remote_openocd.protocol.wire import ProtocolError, decode_frame, encode_frame
 from zephyr_remote_openocd.remote import helper_client as helper_client_module
-from zephyr_remote_openocd.remote.arguments import ArgumentTemplate, SessionValue, TclWord
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
 from zephyr_remote_openocd.remote.flash import FlashInputs, build_flash_plan
 from zephyr_remote_openocd.remote.helper_client import _HelperClient
-from zephyr_remote_openocd.remote.model import RemoteProcess
-from zephyr_remote_openocd.remote.outcome import CompletionPolicy, Trigger
 from zephyr_remote_openocd.remote.paths import PathPlanner
-from zephyr_remote_openocd.remote.protocol import (
-    ProtocolError,
-    decode_message,
-    encode_message,
-    write_start,
-)
 from zephyr_remote_openocd.remote.session import SessionError, _SessionObservations
 from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand, SshLocalForward
-from zephyr_remote_openocd.remote_helper import _decode_start, materialize_argv, materialize_path
 
 from tests.protocol_support import terminal_message, terminal_snapshot
 
@@ -192,7 +193,7 @@ def _open_helper_client_with_events(
 ) -> tuple[_HelperClient, _EventProcess]:
     process = _EventProcess(
         (
-            encode_message(
+            encode_frame(
                 "SESSION_CREATED",
                 helper="fake",
                 session_id="session",
@@ -226,8 +227,8 @@ def test_helper_client_sends_preference_and_reports_attempt_before_startup_error
     first = ("openocd", "-c", "bindto 127.64.0.1", "")
     observations = _SessionObservations()
     client, helper_process = _open_helper_client_with_events(
-        encode_message("ATTEMPT", argv=list(first)),
-        encode_message("CHILD_OUTPUT", stream="stderr", payload="bind collision", line_end=True),
+        encode_frame("ATTEMPT", argv=list(first)),
+        encode_frame("CHILD_OUTPUT", stream="stderr", payload="bind collision", line_end=True),
         terminal_message(
             Trigger.HELPER_FAILURE, code="FAILED", message="startup failed", child_acquired=True
         ),
@@ -236,8 +237,8 @@ def test_helper_client_sends_preference_and_reports_attempt_before_startup_error
     )
     try:
         with pytest.raises(SessionError):
-            client.start_process(RemoteProcess(("openocd",)), (), preferred_address="127.64.0.1")
-        request = _decode_start(decode_message(bytes(helper_process.stdin.written)))
+            client.start_process(ProcessSpec(("openocd",)), (), preferred_address="127.64.0.1")
+        request = decode_command(decode_frame(bytes(helper_process.stdin.written)))
         assert request.preferred_address == "127.64.0.1"
         assert observed == [first]
     finally:
@@ -245,7 +246,7 @@ def test_helper_client_sends_preference_and_reports_attempt_before_startup_error
 
 
 def test_explicit_session_values_are_not_recursively_expanded():
-    process = RemoteProcess(
+    process = ProcessSpec(
         ("openocd", "preview"),
         argv_templates=(
             (
@@ -269,7 +270,7 @@ def test_explicit_session_values_are_not_recursively_expanded():
     )
     stream = io.BytesIO()
     write_start(stream, process, ())
-    request = _decode_start(decode_message(stream.getvalue()))
+    request = decode_command(decode_frame(stream.getvalue()))
     argv = materialize_argv(
         request.argv,
         workspace=r'/runtime/[review] $value "quoted" \backslash {workspace} {address}/session',
@@ -337,7 +338,7 @@ def test_flash_paths_are_quoted_after_session_allocation(
     )
     process = _EventProcess(
         (
-            encode_message(
+            encode_frame(
                 "SESSION_CREATED", helper="fake", session_id="session", remote_workspace=workspace
             ),
             terminal_message(
@@ -352,8 +353,8 @@ def test_flash_paths_are_quoted_after_session_allocation(
         assert client._join_reader()
         with pytest.raises(SessionError):
             observations.operation_status()
-        request = _decode_start(
-            decode_message(bytes(process.stdin.written).splitlines(keepends=True)[0])
+        request = decode_command(
+            decode_frame(bytes(process.stdin.written).splitlines(keepends=True)[0])
         )
         argv = materialize_argv(
             request.argv,
@@ -388,7 +389,7 @@ def test_flash_paths_are_quoted_after_session_allocation(
 
 
 def test_open_rejects_initial_frame_without_lf():
-    payload = encode_message(
+    payload = encode_frame(
         "SESSION_CREATED",
         helper="fake",
         session_id="session",
@@ -402,27 +403,27 @@ def test_open_rejects_initial_frame_without_lf():
 @pytest.mark.parametrize("policy", tuple(CompletionPolicy))
 @pytest.mark.parametrize("contradiction", ("child", "workspace"))
 def test_contradictory_terminal_is_reader_failure_and_never_published(policy, contradiction):
-    terminal = decode_message(
+    terminal = decode_frame(
         terminal_message(Trigger.CONTROLLER_EOF, child_acquired=contradiction != "child")
     )
     if contradiction == "workspace":
         terminal["cleanup"]["workspace_disposal"] = "not_created"
     evidence = (
-        encode_message("READY", remote_address="127.64.0.1", child_pid=1)
+        encode_frame("READY", remote_address="127.64.0.1", child_pid=1)
         if policy == CompletionPolicy.LIVE_SERVER
-        else encode_message("CHILD_OUTPUT", stream="stdout", payload="started", line_end=True)
+        else encode_frame("CHILD_OUTPUT", stream="stdout", payload="started", line_end=True)
     )
     observations = _SessionObservations()
     client, process = _open_helper_client_with_events(
-        encode_message("ATTEMPT", argv=["child"]),
+        encode_frame("ATTEMPT", argv=["child"]),
         evidence,
-        encode_message(
+        encode_frame(
             "SESSION_ENDED", **{k: v for k, v in terminal.items() if k not in {"version", "type"}}
         ),
         observations=observations,
     )
     try:
-        client.start_process(RemoteProcess(("child",), completion_policy=policy), ())
+        client.start_process(ProcessSpec(("child",), completion_policy=policy), ())
         assert client._join_reader(5)
         with pytest.raises(SessionError) as reported:
             observations.operation_status()
@@ -447,7 +448,7 @@ def test_session_observations_project_exit_while_reader_remains_alive(helper_cli
 
     def consume_close() -> None:
         helper_client._dispatch(
-            decode_message(terminal_message(Trigger.CHILD_EXIT, returncode=OPENOCD_FAILURE_RC))
+            decode_frame(terminal_message(Trigger.CHILD_EXIT, returncode=OPENOCD_FAILURE_RC))
         )
         close_recorded.set()
         release_reader.wait()
@@ -513,7 +514,7 @@ def test_large_start_is_rejected_before_helper_write():
     )
     # JSON escaping makes the encoded frame oversized even though its argv
     # contains fewer than 1 MiB of UTF-8 bytes.
-    request = RemoteProcess(("child", "é" * 200_000))
+    request = ProcessSpec(("child", "é" * 200_000))
     try:
         with pytest.raises(ProtocolError):
             helper_client.start_process(request, ())
@@ -530,7 +531,7 @@ def test_helper_shutdown_retains_established_failure():
     )
 
     with pytest.raises(SessionError, match="startup failed"):
-        helper_client.start_process(RemoteProcess(("child",)), ())
+        helper_client.start_process(ProcessSpec(("child",)), ())
 
     with pytest.raises(SessionError) as reported:
         observations.operation_status()
@@ -539,7 +540,7 @@ def test_helper_shutdown_retains_established_failure():
 
     assert error is reported.value
     commands = [
-        decode_message(bytes(line))["type"]
+        decode_frame(bytes(line))["type"]
         for line in process.stdin.written.splitlines(keepends=True)
     ]
     assert commands == ["START"]
@@ -549,12 +550,12 @@ def test_helper_shutdown_retains_established_failure():
 def test_controller_eof_terminal_prevents_dependent_entry():
     observations = _SessionObservations()
     helper_client, _process = _open_helper_client_with_events(
-        encode_message("ATTEMPT", argv=["child"]),
-        encode_message("READY", remote_address="127.64.0.1", child_pid=1),
+        encode_frame("ATTEMPT", argv=["child"]),
+        encode_frame("READY", remote_address="127.64.0.1", child_pid=1),
         terminal_message(Trigger.CONTROLLER_EOF, returncode=None, child_acquired=True),
         observations=observations,
     )
-    helper_client.start_process(RemoteProcess(("child",)), ())
+    helper_client.start_process(ProcessSpec(("child",)), ())
     helper_client.wait_for_change(5)
 
     try:
@@ -570,14 +571,14 @@ def test_controller_eof_terminal_prevents_dependent_entry():
 def test_helper_shutdown_retains_observed_background_failure():
     observations = _SessionObservations()
     helper_client, process = _open_helper_client_with_events(
-        encode_message("ATTEMPT", argv=["child"]),
-        encode_message("READY", remote_address="127.64.0.1", child_pid=1),
+        encode_frame("ATTEMPT", argv=["child"]),
+        encode_frame("READY", remote_address="127.64.0.1", child_pid=1),
         terminal_message(
             Trigger.HELPER_FAILURE, code="FAILED", message="background failed", child_acquired=True
         ),
         observations=observations,
     )
-    helper_client.start_process(RemoteProcess(("child",)), ())
+    helper_client.start_process(ProcessSpec(("child",)), ())
     helper_client.wait_for_change(5)
 
     for _attempt in range(2):
@@ -587,7 +588,7 @@ def test_helper_shutdown_retains_observed_background_failure():
     helper_client.close()
     assert observations.snapshot().failure is reported.value
     commands = [
-        decode_message(bytes(line))["type"]
+        decode_frame(bytes(line))["type"]
         for line in process.stdin.written.splitlines(keepends=True)
     ]
     assert commands == ["START"]
@@ -598,14 +599,14 @@ def test_helper_shutdown_retains_observed_background_failure():
 def test_close_records_background_and_cleanup_failures(monkeypatch, cleanup_fails):
     observations = _SessionObservations()
     helper_client, process = _open_helper_client_with_events(
-        encode_message("ATTEMPT", argv=["child"]),
-        encode_message("READY", remote_address="127.64.0.1", child_pid=1),
+        encode_frame("ATTEMPT", argv=["child"]),
+        encode_frame("READY", remote_address="127.64.0.1", child_pid=1),
         terminal_message(
             Trigger.HELPER_FAILURE, code="FAILED", message="background failed", child_acquired=True
         ),
         observations=observations,
     )
-    helper_client.start_process(RemoteProcess(("child",)), ())
+    helper_client.start_process(ProcessSpec(("child",)), ())
     helper_client.wait_for_change(5)
 
     cleanup_error = RuntimeError("forced cleanup failed")
@@ -626,7 +627,7 @@ def test_close_records_background_and_cleanup_failures(monkeypatch, cleanup_fail
     if cleanup_fails:
         assert any(str(cleanup_error) in note for note in error.__notes__)
     commands = [
-        decode_message(bytes(line))["type"]
+        decode_frame(bytes(line))["type"]
         for line in process.stdin.written.splitlines(keepends=True)
     ]
     assert commands == ["START"]
@@ -660,15 +661,15 @@ def test_terminal_failure_stays_primary_after_trailing_protocol_failure(
         else terminal_message(Trigger.CHILD_EXIT, returncode=OPENOCD_FAILURE_RC)
     )
     corruption = (
-        b"not-json\n" if trailing == "malformed" else encode_message("ATTEMPT", argv=["unadmitted"])
+        b"not-json\n" if trailing == "malformed" else encode_frame("ATTEMPT", argv=["unadmitted"])
     )
     observations = _SessionObservations()
     client, _process = _open_helper_client_with_events(
-        encode_message("ATTEMPT", argv=["child"]), terminal, corruption, observations=observations
+        encode_frame("ATTEMPT", argv=["child"]), terminal, corruption, observations=observations
     )
     try:
         client.start_process(
-            RemoteProcess(("child",), completion_policy=CompletionPolicy.PROCESS_EXIT), ()
+            ProcessSpec(("child",), completion_policy=CompletionPolicy.PROCESS_EXIT), ()
         )
         assert client._join_reader(5)  # Both facts are recorded before the first check.
         error: BaseException | None
@@ -1156,16 +1157,16 @@ def test_helper_startup_timeout_does_not_block_on_partial_output(monkeypatch):
 def test_helper_client_output_delivery_does_not_retain_event_history():
     payloads = [f"payload-{index}" for index in range(1024)]
     frames = [
-        encode_message(
+        encode_frame(
             "SESSION_CREATED",
             helper="fake",
             session_id="session",
             remote_workspace="/workspace",
         ),
-        encode_message("ATTEMPT", argv=["child"]),
-        encode_message("READY", remote_address="127.64.0.1", child_pid=1),
+        encode_frame("ATTEMPT", argv=["child"]),
+        encode_frame("READY", remote_address="127.64.0.1", child_pid=1),
         *(
-            encode_message(
+            encode_frame(
                 "CHILD_OUTPUT",
                 stream="stdout" if index % 2 == 0 else "stderr",
                 payload=payload,
@@ -1245,7 +1246,7 @@ def test_helper_client_output_delivery_does_not_retain_event_history():
     )
     try:
         helper_client.acquire()
-        helper_client.start_process(RemoteProcess(("child",)), ())
+        helper_client.start_process(ProcessSpec(("child",)), ())
         assert helper_client._reader_thread is not None
         helper_client._reader_thread.join(timeout=10)
         assert not helper_client._reader_thread.is_alive()
@@ -1268,7 +1269,7 @@ def test_child_and_control_status_use_one_persistent_arbitration_path(helper_cli
     helper_client._process = cast(ManagedSshProcess, process)
     observations.record_ready()
     if child_first:
-        helper_client._dispatch(decode_message(terminal_message(Trigger.CHILD_EXIT, returncode=7)))
+        helper_client._dispatch(decode_frame(terminal_message(Trigger.CHILD_EXIT, returncode=7)))
     process.returncode = 1
     helper_client.observe_status()
     with pytest.raises(SessionError) as initial:
@@ -1278,7 +1279,7 @@ def test_child_and_control_status_use_one_persistent_arbitration_path(helper_cli
         observations.enter((), ())
     assert first_gate.value is initial.value
     if not child_first:
-        helper_client._dispatch(decode_message(terminal_message(Trigger.CHILD_EXIT, returncode=7)))
+        helper_client._dispatch(decode_frame(terminal_message(Trigger.CHILD_EXIT, returncode=7)))
     helper_client.observe_status()
     with pytest.raises(SessionError) as later:
         observations.operation_status()

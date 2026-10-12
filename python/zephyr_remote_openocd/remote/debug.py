@@ -7,10 +7,12 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from .arguments import ArgumentTemplate, SessionValue
-from .model import DuplicateServiceError, RemoteProcess, Service, validated_services
+from zephyr_remote_openocd.protocol.arguments import ArgumentTemplate, SessionValue
+from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
+from zephyr_remote_openocd.protocol.process import ProcessSpec
+from zephyr_remote_openocd.remote.model import DuplicateServiceError, Service, validated_services
+
 from .openocd_plan import plan_openocd_base
-from .outcome import CompletionPolicy
 from .paths import PathPlanner
 
 RTT_SEARCH_RANGE_SIZE = 0x10
@@ -86,7 +88,7 @@ class DebugInputs:
 
 @dataclass(frozen=True)
 class DebugPlan:
-    process: RemoteProcess
+    process: ProcessSpec
     staged_files: tuple
     services: tuple[Service, ...]
     gdb_argv: tuple[str, ...] | None
@@ -296,7 +298,7 @@ def build_debug_plan(
     argv = base.argv + _server_commands(inputs, services, rtos)
     gdb_argv = _client_argv(inputs, services)
 
-    process = RemoteProcess(
+    process = ProcessSpec(
         argv,
         environment,
         tuple(planner.remote_checks),

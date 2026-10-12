@@ -16,19 +16,16 @@ from typing import Any, BinaryIO, cast, override
 from unittest.mock import create_autospec, patch
 
 import pytest
+from zephyr_remote_openocd.protocol.outcome import Trigger
+from zephyr_remote_openocd.protocol.process import ProcessSpec
+from zephyr_remote_openocd.protocol.wire import encode_frame
 from zephyr_remote_openocd.remote import backend as backend_module
 from zephyr_remote_openocd.remote import ssh as ssh_module
 from zephyr_remote_openocd.remote.backend import RemoteSession
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
 from zephyr_remote_openocd.remote.forwarding import _ForwardManager
 from zephyr_remote_openocd.remote.helper_client import _HelperClient
-from zephyr_remote_openocd.remote.model import (
-    RemoteProcess,
-    RemoteSessionRequest,
-    Service,
-)
-from zephyr_remote_openocd.remote.outcome import Trigger
-from zephyr_remote_openocd.remote.protocol import encode_message
+from zephyr_remote_openocd.remote.model import RemoteSessionRequest, Service
 from zephyr_remote_openocd.remote.session import SessionError
 from zephyr_remote_openocd.remote.ssh import (
     SshCommand,
@@ -505,14 +502,14 @@ def test_initial_forward_failure_consumes_session_close_event(monkeypatch):
     close_seen = threading.Event()
     forward_error = SessionError("initial forwarding failed")
     helper = _HelperProcess(
-        encode_message(
+        encode_frame(
             "SESSION_CREATED",
             helper="fake",
             session_id="session",
             remote_workspace="/workspace",
         )
-        + encode_message("ATTEMPT", argv=["test-process"])
-        + encode_message("READY", remote_address="127.64.0.1", child_pid=1)
+        + encode_frame("ATTEMPT", argv=["test-process"])
+        + encode_frame("READY", remote_address="127.64.0.1", child_pid=1)
         + terminal_message(Trigger.CHILD_EXIT, returncode=SAMPLE_OPENOCD_EXIT_CODE)
     )
     helper.returncode = 0
@@ -520,7 +517,7 @@ def test_initial_forward_failure_consumes_session_close_event(monkeypatch):
     request = RemoteSessionRequest(
         "host",
         command,
-        RemoteProcess(("child",)),
+        ProcessSpec(("child",)),
         services=(Service("gdb", 3333, 3333),),
     )
     deployment = DeploymentResult("/helper.py", "digest", False)

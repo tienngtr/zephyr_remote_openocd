@@ -7,9 +7,10 @@ import sys
 from pathlib import Path
 
 import pytest
+from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.remote.backend import RemoteSession
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
-from zephyr_remote_openocd.remote.model import RemoteProcess, RemoteSessionRequest, Service
+from zephyr_remote_openocd.remote.model import RemoteSessionRequest, Service
 from zephyr_remote_openocd.remote.ssh import (
     SSH_STDERR_TAIL_BYTES,
     ManagedSshProcess,
@@ -88,7 +89,7 @@ def request(command: SshCommand, *, services=()):
     return RemoteSessionRequest(
         "fake-host",
         command,
-        process=RemoteProcess((sys.executable, "-c", "pass")),
+        process=ProcessSpec((sys.executable, "-c", "pass")),
         services=tuple(services),
     )
 
