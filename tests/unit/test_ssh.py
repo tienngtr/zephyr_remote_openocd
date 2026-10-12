@@ -641,6 +641,9 @@ def test_acquisition_rollback_attempts_every_stream_and_retains_all_failures(
     stdin_error = OSError("stdin close failed")
     stdout_error = OSError("stdout close failed")
     stderr_error = OSError("stderr close failed")
+    cleanup_errors = (terminate_error, kill_error, stdin_error, stdout_error, stderr_error)
+    for error in cleanup_errors:
+        error.add_note(f"retained detail for {error}")
 
     class FailingStream(io.BytesIO):
         def __init__(self, error):
@@ -693,13 +696,9 @@ def test_acquisition_rollback_attempts_every_stream_and_retains_all_failures(
             stream.close_attempts for stream in (process.stdin, process.stdout, process.stderr)
         ] == [1, 1, 1]
         assert raised.value.cause is startup_error
-        assert set(raised.value.cleanup_errors) == {
-            terminate_error,
-            kill_error,
-            stdin_error,
-            stdout_error,
-            stderr_error,
-        }
+        assert set(raised.value.cleanup_errors) == set(cleanup_errors)
+        retained = "\n".join(startup_error.__notes__)
+        assert all(error.__notes__[0] in retained for error in cleanup_errors)
     finally:
         for stream in (process.stdin, process.stdout, process.stderr):
             if not stream.closed:

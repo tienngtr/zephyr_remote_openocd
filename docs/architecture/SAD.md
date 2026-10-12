@@ -2293,6 +2293,13 @@ Combining failures retains notes already attached to each secondary exception,
 including diagnostics from nested cleanup batches. Later cleanup composition
 preserves those details even when the secondary exception's summary was already
 attached to the primary failure.
+Each helper input observer scopes its descriptor mode restoration with its
+observation. A read or protocol exception stays primary when restoration also
+fails; the restoration exception and its existing notes are attached before the
+guard records a structured diagnostic. If observation completed normally, or
+was cancelled solely to settle an observer, restoration failure is reported to
+the coordinator as a failure in its own right. Routine observer cancellation
+does not suppress failed restoration or become an operation failure by itself.
 The following table applies to independently observed natural OpenOCD failures.
 A nonzero status observed after helper-requested child termination is retained
 with that provenance and does not by itself fail successful local client work.

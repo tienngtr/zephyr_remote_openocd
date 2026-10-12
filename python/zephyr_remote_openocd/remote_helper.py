@@ -31,7 +31,7 @@ from collections.abc import Callable, Coroutine, Iterable, Iterator
 from contextlib import contextmanager, suppress
 from itertools import chain
 from pathlib import Path, PurePosixPath
-from types import FrameType
+from types import FrameType, TracebackType
 from typing import IO, Any, Literal, NamedTuple
 
 # Direct source execution is a development path; deployed zip applications
@@ -1037,6 +1037,26 @@ class _AsyncInput:
         self._closed = False
         self.was_blocking = _acquire_nonblocking(descriptor)
 
+    def __enter__(self) -> _AsyncInput:
+        return self
+
+    def __exit__(
+        self,
+        _exception_type: type[BaseException] | None,
+        failure: BaseException | None,
+        _traceback: TracebackType | None,
+    ) -> None:
+        try:
+            self.close()
+        except BaseException as cleanup_error:
+            # Cancellation is observer settlement, not an established failure.
+            # Its cleanup failure must still reach the coordinator's guard.
+            if failure is None or isinstance(failure, asyncio.CancelledError):
+                raise
+            failure.add_note(f"input descriptor restoration also failed: {cleanup_error}")
+            for note in getattr(cleanup_error, "__notes__", ()):
+                failure.add_note(f"input descriptor restoration detail: {note}")
+
     def _observed(self) -> None:
         if self._checkpoint is not None and not self._checkpoint.done():
             self._scan_remaining = 0
@@ -1605,9 +1625,8 @@ class ControlSession:
 
     async def _observe_control(self) -> None:
         frames = _ControlFrames()
-        reader = _AsyncInput(sys.stdin.buffer.fileno())
         started = False
-        try:
+        with _AsyncInput(sys.stdin.buffer.fileno()) as reader:
             while True:
                 chunk = await reader.read()
                 if not chunk:
@@ -1624,20 +1643,15 @@ class ControlSession:
                         raise ValueError("unexpected input after START")
                     started = True
                     await self._events.put(_StartReceived(request))
-        finally:
-            reader.close()
 
     async def _observe_output(self, child: SupervisedChild, name: str, stream: IO[bytes]) -> None:
-        reader = _AsyncInput(stream.fileno())
-        child.readers[name] = reader
-        try:
+        with _AsyncInput(stream.fileno()) as reader:
+            child.readers[name] = reader
             while True:
                 chunk = await reader.read()
                 await self._events.put(_ChildOutput(child, name, chunk))
                 if not chunk:
                     return
-        finally:
-            reader.close()
 
     async def _observe_exit(self, child: SupervisedChild) -> None:
         await self._events.put(_ChildExited(child, await child.wait_for_exit()))

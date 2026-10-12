@@ -1641,7 +1641,7 @@ def test_cleanup_task_setup_failure_still_disposes_child_and_independent_resourc
     assert not remote_helper._closure_path(session.work).exists()
 
 
-@pytest.mark.parametrize("failure", ("observer", "workspace"))
+@pytest.mark.parametrize("failure", ("stdout", "stderr", "workspace"))
 def test_nested_failure_detail_survives_cleanup_and_wire(coordinated_helper, monkeypatch, failure):
     session, writer, events, children = coordinated_helper
     nested = RuntimeError("nested cause")
@@ -1650,12 +1650,27 @@ def test_nested_failure_detail_survives_cleanup_and_wire(coordinated_helper, mon
         "composed failure", [OSError("first cause"), ExceptionGroup("inner", [nested])]
     )
     grouped.add_note("outer retained note")
-    if failure == "observer":
+    restoration = OSError("output descriptor restoration failed")
+    restoration.add_note("nested restoration diagnostic")
+    if failure != "workspace":
+        read = os.read
+        set_blocking = os.set_blocking
 
-        async def fail_output(_child, _name, _stream):
-            raise grouped
+        def is_output(descriptor):
+            return bool(children) and descriptor == getattr(children[0].process, failure).fileno()
 
-        monkeypatch.setattr(session, "_observe_output", fail_output)
+        def fail_read(descriptor, size):
+            if is_output(descriptor):
+                raise grouped
+            return read(descriptor, size)
+
+        def fail_restore(descriptor, blocking):
+            set_blocking(descriptor, blocking)
+            if blocking and is_output(descriptor):
+                raise restoration
+
+        monkeypatch.setattr(os, "read", fail_read)
+        monkeypatch.setattr(os, "set_blocking", fail_restore)
     else:
 
         def fail_removal(_work):
@@ -1675,12 +1690,90 @@ def test_nested_failure_detail_survives_cleanup_and_wire(coordinated_helper, mon
     snapshot = _terminal_event(events)
     detail = snapshot.outcome.primary_failure
     assert detail is not None
+    assert detail.message == str(grouped)
     assert detail.diagnostics[1].diagnostics[0].diagnostics[0].message == "nested retained note"
-    assert detail.diagnostics[-1].message == "outer retained note"
+    assert "outer retained note" in [diagnostic.message for diagnostic in detail.diagnostics]
+    if failure != "workspace":
+        assert str(restoration) in repr(detail)
+        assert "nested restoration diagnostic" in repr(detail)
     assert children[0].process.returncode is not None
+    assert children[0].group_disposed
     assert children[0].process.stdout.closed and children[0].process.stderr.closed
     assert session.workspace_lock.closed
-    assert snapshot.cleanup.confirmed == (failure == "observer")
+    assert snapshot.cleanup.confirmed == (failure != "workspace")
+
+
+def test_control_protocol_failure_survives_descriptor_restoration_failure(
+    coordinated_helper, control_pipe, monkeypatch
+):
+    session, writer, events, children = coordinated_helper
+    reader, _writer = control_pipe
+    descriptor = reader.fileno()
+    restoration = OSError("control descriptor restoration failed")
+    restoration.add_note("nested restoration diagnostic")
+    set_blocking = os.set_blocking
+
+    def fail_restore(fd, blocking):
+        set_blocking(fd, blocking)
+        if fd == descriptor and blocking:
+            raise restoration
+
+    monkeypatch.setattr(os, "set_blocking", fail_restore)
+    command = {"version": 1, "type": "UNEXPECTED"}
+    with pytest.raises(ValueError) as invalid:
+        remote_helper.decode_command(command)
+    writer.write(json.dumps(command).encode() + b"\n")
+    _run_terminated(session, fails=True)
+
+    snapshot = _terminal_event(events)
+    detail = snapshot.outcome.primary_failure
+    assert detail is not None and detail.message == str(invalid.value)
+    assert snapshot.outcome.trigger == Trigger.PROTOCOL_FAILURE
+    assert str(restoration) in repr(detail)
+    assert "nested restoration diagnostic" in repr(detail)
+    assert snapshot.cleanup.confirmed and not children
+    assert session.workspace_lock.closed and not session.work.exists()
+
+
+@pytest.mark.parametrize("settlement", ("eof", "cancellation"))
+def test_observer_settlement_retains_descriptor_restoration_failure(
+    coordinated_helper, control_pipe, monkeypatch, settlement
+):
+    session, writer, events, children = coordinated_helper
+    reader, _writer = control_pipe
+    descriptor = reader.fileno()
+    restoration = OSError("control descriptor restoration failed")
+    restoration.add_note("nested restoration diagnostic")
+    set_blocking = os.set_blocking
+
+    def fail_restore(fd, blocking):
+        set_blocking(fd, blocking)
+        if fd == descriptor and blocking:
+            raise restoration
+
+    monkeypatch.setattr(os, "set_blocking", fail_restore)
+    if settlement == "eof":
+        writer.close()
+    else:
+        add_reader = asyncio.SelectorEventLoop.add_reader
+
+        def cancel_on_registered_input(loop, fd, callback, *args):
+            add_reader(loop, fd, callback, *args)
+            if fd == descriptor:
+                # The control observer is suspended on its registered reader
+                # before signal-driven coordinator cleanup cancels it.
+                session.handle_signal(signal.SIGTERM)
+
+        monkeypatch.setattr(asyncio.SelectorEventLoop, "add_reader", cancel_on_registered_input)
+    _run_terminated(session, fails=True)
+
+    snapshot = _terminal_event(events)
+    assert str(restoration) in repr(snapshot.outcome)
+    assert "nested restoration diagnostic" in repr(snapshot.outcome)
+    if settlement == "cancellation":
+        assert snapshot.outcome.trigger == Trigger.SIGNAL
+    assert snapshot.cleanup.confirmed and not children
+    assert session.workspace_lock.closed and not session.work.exists()
 
 
 @pytest.mark.parametrize("final_observation", ("ready", "exit", "timeout"))
