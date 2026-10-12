@@ -59,7 +59,7 @@ if remote_command.endswith(" control"):
             }), flush=True)
     print(json.dumps(dict(version=1, type="SESSION_ENDED", trigger="controller_eof",
         primary_failure=None, diagnostics=[], child_result=None,
-        cleanup=dict(child_disposal="not_acquired", workspace_disposal="confirmed",
+        cleanup=dict(child_disposal="confirmed", workspace_disposal="confirmed",
                      residual_resources=[]))), flush=True)
 elif shlex.split(remote_command)[2] == "stage":
     with tarfile.open(fileobj=io.BytesIO(sys.stdin.buffer.read())) as archive:
