@@ -13,12 +13,13 @@ from contextlib import contextmanager
 
 import pytest
 
+from tests import serial_reader
 from tests.process_support import cleanup_on_exit, local_transport
 from tests.serial_reader import read_event, remote_serial_reader_command, stop_reader
 
 
 @contextmanager
-def reader_session(*, timeout=1, flow_control="none"):
+def reader_session(*, timeout=30, flow_control="none"):
     master, slave = os.openpty()
     try:
         attrs = termios.tcgetattr(slave)
@@ -42,12 +43,39 @@ def arm(process):
     assert read_event(process, 5)["type"] == "ARMED"
 
 
-def test_serial_reader_matches_fragmented_output_after_arm():
+def test_serial_reader_matches_fragmented_output_after_arm(monkeypatch):
+    # Observe real descriptor reads without replacing the reader's accumulation
+    # or matching logic. The acknowledgement precedes return from os.read;
+    # subsequent reads still follow accumulation in this single-threaded child.
+    observer = '''import base64,json,os
+original_read = os.read
+def observe_read(descriptor, size):
+    payload = original_read(descriptor, size)
+    if payload:
+        print(json.dumps(dict(type="READ", data=base64.b64encode(payload).decode())), flush=True)
+    return payload
+os.read = observe_read
+'''
+    monkeypatch.setattr(
+        serial_reader, "SERIAL_READER_SOURCE", observer + serial_reader.SERIAL_READER_SOURCE
+    )
     with reader_session() as (process, master, _):
         arm(process)
         os.write(master, b"fresh ")
+        consumed = bytearray()
+        while len(consumed) < len(b"fresh "):
+            event = read_event(process, 30)
+            assert event["type"] == "READ"
+            fragment = event["data"]
+            assert isinstance(fragment, str)
+            consumed.extend(base64.b64decode(fragment))
+        assert consumed == b"fresh "
+        # The prefix has left the device descriptor before another write can
+        # make the suffix available. They cannot be consumed in one read.
         os.write(master, b"marker\n")
-        event = read_event(process, 5)
+        event = read_event(process, 30)
+        while event["type"] == "READ":
+            event = read_event(process, 30)
         assert event["type"] == "MATCH"
         data = event["data"]
         assert isinstance(data, str)

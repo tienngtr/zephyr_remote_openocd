@@ -21,7 +21,7 @@ import termios
 import threading
 import time
 from collections.abc import Iterable, Iterator
-from contextlib import suppress
+from contextlib import ExitStack, suppress
 from pathlib import Path, PurePosixPath
 from types import FrameType
 from typing import Any, BinaryIO, override
@@ -826,35 +826,71 @@ class TestRttClient:
         return listener.getsockname()[1], thread
 
     def test_bidirectional_non_tty_channel(self, requires_loopback_listener):
-        received = []
+        expected_input = b"local_input"
+        expected_output = b"remote_output"
+        input_received = threading.Event()
+        server_errors: list[BaseException] = []
+        with ExitStack() as resources:
+            listener = resources.enter_context(socket.socket())
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            stop_reader, stop_writer = socket.socketpair()
+            resources.enter_context(stop_reader)
+            resources.enter_context(stop_writer)
+            stdin = resources.enter_context(tempfile.TemporaryFile("w+b"))
+            stdout = resources.enter_context(io.BytesIO())
+            stdin.write(expected_input)
+            stdin.seek(0)
 
-        def server(listener):
-            with listener, listener.accept()[0] as connection:
-                connection.sendall(b"remote_output")
-                received.append(connection.recv(64))
+            def server():
+                try:
+                    readable, _, _ = select.select((listener, stop_reader), (), ())
+                    if stop_reader in readable:
+                        return
+                    with listener.accept()[0] as connection:
+                        connection.sendall(expected_output)
+                        received = bytearray()
+                        while len(received) < len(expected_input):
+                            readable, _, _ = select.select((connection, stop_reader), (), ())
+                            if stop_reader in readable:
+                                return
+                            payload = connection.recv(64)
+                            assert payload, "RTT client closed before forwarding all input"
+                            received.extend(payload)
+                        assert received == expected_input
+                        input_received.set()
+                except BaseException as error:
+                    server_errors.append(error)
 
-        port, thread = self._listener(server)
-        input_read, input_write = os.pipe()
-        output_read, output_write = os.pipe()
-        os.write(input_write, b"local_input")
-        os.close(input_write)
-        with (
-            os.fdopen(input_read, "rb", buffering=0) as stdin,
-            os.fdopen(output_write, "wb", buffering=0) as stdout,
-        ):
-            assert (
-                run_rtt_client(
-                    port,
-                    lambda: 0 if received else None,
-                    stdin=stdin,
-                    stdout=stdout,
+            thread = threading.Thread(target=server)
+
+            def stop_server():
+                try:
+                    stop_writer.shutdown(socket.SHUT_WR)
+                finally:
+                    if thread.ident is not None:
+                        thread.join(30)
+                    assert not thread.is_alive(), "RTT test server did not stop"
+                if server_errors:
+                    raise server_errors[0]
+
+            def poll_session():
+                if server_errors:
+                    raise server_errors[0]
+                return (
+                    0 if input_received.is_set() and stdout.getvalue() == expected_output else None
                 )
-                == 0
-            )
-        thread.join(2)
-        assert received == [b"local_input"]
-        assert os.read(output_read, 64) == b"remote_output"
-        os.close(output_read)
+
+            with cleanup_on_exit(stop_server):
+                thread.start()
+                assert (
+                    run_rtt_client(
+                        listener.getsockname()[1], poll_session, stdin=stdin, stdout=stdout
+                    )
+                    == 0
+                )
+                assert input_received.is_set()
+                assert stdout.getvalue() == expected_output
 
     def test_non_consuming_channel_does_not_block_session_poll(self):
         connection = create_autospec(socket.socket, instance=True, spec_set=True)
@@ -885,13 +921,14 @@ class TestRttClient:
                 rtt_module.select,
                 "select",
                 side_effect=select_input,
-            ) as select_call,
+            ),
         ):
             input_fd = stdin.fileno()
             assert rtt_module._RttRelay(connection, input_fd, stdout, poll_session).run() == 0
 
         assert observed_after_input
-        select_call.assert_called_once_with((input_fd, connection), (), (), 0.1)
+        connection.send.assert_not_called()
+        connection.sendall.assert_not_called()
 
     def test_full_input_queue_pauses_and_resumes_stdin_after_partial_send(self, monkeypatch):
         input_resumed = False
