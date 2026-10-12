@@ -70,12 +70,21 @@ class ControlledHelper:
     allocation = SessionAllocation("session", "/workspace")
 
     def __init__(self) -> None:
-        self.observations = _SessionObservations()
+        self._observations: _SessionObservations | None = None
         self.services: tuple[Service, ...] = ()
         self.close_calls = 0
         self.on_wait: Callable[[], None] | None = None
         self.process_start_handler: Callable[[tuple[str, ...]], None] | None = None
         self.preferred_address: str | None = None
+
+    @property
+    def observations(self) -> _SessionObservations:
+        assert self._observations is not None, "session authority must be bound before use"
+        return self._observations
+
+    @observations.setter
+    def observations(self, observations: _SessionObservations) -> None:
+        self._observations = observations
 
     def acquire(self) -> None:
         pass
@@ -181,8 +190,9 @@ class ForwardingHarness:
         monkeypatch.setattr(_ForwardManager, "_await_ready", staticmethod(self.await_ready))
         monkeypatch.setattr(_ForwardManager, "_preflight", staticmethod(lambda _service: None))
 
-    def make_helper(self, *_args, process_start_handler=None, observations=None, **_kwargs):
-        assert observations is not None
+    def make_helper(
+        self, *_args, observations: _SessionObservations, process_start_handler=None, **_kwargs
+    ):
         self.helper.observations = observations
         self.helper.process_start_handler = process_start_handler
         return self.helper
