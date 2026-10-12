@@ -1563,8 +1563,7 @@ class ControlSession:
         self._session_tasks: list[asyncio.Task[_ObservationFailed | None]] = []
         self._observation_failures: dict[asyncio.Task[Any], _ObservationFailed] = {}
         self._deadline_task: asyncio.Task[_ObservationFailed | None] | None = None
-        self._child_cleaning = False
-        self._group_cleaned = False
+        self._child_cleanup: asyncio.Task[_ObservationFailed | None] | _GroupCleaned | None = None
         self._attempt_finished = False
         self._staging_closed = False
         self._resources_released = False
@@ -1676,7 +1675,13 @@ class ControlSession:
         child: SupervisedChild | None = None,
     ) -> asyncio.Task[_ObservationFailed | None]:
         assert self._tasks is not None
-        task = self._tasks.create_task(self._guard(source, observation, child), name=source)
+        guarded = self._guard(source, observation, child)
+        try:
+            task = self._tasks.create_task(guarded, name=source)
+        except BaseException:
+            guarded.close()
+            observation.close()
+            raise
         task.add_done_callback(lambda _task: observation.close())
         (self._session_tasks if child is None else child.tasks).append(task)
         return task
@@ -1795,16 +1800,24 @@ class ControlSession:
 
     def _start_output_observers(self, child: SupervisedChild) -> None:
         observed = {task.get_name() for task in child.tasks}
+        errors = []
         for name in ("stdout", "stderr"):
-            if name in observed:
+            if name in observed or name in child.output_finished:
                 continue
-            stream = getattr(child.process, name)
-            if stream is None:
-                raise RuntimeError("child output was not captured")
-            if stream.closed:
+            try:
+                stream = getattr(child.process, name)
+                if stream is None:
+                    raise RuntimeError("child output was not captured")
+                if stream.closed:
+                    child.output_finished.add(name)
+                else:
+                    self._observe(name, self._observe_output(child, name, stream), child)
+            except BaseException as error:
+                # No observer can report this stream's EOF. Its pipe remains
+                # owned by the child and is closed during attempt settlement.
                 child.output_finished.add(name)
-            else:
-                self._observe(name, self._observe_output(child, name, stream), child)
+                errors.append(error)
+        _raise_cleanup_errors(errors)
 
     def _record_exit(self, child: SupervisedChild, returncode: int) -> None:
         if child.termination_requested:
@@ -1892,23 +1905,45 @@ class ControlSession:
             await asyncio.wait([reader.checkpoint() for reader in readers])
         await self._events.put(_Deadline(child, readiness=True, final=True))
 
-    async def _clean_group(self, child: SupervisedChild) -> None:
+    @staticmethod
+    async def _dispose_group(child: SupervisedChild) -> _GroupCleaned:
         failure = None
         try:
             await child.terminate()
         except BaseException as error:
             failure = error
-        await self._events.put(_GroupCleaned(child, failure))
+        return _GroupCleaned(child, failure)
 
-    def _begin_child_cleanup(self) -> None:
+    async def _clean_group(self, child: SupervisedChild) -> None:
+        await self._events.put(await self._dispose_group(child))
+
+    async def _begin_child_cleanup(self) -> None:
         child = self.child
-        if child is None or self._child_cleaning:
+        if child is None or self._child_cleanup is not None:
             return
-        self._child_cleaning = True
-        self._start_output_observers(child)
         if self._deadline_task is not None:
             self._deadline_task.cancel()
-        self._observe("process-group cleanup", self._clean_group(child), child)
+        assert self._tasks is not None
+        observation = self._clean_group(child)
+        guarded = self._guard("process-group cleanup", observation, child)
+        try:
+            # The TaskGroup owns successful creation immediately; this slot
+            # adopts it before auxiliary setup or task-list registration.
+            self._child_cleanup = self._tasks.create_task(guarded, name="process-group cleanup")
+        except BaseException as error:
+            guarded.close()
+            observation.close()
+            self._cleanup_failure(error)
+            # The coordinator still owns the child. Disposal does not depend
+            # on allocating a replacement task or publishing to its own queue.
+            self._handle(await self._dispose_group(child))
+        else:
+            child.tasks.append(self._child_cleanup)
+            self._child_cleanup.add_done_callback(lambda _task: observation.close())
+        try:
+            self._start_output_observers(child)
+        except BaseException as error:
+            self._cleanup_failure(error)
 
     async def _cancel(self, tasks: Iterable[asyncio.Task[Any]]) -> None:
         owned = tuple(tasks)
@@ -1994,16 +2029,21 @@ class ControlSession:
                 self._record_exit(observation.child, observation.returncode)
         elif isinstance(observation, _GroupCleaned):
             if observation.child is self.child:
-                self._group_cleaned = True
+                self._child_cleanup = observation
                 if observation.exception is not None:
                     self._cleanup_failure(observation.exception)
-                self._deadline_task = self._observe(
-                    "output drain deadline",
-                    self._observe_deadline(
-                        observation.child, CHILD_RELAY_JOIN_TIMEOUT, readiness=False
-                    ),
-                    observation.child,
-                )
+                if observation.child.output_finished != {"stdout", "stderr"}:
+                    try:
+                        self._deadline_task = self._observe(
+                            "output drain deadline",
+                            self._observe_deadline(
+                                observation.child, CHILD_RELAY_JOIN_TIMEOUT, readiness=False
+                            ),
+                            observation.child,
+                        )
+                    except BaseException as error:
+                        self._cleanup_failure(error)
+                        observation.child.output_finished.update(("stdout", "stderr"))
         elif isinstance(observation, _Deadline) and observation.child is self.child:
             state = self.lifecycle.state
             if observation.readiness and isinstance(state, Starting):
@@ -2046,16 +2086,15 @@ class ControlSession:
                     self._staging_closed = True
                 if self.child is None or self._attempt_finished:
                     return
-                self._begin_child_cleanup()
+                await self._begin_child_cleanup()
             elif (
                 isinstance(state, Starting)
                 and isinstance(state.attempt, OwnedAttempt)
                 and state.attempt.child_result is not None
             ):
-                self._begin_child_cleanup()
+                await self._begin_child_cleanup()
             if (
-                self._child_cleaning
-                and self._group_cleaned
+                isinstance(self._child_cleanup, _GroupCleaned)
                 and self.child is not None
                 and self.child.output_finished == {"stdout", "stderr"}
             ):

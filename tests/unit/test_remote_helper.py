@@ -1587,6 +1587,60 @@ def test_signal_capture_and_spawn_handoff_keep_cleanup_reachable(
     monkeypatch.setattr(remote_helper, "SupervisedChild", supervisor)
 
 
+@pytest.mark.parametrize(
+    "failed_tasks",
+    (
+        ("process-group cleanup",),
+        ("stdout",),
+        ("stderr",),
+        ("stdout", "stderr", "process-group cleanup"),
+        ("process-group cleanup", "output drain deadline"),
+    ),
+    ids=("group-task", "stdout-task", "stderr-task", "group-and-relays", "group-and-deadline"),
+)
+@pytest.mark.parametrize("failure_type", (RuntimeError, KeyboardInterrupt))
+def test_cleanup_task_setup_failure_still_disposes_child_and_independent_resources(
+    coordinated_helper, monkeypatch, failed_tasks, failure_type
+):
+    session, writer, events, children = coordinated_helper
+    create_task = asyncio.TaskGroup.create_task
+    record = remote_helper.emit
+    failures = []
+
+    def create(group, coroutine, *, name=None, **kwargs):
+        if name in failed_tasks:
+            failure = failure_type(f"cannot create {name}")
+            failure.add_note("task acquisition diagnostic")
+            failures.append(failure)
+            raise failure
+        return create_task(group, coroutine, name=name, **kwargs)
+
+    def emit(kind, **fields):
+        record(kind, **fields)
+        if kind == "READY":
+            writer.close()
+
+    monkeypatch.setattr(asyncio.TaskGroup, "create_task", create)
+    monkeypatch.setattr(remote_helper, "emit", emit)
+    write_start(writer, RemoteProcess((sys.executable, "-c", "import signal;signal.pause()")), ())
+    _run_terminated(session, fails=True)
+
+    snapshot = _terminal_event(events)
+    assert snapshot.cleanup.confirmed
+    assert snapshot.outcome.primary_failure is not None
+    assert snapshot.outcome.primary_failure.message == str(failures[0])
+    assert all(str(failure) in repr(snapshot.outcome) for failure in failures)
+    assert "task acquisition diagnostic" in repr(snapshot.outcome)
+    assert len(children) == 1
+    child = children[0]
+    assert child.process.returncode is not None and child.group_disposed
+    assert child.process.stdout.closed and child.process.stderr.closed
+    assert all(task.done() for task in child.tasks)
+    assert session.workspace_lock.closed and not session.work.exists()
+    assert not remote_helper._lease_path(session.work).exists()
+    assert not remote_helper._closure_path(session.work).exists()
+
+
 @pytest.mark.parametrize("failure", ("observer", "workspace"))
 def test_nested_failure_detail_survives_cleanup_and_wire(coordinated_helper, monkeypatch, failure):
     session, writer, events, children = coordinated_helper

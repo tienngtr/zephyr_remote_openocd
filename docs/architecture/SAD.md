@@ -1779,6 +1779,18 @@ adoption. Both construction rollback and an interrupted return use this same
 cleanup reachability; partially adopted streams still receive owned observers.
 Native handlers latch facts throughout those synchronous effects.
 
+Process-group cleanup progress is represented by its owned task or the
+coordinator-dispatched completion fact, rather than separate started/completed
+flags. The TaskGroup owns successful task creation immediately, and the
+coordinator adopts the task before auxiliary observer setup. If task creation
+fails, the coordinator performs the same bounded disposal attempt directly and
+accounts its result without publishing into the queue it normally consumes.
+Output observer setup attempts both streams independently; an unavailable
+observer cannot prevent process termination or leave shutdown waiting for an
+EOF it cannot report. Its pipe remains child-owned until settlement. Failure
+to establish the output-drain deadline records cleanup failure and ends that
+drain opportunity, allowing owned observers and pipes to be settled.
+
 Physical settlement records producer return, verified group disappearance,
 joined observers, and closed pipes separately. Finishing a cleanup coroutine
 does not confirm disposal. The canonical lifecycle settlement transition requires
