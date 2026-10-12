@@ -15,7 +15,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import BinaryIO
 
-from .cleanup import _add_failure_note
+from zephyr_remote_openocd.controller.cleanup import _add_failure_note
 
 
 class RttClientError(RuntimeError):

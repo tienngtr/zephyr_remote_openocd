@@ -8,10 +8,9 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
+from zephyr_remote_openocd.controller.ssh import SshCommand
 from zephyr_remote_openocd.protocol.listeners import ListenerSpec
 from zephyr_remote_openocd.protocol.process import ProcessSpec
-
-from .ssh import SshCommand
 
 
 class DuplicateServiceError(ValueError):
@@ -73,7 +72,7 @@ class Service:
 
 
 @dataclass(frozen=True)
-class RemoteSessionRequest:
+class SessionPlan:
     host: str
     ssh_command: SshCommand
     process: ProcessSpec

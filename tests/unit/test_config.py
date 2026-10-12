@@ -9,7 +9,7 @@ from zephyr_remote_openocd.config import (
     load_config,
     resolve_remote,
 )
-from zephyr_remote_openocd.remote.ssh import SshCommand
+from zephyr_remote_openocd.controller.ssh import SshCommand
 
 from tests.support import ROOT
 

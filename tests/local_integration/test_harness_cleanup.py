@@ -9,7 +9,7 @@ import subprocess
 import sys
 
 import pytest
-from zephyr_remote_openocd.remote.ssh import SshCommand, _stop_process
+from zephyr_remote_openocd.controller.ssh import SshCommand, _stop_process
 
 from tests.process_support import cleanup_on_exit, read_line, stop_and_close
 

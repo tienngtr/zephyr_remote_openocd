@@ -19,25 +19,18 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 from zephyr_remote_openocd.config import PathMapping
+from zephyr_remote_openocd.controller.authority import SessionError
+from zephyr_remote_openocd.controller.deployment import _helper_source, deploy_helper
+from zephyr_remote_openocd.controller.forwarding import ForwardManager
+from zephyr_remote_openocd.controller.model import Service, SessionPlan, StagedFile
+from zephyr_remote_openocd.controller.paths import PathPlanner
+from zephyr_remote_openocd.controller.session import SessionController
+from zephyr_remote_openocd.controller.ssh import SshCommand, SshForwardSpec
 from zephyr_remote_openocd.protocol.arguments import ArgumentTemplate, SessionValue
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.protocol.responses import validate_openocd_version_response
 from zephyr_remote_openocd.protocol.wire import decode_frame
-from zephyr_remote_openocd.remote import (
-    RemoteSession,
-    RemoteSessionRequest,
-    Service,
-    SessionError,
-    StagedFile,
-)
-from zephyr_remote_openocd.remote.deploy import _helper_source, deploy_helper
-from zephyr_remote_openocd.remote.forwarding import _ForwardManager
-from zephyr_remote_openocd.remote.paths import PathPlanner
-from zephyr_remote_openocd.remote.ssh import (
-    SshCommand,
-    SshLocalForward,
-)
 
 from tests.process_support import cleanup_on_exit, read_line, stop_and_close
 
@@ -195,7 +188,7 @@ class TestSshTransportIntegration:
         ssh = SshCommand((*self.ssh.argv_prefix, *conflicts))
         if occupied:
             assert_remote_marker(ssh, self.host)
-        manager = _ForwardManager(ssh, self.host)
+        manager = ForwardManager(ssh, self.host)
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
             port = listener.getsockname()[1]
@@ -236,11 +229,11 @@ class TestSshTransportIntegration:
             sentinel = "ZRO_FORWARD_READY"
             tunnel = self.ssh.popen(
                 self.host,
-                _ForwardManager._ready_command(sentinel),
-                local_forward=SshLocalForward(local_port, "127.0.0.1", remote_port),
+                ForwardManager._ready_command(sentinel),
+                local_forward=SshForwardSpec(local_port, "127.0.0.1", remote_port),
             )
             resources.enter_context(cleanup_on_exit(lambda: stop_and_close(tunnel)))
-            assert _ForwardManager._await_ready(tunnel, sentinel, time.monotonic() + 20)
+            assert ForwardManager._await_ready(tunnel, sentinel, time.monotonic() + 20)
             wait_for_echo(local_port, b"zro_forwarding", 20)
 
             assert helper_process.stdin is not None
@@ -289,14 +282,14 @@ class TestSshTransportIntegration:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "payload.bin"
             source.write_bytes(bytes(range(256)) + b"\0remote")
-            request = RemoteSessionRequest(
+            request = SessionPlan(
                 self.host,
                 self.ssh,
                 session_echo_process(),
                 (StagedFile(source, PurePosixPath("nested/payload.bin")),),
                 (Service("gdb", local_port, 3333),),
             )
-            session = RemoteSession.prepare(request)
+            session = SessionController.prepare(request)
             with cleanup_on_exit(session.close):
                 session.acquire()
                 assert session.descriptor is not None
@@ -341,8 +334,8 @@ class TestSshTransportIntegration:
         while second_port == first_port:
             second_port = free_loopback_port()
         with ExitStack() as resources:
-            first = RemoteSession.prepare(
-                RemoteSessionRequest(
+            first = SessionController.prepare(
+                SessionPlan(
                     self.host,
                     self.ssh,
                     session_echo_process(),
@@ -351,8 +344,8 @@ class TestSshTransportIntegration:
             )
             resources.enter_context(cleanup_on_exit(first.close))
             first.acquire()
-            second = RemoteSession.prepare(
-                RemoteSessionRequest(
+            second = SessionController.prepare(
+                SessionPlan(
                     self.host,
                     self.ssh,
                     session_echo_process(),
@@ -404,8 +397,8 @@ collision.listen()
         attempts: list[tuple[str, ...]] = []
         output: list[str] = []
         with pytest.raises(SessionError):
-            session = RemoteSession.prepare(
-                RemoteSessionRequest(self.host, self.ssh, process, services=(service,))
+            session = SessionController.prepare(
+                SessionPlan(self.host, self.ssh, process, services=(service,))
             )
             with cleanup_on_exit(session.close):
                 session.acquire(
@@ -423,13 +416,13 @@ collision.listen()
 
     def test_helper_revision_repair_preserves_active_session(self):
         """Deploy and repair a distinct bundle while the current revision is live."""
-        request = RemoteSessionRequest(
+        request = SessionPlan(
             self.host,
             self.ssh,
             session_echo_process(),
             services=(Service("gdb", free_loopback_port(), 3333),),
         )
-        session = RemoteSession.prepare(request)
+        session = SessionController.prepare(request)
         with cleanup_on_exit(session.close), ExitStack() as resources:
             session.acquire()
             bundle = io.BytesIO(_helper_source())
@@ -519,7 +512,7 @@ collision.listen()
             )
         )
         local_port = free_loopback_port()
-        request = RemoteSessionRequest(
+        request = SessionPlan(
             self.host,
             ssh,
             session_echo_process(),
@@ -529,7 +522,7 @@ collision.listen()
         with cleanup_on_exit(lambda: stop_and_close(master)):
             assert master.stdout is not None
             assert read_line(master.stdout).strip() == b"ZRO_MASTER_READY", master.stderr_tail()
-            first = RemoteSession.prepare(request)
+            first = SessionController.prepare(request)
             with cleanup_on_exit(first.close):
                 first.acquire()
                 assert first.descriptor is not None
@@ -538,7 +531,7 @@ collision.listen()
             assert master.poll() is None
             with socket.create_connection(("127.0.0.1", local_port), timeout=20):
                 pass
-            second = RemoteSession.prepare(request)
+            second = SessionController.prepare(request)
             with cleanup_on_exit(second.close):
                 second.acquire()
                 assert second.descriptor is not None
@@ -567,8 +560,8 @@ collision.listen()
 
         local_port = free_loopback_port()
         ssh = RecordingSshCommand(self.ssh_settings.ssh_command)
-        session = RemoteSession.prepare(
-            RemoteSessionRequest(
+        session = SessionController.prepare(
+            SessionPlan(
                 self.host, ssh, session_echo_process(), services=(Service("gdb", local_port, 3333),)
             )
         )
@@ -610,8 +603,8 @@ collision.listen()
 
         local_port = free_loopback_port()
         ssh = RecordingSshCommand(self.ssh_settings.ssh_command)
-        session = RemoteSession.prepare(
-            RemoteSessionRequest(
+        session = SessionController.prepare(
+            SessionPlan(
                 self.host, ssh, session_echo_process(), services=(Service("gdb", local_port, 3333),)
             )
         )
@@ -624,7 +617,7 @@ collision.listen()
             forward.wait(timeout=20)
 
             with pytest.raises(SessionError) as raised:
-                session.check_openocd_exit()
+                session.poll_operation()
             assert "gdb" in str(raised.value)
             assert f"127.0.0.1:{local_port}" in str(raised.value)
 
@@ -700,14 +693,14 @@ collision.listen()
                 ),
                 completion_policy=CompletionPolicy.PROCESS_EXIT,
             )
-            request = RemoteSessionRequest(
+            request = SessionPlan(
                 self.host,
                 self.ssh,
                 process,
                 tuple(planner.staged_files),
                 (),
             )
-            session = RemoteSession.prepare(request)
+            session = SessionController.prepare(request)
             try:
                 session.acquire(
                     output_handler=lambda stream, payload, line_end: output.append(

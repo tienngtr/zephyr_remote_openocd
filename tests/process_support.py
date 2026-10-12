@@ -16,8 +16,8 @@ from contextlib import contextmanager
 from typing import IO
 from unittest.mock import patch
 
-from zephyr_remote_openocd.remote.cleanup import _add_failure_note
-from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand, _stop_process
+from zephyr_remote_openocd.controller.cleanup import _add_failure_note
+from zephyr_remote_openocd.controller.ssh import ManagedSshProcess, SshCommand, _stop_process
 
 PROCESS_CLEANUP_TIMEOUT = 10
 

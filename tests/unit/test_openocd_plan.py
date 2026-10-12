@@ -7,13 +7,13 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 from zephyr_remote_openocd.config import PathMapping
+from zephyr_remote_openocd.controller.model import StagedDirectory, StagedFile
+from zephyr_remote_openocd.controller.paths import PathPlanner, PathPlanningError
 from zephyr_remote_openocd.protocol.arguments import materialize_argv, materialize_path
 from zephyr_remote_openocd.protocol.commands import decode_command, write_start
 from zephyr_remote_openocd.protocol.process import ProcessSpec, RequiredPathSpec
 from zephyr_remote_openocd.protocol.wire import decode_frame
-from zephyr_remote_openocd.remote.model import StagedDirectory, StagedFile
 from zephyr_remote_openocd.remote.openocd_plan import plan_openocd_base, plan_support_paths
-from zephyr_remote_openocd.remote.paths import PathPlanner, PathPlanningError
 
 
 @pytest.mark.parametrize("mapped", (False, True), ids=("staged", "mapped"))

@@ -12,6 +12,33 @@ import time
 from collections.abc import Callable, Iterable
 from typing import Protocol
 
+from zephyr_remote_openocd.controller.authority import (
+    SessionAuthority,
+    SessionClosedError,
+    SessionError,
+)
+from zephyr_remote_openocd.controller.deployment import DeploymentResult, deploy_helper
+from zephyr_remote_openocd.controller.forwarding import (
+    FORWARD_HEALTH_INTERVAL,
+    ForwardAdvisory,
+    ForwardFailure,
+    ForwardManager,
+    ForwardStartError,
+)
+from zephyr_remote_openocd.controller.helper_connection import HelperConnection
+from zephyr_remote_openocd.controller.model import (
+    Service,
+    SessionAllocation,
+    SessionDescriptor,
+    SessionPlan,
+    StagedEntry,
+)
+from zephyr_remote_openocd.controller.preferred_address_cache import (
+    load_preferred_address,
+    remember_preferred_address,
+)
+from zephyr_remote_openocd.controller.ssh import SshCommand
+from zephyr_remote_openocd.controller.staging import build_archive
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.protocol.responses import (
     validate_error_response,
@@ -19,27 +46,6 @@ from zephyr_remote_openocd.protocol.responses import (
     validate_staged_response,
 )
 from zephyr_remote_openocd.protocol.wire import ProtocolError, decode_frame
-from zephyr_remote_openocd.remote.model import (
-    RemoteSessionRequest,
-    Service,
-    SessionAllocation,
-    SessionDescriptor,
-    StagedEntry,
-)
-
-from .deploy import DeploymentResult, deploy_helper
-from .forwarding import (
-    FORWARD_HEALTH_INTERVAL,
-    ForwardAdvisory,
-    ForwardFailure,
-    ForwardStartError,
-    _ForwardManager,
-)
-from .helper_client import _HelperClient
-from .preferred_address_cache import load_preferred_address, remember_preferred_address
-from .session import SessionClosedError, SessionError, _SessionObservations
-from .ssh import SshCommand
-from .staging import build_archive
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -88,8 +94,8 @@ def query_remote_openocd_version(
         raise SessionError(f"invalid remote OpenOCD version response: {result.stdout!r}") from error
 
 
-class _SessionHelper(Protocol):
-    """Helper-control operations owned by ``RemoteSession``."""
+class SessionConnection(Protocol):
+    """Helper-control operations owned by ``SessionController``."""
 
     def acquire(self) -> None: ...
 
@@ -113,8 +119,8 @@ class _SessionHelper(Protocol):
     def close(self) -> None: ...
 
 
-class _SessionForwards(Protocol):
-    """Forwarding operations owned by ``RemoteSession``."""
+class SessionForwards(Protocol):
+    """Forwarding operations owned by ``SessionController``."""
 
     @property
     def has_forwards(self) -> bool: ...
@@ -129,21 +135,21 @@ class _SessionForwards(Protocol):
     def close(self) -> None: ...
 
 
-class RemoteSession:
+class SessionController:
     """Coordinate one helper client and its SSH forwarding processes."""
 
     def __init__(
         self,
-        request: RemoteSessionRequest,
+        request: SessionPlan,
         deployment: DeploymentResult,
         *,
         advisory_handler: Callable[[ForwardAdvisory], None] | None = None,
     ) -> None:
         self.request = request
         self.deployment = deployment
-        self._forwards: _SessionForwards = _ForwardManager(request.ssh_command, request.host)
-        self._helper: _SessionHelper | None = None
-        self._observations = _SessionObservations()
+        self._forwards: SessionForwards = ForwardManager(request.ssh_command, request.host)
+        self._helper: SessionConnection | None = None
+        self._authority = SessionAuthority()
         self.closed = False
         self.descriptor: SessionDescriptor | None = None
         self._advisory_handler = advisory_handler or _log_forward_advisory
@@ -156,17 +162,17 @@ class RemoteSession:
 
     @property
     def openocd_returncode(self) -> int | None:
-        ending = self._observations.snapshot().ending
+        ending = self._authority.snapshot().ending
         result = None if ending is None else ending.outcome.child_result
         return None if result is None else result.returncode
 
     @classmethod
     def prepare(
         cls,
-        request: RemoteSessionRequest,
+        request: SessionPlan,
         *,
         advisory_handler: Callable[[ForwardAdvisory], None] | None = None,
-    ) -> RemoteSession:
+    ) -> SessionController:
         """Create the coordinator without acquiring live session resources."""
         deployment = deploy_helper(request.ssh_command, request.host)
         return cls(request, deployment, advisory_handler=advisory_handler)
@@ -180,20 +186,20 @@ class RemoteSession:
         """Acquire resources on an owned coordinator; the caller must close it."""
         if self.closed or self._helper is not None:
             raise SessionError("remote session has already been acquired or closed")
-        self._helper = _HelperClient(
+        self._helper = HelperConnection(
             self.request.ssh_command,
             self.request.host,
             self.deployment,
             output_handler=output_handler,
             process_start_handler=process_start_handler,
-            observations=self._observations,
+            authority=self._authority,
         )
         try:
             self._helper.acquire()
             self._stage(self.request.staged_files)
             self._start_process(self.request.services)
         except BaseException as error:
-            primary = self._observations.arbitrate_failure(error)
+            primary = self._authority.resolve_effect_failure(error)
             raise primary from primary.__cause__
 
     def _stage(self, files: Iterable[StagedEntry]):
@@ -241,12 +247,12 @@ class RemoteSession:
         )
         if address is None:
             return None
-        self._observations.record_ready()
+        self._authority.record_ready()
         self.descriptor = SessionDescriptor(helper.allocation, address)
         auxiliary = set(self.request.auxiliary_services)
         self.forward(tuple(service for service in service_list if service not in auxiliary))
         self.forward(self.request.auxiliary_services, required=False)
-        returncode = self.check_openocd_exit()
+        returncode = self.poll_operation()
         if service_list and returncode is not None:
             raise SessionError(f"remote OpenOCD exited during startup with status {returncode}")
         return self.descriptor
@@ -256,7 +262,7 @@ class RemoteSession:
         try:
             self._forward(services, required=required)
         except BaseException as error:
-            primary = self._observations.arbitrate_failure(error)
+            primary = self._authority.resolve_effect_failure(error)
             raise primary from primary.__cause__
 
     def _forward(self, services: Iterable[Service], *, required: bool) -> None:
@@ -266,7 +272,7 @@ class RemoteSession:
             raise SessionError("remote session is not ready for additional forwarding")
         service_list = tuple(services)
         if required:
-            self._observations.enter(self._required_services, self._forwards.services)
+            self._authority.admit_work(self._required_services, self._forwards.services)
             if not service_list:
                 return
             self._start_forward(service_list, self.descriptor.remote_address, required=True)
@@ -276,7 +282,7 @@ class RemoteSession:
             )
         elif not required:
             for service in service_list:
-                self._observations.enter(self._required_services, self._forwards.services)
+                self._authority.admit_work(self._required_services, self._forwards.services)
                 self._start_forward((service,), self.descriptor.remote_address, required=False)
 
     def _start_forward(
@@ -286,17 +292,17 @@ class RemoteSession:
             self._forwards.start(services, remote_address)
         except BaseException as error:
             if not required and isinstance(error, ForwardStartError) and not error.cleanup_errors:
-                primary = self._observations.arbitrate_advisory(error)
+                primary = self._authority.resolve_optional_failure(error)
                 if primary is None:
                     self._advisory_handler(ForwardAdvisory(error.service, "startup", error))
                     return
             else:
-                primary = self._observations.arbitrate_failure(error)
+                primary = self._authority.resolve_effect_failure(error)
             raise primary from primary.__cause__
 
-    def mark_auxiliary(self, services: Iterable[Service]) -> None:
+    def make_forwards_optional(self, services: Iterable[Service]) -> None:
         """Reclassify owned forwards after their required phase completes."""
-        if self.closed or self._observations.snapshot().closing:
+        if self.closed or self._authority.snapshot().closing:
             raise SessionClosedError("remote session is closed")
         service_set = set(services)
         if not service_set.issubset(self._forwards.services):
@@ -310,7 +316,7 @@ class RemoteSession:
         service = failure.service
         error = failure.as_error()
         if service in self._required_services:
-            self._observations.record_failure("FORWARD_FAILURE", error, key=("forward", service))
+            self._authority.record_failure("FORWARD_FAILURE", error, key=("forward", service))
         elif service not in self._warned_services:
             self._advisory_handler(ForwardAdvisory(service, "runtime", error))
             self._warned_services.add(service)
@@ -321,28 +327,28 @@ class RemoteSession:
             try:
                 observe()
             except BaseException as error:
-                self._observations.record_failure("HEALTH_OBSERVATION_FAILURE", error)
+                self._authority.record_failure("HEALTH_OBSERVATION_FAILURE", error)
 
-    def check_openocd_exit(self) -> int | None:
+    def poll_operation(self) -> int | None:
         if not self.closed:
             self._observe_health()
-        return self._observations.operation_status()
+        return self._authority.operation_status()
 
-    def run_dependent[ResultT](self, launch: Callable[[], ResultT]) -> ResultT:
+    def run_local_client[ResultT](self, launch: Callable[[], ResultT]) -> ResultT:
         """Commit actual execution entry after accounting recorded fatal facts."""
         try:
-            returncode = self.check_openocd_exit()
+            returncode = self.poll_operation()
             if returncode is not None:
                 raise SessionError(f"remote OpenOCD exited before dependent launch ({returncode})")
-            self._observations.enter(self._required_services, self._forwards.services)
+            self._authority.admit_work(self._required_services, self._forwards.services)
             return launch()
         except BaseException as error:
-            primary = self._observations.arbitrate_failure(error)
+            primary = self._authority.resolve_effect_failure(error)
             raise primary from primary.__cause__
 
     def record_operation_failure(self, error: BaseException) -> None:
         """Report a local operation/cancellation fact to the session authority."""
-        self._observations.record_failure("OPERATION_FAILURE", error)
+        self._authority.record_failure("OPERATION_FAILURE", error)
 
     def finish(self) -> None:
         """Settle ownership and publish the authority's complete operation result."""
@@ -350,25 +356,25 @@ class RemoteSession:
             self.close()
         except BaseException as error:
             self.record_operation_failure(error)
-        failure = self._observations.publish_failure()
+        failure = self._authority.publish_failure()
         if failure is not None:
             raise failure
 
     def wait_for_openocd_exit(self, timeout: float | None = None) -> int:
         if self.closed:
-            result = self.check_openocd_exit()
+            result = self.poll_operation()
             if result is None:
                 raise SessionClosedError("remote session closed without a natural OpenOCD exit")
             return result
         helper = self._helper_or_error()
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
-            result = self.check_openocd_exit()
+            result = self.poll_operation()
             if result is not None:
                 return result
             remaining = None if deadline is None else deadline - time.monotonic()
             if remaining is not None and remaining <= 0:
-                raise self._observations.arbitrate_failure(helper.timeout_expired(timeout or 0.0))
+                raise self._authority.resolve_effect_failure(helper.timeout_expired(timeout or 0.0))
             health_wait = FORWARD_HEALTH_INTERVAL if self._forwards.has_forwards else remaining
             wait_timeout = (
                 health_wait if remaining is None else min(remaining, health_wait or remaining)
@@ -376,7 +382,7 @@ class RemoteSession:
             try:
                 helper.wait_for_change(wait_timeout)
             except BaseException as error:
-                primary = self._observations.arbitrate_failure(error)
+                primary = self._authority.resolve_effect_failure(error)
                 raise primary from primary.__cause__
 
     def close(self) -> None:
@@ -384,7 +390,7 @@ class RemoteSession:
             return
         previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
         try:
-            self._observations.cancel()
+            self._authority.cancel()
             # Sample before disposal erases already-exited SSH processes.
             if self._helper is not None:
                 self._observe_health()
@@ -392,14 +398,14 @@ class RemoteSession:
                 try:
                     cleanup()
                 except BaseException as error:
-                    self._observations.record_failure("SESSION_CLEANUP_FAILURE", error)
+                    self._authority.record_failure("SESSION_CLEANUP_FAILURE", error)
             self.closed = True
         finally:
             try:
                 signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
             except BaseException as error:
-                self._observations.record_failure("LOCAL_CANCELLATION", error)
-        failure = self._observations.take_unreported_failure()
+                self._authority.record_failure("LOCAL_CANCELLATION", error)
+        failure = self._authority.take_unreported_failure()
         if failure is not None:
             raise failure
 
@@ -408,7 +414,7 @@ class RemoteSession:
             return
         self._helper.close()
 
-    def _helper_or_error(self) -> _SessionHelper:
+    def _helper_or_error(self) -> SessionConnection:
         if self._helper is None:
             raise SessionError("remote helper control session is not open")
         return self._helper

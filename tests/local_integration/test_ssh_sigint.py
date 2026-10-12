@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from zephyr_remote_openocd.remote import ssh
+from zephyr_remote_openocd.controller import ssh
 
 from tests.process_support import read_line
 
@@ -31,7 +31,7 @@ import subprocess
 import sys
 import termios
 
-from zephyr_remote_openocd.remote.ssh import SshCommand
+from zephyr_remote_openocd.controller.ssh import SshCommand
 
 from tests.process_support import read_line
 

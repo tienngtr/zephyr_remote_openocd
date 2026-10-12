@@ -16,23 +16,23 @@ from typing import Any, BinaryIO, cast, override
 from unittest.mock import create_autospec, patch
 
 import pytest
-from zephyr_remote_openocd.protocol.outcome import Trigger
-from zephyr_remote_openocd.protocol.process import ProcessSpec
-from zephyr_remote_openocd.protocol.wire import encode_frame
-from zephyr_remote_openocd.remote import backend as backend_module
-from zephyr_remote_openocd.remote import ssh as ssh_module
-from zephyr_remote_openocd.remote.backend import RemoteSession
-from zephyr_remote_openocd.remote.deploy import DeploymentResult
-from zephyr_remote_openocd.remote.forwarding import _ForwardManager
-from zephyr_remote_openocd.remote.helper_client import _HelperClient
-from zephyr_remote_openocd.remote.model import RemoteSessionRequest, Service
-from zephyr_remote_openocd.remote.session import SessionError
-from zephyr_remote_openocd.remote.ssh import (
+from zephyr_remote_openocd.controller import session as session_module
+from zephyr_remote_openocd.controller import ssh as ssh_module
+from zephyr_remote_openocd.controller.authority import SessionError
+from zephyr_remote_openocd.controller.deployment import DeploymentResult
+from zephyr_remote_openocd.controller.forwarding import ForwardManager
+from zephyr_remote_openocd.controller.helper_connection import HelperConnection
+from zephyr_remote_openocd.controller.model import Service, SessionPlan
+from zephyr_remote_openocd.controller.session import SessionController
+from zephyr_remote_openocd.controller.ssh import (
     SshCommand,
-    SshLocalForward,
+    SshForwardSpec,
     SshProcessStartError,
     _stop_process,
 )
+from zephyr_remote_openocd.protocol.outcome import Trigger
+from zephyr_remote_openocd.protocol.process import ProcessSpec
+from zephyr_remote_openocd.protocol.wire import encode_frame
 
 from tests.process_support import cleanup_on_exit
 from tests.protocol_support import terminal_message
@@ -482,7 +482,7 @@ class _HelperProcess:
 
 class _ForwardCommand(_PopenOnlySshCommand):
     processes: Iterator[Any]
-    calls: list[tuple[str, str, SshLocalForward | None]]
+    calls: list[tuple[str, str, SshForwardSpec | None]]
 
     def __init__(self, *processes):
         super().__init__()
@@ -491,7 +491,7 @@ class _ForwardCommand(_PopenOnlySshCommand):
 
     @override
     def popen(
-        self, host: str, remote_command: str, *, local_forward: SshLocalForward | None = None
+        self, host: str, remote_command: str, *, local_forward: SshForwardSpec | None = None
     ) -> Any:
         self.calls.append((host, remote_command, local_forward))
         return next(self.processes)
@@ -514,20 +514,20 @@ def test_initial_forward_failure_consumes_session_close_event(monkeypatch):
     )
     helper.returncode = 0
     command = _ForwardCommand(helper)
-    request = RemoteSessionRequest(
+    request = SessionPlan(
         "host",
         command,
         ProcessSpec(("child",)),
         services=(Service("gdb", 3333, 3333),),
     )
     deployment = DeploymentResult("/helper.py", "digest", False)
-    dispatch = _HelperClient._dispatch
+    dispatch = HelperConnection._dispatch
 
     def deploy(_ssh_command, _host):
         return deployment
 
-    monkeypatch.setattr(backend_module, "deploy_helper", deploy)
-    monkeypatch.setattr(RemoteSession, "_stage", lambda _session, _files: None)
+    monkeypatch.setattr(session_module, "deploy_helper", deploy)
+    monkeypatch.setattr(SessionController, "_stage", lambda _session, _files: None)
 
     def observe_close(helper_client, event):
         dispatch(helper_client, event)
@@ -538,11 +538,11 @@ def test_initial_forward_failure_consumes_session_close_event(monkeypatch):
         assert close_seen.wait(5)
         raise forward_error
 
-    monkeypatch.setattr(_HelperClient, "_dispatch", observe_close)
-    monkeypatch.setattr(_ForwardManager, "start", fail_forwards)
+    monkeypatch.setattr(HelperConnection, "_dispatch", observe_close)
+    monkeypatch.setattr(ForwardManager, "start", fail_forwards)
 
     with pytest.raises(SessionError) as raised:
-        session = RemoteSession.prepare(request)
+        session = SessionController.prepare(request)
         with cleanup_on_exit(session.close):
             session.acquire()
 

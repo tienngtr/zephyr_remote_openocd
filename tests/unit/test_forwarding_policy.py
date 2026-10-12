@@ -10,14 +10,14 @@ from typing import cast
 from unittest.mock import create_autospec
 
 import pytest
+from zephyr_remote_openocd.controller import preferred_address_cache
+from zephyr_remote_openocd.controller import ssh as ssh_module
+from zephyr_remote_openocd.controller.authority import SessionError
+from zephyr_remote_openocd.controller.forwarding import ForwardStartError
+from zephyr_remote_openocd.controller.helper_connection import HelperConnection
+from zephyr_remote_openocd.controller.ssh import ManagedSshProcess, SshCommand
 from zephyr_remote_openocd.protocol.outcome import Trigger
 from zephyr_remote_openocd.protocol.wire import encode_frame
-from zephyr_remote_openocd.remote import preferred_address_cache
-from zephyr_remote_openocd.remote import ssh as ssh_module
-from zephyr_remote_openocd.remote.forwarding import ForwardStartError
-from zephyr_remote_openocd.remote.helper_client import _HelperClient
-from zephyr_remote_openocd.remote.session import SessionError
-from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand
 
 from tests.forwarding_support import GDB, RTT, TCL, TELNET, ControlledSshCommand, ForwardingHarness
 from tests.process_support import cleanup_on_exit
@@ -37,11 +37,11 @@ def test_close_preserves_recorded_session_failure_over_forward_cleanup(
     session = harness.prepare((GDB,), ())
     with cleanup_on_exit(session.close):
         session.acquire()
-        helper = _HelperClient(
+        helper = HelperConnection(
             harness.ssh,
             session.request.host,
             session.deployment,
-            observations=session._observations,
+            authority=session._authority,
         )
         process = create_autospec(ManagedSshProcess, instance=True, spec_set=True)
         read_fd, write_fd = os.pipe()
@@ -67,19 +67,19 @@ def test_close_preserves_recorded_session_failure_over_forward_cleanup(
         )
         session._helper = helper
         helper.acquire()
-        assert session.check_openocd_exit() is None
+        assert session.poll_operation() is None
         cleanup_error = RuntimeError("forward cleanup failed")
         cleanup_error.add_note("nested forward cleanup detail")
 
         def record_failure():
             if fact == "terminal":
-                session._observations.record_terminal(
+                session._authority.record_terminal(
                     terminal_snapshot(
                         Trigger.HELPER_FAILURE, code="FAILED", message="established failure"
                     )
                 )
             else:
-                session._observations.record_reader_failure(RuntimeError("established failure"))
+                session._authority.record_reader_failure(RuntimeError("established failure"))
 
         def fail_cleanup():
             if during_cleanup:
@@ -169,9 +169,9 @@ def test_recorded_failure_or_cancellation_prevents_forward_entry(
 
         monkeypatch.setattr(ControlledSshCommand, "popen", forbidden_forward)
         if fact == "reader":
-            session._observations.record_reader_failure(RuntimeError("earlier reader failure"))
+            session._authority.record_reader_failure(RuntimeError("earlier reader failure"))
         else:
-            session._observations.cancel()
+            session._authority.cancel()
         with pytest.raises(SessionError) as raised:
             session.forward((RTT,), required=required)
         if fact == "reader":
@@ -193,7 +193,7 @@ def test_auxiliary_start_failure_preserves_other_services(harness, failed_servic
             item for item in services if item != failed_service
         )
         assert harness.helper.services == services
-        assert session.check_openocd_exit() is None
+        assert session.poll_operation() is None
         assert [advisory.service for advisory in harness.advisories] == [failed_service]
         assert harness.advisories[0].phase == "startup"
         assert harness.ssh.process(GDB).mock.close_stderr.call_count == 0
@@ -301,8 +301,8 @@ def test_auxiliary_exit_warns_once_without_failing_gdb(harness, failed_service):
     try:
         session.acquire()
         harness.ssh.process(failed_service).returncode = 13
-        assert session.check_openocd_exit() is None
-        assert session.check_openocd_exit() is None
+        assert session.poll_operation() is None
+        assert session.poll_operation() is None
         assert [advisory.service for advisory in harness.advisories] == [failed_service]
         assert harness.advisories[0].phase == "runtime"
         assert harness.ssh.process(GDB).mock.close_stderr.call_count == 0
@@ -317,7 +317,7 @@ def test_required_exit_remains_fatal_on_repeated_health_checks(harness):
         harness.ssh.process(GDB).returncode = 13
         for _ in range(2):
             with pytest.raises(SessionError):
-                session.check_openocd_exit()
+                session.poll_operation()
         assert not harness.advisories
     finally:
         session.close()
@@ -335,13 +335,13 @@ def test_multiple_required_forward_failures_retain_secondary_diagnostics(harness
         gdb_forward.returncode = 13
         if observation == "later-poll":
             with pytest.raises(SessionError) as first:
-                session.check_openocd_exit()
+                session.poll_operation()
         rtt_forward.returncode = 17
         with pytest.raises(SessionError) as raised:
             if observation == "close":
                 session.close()
             else:
-                session.check_openocd_exit()
+                session.poll_operation()
         primary = raised.value
         assert gdb_forward.diagnostic.decode() in str(primary)
         notes = tuple(getattr(primary, "__notes__", ()))
@@ -351,7 +351,7 @@ def test_multiple_required_forward_failures_retain_secondary_diagnostics(harness
             assert primary is first.value
         if observation != "close":
             with pytest.raises(SessionError) as repeated:
-                session.check_openocd_exit()
+                session.poll_operation()
             assert repeated.value is primary
             assert tuple(primary.__notes__) == notes
         assert not harness.advisories
@@ -368,13 +368,13 @@ def test_simultaneous_forward_failures_preserve_required_failure_and_advisories(
         for service in (GDB, TCL):
             harness.ssh.process(service).returncode = 13
         with pytest.raises(SessionError) as first:
-            session.check_openocd_exit()
+            session.poll_operation()
         assert [advisory.service for advisory in harness.advisories] == [TCL]
-        harness.helper.observations.record_terminal(
+        harness.helper.authority.record_terminal(
             terminal_snapshot(Trigger.CHILD_EXIT, returncode=7)
         )
         with pytest.raises(SessionError) as later:
-            session.check_openocd_exit()
+            session.poll_operation()
         assert later.value is first.value
         assert session.openocd_returncode == 7
         assert any("exit status 7" in note for note in later.value.__notes__)
@@ -388,10 +388,10 @@ def test_mark_auxiliary_requires_owned_service(harness, unknown):
     try:
         session.acquire()
         with pytest.raises(SessionError):
-            session.mark_auxiliary((GDB, unknown))
+            session.make_forwards_optional((GDB, unknown))
         harness.ssh.process(GDB).returncode = 13
         with pytest.raises(SessionError):
-            session.check_openocd_exit()
+            session.poll_operation()
     finally:
         session.close()
 
@@ -401,14 +401,14 @@ def test_late_observed_gdb_exit_uses_current_rtt_forwarding_classification(harne
     try:
         session.acquire()
         harness.ssh.process(GDB).returncode = 13
-        session.mark_auxiliary((GDB,))
+        session.make_forwards_optional((GDB,))
         harness.ssh.process(RTT)
         session.forward((RTT,), required=True)
-        assert session.check_openocd_exit() is None
+        assert session.poll_operation() is None
         assert [advisory.service for advisory in harness.advisories] == [GDB]
         harness.ssh.process(RTT).returncode = 13
         with pytest.raises(SessionError):
-            session.check_openocd_exit()
+            session.poll_operation()
     finally:
         session.close()
 
@@ -436,17 +436,17 @@ def test_terminal_recorded_during_forward_health_collection_remains_primary(harn
         process = harness.ssh.process(GDB)
 
         def observe_forward_exit():
-            harness.helper.observations.record_terminal(
+            harness.helper.authority.record_terminal(
                 terminal_snapshot(Trigger.CHILD_EXIT, returncode=7)
             )
             return 13
 
         process.mock.poll.side_effect = observe_forward_exit
         with pytest.raises(SessionError, match="exit status 7") as first:
-            session.check_openocd_exit()
+            session.poll_operation()
         assert any("gdb" in note and "13" in note for note in first.value.__notes__)
         with pytest.raises(SessionError) as later:
-            session.check_openocd_exit()
+            session.poll_operation()
         assert later.value is first.value
         assert session.openocd_returncode == 7
     finally:
@@ -465,12 +465,12 @@ def test_forward_exit_is_published_before_a_later_poll_failure(harness):
         tcl = harness.ssh.process(TCL)
         tcl.mock.poll.side_effect = later_error
         with pytest.raises(SessionError) as first:
-            session.check_openocd_exit()
+            session.poll_operation()
         assert "gdb" in str(first.value) and "13" in str(first.value)
         assert any(str(later_error) in note for note in first.value.__notes__)
         assert any("poll diagnostic detail" in note for note in first.value.__notes__)
         with pytest.raises(SessionError) as later:
-            session.check_openocd_exit()
+            session.poll_operation()
         assert later.value is first.value
     finally:
         tcl.mock.poll.side_effect = lambda: tcl.returncode
@@ -490,7 +490,7 @@ def test_best_effort_start_cannot_downgrade_an_established_forward_start_failure
 
         with pytest.MonkeyPatch.context() as patch:
             patch.setattr(
-                "zephyr_remote_openocd.remote.forwarding._ForwardManager._await_ready",
+                "zephyr_remote_openocd.controller.forwarding.ForwardManager._await_ready",
                 staticmethod(fail_readiness),
             )
             with pytest.raises(ForwardStartError) as raised:

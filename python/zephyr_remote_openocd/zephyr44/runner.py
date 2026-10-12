@@ -20,12 +20,12 @@ from zephyr_remote_openocd.config import (
     load_config,
     resolve_remote,
 )
-from zephyr_remote_openocd.remote import (
-    ForwardAdvisory,
-    RemoteSession,
-    RemoteSessionRequest,
-    query_remote_openocd_version,
-)
+from zephyr_remote_openocd.controller.forwarding import ForwardAdvisory
+from zephyr_remote_openocd.controller.model import SessionPlan
+from zephyr_remote_openocd.controller.paths import PathPlanner, PathPlanningError
+from zephyr_remote_openocd.controller.rtt import run_rtt_client
+from zephyr_remote_openocd.controller.session import SessionController, query_remote_openocd_version
+from zephyr_remote_openocd.controller.ssh import SshCommand
 from zephyr_remote_openocd.remote.debug import (
     DebugInputs,
     DebugPlanError,
@@ -33,9 +33,6 @@ from zephyr_remote_openocd.remote.debug import (
     parse_openocd_version,
 )
 from zephyr_remote_openocd.remote.flash import FlashInputs, FlashPlanError, build_flash_plan
-from zephyr_remote_openocd.remote.paths import PathPlanner, PathPlanningError
-from zephyr_remote_openocd.remote.rtt import run_rtt_client
-from zephyr_remote_openocd.remote.ssh import SshCommand
 
 
 class RemoteOpenOcdBinaryRunner(OpenOcdBinaryRunner):
@@ -156,7 +153,7 @@ def _build_operation(runner, command, selected):
 
 
 def _execute_operation(runner, command, request, plan):
-    session = RemoteSession.prepare(
+    session = SessionController.prepare(
         request,
         advisory_handler=lambda advisory: _report_forward_advisory(runner, advisory),
     )
@@ -199,30 +196,32 @@ def _execute_started_operation(runner, command, plan, session):
 def _execute_gdb_client(runner, plan, session):
     assert plan is not None and plan.gdb_argv is not None
     runner.require(plan.gdb_argv[0])
-    returncode = session.check_openocd_exit()
+    returncode = session.poll_operation()
     if returncode is not None:
         raise RuntimeError(f"remote OpenOCD exited before GDB startup with status {returncode}")
-    session.run_dependent(lambda: runner.run_client(list(plan.gdb_argv)))
-    return session.check_openocd_exit()
+    session.run_local_client(lambda: runner.run_client(list(plan.gdb_argv)))
+    return session.poll_operation()
 
 
 def _execute_rtt(runner, plan, session):
     assert plan is not None and plan.gdb_argv is not None
     assert plan.rtt_service is not None
     runner.require(plan.gdb_argv[0])
-    returncode = session.check_openocd_exit()
+    returncode = session.poll_operation()
     if returncode is not None:
         raise RuntimeError(f"remote OpenOCD exited before GDB startup with status {returncode}")
-    session.run_dependent(lambda: runner.run_client(list(plan.gdb_argv)))
-    session.mark_auxiliary(tuple(service for service in plan.services if service.name == "gdb"))
+    session.run_local_client(lambda: runner.run_client(list(plan.gdb_argv)))
+    session.make_forwards_optional(
+        tuple(service for service in plan.services if service.name == "gdb")
+    )
     session.forward((plan.rtt_service,), required=True)
     _report_rtt_service(runner, plan, session)
 
-    returncode = session.check_openocd_exit()
+    returncode = session.poll_operation()
     if returncode is not None:
         raise RuntimeError(f"remote OpenOCD exited before RTT startup with status {returncode}")
-    return session.run_dependent(
-        lambda: run_rtt_client(plan.rtt_service.local_port, session.check_openocd_exit)
+    return session.run_local_client(
+        lambda: run_rtt_client(plan.rtt_service.local_port, session.poll_operation)
     )
 
 
@@ -371,7 +370,7 @@ def _flash_request(runner, selected):
     )
     planner = PathPlanner(selected.path_mappings)
     plan = build_flash_plan(inputs, planner, environment)
-    return RemoteSessionRequest(
+    return SessionPlan(
         selected.remote_host,
         SshCommand(selected.ssh_command),
         plan.process,
@@ -486,7 +485,7 @@ def _debug_plan(runner, command, selected, version):
 
 
 def _debug_request(runner, selected, plan):
-    return RemoteSessionRequest(
+    return SessionPlan(
         selected.remote_host,
         SshCommand(selected.ssh_command),
         plan.process,

@@ -7,10 +7,10 @@ import subprocess
 from unittest.mock import patch
 
 import pytest
-from zephyr_remote_openocd.remote.forwarding import _ForwardManager
-from zephyr_remote_openocd.remote.model import Service
-from zephyr_remote_openocd.remote.session import SessionError
-from zephyr_remote_openocd.remote.ssh import SshCommand
+from zephyr_remote_openocd.controller.authority import SessionError
+from zephyr_remote_openocd.controller.forwarding import ForwardManager
+from zephyr_remote_openocd.controller.model import Service
+from zephyr_remote_openocd.controller.ssh import SshCommand
 
 pytestmark = pytest.mark.local
 
@@ -38,7 +38,7 @@ def test_forward_manager_preserves_effective_forwarding_requirements(tmp_path, f
     )
     ssh = SshCommand((str(alternate), "-F", str(config), *fixed_args))
     service = Service("gdb", 32100, 3333)
-    manager = _ForwardManager(ssh, "example.invalid")
+    manager = ForwardManager(ssh, "example.invalid")
     # Capture the actual subprocess argv from the real manager and transport.
     # No process is acquired, so no lifecycle double or readiness bypass is needed.
     with (

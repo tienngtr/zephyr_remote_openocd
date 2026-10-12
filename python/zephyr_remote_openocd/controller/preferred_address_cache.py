@@ -11,9 +11,8 @@ import tempfile
 from contextlib import suppress
 from pathlib import Path
 
+from zephyr_remote_openocd.controller.ssh import SshCommand
 from zephyr_remote_openocd.protocol.addresses import validate_preferred_address
-
-from .ssh import SshCommand
 
 
 def _cache_directory() -> Path:

@@ -7,16 +7,16 @@ import sys
 from pathlib import Path
 
 import pytest
-from zephyr_remote_openocd.protocol.process import ProcessSpec
-from zephyr_remote_openocd.remote.backend import RemoteSession
-from zephyr_remote_openocd.remote.deploy import DeploymentResult
-from zephyr_remote_openocd.remote.model import RemoteSessionRequest, Service
-from zephyr_remote_openocd.remote.ssh import (
+from zephyr_remote_openocd.controller.deployment import DeploymentResult
+from zephyr_remote_openocd.controller.model import Service, SessionPlan
+from zephyr_remote_openocd.controller.session import SessionController
+from zephyr_remote_openocd.controller.ssh import (
     SSH_STDERR_TAIL_BYTES,
     ManagedSshProcess,
     SshCommand,
-    SshLocalForward,
+    SshForwardSpec,
 )
+from zephyr_remote_openocd.protocol.process import ProcessSpec
 
 pytestmark = pytest.mark.local
 
@@ -86,7 +86,7 @@ def fake_ssh_command(tmp_path: Path) -> SshCommand:
 
 
 def request(command: SshCommand, *, services=()):
-    return RemoteSessionRequest(
+    return SessionPlan(
         "fake-host",
         command,
         process=ProcessSpec((sys.executable, "-c", "pass")),
@@ -107,14 +107,14 @@ def test_control_progresses_when_configured_ssh_stderr_exceeds_pipe_capacity(tmp
         host: str,
         remote_command: str,
         *,
-        local_forward: SshLocalForward | None = None,
+        local_forward: SshForwardSpec | None = None,
     ) -> ManagedSshProcess:
         transport = popen(command, host, remote_command, local_forward=local_forward)
         transports.append(transport)
         return transport
 
     monkeypatch.setattr(SshCommand, "popen", record_transport)
-    backend = RemoteSession(request(fake_ssh_command(tmp_path)), deployment())
+    backend = SessionController(request(fake_ssh_command(tmp_path)), deployment())
     try:
         backend.acquire()
         assert backend.descriptor is not None
@@ -135,7 +135,9 @@ def test_forward_progresses_when_configured_ssh_stderr_exceeds_pipe_capacity(tmp
     # the readiness sentinel does not require an actual forwarded listener.
     local_port = 45678
     service = Service("gdb", local_port, 3333)
-    backend = RemoteSession(request(fake_ssh_command(tmp_path), services=(service,)), deployment())
+    backend = SessionController(
+        request(fake_ssh_command(tmp_path), services=(service,)), deployment()
+    )
     try:
         backend.acquire()
         assert backend.descriptor is not None

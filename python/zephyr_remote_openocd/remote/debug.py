@@ -7,13 +7,17 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from zephyr_remote_openocd.controller.model import (
+    DuplicateServiceError,
+    Service,
+    validated_services,
+)
+from zephyr_remote_openocd.controller.paths import PathPlanner
 from zephyr_remote_openocd.protocol.arguments import ArgumentTemplate, SessionValue
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
 from zephyr_remote_openocd.protocol.process import ProcessSpec
-from zephyr_remote_openocd.remote.model import DuplicateServiceError, Service, validated_services
 
 from .openocd_plan import plan_openocd_base
-from .paths import PathPlanner
 
 RTT_SEARCH_RANGE_SIZE = 0x10
 RTT_CHANNEL = 0

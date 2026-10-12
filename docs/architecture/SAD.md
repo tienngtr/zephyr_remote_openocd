@@ -1149,7 +1149,7 @@ resources it acquired; a sharing master and retained forwards remain externally
 managed. Subprocess exit therefore does not prove that a shared listener has
 been removed, and retained external state alone is not a runner cleanup failure.
 
-`remote/preferred_address_cache.py` stores a disposable preferred address under
+`controller/preferred_address_cache.py` stores a disposable preferred address under
 `~/.cache/zephyr_remote_openocd/preferred-addresses/`. The filename is a SHA-256
 digest of an unambiguous encoding of the configured SSH argv prefix and host;
 the file contains only the canonical loopback address. Remotes with identical
@@ -1966,7 +1966,7 @@ Standalone staging behavior and protocol framing remain coordinated through
 ## 39. Local Session Lifecycle
 
 The launch model in
-[`remote/launch.py`](../../python/zephyr_remote_openocd/remote/launch.py) expresses
+[`controller/admission.py`](../../python/zephyr_remote_openocd/controller/admission.py) expresses
 local launch eligibility within the synchronized session observations. It
 requires observed readiness and phase-specific forwarding, preserves
 cancellation and fatal failure across boundaries, and rejects stale launch
@@ -2383,12 +2383,12 @@ is more durable than a duplicate path sketch:
 - `zephyr44/runner.py` adapts Zephyr runner state to board-independent plans.
 - `remote/openocd_plan.py`, `debug.py`, and `flash.py` construct OpenOCD
   commands without owning their execution.
-- `remote/paths.py` classifies required paths, and `remote/staging.py` builds
+- `controller/paths.py` classifies required paths, and `controller/staging.py` builds
   staging manifests and local archives; the backend and remote helper carry
   out configured transfer and safe extraction.
-- `remote/session.py`, `helper_client.py`, and `backend.py` coordinate local
+- `controller/authority.py`, `helper_client.py`, and `backend.py` coordinate local
   session lifecycle, helper protocol, and OpenOCD result propagation.
-- `remote/model.py` defines transport and service data; `services.py`, `rtt.py`,
+- `controller/model.py` defines transport and service data; `services.py`, `rtt.py`,
   `arguments.py`, and `tcl.py` own service, RTT, explicit session-value argument
   templates, and Tcl-word quoting.
 - `forwarding.py` manages local SSH forwards to remote OpenOCD-owned listeners;
@@ -2399,8 +2399,8 @@ is more durable than a duplicate path sketch:
   failure, rather than through a shared cross-cutting implementation.
 - `remote_helper.py` owns remote supervision, output relay, protocol dispatch,
   and cleanup.
-- `remote/ssh.py` is the only boundary for configured SSH command behavior.
-- `remote/preferred_address_cache.py` owns the best-effort local preferred address
+- `controller/ssh.py` is the only boundary for configured SSH command behavior.
+- `controller/preferred_address_cache.py` owns the best-effort local preferred address
   cache; it does not own remote leases or external SSH sharing state.
 
 Platform-specific SSH behavior, if any is eventually needed, shall remain inside the SSH transport layer rather than spread through runner logic.

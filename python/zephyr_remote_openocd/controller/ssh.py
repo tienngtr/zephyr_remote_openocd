@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass
 from typing import BinaryIO, Protocol, cast
 
-from .cleanup import _add_failure_note, _raise_cleanup_errors
+from zephyr_remote_openocd.controller.cleanup import _add_failure_note, _raise_cleanup_errors
 
 # SSH diagnostics must never be allowed to fill the OS pipe, but retaining a
 # small tail keeps connection and forwarding failures actionable.  This limit
@@ -325,7 +325,7 @@ def _stop_process(process: _ProcessControl, *, close_streams: bool = True) -> No
 
 
 @dataclass(frozen=True)
-class SshLocalForward:
+class SshForwardSpec:
     """Runner-owned local forwarding, including mandatory SSH semantics."""
 
     local_port: int
@@ -375,7 +375,7 @@ class SshCommand:
         )
 
     def popen(
-        self, host: str, remote_command: str, *, local_forward: SshLocalForward | None = None
+        self, host: str, remote_command: str, *, local_forward: SshForwardSpec | None = None
     ) -> ManagedSshProcess:
         """Start a long-lived SSH operation, retaining explicit lifecycle control."""
         # OpenSSH uses the first value of these options. Runner-owned forwarding

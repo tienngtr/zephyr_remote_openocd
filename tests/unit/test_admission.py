@@ -5,14 +5,14 @@
 import asyncio
 
 import pytest
+from zephyr_remote_openocd.controller.admission import AdmissionGate, LaunchDenied
 from zephyr_remote_openocd.protocol.outcome import Diagnostic
-from zephyr_remote_openocd.remote.launch import LaunchDenied, LaunchGate
 
 from tests.forwarding_support import GDB, RTT
 
 
 def test_ready_and_forwarding_are_both_required_at_entry() -> None:
-    gate = LaunchGate()
+    gate = AdmissionGate()
     ticket = gate.prepare((GDB,))
     assert not gate.enter(ticket)
     gate.observe_remote_ready()
@@ -24,7 +24,7 @@ def test_ready_and_forwarding_are_both_required_at_entry() -> None:
 
 @pytest.mark.parametrize("fatal", (False, True), ids=("cancel", "fatal-failure"))
 def test_late_ready_cannot_restore_cancelled_eligibility(fatal: bool) -> None:
-    gate = LaunchGate()
+    gate = AdmissionGate()
     ticket = gate.prepare((GDB,))
     gate.observe_forwarded((GDB,))
     first_failure = Diagnostic("TRANSPORT", "transport failed")
@@ -41,7 +41,7 @@ def test_late_ready_cannot_restore_cancelled_eligibility(fatal: bool) -> None:
 
 
 def test_next_boundary_requires_its_forwards_and_rejects_old_launch_token() -> None:
-    gate = LaunchGate()
+    gate = AdmissionGate()
     gate.observe_remote_ready()
     gate.observe_forwarded((GDB,))
     gdb_ticket = gate.prepare((GDB,))
@@ -59,7 +59,7 @@ def test_next_boundary_requires_its_forwards_and_rejects_old_launch_token() -> N
 
 def test_queued_launch_checks_cancellation_at_actual_execution() -> None:
     async def scenario() -> None:
-        gate = LaunchGate()
+        gate = AdmissionGate()
         gate.observe_remote_ready()
         gate.observe_forwarded((GDB,))
         ticket = gate.prepare((GDB,))

@@ -13,7 +13,7 @@ from typing import override
 from unittest.mock import MagicMock, create_autospec
 
 import pytest
-from zephyr_remote_openocd.remote import rtt as rtt_module
+from zephyr_remote_openocd.controller import rtt as rtt_module
 
 
 @pytest.fixture

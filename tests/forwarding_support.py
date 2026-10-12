@@ -12,17 +12,17 @@ from typing import BinaryIO, cast, override
 from unittest.mock import Mock, create_autospec
 
 import pytest
+from zephyr_remote_openocd.controller import session as session_module
+from zephyr_remote_openocd.controller.authority import SessionAuthority
+from zephyr_remote_openocd.controller.deployment import DeploymentResult
+from zephyr_remote_openocd.controller.forwarding import ForwardAdvisory, ForwardManager
+from zephyr_remote_openocd.controller.model import Service, SessionAllocation, SessionPlan
+from zephyr_remote_openocd.controller.session import SessionController
+from zephyr_remote_openocd.controller.ssh import ManagedSshProcess, SshCommand, SshForwardSpec
 from zephyr_remote_openocd.protocol.arguments import materialize_argv
 from zephyr_remote_openocd.protocol.commands import decode_command, write_start
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.protocol.wire import decode_frame, encode_frame
-from zephyr_remote_openocd.remote import backend as backend_module
-from zephyr_remote_openocd.remote.backend import RemoteSession
-from zephyr_remote_openocd.remote.deploy import DeploymentResult
-from zephyr_remote_openocd.remote.forwarding import ForwardAdvisory, _ForwardManager
-from zephyr_remote_openocd.remote.model import RemoteSessionRequest, Service, SessionAllocation
-from zephyr_remote_openocd.remote.session import _SessionObservations
-from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand, SshLocalForward
 
 GDB = Service("gdb", 3333, 3333)
 TCL = Service("tcl", 6333, 6333)
@@ -67,7 +67,7 @@ class ControlledHelper:
     allocation = SessionAllocation("session", "/workspace")
 
     def __init__(self) -> None:
-        self._observations: _SessionObservations | None = None
+        self._authority: SessionAuthority | None = None
         self.services: tuple[Service, ...] = ()
         self.close_calls = 0
         self.on_wait: Callable[[], None] | None = None
@@ -75,13 +75,13 @@ class ControlledHelper:
         self.preferred_address: str | None = None
 
     @property
-    def observations(self) -> _SessionObservations:
-        assert self._observations is not None, "session authority must be bound before use"
-        return self._observations
+    def authority(self) -> SessionAuthority:
+        assert self._authority is not None, "session authority must be bound before use"
+        return self._authority
 
-    @observations.setter
-    def observations(self, observations: _SessionObservations) -> None:
-        self._observations = observations
+    @authority.setter
+    def authority(self, authority: SessionAuthority) -> None:
+        self._authority = authority
 
     def acquire(self) -> None:
         pass
@@ -139,7 +139,7 @@ class ControlledSshCommand(SshCommand):
 
     @override
     def popen(
-        self, host: str, remote_command: str, *, local_forward: SshLocalForward | None = None
+        self, host: str, remote_command: str, *, local_forward: SshForwardSpec | None = None
     ) -> ManagedSshProcess:
         del host, remote_command
         assert local_forward is not None
@@ -182,15 +182,15 @@ class ForwardingHarness:
         self.helper = ControlledHelper()
         self.advisories: list[ForwardAdvisory] = []
         deployment = DeploymentResult("/helper.py", "digest", False)
-        monkeypatch.setattr(backend_module, "deploy_helper", lambda *_args: deployment)
-        monkeypatch.setattr(backend_module, "_HelperClient", self.make_helper)
-        monkeypatch.setattr(_ForwardManager, "_await_ready", staticmethod(self.await_ready))
-        monkeypatch.setattr(_ForwardManager, "_preflight", staticmethod(lambda _service: None))
+        monkeypatch.setattr(session_module, "deploy_helper", lambda *_args: deployment)
+        monkeypatch.setattr(session_module, "HelperConnection", self.make_helper)
+        monkeypatch.setattr(ForwardManager, "_await_ready", staticmethod(self.await_ready))
+        monkeypatch.setattr(ForwardManager, "_preflight", staticmethod(lambda _service: None))
 
     def make_helper(
-        self, *_args, observations: _SessionObservations, process_start_handler=None, **_kwargs
+        self, *_args, authority: SessionAuthority, process_start_handler=None, **_kwargs
     ):
-        self.helper.observations = observations
+        self.helper.authority = authority
         self.helper.process_start_handler = process_start_handler
         return self.helper
 
@@ -205,10 +205,10 @@ class ForwardingHarness:
         self,
         services: tuple[Service, ...] = (GDB, TCL, TELNET),
         auxiliary: tuple[Service, ...] = (TCL, TELNET),
-    ) -> RemoteSessionRequest:
+    ) -> SessionPlan:
         for service in services:
             self.ssh.process(service)
-        return RemoteSessionRequest(
+        return SessionPlan(
             "host",
             self.ssh,
             ProcessSpec(("openocd",)),
@@ -220,8 +220,8 @@ class ForwardingHarness:
         self,
         services: tuple[Service, ...] = (GDB, TCL, TELNET),
         auxiliary: tuple[Service, ...] = (TCL, TELNET),
-    ) -> RemoteSession:
-        return RemoteSession.prepare(
+    ) -> SessionController:
+        return SessionController.prepare(
             self.request(services, auxiliary),
             advisory_handler=self.advisories.append,
         )

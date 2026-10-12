@@ -11,12 +11,11 @@ itself owns no synchronization.
 from collections.abc import Iterable
 from enum import Enum, auto
 
+from zephyr_remote_openocd.controller.model import Service
 from zephyr_remote_openocd.protocol.outcome import Diagnostic
 
-from .model import Service
 
-
-class LocalPhase(Enum):
+class AdmissionPhase(Enum):
     OPENING = auto()
     ACTIVE = auto()
     CANCELLING = auto()
@@ -27,7 +26,7 @@ class LaunchDenied(RuntimeError):
     """A cancelled or ended operation cannot prepare another launch."""
 
 
-class LaunchGate:
+class AdmissionGate:
     """The local coordinator alone prepares, enters, cancels, and ends launches.
 
     READY and forwarding are observations, not transitions. A launch ticket scopes
@@ -37,7 +36,7 @@ class LaunchGate:
     """
 
     def __init__(self) -> None:
-        self._phase = LocalPhase.OPENING
+        self._phase = AdmissionPhase.OPENING
         self._ticket: int | None = None
         self._required: frozenset[Service] = frozenset()
         self._forwarded: frozenset[Service] = frozenset()
@@ -45,7 +44,7 @@ class LaunchGate:
         self._failure: Diagnostic | None = None
 
     @property
-    def phase(self) -> LocalPhase:
+    def phase(self) -> AdmissionPhase:
         return self._phase
 
     @property
@@ -53,11 +52,11 @@ class LaunchGate:
         return self._failure
 
     def prepare(self, required_services: Iterable[Service]) -> int:
-        if self._phase in (LocalPhase.CANCELLING, LocalPhase.ENDED):
+        if self._phase in (AdmissionPhase.CANCELLING, AdmissionPhase.ENDED):
             raise LaunchDenied("operation no longer permits dependent launch")
         self._ticket = (self._ticket or 0) + 1
         self._required = frozenset(required_services)
-        self._phase = LocalPhase.OPENING
+        self._phase = AdmissionPhase.OPENING
         return self._ticket
 
     def observe_remote_ready(self) -> None:
@@ -68,18 +67,18 @@ class LaunchGate:
 
     def enter(self, ticket: int) -> bool:
         if (
-            self._phase != LocalPhase.OPENING
+            self._phase != AdmissionPhase.OPENING
             or self._ticket != ticket
             or not self._remote_ready
             or not self._required.issubset(self._forwarded)
         ):
             return False
-        self._phase = LocalPhase.ACTIVE
+        self._phase = AdmissionPhase.ACTIVE
         return True
 
     def cancel(self) -> None:
-        if self._phase != LocalPhase.ENDED:
-            self._phase = LocalPhase.CANCELLING
+        if self._phase != AdmissionPhase.ENDED:
+            self._phase = AdmissionPhase.CANCELLING
 
     def fail(self, failure: Diagnostic) -> None:
         if self._failure is None:
@@ -87,4 +86,4 @@ class LaunchGate:
         self.cancel()
 
     def end(self) -> None:
-        self._phase = LocalPhase.ENDED
+        self._phase = AdmissionPhase.ENDED

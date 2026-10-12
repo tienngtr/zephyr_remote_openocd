@@ -9,7 +9,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from zephyr_remote_openocd.remote.ssh import SshCommand
+from zephyr_remote_openocd.controller.ssh import SshCommand
 
 from tests.hardware_support import FlashFixture, hardware_operation_environment
 from tests.process_support import cleanup_on_exit, run_process

@@ -16,6 +16,12 @@ from typing import Any, BinaryIO, cast, override
 
 import pytest
 from zephyr_remote_openocd.config import PathMapping
+from zephyr_remote_openocd.controller import helper_connection as connection_module
+from zephyr_remote_openocd.controller.authority import SessionAuthority, SessionError
+from zephyr_remote_openocd.controller.deployment import DeploymentResult
+from zephyr_remote_openocd.controller.helper_connection import HelperConnection
+from zephyr_remote_openocd.controller.paths import PathPlanner
+from zephyr_remote_openocd.controller.ssh import ManagedSshProcess, SshCommand, SshForwardSpec
 from zephyr_remote_openocd.protocol.arguments import (
     ArgumentTemplate,
     SessionValue,
@@ -27,20 +33,14 @@ from zephyr_remote_openocd.protocol.commands import decode_command, write_start
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy, Trigger
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.protocol.wire import ProtocolError, decode_frame, encode_frame
-from zephyr_remote_openocd.remote import helper_client as helper_client_module
-from zephyr_remote_openocd.remote.deploy import DeploymentResult
 from zephyr_remote_openocd.remote.flash import FlashInputs, build_flash_plan
-from zephyr_remote_openocd.remote.helper_client import _HelperClient
-from zephyr_remote_openocd.remote.paths import PathPlanner
-from zephyr_remote_openocd.remote.session import SessionError, _SessionObservations
-from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand, SshLocalForward
 
 from tests.protocol_support import terminal_message, terminal_snapshot
 
 OPENOCD_FAILURE_RC = 7
 
 # These tests intentionally retain narrow typing escapes at the process-control
-# boundary.  _HelperClient owns the complete ManagedSshProcess lifecycle, so a
+# boundary.  HelperConnection owns the complete ManagedSshProcess lifecycle, so a
 # smaller production protocol would exist only for tests.  The process-shaped
 # doubles below inject behavior a real wrapper cannot express deterministically:
 # poll and wait failures, stdin-close and exit races, termination and stderr-close
@@ -161,22 +161,22 @@ def _open_helper_client(
     process: _EventProcess,
     *,
     process_start_handler: Callable[[tuple[str, ...]], None] | None = None,
-    observations: _SessionObservations,
-) -> _HelperClient:
+    authority: SessionAuthority,
+) -> HelperConnection:
     class Command(_PopenOnlySshCommand):
         @override
         def popen(
-            self, host: str, remote_command: str, *, local_forward: SshLocalForward | None = None
+            self, host: str, remote_command: str, *, local_forward: SshForwardSpec | None = None
         ) -> Any:
             del host, remote_command, local_forward
             return process
 
-    client = _HelperClient(
+    client = HelperConnection(
         Command(),
         "host",
         DeploymentResult("/helper.py", "digest", False),
         process_start_handler=process_start_handler,
-        observations=observations,
+        authority=authority,
     )
     try:
         client.acquire()
@@ -189,8 +189,8 @@ def _open_helper_client(
 def _open_helper_client_with_events(
     *events: bytes,
     process_start_handler: Callable[[tuple[str, ...]], None] | None = None,
-    observations: _SessionObservations,
-) -> tuple[_HelperClient, _EventProcess]:
+    authority: SessionAuthority,
+) -> tuple[HelperConnection, _EventProcess]:
     process = _EventProcess(
         (
             encode_frame(
@@ -203,17 +203,17 @@ def _open_helper_client_with_events(
         )
     )
     client = _open_helper_client(
-        process, process_start_handler=process_start_handler, observations=observations
+        process, process_start_handler=process_start_handler, authority=authority
     )
     return client, process
 
 
 @pytest.fixture
-def helper_client() -> Iterator[tuple[_HelperClient, _SessionObservations]]:
-    observations = _SessionObservations()
-    client, process = _open_helper_client_with_events(observations=observations)
+def helper_client() -> Iterator[tuple[HelperConnection, SessionAuthority]]:
+    authority = SessionAuthority()
+    client, process = _open_helper_client_with_events(authority=authority)
     try:
-        yield client, observations
+        yield client, authority
     finally:
         # Fault tests may replace the transport; release the acquisition
         # transport's pipes independently of the injected shutdown behavior.
@@ -225,7 +225,7 @@ def helper_client() -> Iterator[tuple[_HelperClient, _SessionObservations]]:
 def test_helper_client_sends_preference_and_reports_attempt_before_startup_error():
     observed: list[tuple[str, ...]] = []
     first = ("openocd", "-c", "bindto 127.64.0.1", "")
-    observations = _SessionObservations()
+    authority = SessionAuthority()
     client, helper_process = _open_helper_client_with_events(
         encode_frame("ATTEMPT", argv=list(first)),
         encode_frame("CHILD_OUTPUT", stream="stderr", payload="bind collision", line_end=True),
@@ -233,7 +233,7 @@ def test_helper_client_sends_preference_and_reports_attempt_before_startup_error
             Trigger.HELPER_FAILURE, code="FAILED", message="startup failed", child_acquired=True
         ),
         process_start_handler=observed.append,
-        observations=observations,
+        authority=authority,
     )
     try:
         with pytest.raises(SessionError):
@@ -346,13 +346,13 @@ def test_flash_paths_are_quoted_after_session_allocation(
             ),
         )
     )
-    observations = _SessionObservations()
-    client = _open_helper_client(process, observations=observations)
+    authority = SessionAuthority()
+    client = _open_helper_client(process, authority=authority)
     try:
         assert client.start_process(plan.process, ()) is None
         assert client._join_reader()
         with pytest.raises(SessionError):
-            observations.operation_status()
+            authority.operation_status()
         request = decode_command(
             decode_frame(bytes(process.stdin.written).splitlines(keepends=True)[0])
         )
@@ -397,7 +397,7 @@ def test_open_rejects_initial_frame_without_lf():
     ).rstrip(b"\n")
 
     with pytest.raises(ProtocolError):
-        _open_helper_client(_EventProcess((payload,)), observations=_SessionObservations())
+        _open_helper_client(_EventProcess((payload,)), authority=SessionAuthority())
 
 
 @pytest.mark.parametrize("policy", tuple(CompletionPolicy))
@@ -413,27 +413,25 @@ def test_contradictory_terminal_is_reader_failure_and_never_published(policy, co
         if policy == CompletionPolicy.LIVE_SERVER
         else encode_frame("CHILD_OUTPUT", stream="stdout", payload="started", line_end=True)
     )
-    observations = _SessionObservations()
+    authority = SessionAuthority()
     client, process = _open_helper_client_with_events(
         encode_frame("ATTEMPT", argv=["child"]),
         evidence,
         encode_frame(
             "SESSION_ENDED", **{k: v for k, v in terminal.items() if k not in {"version", "type"}}
         ),
-        observations=observations,
+        authority=authority,
     )
     try:
         client.start_process(ProcessSpec(("child",), completion_policy=policy), ())
         assert client._join_reader(5)
         with pytest.raises(SessionError) as reported:
-            observations.operation_status()
+            authority.operation_status()
         assert isinstance(reported.value.__cause__, ProtocolError)
-        assert observations.snapshot().ending is None
+        assert authority.snapshot().ending is None
         client.close()
-        assert observations.snapshot().failure is reported.value
-        assert any(
-            detail.code == "MISSING_TERMINAL" for detail in observations.snapshot().diagnostics
-        )
+        assert authority.snapshot().failure is reported.value
+        assert any(detail.code == "MISSING_TERMINAL" for detail in authority.snapshot().diagnostics)
         assert process.stdin.closed
         assert process.stdout.closed
     finally:
@@ -442,7 +440,7 @@ def test_contradictory_terminal_is_reader_failure_and_never_published(policy, co
 
 @pytest.mark.timeout(10)
 def test_session_observations_project_exit_while_reader_remains_alive(helper_client):
-    helper_client, observations = helper_client
+    helper_client, authority = helper_client
     close_recorded = threading.Event()
     release_reader = threading.Event()
 
@@ -458,9 +456,9 @@ def test_session_observations_project_exit_while_reader_remains_alive(helper_cli
     assert close_recorded.wait(5)
     try:
         assert reader.is_alive()
-        assert observations.snapshot().ending.outcome.child_result.returncode == OPENOCD_FAILURE_RC
+        assert authority.snapshot().ending.outcome.child_result.returncode == OPENOCD_FAILURE_RC
         with pytest.raises(SessionError, match="exit status 7"):
-            observations.operation_status()
+            authority.operation_status()
     finally:
         release_reader.set()
         reader.join(timeout=5)
@@ -469,7 +467,7 @@ def test_session_observations_project_exit_while_reader_remains_alive(helper_cli
 
 
 def test_close_reaps_natural_exit_before_transport_cleanup(monkeypatch, helper_client):
-    helper_client, observations = helper_client
+    helper_client, authority = helper_client
     natural_exit_reaped = threading.Event()
 
     class Process(_ControlProcess):
@@ -493,10 +491,10 @@ def test_close_reaps_natural_exit_before_transport_cleanup(monkeypatch, helper_c
     helper_client._process = cast(ManagedSshProcess, process)
     helper_client._reader_thread = Reader()
 
-    observations.record_terminal(terminal_snapshot(Trigger.CHILD_EXIT, returncode=0))
+    authority.record_terminal(terminal_snapshot(Trigger.CHILD_EXIT, returncode=0))
 
     helper_client.close()
-    error = observations.snapshot().failure
+    error = authority.snapshot().failure
 
     assert error is None
     assert natural_exit_reaped.is_set()
@@ -507,10 +505,10 @@ def test_close_reaps_natural_exit_before_transport_cleanup(monkeypatch, helper_c
 
 
 def test_large_start_is_rejected_before_helper_write():
-    observations = _SessionObservations()
+    authority = SessionAuthority()
     helper_client, process = _open_helper_client_with_events(
         terminal_message(Trigger.CONTROLLER_EOF, returncode=None),
-        observations=observations,
+        authority=authority,
     )
     # JSON escaping makes the encoded frame oversized even though its argv
     # contains fewer than 1 MiB of UTF-8 bytes.
@@ -524,19 +522,19 @@ def test_large_start_is_rejected_before_helper_write():
 
 
 def test_helper_shutdown_retains_established_failure():
-    observations = _SessionObservations()
+    authority = SessionAuthority()
     helper_client, process = _open_helper_client_with_events(
         terminal_message(Trigger.HELPER_FAILURE, code="FAILED", message="startup failed"),
-        observations=observations,
+        authority=authority,
     )
 
     with pytest.raises(SessionError, match="startup failed"):
         helper_client.start_process(ProcessSpec(("child",)), ())
 
     with pytest.raises(SessionError) as reported:
-        observations.operation_status()
+        authority.operation_status()
     helper_client.close()
-    error = observations.snapshot().failure
+    error = authority.snapshot().failure
 
     assert error is reported.value
     commands = [
@@ -548,19 +546,19 @@ def test_helper_shutdown_retains_established_failure():
 
 @pytest.mark.timeout(10)
 def test_controller_eof_terminal_prevents_dependent_entry():
-    observations = _SessionObservations()
+    authority = SessionAuthority()
     helper_client, _process = _open_helper_client_with_events(
         encode_frame("ATTEMPT", argv=["child"]),
         encode_frame("READY", remote_address="127.64.0.1", child_pid=1),
         terminal_message(Trigger.CONTROLLER_EOF, returncode=None, child_acquired=True),
-        observations=observations,
+        authority=authority,
     )
     helper_client.start_process(ProcessSpec(("child",)), ())
     helper_client.wait_for_change(5)
 
     try:
         with pytest.raises(SessionError) as raised:
-            observations.enter((), ())
+            authority.admit_work((), ())
 
         assert raised.value.__cause__ is None
     finally:
@@ -569,24 +567,24 @@ def test_controller_eof_terminal_prevents_dependent_entry():
 
 @pytest.mark.timeout(10)
 def test_helper_shutdown_retains_observed_background_failure():
-    observations = _SessionObservations()
+    authority = SessionAuthority()
     helper_client, process = _open_helper_client_with_events(
         encode_frame("ATTEMPT", argv=["child"]),
         encode_frame("READY", remote_address="127.64.0.1", child_pid=1),
         terminal_message(
             Trigger.HELPER_FAILURE, code="FAILED", message="background failed", child_acquired=True
         ),
-        observations=observations,
+        authority=authority,
     )
     helper_client.start_process(ProcessSpec(("child",)), ())
     helper_client.wait_for_change(5)
 
     for _attempt in range(2):
         with pytest.raises(SessionError) as reported:
-            observations.operation_status()
+            authority.operation_status()
 
     helper_client.close()
-    assert observations.snapshot().failure is reported.value
+    assert authority.snapshot().failure is reported.value
     commands = [
         decode_frame(bytes(line))["type"]
         for line in process.stdin.written.splitlines(keepends=True)
@@ -597,14 +595,14 @@ def test_helper_shutdown_retains_observed_background_failure():
 @pytest.mark.parametrize("cleanup_fails", (False, True), ids=("clean", "cleanup-failure"))
 @pytest.mark.timeout(10)
 def test_close_records_background_and_cleanup_failures(monkeypatch, cleanup_fails):
-    observations = _SessionObservations()
+    authority = SessionAuthority()
     helper_client, process = _open_helper_client_with_events(
         encode_frame("ATTEMPT", argv=["child"]),
         encode_frame("READY", remote_address="127.64.0.1", child_pid=1),
         terminal_message(
             Trigger.HELPER_FAILURE, code="FAILED", message="background failed", child_acquired=True
         ),
-        observations=observations,
+        authority=authority,
     )
     helper_client.start_process(ProcessSpec(("child",)), ())
     helper_client.wait_for_change(5)
@@ -616,10 +614,10 @@ def test_close_records_background_and_cleanup_failures(monkeypatch, cleanup_fail
         raise cleanup_error
 
     if cleanup_fails:
-        monkeypatch.setattr(helper_client_module, "_stop_process", fail_stop)
+        monkeypatch.setattr(connection_module, "_stop_process", fail_stop)
 
     helper_client.close()
-    error = observations.snapshot().failure
+    error = authority.snapshot().failure
 
     assert isinstance(error, SessionError)
     assert "background failed" in str(error)
@@ -634,16 +632,14 @@ def test_close_records_background_and_cleanup_failures(monkeypatch, cleanup_fail
 
 
 def test_reader_failure_takes_precedence_over_known_openocd_result(helper_client):
-    helper_client, observations = helper_client
+    helper_client, authority = helper_client
     reader_error = RuntimeError("protocol failed")
-    observations.record_reader_failure(reader_error)
-    observations.record_terminal(
-        terminal_snapshot(Trigger.CHILD_EXIT, returncode=OPENOCD_FAILURE_RC)
-    )
+    authority.record_reader_failure(reader_error)
+    authority.record_terminal(terminal_snapshot(Trigger.CHILD_EXIT, returncode=OPENOCD_FAILURE_RC))
 
-    assert observations.snapshot().ending.outcome.child_result.returncode == OPENOCD_FAILURE_RC
+    assert authority.snapshot().ending.outcome.child_result.returncode == OPENOCD_FAILURE_RC
     with pytest.raises(SessionError) as raised:
-        observations.operation_status()
+        authority.operation_status()
 
     assert raised.value.__cause__ is reader_error
     assert any("remote OpenOCD failed" in note for note in raised.value.__notes__)
@@ -663,9 +659,9 @@ def test_terminal_failure_stays_primary_after_trailing_protocol_failure(
     corruption = (
         b"not-json\n" if trailing == "malformed" else encode_frame("ATTEMPT", argv=["unadmitted"])
     )
-    observations = _SessionObservations()
+    authority = SessionAuthority()
     client, _process = _open_helper_client_with_events(
-        encode_frame("ATTEMPT", argv=["child"]), terminal, corruption, observations=observations
+        encode_frame("ATTEMPT", argv=["child"]), terminal, corruption, authority=authority
     )
     try:
         client.start_process(
@@ -675,20 +671,20 @@ def test_terminal_failure_stays_primary_after_trailing_protocol_failure(
         error: BaseException | None
         if boundary == "status":
             with pytest.raises(SessionError) as raised:
-                observations.operation_status()
+                authority.operation_status()
             error = raised.value
             client.close()
-            assert observations.snapshot().failure is error
+            assert authority.snapshot().failure is error
         else:
             client.close()
-            error = observations.snapshot().failure
+            error = authority.snapshot().failure
         assert isinstance(error, SessionError)
         assert (
             "startup failed" if terminal_failure == "startup" else "remote OpenOCD failed"
         ) in str(error)
         assert error.__cause__ is None
         assert any("helper event stream failed" in note for note in error.__notes__)
-        ending = observations.snapshot().ending
+        ending = authority.snapshot().ending
         assert ending is not None
         child_result = ending.outcome.child_result
         assert (None if child_result is None else child_result.returncode) == (
@@ -703,10 +699,10 @@ def test_terminal_failure_stays_primary_after_trailing_protocol_failure(
 def test_close_preserves_terminal_failure_before_shutdown(
     helper_client, terminal_failure, shutdown_failure
 ):
-    helper_client, observations = helper_client
+    helper_client, authority = helper_client
     shutdown_error = OSError(f"helper {shutdown_failure} failed")
     shutdown_error.add_note("shutdown failure detail")
-    observations.record_terminal(
+    authority.record_terminal(
         terminal_snapshot(Trigger.STARTUP_FAILURE, code="STARTUP_FAILURE", message="startup failed")
         if terminal_failure == "startup"
         else terminal_snapshot(Trigger.CHILD_EXIT, returncode=OPENOCD_FAILURE_RC)
@@ -726,7 +722,7 @@ def test_close_preserves_terminal_failure_before_shutdown(
 
         @override
         def wait(self, timeout: float | None = None) -> int:
-            if shutdown_failure == "wait" and timeout == helper_client_module.HELPER_STOP_TIMEOUT:
+            if shutdown_failure == "wait" and timeout == connection_module.HELPER_STOP_TIMEOUT:
                 raise shutdown_error
             return super().wait(timeout)
 
@@ -734,7 +730,7 @@ def test_close_preserves_terminal_failure_before_shutdown(
     helper_client._process = cast(ManagedSshProcess, process)
 
     helper_client.close()
-    error = observations.snapshot().failure
+    error = authority.snapshot().failure
 
     assert isinstance(error, SessionError)
     assert ("startup failed" if terminal_failure == "startup" else "remote OpenOCD failed") in str(
@@ -749,7 +745,7 @@ def test_close_preserves_terminal_failure_before_shutdown(
 
 
 def test_close_keeps_shutdown_failure_primary_when_forced_cleanup_also_fails(helper_client):
-    helper_client, observations = helper_client
+    helper_client, authority = helper_client
     graceful_stop_error = RuntimeError("graceful stop failed")
     forced_stop_error = RuntimeError("forced stop failed")
 
@@ -765,7 +761,7 @@ def test_close_keeps_shutdown_failure_primary_when_forced_cleanup_also_fails(hel
 
         @override
         def wait(self, timeout=None):
-            if timeout == helper_client_module.HELPER_STOP_TIMEOUT:
+            if timeout == connection_module.HELPER_STOP_TIMEOUT:
                 raise subprocess.TimeoutExpired(self.args, timeout)
             return super().wait(timeout)
 
@@ -775,9 +771,9 @@ def test_close_keeps_shutdown_failure_primary_when_forced_cleanup_also_fails(hel
 
     helper_client._process = cast(ManagedSshProcess, Process())
 
-    observations.record_terminal(terminal_snapshot(Trigger.CONTROLLER_EOF))
+    authority.record_terminal(terminal_snapshot(Trigger.CONTROLLER_EOF))
     helper_client.close()
-    error = observations.snapshot().failure
+    error = authority.snapshot().failure
 
     assert error is graceful_stop_error
     assert any("15.0" in note for note in graceful_stop_error.__notes__)
@@ -785,7 +781,7 @@ def test_close_keeps_shutdown_failure_primary_when_forced_cleanup_also_fails(hel
 
 
 def test_close_cleans_up_helper_when_initial_status_observation_fails(helper_client):
-    helper_client, observations = helper_client
+    helper_client, authority = helper_client
     observation_error = RuntimeError("helper status failed")
 
     class Process(_ControlProcess):
@@ -803,9 +799,9 @@ def test_close_cleans_up_helper_when_initial_status_observation_fails(helper_cli
     process = Process()
     helper_client._process = cast(ManagedSshProcess, process)
 
-    observations.record_terminal(terminal_snapshot(Trigger.CONTROLLER_EOF))
+    authority.record_terminal(terminal_snapshot(Trigger.CONTROLLER_EOF))
     helper_client.close()
-    error = observations.snapshot().failure
+    error = authority.snapshot().failure
 
     assert error is observation_error
     assert process.returncode == 0
@@ -815,7 +811,7 @@ def test_close_cleans_up_helper_when_initial_status_observation_fails(helper_cli
 
 
 def test_close_cleans_up_helper_when_reader_join_fails(helper_client):
-    helper_client, observations = helper_client
+    helper_client, authority = helper_client
     join_error = RuntimeError("helper reader join failed")
 
     class Reader(threading.Thread):
@@ -838,10 +834,10 @@ def test_close_cleans_up_helper_when_reader_join_fails(helper_client):
     process.returncode = 0
     helper_client._process = cast(ManagedSshProcess, process)
     helper_client._reader_thread = Reader()
-    observations.record_terminal(terminal_snapshot(Trigger.CHILD_EXIT, returncode=0))
+    authority.record_terminal(terminal_snapshot(Trigger.CHILD_EXIT, returncode=0))
 
     helper_client.close()
-    error = observations.snapshot().failure
+    error = authority.snapshot().failure
 
     assert error is join_error
     assert process.stdin.closed
@@ -850,7 +846,7 @@ def test_close_cleans_up_helper_when_reader_join_fails(helper_client):
 
 
 def test_close_preserves_cleanup_error_when_final_status_observation_fails(helper_client):
-    helper_client, observations = helper_client
+    helper_client, authority = helper_client
     status_error = RuntimeError("helper final status failed")
     cleanup_error = RuntimeError("helper stderr cleanup failed")
 
@@ -873,10 +869,10 @@ def test_close_preserves_cleanup_error_when_final_status_observation_fails(helpe
 
     process = Process()
     helper_client._process = cast(ManagedSshProcess, process)
-    observations.record_terminal(terminal_snapshot(Trigger.CHILD_EXIT, returncode=0))
+    authority.record_terminal(terminal_snapshot(Trigger.CHILD_EXIT, returncode=0))
 
     helper_client.close()
-    error = observations.snapshot().failure
+    error = authority.snapshot().failure
 
     assert error is cleanup_error
     assert process.stdin.closed
@@ -885,7 +881,7 @@ def test_close_preserves_cleanup_error_when_final_status_observation_fails(helpe
 
 
 def test_close_closes_streams_when_reader_thread_does_not_start(monkeypatch, helper_client):
-    helper_client, observations = helper_client
+    helper_client, authority = helper_client
     reader_start_error = RuntimeError("helper reader did not start")
 
     def fail_start(_thread):
@@ -896,7 +892,7 @@ def test_close_closes_streams_when_reader_thread_does_not_start(monkeypatch, hel
     monkeypatch.setattr(threading.Thread, "start", fail_start)
 
     helper_client.close()
-    error = observations.snapshot().failure
+    error = authority.snapshot().failure
 
     assert error is reader_start_error
     assert process.stdin.closed
@@ -917,7 +913,7 @@ def test_close_closes_streams_when_reader_thread_does_not_start(monkeypatch, hel
 def test_close_forces_cleanup_after_helper_wait_failure(
     helper_client, wait_failure_type, stdin_close_fails, terminal_fails
 ):
-    helper_client, observations = helper_client
+    helper_client, authority = helper_client
     close_event = (
         terminal_message(Trigger.STARTUP_FAILURE, code="STARTUP_FAILURE", message="startup failed")
         if terminal_fails
@@ -925,7 +921,7 @@ def test_close_forces_cleanup_after_helper_wait_failure(
     )
     stdin_close_error = OSError("helper stdin close failed")
     wait_error = (
-        subprocess.TimeoutExpired(("fake-helper",), helper_client_module.HELPER_STOP_TIMEOUT)
+        subprocess.TimeoutExpired(("fake-helper",), connection_module.HELPER_STOP_TIMEOUT)
         if wait_failure_type is subprocess.TimeoutExpired
         else wait_failure_type()
     )
@@ -961,7 +957,7 @@ def test_close_forces_cleanup_after_helper_wait_failure(
     helper_client._process = cast(ManagedSshProcess, process)
 
     helper_client.close()
-    error = observations.snapshot().failure
+    error = authority.snapshot().failure
 
     assert error is (stdin_close_error if stdin_close_fails else wait_error)
     if stdin_close_fails:
@@ -976,7 +972,7 @@ def test_close_forces_cleanup_after_helper_wait_failure(
 
 
 def test_helper_close_keeps_reader_owned_stdout_open_until_reader_stops(helper_client):
-    helper_client, observations = helper_client
+    helper_client, authority = helper_client
     reader_stopped = threading.Event()
 
     class ReaderOwnedStream(io.BytesIO):
@@ -1008,11 +1004,11 @@ def test_helper_close_keeps_reader_owned_stdout_open_until_reader_stops(helper_c
     process = Process()
     reader = Reader()
     helper._process = cast(ManagedSshProcess, process)
-    observations.record_terminal(terminal_snapshot(Trigger.CHILD_EXIT, returncode=0))
+    authority.record_terminal(terminal_snapshot(Trigger.CHILD_EXIT, returncode=0))
     helper._reader_thread = reader
 
     helper.close()
-    error = observations.snapshot().failure
+    error = authority.snapshot().failure
 
     assert error is None
 
@@ -1024,14 +1020,14 @@ def test_helper_close_keeps_reader_owned_stdout_open_until_reader_stops(helper_c
 
 
 def test_helper_close_retains_nested_process_cleanup_diagnostics(helper_client):
-    helper_client, observations = helper_client
+    helper_client, authority = helper_client
     terminate_error = RuntimeError("helper terminate failed")
     stderr_error = RuntimeError("helper stderr close failed")
 
     class Process(_ControlProcess):
         @override
         def wait(self, timeout=None):
-            if timeout == helper_client_module.HELPER_STOP_TIMEOUT:
+            if timeout == connection_module.HELPER_STOP_TIMEOUT:
                 raise SessionError("shutdown wait failed")
             return super().wait(timeout)
 
@@ -1046,10 +1042,10 @@ def test_helper_close_retains_nested_process_cleanup_diagnostics(helper_client):
 
     helper = helper_client
     helper._process = cast(ManagedSshProcess, Process())
-    observations.record_terminal(terminal_snapshot(Trigger.CONTROLLER_EOF, returncode=None))
+    authority.record_terminal(terminal_snapshot(Trigger.CONTROLLER_EOF, returncode=None))
 
     helper.close()
-    error = observations.snapshot().failure
+    error = authority.snapshot().failure
 
     assert isinstance(error, SessionError)
     notes = error.__notes__
@@ -1097,7 +1093,7 @@ def test_helper_startup_timeout_does_not_block_on_partial_output(monkeypatch):
     class Command(_PopenOnlySshCommand):
         @override
         def popen(
-            self, host: str, remote_command: str, *, local_forward: SshLocalForward | None = None
+            self, host: str, remote_command: str, *, local_forward: SshForwardSpec | None = None
         ) -> Any:
             return process
 
@@ -1117,7 +1113,7 @@ def test_helper_startup_timeout_does_not_block_on_partial_output(monkeypatch):
         def select(self, _timeout):
             if not self.delivered:
                 self.delivered = True
-                clock.now = helper_client_module.HELPER_START_TIMEOUT + 1
+                clock.now = connection_module.HELPER_START_TIMEOUT + 1
                 return [(None, None)]
             return []
 
@@ -1129,14 +1125,14 @@ def test_helper_startup_timeout_does_not_block_on_partial_output(monkeypatch):
     clock = Clock()
     try:
         os.write(write_fd, b'{"version":1,"type":"SESSION_CREATED"')
-        monkeypatch.setattr(helper_client_module.time, "monotonic", clock.monotonic)
-        monkeypatch.setattr(helper_client_module.selectors, "DefaultSelector", Selector)
+        monkeypatch.setattr(connection_module.time, "monotonic", clock.monotonic)
+        monkeypatch.setattr(connection_module.selectors, "DefaultSelector", Selector)
 
-        client = _HelperClient(
+        client = HelperConnection(
             Command(),
             "host",
             DeploymentResult("/helper.py", "digest", False),
-            observations=_SessionObservations(),
+            authority=SessionAuthority(),
         )
         with pytest.raises(SessionError) as raised:
             try:
@@ -1228,21 +1224,21 @@ def test_helper_client_output_delivery_does_not_retain_event_history():
 
         @override
         def popen(
-            self, host: str, remote_command: str, *, local_forward: SshLocalForward | None = None
+            self, host: str, remote_command: str, *, local_forward: SshForwardSpec | None = None
         ) -> Any:
             return self.process
 
     handled = []
     command = Command()
-    observations = _SessionObservations()
-    helper_client = _HelperClient(
+    authority = SessionAuthority()
+    helper_client = HelperConnection(
         command,
         "host",
         DeploymentResult("/helper.py", "digest", False),
         output_handler=lambda stream, payload, line_end: handled.append(
             (stream, payload, line_end)
         ),
-        observations=observations,
+        authority=authority,
     )
     try:
         helper_client.acquire()
@@ -1256,42 +1252,42 @@ def test_helper_client_output_delivery_does_not_retain_event_history():
             ("stdout" if index % 2 == 0 else "stderr", payload, False)
             for index, payload in enumerate(payloads)
         ]
-        assert observations.operation_status() == 0
+        assert authority.operation_status() == 0
     finally:
         helper_client.close()
-        assert observations.snapshot().failure is None
+        assert authority.snapshot().failure is None
 
 
 @pytest.mark.parametrize("child_first", (True, False), ids=("child-first", "transport-first"))
 def test_child_and_control_status_use_one_persistent_arbitration_path(helper_client, child_first):
-    helper_client, observations = helper_client
+    helper_client, authority = helper_client
     process = _ControlProcess()
     helper_client._process = cast(ManagedSshProcess, process)
-    observations.record_ready()
+    authority.record_ready()
     if child_first:
         helper_client._dispatch(decode_frame(terminal_message(Trigger.CHILD_EXIT, returncode=7)))
     process.returncode = 1
     helper_client.observe_status()
     with pytest.raises(SessionError) as initial:
-        observations.operation_status()
+        authority.operation_status()
     assert ("exit status 7" if child_first else "status 1") in str(initial.value)
     with pytest.raises(SessionError) as first_gate:
-        observations.enter((), ())
+        authority.admit_work((), ())
     assert first_gate.value is initial.value
     if not child_first:
         helper_client._dispatch(decode_frame(terminal_message(Trigger.CHILD_EXIT, returncode=7)))
     helper_client.observe_status()
     with pytest.raises(SessionError) as later:
-        observations.operation_status()
+        authority.operation_status()
     assert later.value is initial.value
     assert ("exit status 7" if child_first else "status 1") in str(initial.value)
     assert any(
         ("status 1" if child_first else "exit status 7") in note for note in initial.value.__notes__
     )
-    assert observations.snapshot().ending.outcome.child_result.returncode == 7
+    assert authority.snapshot().ending.outcome.child_result.returncode == 7
     with pytest.raises(SessionError) as gate:
-        observations.enter((), ())
+        authority.admit_work((), ())
     assert gate.value is initial.value
     helper_client.close()
-    assert observations.snapshot().failure is initial.value
-    assert observations.snapshot().ending.outcome.child_result.returncode == 7
+    assert authority.snapshot().failure is initial.value
+    assert authority.snapshot().ending.outcome.child_result.returncode == 7

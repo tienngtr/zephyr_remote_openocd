@@ -11,8 +11,8 @@ import zipfile
 from importlib.resources import files
 from pathlib import Path
 
+from zephyr_remote_openocd.controller.deployment import _helper_source
 from zephyr_remote_openocd.protocol.wire import VERSION
-from zephyr_remote_openocd.remote.deploy import _helper_source
 
 
 def test_helper_bundle_is_deterministic_and_runs_without_local_package(tmp_path):

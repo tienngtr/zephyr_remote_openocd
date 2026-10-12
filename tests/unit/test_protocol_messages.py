@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 
 import pytest
+from zephyr_remote_openocd.controller.model import Service
 from zephyr_remote_openocd.protocol import commands as protocol_commands
 from zephyr_remote_openocd.protocol.commands import write_start
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
@@ -21,7 +22,6 @@ from zephyr_remote_openocd.protocol.wire import (
     read_message,
     validate_event,
 )
-from zephyr_remote_openocd.remote.model import Service
 
 
 class TestProtocol:

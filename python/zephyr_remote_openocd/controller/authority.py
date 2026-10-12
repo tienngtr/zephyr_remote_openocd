@@ -8,11 +8,10 @@ import threading
 from collections.abc import Iterable
 from dataclasses import dataclass
 
+from zephyr_remote_openocd.controller.admission import AdmissionGate
+from zephyr_remote_openocd.controller.cleanup import _add_failure_note
+from zephyr_remote_openocd.controller.model import Service
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy, Diagnostic, TerminalSnapshot
-
-from .cleanup import _add_failure_note
-from .launch import LaunchGate
-from .model import Service
 
 
 class SessionError(RuntimeError):
@@ -39,14 +38,14 @@ class _FailureRecord:
 
 
 @dataclass(frozen=True, slots=True)
-class _SessionSnapshot:
+class SessionSnapshot:
     ending: TerminalSnapshot | None
     closing: bool
     failure: BaseException | None
     diagnostics: tuple[Diagnostic, ...]
 
 
-class _SessionObservations:
+class SessionAuthority:
     """One authority for failure recording, publication, and dependent entry.
 
     Physical owners report facts under this lock. The first fatal observation
@@ -60,15 +59,15 @@ class _SessionObservations:
         self._closing = False
         self._error_reported = False
         self._policy = CompletionPolicy.LIVE_SERVER
-        self._gate = LaunchGate()
+        self._gate = AdmissionGate()
         self._changed = threading.Condition(threading.RLock())
 
     def _failure(self) -> BaseException | None:
         return next((record.error for record in self._failures.values()), None)
 
-    def snapshot(self) -> _SessionSnapshot:
+    def snapshot(self) -> SessionSnapshot:
         with self._changed:
-            return _SessionSnapshot(
+            return SessionSnapshot(
                 self._ending,
                 self._closing,
                 self._failure(),
@@ -169,22 +168,22 @@ class _SessionObservations:
             result = None if self._ending is None else self._ending.outcome.child_result
             return None if result is None else result.returncode
 
-    def arbitrate_failure(self, error: BaseException) -> BaseException:
+    def resolve_effect_failure(self, error: BaseException) -> BaseException:
         """Record a failed effect and publish the authority's selected failure."""
         with self._changed:
             self.record_failure("OPERATION_FAILURE", error)
             return self.publish_failure() or error
 
-    def arbitrate_advisory(self, error: BaseException) -> BaseException | None:
+    def resolve_optional_failure(self, error: BaseException) -> BaseException | None:
         """Retain advisory detail behind an established fatal outcome, if any."""
         with self._changed:
-            return None if self._failure() is None else self.arbitrate_failure(error)
+            return None if self._failure() is None else self.resolve_effect_failure(error)
 
     def take_unreported_failure(self) -> BaseException | None:
         with self._changed:
             return None if self._error_reported else self.publish_failure()
 
-    def enter(self, required: Iterable[Service], forwarded: Iterable[Service]) -> None:
+    def admit_work(self, required: Iterable[Service], forwarded: Iterable[Service]) -> None:
         with self._changed:
             error = self.publish_failure()
             if error is not None:

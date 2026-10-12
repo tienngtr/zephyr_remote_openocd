@@ -15,12 +15,12 @@ from types import FrameType
 from typing import override
 
 import pytest
+from zephyr_remote_openocd.controller.model import SessionPlan
+from zephyr_remote_openocd.controller.paths import PathPlanner
+from zephyr_remote_openocd.controller.session import SessionController
+from zephyr_remote_openocd.controller.ssh import ManagedSshProcess, SshCommand, SshForwardSpec
 from zephyr_remote_openocd.protocol.process import ProcessSpec
-from zephyr_remote_openocd.remote import RemoteSession
 from zephyr_remote_openocd.remote.flash import FlashInputs, build_flash_plan
-from zephyr_remote_openocd.remote.model import RemoteSessionRequest
-from zephyr_remote_openocd.remote.paths import PathPlanner
-from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand, SshLocalForward
 
 from tests.concurrency_support import ConcurrentSessions
 from tests.process_support import cleanup_on_exit
@@ -39,7 +39,7 @@ def test_interruption_after_session_acquisition_cleans_helper_and_child(tmp_path
     class Command(SshCommand):
         @override
         def popen(
-            self, host: str, remote_command: str, *, local_forward: SshLocalForward | None = None
+            self, host: str, remote_command: str, *, local_forward: SshForwardSpec | None = None
         ) -> ManagedSshProcess:
             process = super().popen(host, remote_command, local_forward=local_forward)
             transports.append(process)
@@ -56,8 +56,8 @@ def test_interruption_after_session_acquisition_cleans_helper_and_child(tmp_path
         ),
         required_output_sentinels=("ZRO_TEST_READY",),
     )
-    session = RemoteSession.prepare(
-        RemoteSessionRequest(
+    session = SessionController.prepare(
+        SessionPlan(
             "test-host",
             Command((sys.executable, str(ROOT / "tests/fixtures/local_ssh.py"), str(tmp_path))),
             child,
@@ -80,7 +80,7 @@ def test_interruption_after_session_acquisition_cleans_helper_and_child(tmp_path
 
     def interrupt_at_boundary(frame: FrameType, event: str, _arg: object):
         nonlocal child_pidfd, workspace, interrupted
-        acquire_return = event == "return" and frame.f_code is RemoteSession.acquire.__code__
+        acquire_return = event == "return" and frame.f_code is SessionController.acquire.__code__
         caller_resumption = (
             event == "line"
             and frame.f_code is acquire_owned_session.__code__
@@ -153,8 +153,8 @@ def test_same_probe_session_finishes_while_another_session_is_active(tmp_path: P
             ),
             PathPlanner(()),
         )
-        session = RemoteSession.prepare(
-            RemoteSessionRequest(
+        session = SessionController.prepare(
+            SessionPlan(
                 "test-host",
                 ssh,
                 replace(plan.process, required_output_sentinels=("ZRO_TEST_READY",)),
@@ -163,7 +163,7 @@ def test_same_probe_session_finishes_while_another_session_is_active(tmp_path: P
         )
         try:
             session.acquire()
-            assert session.check_openocd_exit() is None
+            assert session.poll_operation() is None
             opened[channel].set()
             assert session.wait_for_openocd_exit(30) == 0
         finally:

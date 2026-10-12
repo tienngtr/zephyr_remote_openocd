@@ -8,13 +8,13 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from zephyr_remote_openocd.controller.paths import PathPlanner
 from zephyr_remote_openocd.protocol.arguments import ArgumentTemplate, SessionValue
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.remote.arguments import TclPathArgument
 
 from .openocd_plan import OpenOcdBasePlan, plan_openocd_base
-from .paths import PathPlanner
 
 
 class FlashPlanError(RuntimeError):

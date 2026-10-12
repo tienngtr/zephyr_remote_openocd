@@ -8,7 +8,7 @@ import base64
 import json
 import shlex
 
-from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, _stop_process
+from zephyr_remote_openocd.controller.ssh import ManagedSshProcess, _stop_process
 
 from tests.process_support import read_line
 

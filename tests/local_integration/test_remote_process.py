@@ -28,38 +28,35 @@ from typing import Any, BinaryIO, override
 from unittest.mock import create_autospec, patch
 
 import pytest
+from zephyr_remote_openocd.controller import forwarding as forwarding_module
+from zephyr_remote_openocd.controller import helper_connection as connection_module
+from zephyr_remote_openocd.controller import rtt as rtt_module
+from zephyr_remote_openocd.controller import session as session_module
+from zephyr_remote_openocd.controller.authority import SessionAuthority, SessionError
+from zephyr_remote_openocd.controller.deployment import DeploymentResult
+from zephyr_remote_openocd.controller.forwarding import ForwardManager
+from zephyr_remote_openocd.controller.helper_connection import HelperConnection
+from zephyr_remote_openocd.controller.model import (
+    Service,
+    SessionAllocation,
+    SessionPlan,
+    StagedDirectory,
+    StagedFile,
+)
+from zephyr_remote_openocd.controller.paths import REMOTE_ADDRESS_PLACEHOLDER, PathPlanner
+from zephyr_remote_openocd.controller.rtt import RttClientError, run_rtt_client
+from zephyr_remote_openocd.controller.session import SessionController, query_remote_openocd_version
+from zephyr_remote_openocd.controller.ssh import (
+    ManagedSshProcess,
+    SshCommand,
+    SshForwardSpec,
+    _stop_process,
+)
+from zephyr_remote_openocd.controller.staging import build_archive
 from zephyr_remote_openocd.helper import workspace as helper_workspace_module
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy, Trigger
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.protocol.wire import decode_terminal, encode_frame
-from zephyr_remote_openocd.remote import backend as backend_module
-from zephyr_remote_openocd.remote import forwarding as forwarding_module
-from zephyr_remote_openocd.remote import helper_client as helper_client_module
-from zephyr_remote_openocd.remote import rtt as rtt_module
-from zephyr_remote_openocd.remote.backend import (
-    RemoteSession,
-    query_remote_openocd_version,
-)
-from zephyr_remote_openocd.remote.deploy import DeploymentResult
-from zephyr_remote_openocd.remote.forwarding import _ForwardManager
-from zephyr_remote_openocd.remote.helper_client import _HelperClient
-from zephyr_remote_openocd.remote.model import (
-    RemoteSessionRequest,
-    Service,
-    SessionAllocation,
-    StagedDirectory,
-    StagedFile,
-)
-from zephyr_remote_openocd.remote.paths import REMOTE_ADDRESS_PLACEHOLDER, PathPlanner
-from zephyr_remote_openocd.remote.rtt import RttClientError, run_rtt_client
-from zephyr_remote_openocd.remote.session import SessionError, _SessionObservations
-from zephyr_remote_openocd.remote.ssh import (
-    ManagedSshProcess,
-    SshCommand,
-    SshLocalForward,
-    _stop_process,
-)
-from zephyr_remote_openocd.remote.staging import build_archive
 
 from tests.process_support import cleanup_on_exit, local_transport, read_line, read_lines
 from tests.protocol_support import terminal_message
@@ -86,7 +83,7 @@ class _BlockedSshCommand(SshCommand):
 
     @override
     def popen(
-        self, host: str, remote_command: str, *, local_forward: SshLocalForward | None = None
+        self, host: str, remote_command: str, *, local_forward: SshForwardSpec | None = None
     ) -> ManagedSshProcess:
         raise AssertionError("popen() is not expected in this test")
 
@@ -109,8 +106,8 @@ def test_interrupted_helper_acquisition_cleans_owned_control_process(tmp_path, m
     managed_processes: list[ManagedSshProcess] = []
     workspaces: list[Path] = []
     interruption = KeyboardInterrupt()
-    original_acquire = _HelperClient.acquire
-    original_read = _HelperClient._read_initial_message
+    original_acquire = HelperConnection.acquire
+    original_read = HelperConnection._read_initial_message
 
     class LocalCommand(_BlockedSshCommand):
         @override
@@ -138,10 +135,10 @@ def test_interrupted_helper_acquisition_cleans_owned_control_process(tmp_path, m
         original_acquire(client)
         raise interruption
 
-    monkeypatch.setattr(_HelperClient, "acquire", acquire_and_interrupt)
-    monkeypatch.setattr(_HelperClient, "_read_initial_message", staticmethod(read_and_interrupt))
-    session = RemoteSession(
-        RemoteSessionRequest("local", LocalCommand(), TEST_PROCESS),
+    monkeypatch.setattr(HelperConnection, "acquire", acquire_and_interrupt)
+    monkeypatch.setattr(HelperConnection, "_read_initial_message", staticmethod(read_and_interrupt))
+    session = SessionController(
+        SessionPlan("local", LocalCommand(), TEST_PROCESS),
         DeploymentResult(str(helper_path), "test", False),
     )
     try:
@@ -180,12 +177,12 @@ def test_sigint_during_helper_reader_start_keeps_one_owned_reader(monkeypatch):
         "assert sys.stdin.buffer.read() == b''\n"
         f"os.write(1, {closed!r})\n"
     )
-    observations = _SessionObservations()
-    helper = _HelperClient(
+    authority = SessionAuthority()
+    helper = HelperConnection(
         SshCommand((sys.executable, "-u", "-c", code)),
         "local",
         DeploymentResult("/helper.py", "digest", False),
-        observations=observations,
+        authority=authority,
     )
     started: list[threading.Thread] = []
     start = threading.Thread.start
@@ -207,7 +204,7 @@ def test_sigint_during_helper_reader_start_keeps_one_owned_reader(monkeypatch):
 
         helper.close()
 
-        assert observations.snapshot().failure is interrupted.value
+        assert authority.snapshot().failure is interrupted.value
         assert len(started) == 1
         assert not started[0].is_alive()
         assert signal.pthread_sigmask(signal.SIG_BLOCK, set()) == previous_mask
@@ -250,7 +247,7 @@ def test_helper_close_allows_recorded_natural_exit_before_termination(
     class LocalCommand(_BlockedSshCommand):
         @override
         def popen(
-            self, host: str, remote_command: str, *, local_forward: SshLocalForward | None = None
+            self, host: str, remote_command: str, *, local_forward: SshForwardSpec | None = None
         ) -> ManagedSshProcess:
             return managed
 
@@ -267,38 +264,38 @@ def test_helper_close_allows_recorded_natural_exit_before_termination(
     def gated_wait(timeout: float | None = None) -> int:
         nonlocal graceful_wait_started
         if not terminated:
-            assert timeout is not None and 0 < timeout <= helper_client_module.HELPER_STOP_TIMEOUT
+            assert timeout is not None and 0 < timeout <= connection_module.HELPER_STOP_TIMEOUT
             graceful_wait_started = True
             if transport_timeout:
                 raise subprocess.TimeoutExpired(managed.args, timeout)
             os.write(exit_write, b"x")
         return wait(timeout=timeout)
 
-    observations = _SessionObservations()
+    authority = SessionAuthority()
     try:
-        helper = _HelperClient(
+        helper = HelperConnection(
             LocalCommand(),
             "local",
             DeploymentResult("/helper.py", "digest", False),
-            observations=observations,
+            authority=authority,
         )
         helper.acquire()
         helper.start_process(TEST_PROCESS, ())
         # EOF and protocol completion are observed while OS exit remains gated.
         assert helper._join_reader(timeout=5)
         helper.observe_status()
-        initial_failure = observations.snapshot().failure
+        initial_failure = authority.snapshot().failure
         if openocd_returncode:
             with pytest.raises(SessionError) as observed:
-                observations.operation_status()
+                authority.operation_status()
         else:
-            assert observations.operation_status() == 0
+            assert authority.operation_status() == 0
         assert managed.poll() is None
         monkeypatch.setattr(managed, "wait", gated_wait)
         monkeypatch.setattr(managed, "terminate", observe_terminate)
 
         helper.close()
-        error = observations.snapshot().failure
+        error = authority.snapshot().failure
 
         assert graceful_wait_started
         assert terminated is transport_timeout
@@ -312,7 +309,7 @@ def test_helper_close_allows_recorded_natural_exit_before_termination(
         else:
             assert managed.returncode == 0
             assert error is initial_failure
-        ending = observations.snapshot().ending
+        ending = authority.snapshot().ending
         assert ending is not None
         child_result = ending.outcome.child_result
         assert (None if child_result is None else child_result.returncode) == openocd_returncode
@@ -447,7 +444,7 @@ class TestForwardingLifecycle:
 
     class Command(_BlockedSshCommand):
         process: Any
-        calls: list[tuple[str, str, SshLocalForward | None]]
+        calls: list[tuple[str, str, SshForwardSpec | None]]
 
         def __init__(self, process):
             super().__init__()
@@ -460,8 +457,8 @@ class TestForwardingLifecycle:
 
     @staticmethod
     def session(command):
-        return RemoteSession(
-            RemoteSessionRequest("target", command, TEST_PROCESS),
+        return SessionController(
+            SessionPlan("target", command, TEST_PROCESS),
             DeploymentResult("/helper.py", "digest", False),
         )
 
@@ -479,14 +476,16 @@ class TestForwardingLifecycle:
         session = self.session(command)
         service = Service("gdb", self.port(), 3333)
         with (
-            patch.object(_ForwardManager, "_await_ready", return_value=True),
-            patch("zephyr_remote_openocd.remote.forwarding.socket.create_connection") as connect,
+            patch.object(ForwardManager, "_await_ready", return_value=True),
+            patch(
+                "zephyr_remote_openocd.controller.forwarding.socket.create_connection"
+            ) as connect,
         ):
             session._forwards.start((service,), "127.64.1.1")
         connect.assert_not_called()
         remote_command = command.calls[0][1]
         assert remote_command.startswith("python3 -c ")
-        assert command.calls[0][2] == SshLocalForward(service.local_port, "127.64.1.1", 3333)
+        assert command.calls[0][2] == SshForwardSpec(service.local_port, "127.64.1.1", 3333)
         session._forwards.close()
         assert process.terminate_calls == 1
 
@@ -502,13 +501,13 @@ class TestForwardingLifecycle:
                 "remote_workspace": "/workspace",
             },
         )
-        observations = _SessionObservations()
+        authority = SessionAuthority()
         helper = _helper_client(
-            RemoteSessionRequest("target", command, TEST_PROCESS),
+            SessionPlan("target", command, TEST_PROCESS),
             DeploymentResult("/helper.py", "digest", False),
-            observations=observations,
+            authority=authority,
         )
-        with patch.object(_HelperClient, "_read_event", side_effect=events):
+        with patch.object(HelperConnection, "_read_event", side_effect=events):
             try:
                 helper.acquire()
             finally:
@@ -527,19 +526,19 @@ class TestForwardingLifecycle:
 
         with (
             patch.object(
-                backend_module,
+                session_module,
                 "deploy_helper",
                 return_value=DeploymentResult("/helper.py", "digest", False),
             ),
-            patch.object(_HelperClient, "_read_event", side_effect=startup_error),
+            patch.object(HelperConnection, "_read_event", side_effect=startup_error),
             patch.object(
-                helper_client_module,
+                connection_module,
                 "_stop_process",
                 side_effect=RuntimeError("process cleanup failed"),
             ),
             pytest.raises(SessionError) as raised,
         ):
-            session = RemoteSession.prepare(RemoteSessionRequest("target", command, TEST_PROCESS))
+            session = SessionController.prepare(SessionPlan("target", command, TEST_PROCESS))
             with cleanup_on_exit(session.close):
                 session.acquire()
 
@@ -577,7 +576,7 @@ class TestForwardingLifecycle:
         session = self.session(command)
         service = Service("gdb", 32155, 3333)
         monkeypatch.setattr(
-            _ForwardManager,
+            ForwardManager,
             "_preflight",
             staticmethod(lambda _service: "stale listener"),
         )
@@ -609,7 +608,7 @@ class TestForwardingLifecycle:
                 host: str,
                 remote_command: str,
                 *,
-                local_forward: SshLocalForward | None = None,
+                local_forward: SshForwardSpec | None = None,
             ) -> ManagedSshProcess:
                 del host, remote_command, local_forward
                 return self.processes.pop(0)
@@ -627,9 +626,9 @@ class TestForwardingLifecycle:
             raise cleanup_error
 
         monkeypatch.setattr(failed, "terminate", fail_terminate)
-        manager = _ForwardManager(Command([failed, healthy]), "target")
-        monkeypatch.setattr(_ForwardManager, "_preflight", staticmethod(lambda _service: None))
-        monkeypatch.setattr(_ForwardManager, "_await_ready", staticmethod(lambda *_args: True))
+        manager = ForwardManager(Command([failed, healthy]), "target")
+        monkeypatch.setattr(ForwardManager, "_preflight", staticmethod(lambda _service: None))
+        monkeypatch.setattr(ForwardManager, "_await_ready", staticmethod(lambda *_args: True))
         try:
             manager.start(
                 (Service("gdb", 32155, 3333), Service("tcl", 32156, 6666)),
@@ -709,8 +708,8 @@ def test_sigint_during_session_close_cleans_owned_transports(
         assert remote_argv[0] == "python3"
         return popen([sys.executable, "-u", *remote_argv[1:]], env=environment, **kwargs)
 
-    session = RemoteSession(
-        RemoteSessionRequest(
+    session = SessionController(
+        SessionPlan(
             "target",
             LocalCommand(),
             ProcessSpec(
@@ -731,7 +730,7 @@ def test_sigint_during_session_close_cleans_owned_transports(
         nonlocal requested
         # Schedule a real SIGINT at an ownership boundary without replacing
         # lifecycle collaborators or depending on thread scheduling/line numbers.
-        cleanup = _HelperClient.close if phase == "helper-entry" else _ForwardManager.close
+        cleanup = HelperConnection.close if phase == "helper-entry" else ForwardManager.close
         if event == "line" and frame.f_code is cleanup.__code__ and not requested:
             first = processes[0]
             second = processes[1]
@@ -758,7 +757,7 @@ def test_sigint_during_session_close_cleans_owned_transports(
         raise interruption
 
     monkeypatch.setattr(subprocess, "Popen", launch)
-    monkeypatch.setattr(_ForwardManager, "_preflight", staticmethod(lambda _service: None))
+    monkeypatch.setattr(ForwardManager, "_preflight", staticmethod(lambda _service: None))
     signal.signal(signal.SIGINT, handle_interrupt)
     try:
         session.acquire()
@@ -1007,12 +1006,12 @@ class TestRttClient:
             helper_client._dispatch(json.loads(terminal_message(Trigger.CHILD_EXIT, returncode=0)))
             return b""
 
-        observations = _SessionObservations()
-        helper_client = _HelperClient(
+        authority = SessionAuthority()
+        helper_client = HelperConnection(
             SshCommand(),
             "target",
             DeploymentResult("/helper.py", "digest", False),
-            observations=observations,
+            authority=authority,
         )
         connection = create_autospec(socket.socket, instance=True, spec_set=True)
         connection.recv.side_effect = recv
@@ -1025,7 +1024,7 @@ class TestRttClient:
                     connection,
                     stream.fileno(),
                     stream,
-                    observations.operation_status,
+                    authority.operation_status,
                 ).run()
                 == 0
             )
@@ -1588,8 +1587,8 @@ stage(sys.argv[2])
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "firmware.bin"
             source.write_bytes(b"firmware")
-            session = RemoteSession(
-                RemoteSessionRequest("local", LocalCommand(), TEST_PROCESS),
+            session = SessionController(
+                SessionPlan("local", LocalCommand(), TEST_PROCESS),
                 DeploymentResult("/helper.py", "digest", False),
             )
             session._helper = _StagingHelper()
@@ -1613,8 +1612,8 @@ stage(sys.argv[2])
 
         source = tmp_path / "firmware.bin"
         source.write_bytes(b"firmware")
-        session = RemoteSession(
-            RemoteSessionRequest("local", LocalCommand(), TEST_PROCESS),
+        session = SessionController(
+            SessionPlan("local", LocalCommand(), TEST_PROCESS),
             DeploymentResult("/helper.py", "digest", False),
         )
         session._helper = _StagingHelper()
@@ -1639,8 +1638,8 @@ stage(sys.argv[2])
             source = Path(directory) / "firmware.bin"
             source.write_bytes(b"firmware")
             command = LocalCommand()
-            session = RemoteSession(
-                RemoteSessionRequest("local", command, TEST_PROCESS),
+            session = SessionController(
+                SessionPlan("local", command, TEST_PROCESS),
                 DeploymentResult("/helper.py", "digest", False),
             )
             session._helper = _StagingHelper()
@@ -1669,7 +1668,7 @@ stage(sys.argv[2])
                 return subprocess.CompletedProcess(command, 0, b"\xff", b"")
 
         monkeypatch.setattr(
-            "zephyr_remote_openocd.remote.backend.deploy_helper",
+            "zephyr_remote_openocd.controller.session.deploy_helper",
             lambda _command, _host: DeploymentResult("/helper.py", "digest", False),
         )
 
@@ -2332,10 +2331,10 @@ stage(sys.argv[2])
                 ),
                 completion_policy=CompletionPolicy.PROCESS_EXIT,
             )
-            request = RemoteSessionRequest("local", LocalCommand(), process=remote_process)
+            request = SessionPlan("local", LocalCommand(), process=remote_process)
             deployment = DeploymentResult(str(helper), "digest", False)
-            with patch.object(backend_module, "deploy_helper", return_value=deployment):
-                backend = RemoteSession.prepare(request)
+            with patch.object(session_module, "deploy_helper", return_value=deployment):
+                backend = SessionController.prepare(request)
             try:
                 backend.acquire(
                     output_handler=lambda stream, payload, line_end: output.append(
@@ -2398,7 +2397,7 @@ stage(sys.argv[2])
             )
             output = []
             backend = _session_with_helper(
-                RemoteSessionRequest("local", LocalCommand(), process=remote_process),
+                SessionPlan("local", LocalCommand(), process=remote_process),
                 DeploymentResult(str(helper), "digest", False),
                 lambda stream, payload, line_end: output.append((stream, payload, line_end)),
             )
@@ -2481,21 +2480,21 @@ sys.exit({exit_code})
                     [sys.executable, "-c", helper_code],
                 )
 
-        observations = _SessionObservations()
+        authority = SessionAuthority()
         helper_client = _helper_client(
-            RemoteSessionRequest("local", LocalCommand(), TEST_PROCESS),
+            SessionPlan("local", LocalCommand(), TEST_PROCESS),
             DeploymentResult("/helper.py", "digest", False),
-            observations=observations,
+            authority=authority,
         )
         try:
             helper_client.acquire()
             if expected is None:
                 helper_client.close()
-                assert observations.snapshot().failure is None
-                assert observations.operation_status() == expected_openocd_result
+                assert authority.snapshot().failure is None
+                assert authority.operation_status() == expected_openocd_result
             else:
                 helper_client.close()
-                error = observations.snapshot().failure
+                error = authority.snapshot().failure
                 assert error is not None
                 assert all(
                     fragment in str(error) + " ".join(getattr(error, "__notes__", ()))
@@ -2540,11 +2539,11 @@ sys.exit({HELPER_FAILURE_RC})
                 return process
 
         command = LocalCommand()
-        observations = _SessionObservations()
+        authority = SessionAuthority()
         helper_client = _helper_client(
-            RemoteSessionRequest("local", command, TEST_PROCESS),
+            SessionPlan("local", command, TEST_PROCESS),
             DeploymentResult("/helper.py", "digest", False),
-            observations=observations,
+            authority=authority,
         )
         helper_exited = threading.Event()
         drain_events = helper_client._drain_events
@@ -2562,8 +2561,8 @@ sys.exit({HELPER_FAILURE_RC})
                 assert helper_client._join_reader(timeout=5)
             helper_client.observe_status()
             with pytest.raises(SessionError, match="status 9"):
-                observations.operation_status()
-            ending = observations.snapshot().ending
+                authority.operation_status()
+            ending = authority.snapshot().ending
             assert ending is not None
             child_result = ending.outcome.child_result
             assert child_result is not None
@@ -2606,11 +2605,11 @@ sys.exit({HELPER_FAILURE_RC})
                 required_output_sentinels=(output_sentinel,),
             )
             command = LocalCommand()
-            observations = _SessionObservations()
+            authority = SessionAuthority()
             helper_client = _helper_client(
-                RemoteSessionRequest("local", command, process=remote_process),
+                SessionPlan("local", command, process=remote_process),
                 DeploymentResult(str(helper), "digest", False),
-                observations=observations,
+                authority=authority,
             )
             child_pid = None
             child_pidfd = None
@@ -2623,7 +2622,7 @@ sys.exit({HELPER_FAILURE_RC})
 
                 helper_client.close()
 
-                assert observations.snapshot().failure is None
+                assert authority.snapshot().failure is None
                 assert command.process.returncode == 0
                 assert not workspace.exists()
                 _assert_pidfd_exited(child_pidfd)
@@ -2664,7 +2663,7 @@ sys.exit({HELPER_FAILURE_RC})
                     'import sys,time;print("hello",flush=True);time.sleep(30)',
                 ),
             )
-            request = RemoteSessionRequest("local", LocalCommand(), process=remote_process)
+            request = SessionPlan("local", LocalCommand(), process=remote_process)
 
             output_error = RuntimeError()
 
@@ -2692,23 +2691,23 @@ sys.exit({HELPER_FAILURE_RC})
                     backend.close()
 
 
-def _helper_client(request, deployment, output_handler=None, *, observations):
-    return _HelperClient(
+def _helper_client(request, deployment, output_handler=None, *, authority):
+    return HelperConnection(
         request.ssh_command,
         request.host,
         deployment,
         output_handler=output_handler,
-        observations=observations,
+        authority=authority,
     )
 
 
 def _session_with_helper(request, deployment, output_handler=None):
-    session = RemoteSession(request, deployment)
-    session._helper = _HelperClient(
+    session = SessionController(request, deployment)
+    session._helper = HelperConnection(
         request.ssh_command,
         request.host,
         deployment,
         output_handler=output_handler,
-        observations=session._observations,
+        authority=session._authority,
     )
     return session

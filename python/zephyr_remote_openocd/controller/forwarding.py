@@ -16,10 +16,20 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Literal
 
-from .cleanup import _add_failure_note, _raise_cleanup_errors
-from .model import DuplicateServiceError, Service, validated_services
-from .session import SessionError
-from .ssh import ManagedSshProcess, SshCommand, SshLocalForward, SshProcessStartError, _stop_process
+from zephyr_remote_openocd.controller.authority import SessionError
+from zephyr_remote_openocd.controller.cleanup import _add_failure_note, _raise_cleanup_errors
+from zephyr_remote_openocd.controller.model import (
+    DuplicateServiceError,
+    Service,
+    validated_services,
+)
+from zephyr_remote_openocd.controller.ssh import (
+    ManagedSshProcess,
+    SshCommand,
+    SshForwardSpec,
+    SshProcessStartError,
+    _stop_process,
+)
 
 FORWARD_START_TIMEOUT = 10.0
 FORWARD_HEALTH_INTERVAL = 0.25
@@ -63,7 +73,7 @@ class ForwardAdvisory:
     failure: SessionError
 
 
-class _ForwardManager:
+class ForwardManager:
     """Own local SSH forwards for one remote session."""
 
     def __init__(self, ssh_command: SshCommand, host: str):
@@ -157,7 +167,7 @@ class _ForwardManager:
                     process = self._ssh_command.popen(
                         self._host,
                         self._ready_command(sentinel),
-                        local_forward=SshLocalForward(
+                        local_forward=SshForwardSpec(
                             service.local_port, remote_address, service.remote_port
                         ),
                     )

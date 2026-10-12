@@ -11,14 +11,14 @@ from pathlib import Path
 from typing import override
 
 import pytest
+from zephyr_remote_openocd.controller.authority import SessionError
+from zephyr_remote_openocd.controller.forwarding import ForwardManager
+from zephyr_remote_openocd.controller.helper_connection import HelperConnection
+from zephyr_remote_openocd.controller.model import Service, SessionPlan
+from zephyr_remote_openocd.controller.session import SessionController
+from zephyr_remote_openocd.controller.ssh import ManagedSshProcess, SshCommand, SshForwardSpec
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.protocol.wire import ProtocolError
-from zephyr_remote_openocd.remote.backend import RemoteSession
-from zephyr_remote_openocd.remote.forwarding import _ForwardManager
-from zephyr_remote_openocd.remote.helper_client import _HelperClient
-from zephyr_remote_openocd.remote.model import RemoteSessionRequest, Service
-from zephyr_remote_openocd.remote.session import SessionError
-from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand, SshLocalForward
 
 from tests.process_support import cleanup_on_exit
 
@@ -73,21 +73,21 @@ def test_acquisition_rejects_helper_termination_recorded_during_forwarding(
     (tmp_path / "ending").write_text(ending)
     os.mkfifo(tmp_path / "gate")
     recorded = threading.Event()
-    drain = _HelperClient._drain_events
+    drain = HelperConnection._drain_events
 
-    def drain_and_notify(client: _HelperClient) -> None:
+    def drain_and_notify(client: HelperConnection) -> None:
         try:
             drain(client)
         finally:
             recorded.set()
 
-    monkeypatch.setattr(_HelperClient, "_drain_events", drain_and_notify)
+    monkeypatch.setattr(HelperConnection, "_drain_events", drain_and_notify)
     transports: list[ManagedSshProcess] = []
 
     class Command(SshCommand):
         @override
         def popen(
-            self, host: str, remote_command: str, *, local_forward: SshLocalForward | None = None
+            self, host: str, remote_command: str, *, local_forward: SshForwardSpec | None = None
         ) -> ManagedSshProcess:
             if local_forward is not None:
                 with (tmp_path / "gate").open("wb", buffering=0) as gate:
@@ -98,8 +98,8 @@ def test_acquisition_rejects_helper_termination_recorded_during_forwarding(
             return process
 
     service = Service("gdb", 45678, 3333)
-    session = RemoteSession.prepare(
-        RemoteSessionRequest(
+    session = SessionController.prepare(
+        SessionPlan(
             "controlled-host",
             Command((str(peer),)),
             ProcessSpec(("openocd",)),
@@ -129,15 +129,15 @@ def test_failure_recorded_during_forward_readiness_remains_primary(
     (tmp_path / "ending").write_text(ending)
     os.mkfifo(tmp_path / "gate")
     recorded = threading.Event()
-    drain = _HelperClient._drain_events
+    drain = HelperConnection._drain_events
 
-    def drain_and_notify(client: _HelperClient) -> None:
+    def drain_and_notify(client: HelperConnection) -> None:
         try:
             drain(client)
         finally:
             recorded.set()
 
-    monkeypatch.setattr(_HelperClient, "_drain_events", drain_and_notify)
+    monkeypatch.setattr(HelperConnection, "_drain_events", drain_and_notify)
     transports: list[ManagedSshProcess] = []
 
     def fail_readiness(process: ManagedSshProcess, _sentinel: str, _deadline: float) -> bool:
@@ -149,9 +149,9 @@ def test_failure_recorded_during_forward_readiness_remains_primary(
         error.add_note("forward diagnostic detail")
         raise error
 
-    monkeypatch.setattr(_ForwardManager, "_await_ready", staticmethod(fail_readiness))
-    session = RemoteSession.prepare(
-        RemoteSessionRequest("controlled-host", SshCommand((str(peer),)), ProcessSpec(("openocd",)))
+    monkeypatch.setattr(ForwardManager, "_await_ready", staticmethod(fail_readiness))
+    session = SessionController.prepare(
+        SessionPlan("controlled-host", SshCommand((str(peer),)), ProcessSpec(("openocd",)))
     )
     try:
         session.acquire()
@@ -190,29 +190,29 @@ def test_recorded_terminal_prevents_new_forward_entry(
     (tmp_path / "ending").write_text(ending)
     os.mkfifo(tmp_path / "gate")
     recorded = threading.Event()
-    drain = _HelperClient._drain_events
+    drain = HelperConnection._drain_events
 
-    def drain_and_notify(client: _HelperClient) -> None:
+    def drain_and_notify(client: HelperConnection) -> None:
         try:
             drain(client)
         finally:
             recorded.set()
 
-    monkeypatch.setattr(_HelperClient, "_drain_events", drain_and_notify)
-    forward_entries: list[SshLocalForward] = []
+    monkeypatch.setattr(HelperConnection, "_drain_events", drain_and_notify)
+    forward_entries: list[SshForwardSpec] = []
 
     class Command(SshCommand):
         @override
         def popen(
-            self, host: str, remote_command: str, *, local_forward: SshLocalForward | None = None
+            self, host: str, remote_command: str, *, local_forward: SshForwardSpec | None = None
         ) -> ManagedSshProcess:
             if local_forward is not None:
                 forward_entries.append(local_forward)
                 raise OSError("later forward creation failure")
             return super().popen(host, remote_command)
 
-    session = RemoteSession.prepare(
-        RemoteSessionRequest("controlled-host", Command((str(peer),)), ProcessSpec(("openocd",)))
+    session = SessionController.prepare(
+        SessionPlan("controlled-host", Command((str(peer),)), ProcessSpec(("openocd",)))
     )
     with cleanup_on_exit(session.close):
         session.acquire()

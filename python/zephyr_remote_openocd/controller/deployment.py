@@ -11,9 +11,9 @@ import zipfile
 from dataclasses import dataclass
 from importlib.resources import files
 
+from zephyr_remote_openocd.controller.ssh import SshCommand
 from zephyr_remote_openocd.protocol.responses import validate_deployment_response
 from zephyr_remote_openocd.protocol.wire import ProtocolError, decode_frame
-from zephyr_remote_openocd.remote.ssh import SshCommand
 
 BOOTSTRAP = r'''import fcntl,hashlib,json,os,pathlib,sys,tempfile,time
 STALE_HELPER_AGE_SECONDS=24*60*60
