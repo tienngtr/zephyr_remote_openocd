@@ -51,11 +51,12 @@ scripts, and local Python helper subprocesses with:
 CI additionally publishes a Markdown job summary. Coverage is informational and
 has no minimum threshold.
 
-The repository map is small: `python/zephyr_remote_openocd/remote/` contains
-generic transport and session logic, `zephyr44/runner.py` contains Zephyr 4.4.x
-integration, `runners/remote_openocd.py` registers the west runner,
-`remote_helper.py` is the deployed helper, and `resources/` contains the user
-configuration contract. Matching tests live under `tests/unit/`,
+Under `python/zephyr_remote_openocd/`, `controller/` owns local sessions and
+transport, `helper/` executes remotely, `protocol/` defines the shared wire
+contract, and `openocd/` constructs commands without executing them.
+`zephyr44/runner.py` contains Zephyr 4.4.x integration,
+`runners/remote_openocd.py` registers the west runner, and `resources/` contains
+the user configuration contract. Matching tests live under `tests/unit/`,
 `tests/local_integration/`, `tests/zephyr_integration/`,
 `tests/ssh_integration/`, and `tests/hardware/`.
 

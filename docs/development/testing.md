@@ -208,7 +208,7 @@ through the real runner integration while rejecting external process, socket, an
 operations. The local-process concurrency test exercises real deployment,
 staging, and session cleanup through a configured local SSH replacement. Its
 first session has completed instance acquisition on its already-owned
-`RemoteSession` coordinator and stays active while the
+`SessionController` coordinator and stays active while the
 second same-serial session finishes. FIFO gates and an explicit post-open event
 provide synchronization without timing assertions. The adapter's remaining
 concurrency policy is reviewed design evidence. These checks use no SSH server,

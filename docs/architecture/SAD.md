@@ -132,15 +132,10 @@ zephyr_remote_openocd/
             zephyr44/
                 runner.py
 
-            remote/
-                model.py, paths.py, staging.py, ssh.py
-                services.py, session.py, forwarding.py
-                helper_client.py, cleanup.py, protocol.py
-                backend.py, deploy.py, debug.py, flash.py, rtt.py
-                preferred_address_cache.py
-                openocd_plan.py, arguments.py, tcl.py
-
-            remote_helper.py
+            controller/       local coordination, transport, and staging
+            helper/           remote coordination and physical ownership
+            protocol/         shared domain values and Protocol v1 codecs
+            openocd/          pure command and operation planning
 
     resources/
         config.example.yaml
@@ -587,12 +582,12 @@ introduces no serial constraint.
 The generic subsystem receives structured data, conceptually:
 
 ```python
-RemoteSessionRequest(
+SessionPlan(
     host=...,
     ssh_command=...,
-    process=RemoteProcess(...),
+    process=ProcessSpec(...),
     staged_files=...,
-    services=...,
+    forwards=...,
 )
 ```
 
@@ -600,7 +595,7 @@ This subsystem has no dependency on a specific board or SoC.
 
 ### 18.1 Runtime Environment Forwarding
 
-While constructing the immutable `RemoteProcess` for an operation, the
+While constructing the immutable `ProcessSpec` for an operation, the
 Zephyr adapter reads local values only for names in the selected remote's
 `forward_env` allow-list. The complete local environment is never copied. A
 name with no local value causes a non-fatal warning and is omitted from the
@@ -956,17 +951,17 @@ No board-specific addressing is involved.
 
 ## 28. Local Service Forwarding
 
-The generic session layer uses explicit logical service descriptions:
+The controller uses explicit local forwarding specifications:
 
 ```python
-Service(
+ForwardSpec(
     name="gdb",
     local_port=...,
     remote_port=...,
 )
 ```
 
-Possible services include:
+These forwards connect local clients to remote listeners for:
 
 - GDB;
 - Tcl;
@@ -985,36 +980,37 @@ OpenOCD. A successfully created local forward proves only that SSH accepted the
 forward; it does not prove that OpenOCD has a listener behind the remote
 endpoint.
 
-`RemoteSessionRequest.services` describes the initial service set supplied to
-the helper and forwarded while the session opens. `reserved_services` adds
-service ports that the helper validates and includes in address allocation but
-that are forwarded later by the operation. Its `auxiliary_services` subset
-identifies initial best-effort forwards; all other initial service forwards are
-required. The `auxiliary_services` name is an internal implementation detail
-for this client-side classification; it is not part of the wire contract
-described in [protocol.md](protocol.md). Omitting the subset preserves the
-generic all-required default. Debug plans classify enabled Tcl/telnet as
-auxiliary and GDB plus explicitly requested RTT as required. RTT for the `rtt`
-command remains reserved but deferred in the debug plan and is forwarded only
-after batch GDB setup succeeds.
+`SessionPlan.forwards` holds initial `ForwardSpec` values, each describing a
+local port and its remote listener. `reserved_listeners` holds `ListenerSpec`
+values that participate in remote address allocation without requesting a local
+forward. This includes a distinct GDB base listener and RTT deferred until batch
+GDB setup succeeds. `SessionPlan.listeners` projects both sets into the helper's
+wire-side listener contract.
 
-Immutable local `Service` and `RemoteSessionRequest` construction validates
-the locally knowable service contract before the helper request is emitted,
-including service names, ports, duplicates, conflicts, and auxiliary or
-reserved-set relationships. The helper independently validates its wire-side
-service contract as defined in [protocol.md](protocol.md).
+The `auxiliary_forwards` subset identifies initial best-effort forwards; all
+other initial forwards are required. This classification is internal to the
+controller and is not part of [Protocol v1](protocol.md). Omitting it preserves
+the generic all-required default. Debug plans classify enabled Tcl/telnet as
+auxiliary and GDB plus explicitly requested RTT as required.
+
+Immutable `ForwardSpec`, `ListenerSpec`, and `SessionPlan` construction validates
+locally knowable names, ports, duplicates, listener conflicts, and auxiliary-set
+relationships. Reserved listeners have no local port to validate. The helper
+independently validates the serialized listener contract. Recording retains its
+historical `reserved_services` JSON shape, with the remote port shown in its
+legacy `local_port` field; no product configuration or wire key changes.
 
 The session starts required forwards in one batch, then attempts each
-best-effort forward in its own one-service batch. Each manager call rolls back
+best-effort forward in its own one-forward batch. Each manager call rolls back
 that call's pending processes and preserves previously active forwards.
-`ForwardStartError` exposes the failed service, startup cause, and explicit
+`ForwardStartError` exposes the failed forward, startup cause, and explicit
 rollback cleanup errors. The session warns only when a best-effort attempt
 rolled back successfully. Failed rollback remains fatal; pending processes
 receive one bounded cleanup attempt and need not be adopted for a retry.
 The manager owns the pending batch from transport registration through commit
 or completion of each rollback attempt. Pending transports remain reachable by
 `close()` if startup escapes before rollback's SIGINT mask is established.
-They are not published as active services, and another startup cannot begin
+They are not published as owned forwards, and another startup cannot begin
 until a stranded pending batch has been cleaned. Close covers committed and
 pending ownership, attempting a transport once if an interrupted commit has
 temporarily recorded it in both sets.
@@ -1366,28 +1362,29 @@ The local operation decides dependent launch eligibility (§39); the remote
 helper decides remote phase transitions. Forwarding and RTT retain their own
 physical cleanup and failure domains. No cross-host global supervisor is added.
 The detailed normal local-session sequence is defined in §39. The runner owns
-the local `RemoteSession` lifetime and closes it when the operation finishes.
+the local `SessionController` lifetime and closes it when the operation finishes.
 The helper may also end the remote session after OpenOCD exit, protocol failure,
 or control-channel loss. The ownership boundaries are:
 
 | Owner | Resources and decisions |
 | --- | --- |
-| `RemoteSession` | Coordinates staging and subsystem cleanup and reports session/cleanup failures to the active operation. |
-| `_HelperClient` | Owns the helper control channel, protocol reader, helper observations, output delivery, and helper shutdown. |
-| `_ForwardManager` | Owns local forwarding SSH processes, forward status checks, and forward cleanup. |
+| `SessionController` | Coordinates staging and subsystem cleanup and reports session/cleanup failures to the active operation. |
+| `HelperConnection` | Owns the helper control channel, protocol reader, helper observations, output delivery, and helper shutdown. |
+| `ForwardManager` | Owns local forwarding SSH processes, forward status checks, and forward cleanup. |
 | `ManagedSshProcess` | Owns one local SSH subprocess and its stderr drain. |
 | External SSH connection-sharing mechanism | Owns its master and any forwarding state retained independently of runner-launched subprocesses; outside runner cleanup. |
-| Remote lifecycle authority | Owns remote phase transitions, attempt admission, outcome selection, workspace lifetime, and cleanup coordination. |
+| `HelperSession` | Coordinates remote physical owners, observation dispatch, and cleanup through the remote authority. |
+| `LifecycleAuthority` | Owns remote phase transitions, attempt admission, and outcome selection; acquires no resources. |
 | Child physical owner | Owns the acquired OpenOCD process group, output relays, termination, reaping, and stream closure; reports facts to the remote authority. |
 
-`RemoteSession.close()` coordinates the subsystem cleanup sequences and publishes
-the failure selected by its shared `_SessionObservations` authority. Failure of one
+`SessionController.close()` coordinates the subsystem cleanup sequences and publishes
+the failure selected by its shared `SessionAuthority` authority. Failure of one
 subsystem cleanup does not prevent the other applicable cleanup sequence from
 being attempted. Each owner cleans up the resources it acquired; no owner
 transfers an active resource to another owner merely because cleanup encountered
 an error.
 
-`RemoteSession.close()` blocks SIGINT before entering forwarding or helper
+`SessionController.close()` blocks SIGINT before entering forwarding or helper
 cleanup and keeps it blocked through every applicable bounded cleanup attempt
 and marking the session closed. It then restores the caller's exact previous
 signal mask. Subsystem entry and the transitions between cleanup owners are
@@ -1463,9 +1460,9 @@ explicit closed flag keep repeated cleanup attempts harmless. The drain thread
 is a daemon so an uncooperative inherited writer cannot hold local process
 shutdown open indefinitely.
 
-This separation is intentional: `_HelperClient` and `_ForwardManager`
+This separation is intentional: `HelperConnection` and `ForwardManager`
 perform process cleanup within their own subsystem sequences,
-`RemoteSession.close()` coordinates those cleanup sequences, `ManagedSshProcess`
+`SessionController.close()` coordinates those cleanup sequences, `ManagedSshProcess`
 exposes per-process control and diagnostic access, and `_StderrDrain` alone
 owns stderr consumption and stream closing. In this design, removing the
 wrapper, drain thread, bounded tail, or bounded reader shutdown would require
@@ -1475,18 +1472,18 @@ ownership, permit pipe backpressure to stall the session, lose actionable SSH
 diagnostics, or make cleanup potentially unbounded. The per-process wrapper
 does not replace the helper and forwarding resource owners.
 
-`RemoteSession` is the sole local remote-session coordinator and owns all
+`SessionController` is the sole local remote-session coordinator and owns all
 runner-acquired local session resources, excluding externally retained sharing
-state as described in §32. `RemoteSession.prepare()` deploys the helper revision
+state as described in §32. `SessionController.prepare()` deploys the helper revision
 and returns a coordinator with no live session resources. The adapter adopts
 that coordinator before calling its instance `acquire()` operation, and
-releases it through cleanup-only `RemoteSession.close()`. There is no factory
+releases it through cleanup-only `SessionController.close()`. There is no factory
 returning an acquired session: the caller must own the resource-free coordinator
 and enter its cleanup scope before calling `acquire()`. A callee's rollback
 guard cannot cover interruption after returning a live object but before the
 caller adopts it. The helper client and
 forward manager own their respective resources and cleanup sequences beneath
-this boundary. The session stores a resource-free `_HelperClient` before calling
+this boundary. The session stores a resource-free `HelperConnection` before calling
 its instance `acquire()`. The client briefly blocks SIGINT while launching and
 adopting the control transport, then restores the caller's mask before awaiting
 `SESSION_CREATED`. Thus pending launch interruption is delivered with transport
@@ -1498,7 +1495,7 @@ If acquisition
 ends before the allocation is accepted, client cleanup terminates and reaps the
 owned control process while closing its input lease and reading any available
 final outcome. An owned client with no acquired transport closes harmlessly. Helper acquisition and
-startup rollback belong to the session owner; `_HelperClient` has no
+startup rollback belong to the session owner; `HelperConnection` has no
 resource-acquiring factory. A session is single-use: it cannot be reopened or
 restarted.
 
@@ -1678,7 +1675,7 @@ not by cancelling its awaiter.
 | Forwarding transport | Forward manager's pending-resource owner | Keep rollback ownership through validation/adoption; independent failed forwards cannot orphan an acquired process or roll back another active forward. |
 | RTT socket and terminal mode | Caller-owned resource-free connection scope and terminal scope | Raw socket creation and registration briefly block SIGINT; connect and initial observation populate the already-owned scope without returning a live socket. Terminal restoration and socket closure are independently attempted on failure/interruption. |
 
-A `SupervisedChild` owns the configured OpenOCD process-group resources and
+A `SupervisedProcess` owns the configured OpenOCD process-group resources and
 per-stream decoding state, which only the coordinator consumes. Process
 creation retains `Popen(start_new_session=True)` and explicit reaping: using
 asyncio's subprocess transport would automatically reap the leader before the
@@ -1967,13 +1964,13 @@ Standalone staging behavior and protocol framing remain coordinated through
 
 The launch model in
 [`controller/admission.py`](../../python/zephyr_remote_openocd/controller/admission.py) expresses
-local launch eligibility within the synchronized session observations. It
+local launch eligibility within the synchronized `SessionAuthority`. It
 requires observed readiness and phase-specific forwarding, preserves
 cancellation and fatal failure across boundaries, and rejects stale launch
 tickets when GDB setup is followed by RTT client execution. Its pure tests
 establish these transition semantics.
 
-The shared session observations lock serializes recorded terminal and
+The shared session authority lock serializes recorded terminal and
 reader failure facts with cancellation and actual dependent-work entry. The helper
 reader can record a fatal fact after a session check returns but before gate
 entry. Checking the helper and then entering an independent gate does not
@@ -1991,8 +1988,8 @@ records at recognition rather than independently projecting precedence through
 a return code or a cleanup result. The first recorded fatal observation remains
 primary. Later failures persist as ordered diagnostics, including their existing
 nested diagnostics; status checks and finalization cannot change that selection.
-`RemoteSession` creates this authority and supplies it to `_HelperClient`;
-the helper cannot create a separate arbiter. Helper shutdown records failures
+`SessionController` creates this authority and supplies it to `HelperConnection`;
+the connection cannot create a separate arbiter. Helper shutdown records failures
 directly into that authority and returns no result for its caller to arbitrate.
 Public operation status is projected by the session after collecting physical
 observations, rather than by the helper resource owner.
@@ -2034,9 +2031,9 @@ New forwarding work uses the same synchronized authority entry as GDB/RTT.
 Immediately before starting a required forwarding batch or each best-effort
 forward, the session accounts recorded terminal/reader failures, cancellation,
 current READY, and the already-required forwarding for the current phase. The
-new services become required only after successful acquisition; entry does not
+new forwards become required only after successful acquisition; entry does not
 require them to exist yet. Authority rejection propagates as the session outcome,
-including for best-effort services, rather than being reduced to a forward advisory.
+including for best-effort forwards, rather than being reduced to a forward advisory.
 A terminal fact racing after committed entry may let that transaction finish
 acquisition or rollback; its resources remain with the forward manager and
 session cleanup owners. A later transaction must enter again. In particular,
@@ -2375,35 +2372,48 @@ session after the helper observes control-channel loss.
 
 ## 43. Code Ownership Boundaries
 
-The physical Python tree in §5 is the current module layout. Logical ownership
-is more durable than a duplicate path sketch:
+The package boundaries express execution location and logical ownership:
 
-- `config.py` owns configuration loading, schema validation, and selection
-  resolution.
-- `zephyr44/runner.py` adapts Zephyr runner state to board-independent plans.
-- `openocd/command.py`, `debug.py`, and `flash.py` construct OpenOCD
-  commands without owning their execution.
-- `controller/paths.py` classifies required paths, and `controller/staging.py` builds
-  staging manifests and local archives; the backend and remote helper carry
-  out configured transfer and safe extraction.
-- `controller/authority.py`, `helper_client.py`, and `backend.py` coordinate local
-  session lifecycle, helper protocol, and OpenOCD result propagation.
-- `controller/model.py` defines transport and service data; `services.py`, `rtt.py`,
-  `arguments.py`, and `tcl.py` own service, RTT, explicit session-value argument
-  templates, and Tcl-word quoting.
-- `forwarding.py` manages local SSH forwards to remote OpenOCD-owned listeners;
-  `remote_helper.py` allocates remote addresses and checks selected ports for
-  bind collisions.
-- `remote/protocol.py` owns helper wire framing and validation. Diagnostics are
-  produced and propagated at the subsystem boundary that observes each
-  failure, rather than through a shared cross-cutting implementation.
-- `remote_helper.py` owns remote supervision, output relay, protocol dispatch,
-  and cleanup.
-- `controller/ssh.py` is the only boundary for configured SSH command behavior.
-- `controller/preferred_address_cache.py` owns the best-effort local preferred address
-  cache; it does not own remote leases or external SSH sharing state.
+- `controller` runs locally. `SessionController` coordinates staging, the
+  `HelperConnection`, and `ForwardManager`; its synchronized `SessionAuthority`
+  selects failures and admits dependent work. SSH transports, local RTT sockets,
+  local archives, and the preferred-address cache remain controller resources.
+- `helper` runs on the remote host. `HelperSession` coordinates physical facts
+  through its pure `LifecycleAuthority`. Workspace leases, address leases,
+  `SupervisedProcess` acquisition and disposal, descriptor modes, output relays,
+  and signal handlers have explicit physical owners. The CLI only dispatches
+  commands and reports JSON errors; it does not implement another lifecycle.
+- `protocol` is shared by both machines. It defines immutable outcomes,
+  `ProcessSpec`, `ListenerSpec`, explicit argument templates, strict START
+  decoding, bounded framing, event ordering, and standalone response validation.
+  Canonical Tcl-word quoting belongs to this serialized template contract. These
+  modules depend only on the standard library, never on OpenOCD planning, local
+  transport, configuration loading, or Zephyr.
+- `openocd` contains pure command planning and debug/flash operation plans. It
+  depends on protocol templates and consumes controller path and forwarding
+  descriptions as offline inputs without acquiring transports or live session
+  resources.
+- `zephyr44` adapts the supported Zephyr 4.4 runner state to board-independent
+  plans; `config.py` loads and resolves the configuration contract. The west
+  runner entry point remains the supported public integration boundary.
 
-Platform-specific SSH behavior, if any is eventually needed, shall remain inside the SSH transport layer rather than spread through runner logic.
+Specifications and observations do not own live resources. `SessionPlan`
+contains local staging inputs and forward specifications; `ProcessSpec` describes
+future remote execution. `StartRequest` represents decoded Protocol v1 input
+and retains its wire validation boundary rather than duplicating controller
+transport state. `SessionDescriptor` and `TerminalSnapshot` are observations.
+Shared template types and the Tcl quoting rule have one canonical implementation
+used during offline preview and remote materialization.
+
+The deployment builder includes every canonical `helper` and `protocol` Python
+module and the minimal executable entry point. Fixed zip metadata makes the
+content-addressed digest cover their source bytes. The bundle includes no OpenOCD
+planning, controller, configuration, or Zephyr dependency and executes under
+isolated Python without a checkout or installed package.
+
+Diagnostics are produced at the subsystem boundary observing each failure and
+composed by the existing authority. Platform-specific SSH behavior remains in
+the configured SSH command boundary.
 
 ### 43.1 Architecture maintenance invariants
 
@@ -2551,7 +2561,7 @@ OpenOCD, GDB, and hardware I/O. Hardware capabilities are selected
 independently so an unsupported optional capability does not suppress other
 operations. Verification traceability maps requirements directly to maintained
 tests; this document describes only the architecture of that test boundary.
-Generic `RemoteProcess`, helper/session boundaries, and socket-forwarding
+Generic `ProcessSpec`, helper/session boundaries, and socket-forwarding
 interfaces provide deterministic seams for fake OpenOCD process and socket
 endpoints, so remote-session and forwarding behavior can be exercised without
 physical hardware.
@@ -2592,10 +2602,10 @@ Selected architecture:
 - per-session remote loopback isolation;
 - structured RTT handling;
 - semihosting console via OpenOCD stdout/stderr;
-- one concrete local `RemoteSession` owner;
+- one concrete local `SessionController` owner;
 - resource-free session preparation followed by single-use instance acquisition;
 - no generic `SessionBackend`/`BackendSession` layer;
-- cleanup-only `RemoteSession.close()`;
+- cleanup-only `SessionController.close()`;
 - genuine child result stored separately from shutdown trigger and infrastructure status;
 - primary-failure selection by the active local operation;
 - condition-driven bounded local shutdown after controller-input half-close;

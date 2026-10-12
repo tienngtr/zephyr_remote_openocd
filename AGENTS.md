@@ -3,7 +3,8 @@
 ## Scope and References
 
 Use Python 3.12+. Production code lives in `python/zephyr_remote_openocd/`:
-board-independent logic in `remote/`, Zephyr 4.4 integration in
+board-independent logic in `controller/`, `helper/`, `protocol/`, and `openocd/`,
+Zephyr 4.4 integration in
 `zephyr44/runner.py`, and the west entry point in `runners/remote_openocd.py`.
 Requirements and architecture live in `docs/requirements/SRS.md` and
 `docs/architecture/SAD.md`.
