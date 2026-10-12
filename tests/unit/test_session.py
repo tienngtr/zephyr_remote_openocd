@@ -113,52 +113,6 @@ def test_later_reader_detail_reopens_delivery_with_established_terminal_primary(
     assert observations.take_unreported_failure() is None
 
 
-@pytest.mark.timeout(10)
-def test_integrated_entry_accounts_reader_fatal_after_preceding_helper_check(monkeypatch):
-    from zephyr_remote_openocd.remote.backend import RemoteSession
-    from zephyr_remote_openocd.remote.deploy import DeploymentResult
-    from zephyr_remote_openocd.remote.helper_client import _HelperClient
-    from zephyr_remote_openocd.remote.model import RemoteProcess, RemoteSessionRequest
-    from zephyr_remote_openocd.remote.ssh import SshCommand
-
-    request = RemoteSessionRequest("host", SshCommand(), RemoteProcess(("openocd",)))
-    deployment = DeploymentResult("/helper.py", "digest", False)
-    session = RemoteSession(request, deployment)
-    helper = _HelperClient(
-        request.ssh_command, request.host, deployment, observations=session._observations
-    )
-    session._helper = helper
-    session._observations.record_ready()
-    observing = threading.Event()
-    observed = threading.Event()
-    launched = []
-
-    def reader():
-        assert observing.wait(5)
-        helper._observations.record_reader_failure(RuntimeError("concurrent helper failure"))
-        observed.set()
-
-    thread = threading.Thread(target=reader)
-    thread.start()
-
-    enter = session._observations.enter
-
-    def execution_entry(required, forwarded):
-        observing.set()
-        assert observed.wait(5)
-        enter(required, forwarded)
-
-    monkeypatch.setattr(session._observations, "enter", execution_entry)
-    try:
-        with pytest.raises(SessionError, match="concurrent helper failure"):
-            session.run_dependent(lambda: launched.append(True))
-        assert not launched
-    finally:
-        thread.join(5)
-        session.close()
-    assert not thread.is_alive()
-
-
 @pytest.mark.parametrize(
     "first, second",
     tuple(

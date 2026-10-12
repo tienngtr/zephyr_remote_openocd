@@ -9,17 +9,25 @@ from pathlib import Path
 import pytest
 from zephyr_remote_openocd.remote.backend import RemoteSession
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
-from zephyr_remote_openocd.remote.helper_client import _HelperClient
 from zephyr_remote_openocd.remote.model import RemoteProcess, RemoteSessionRequest, Service
-from zephyr_remote_openocd.remote.ssh import SSH_STDERR_TAIL_BYTES, SshCommand
+from zephyr_remote_openocd.remote.ssh import (
+    SSH_STDERR_TAIL_BYTES,
+    ManagedSshProcess,
+    SshCommand,
+    SshLocalForward,
+)
 
 pytestmark = pytest.mark.local
 
 
 FAKE_SSH = r'''
+import hashlib
+import io
 import json
 import re
+import shlex
 import sys
+import tarfile
 
 
 def noisy_stderr(marker):
@@ -53,6 +61,11 @@ if remote_command.endswith(" control"):
         primary_failure=None, diagnostics=[], child_result=None,
         cleanup=dict(child_disposal="not_acquired", workspace_disposal="confirmed",
                      residual_resources=[]))), flush=True)
+elif shlex.split(remote_command)[2] == "stage":
+    with tarfile.open(fileobj=io.BytesIO(sys.stdin.buffer.read())) as archive:
+        assert archive.getmembers() == []
+    print(json.dumps(dict(version=1, type="STAGED", files=[], directories=[],
+                         byte_count=0, sha256=hashlib.sha256(b"").hexdigest())), flush=True)
 elif remote_command.startswith("python3 -c "):
     noisy_stderr(b"forward-tail")
     sentinel = re.search(r"ZRO_FORWARD_[0-9a-f]+", remote_command).group(0)
@@ -84,16 +97,32 @@ def deployment() -> DeploymentResult:
     return DeploymentResult("/helper.py", "digest", False)
 
 
-def test_control_progresses_when_configured_ssh_stderr_exceeds_pipe_capacity(tmp_path):
-    backend = _session_with_helper(request(fake_ssh_command(tmp_path)), deployment())
+def test_control_progresses_when_configured_ssh_stderr_exceeds_pipe_capacity(tmp_path, monkeypatch):
+    transports: list[ManagedSshProcess] = []
+    popen = SshCommand.popen
+
+    def record_transport(
+        command: SshCommand,
+        host: str,
+        remote_command: str,
+        *,
+        local_forward: SshLocalForward | None = None,
+    ) -> ManagedSshProcess:
+        transport = popen(command, host, remote_command, local_forward=local_forward)
+        transports.append(transport)
+        return transport
+
+    monkeypatch.setattr(SshCommand, "popen", record_transport)
+    backend = RemoteSession(request(fake_ssh_command(tmp_path)), deployment())
     try:
-        backend._helper_or_error().acquire()
-        descriptor = backend._start_process(())
-        assert descriptor.remote_address == "127.64.0.1"
-        control = backend._helper_or_error()._process_or_error()
+        backend.acquire()
+        assert backend.descriptor is not None
+        assert backend.descriptor.remote_address == "127.64.0.1"
     finally:
         backend.close()
     assert backend.closed
+    assert len(transports) == 1
+    control = transports[0]
     assert control.poll() == 0
     tail = control.stderr_tail()
     assert len(tail) <= SSH_STDERR_TAIL_BYTES
@@ -101,27 +130,16 @@ def test_control_progresses_when_configured_ssh_stderr_exceeds_pipe_capacity(tmp
 
 
 def test_forward_progresses_when_configured_ssh_stderr_exceeds_pipe_capacity(tmp_path):
-    # The fake SSH command only exercises the readiness transport; no local
-    # listener is needed for this regression.  A fixed high port also keeps the
-    # test usable in restricted sandboxes where socket creation is disabled.
+    # The fake SSH endpoint exercises forwarding readiness and stderr draining;
+    # the readiness sentinel does not require an actual forwarded listener.
     local_port = 45678
     service = Service("gdb", local_port, 3333)
-    backend = _session_with_helper(request(fake_ssh_command(tmp_path)), deployment())
+    backend = RemoteSession(request(fake_ssh_command(tmp_path), services=(service,)), deployment())
     try:
-        backend._helper_or_error().acquire()
-        descriptor = backend._start_process((service,))
-        assert descriptor.remote_address == "127.64.0.1"
+        backend.acquire()
+        assert backend.descriptor is not None
+        assert backend.descriptor.remote_address == "127.64.0.1"
+        assert backend.forwarded_services == (service,)
     finally:
         backend.close()
     assert backend.closed
-
-
-def _session_with_helper(request, deployment):
-    session = RemoteSession(request, deployment)
-    session._helper = _HelperClient(
-        session.request.ssh_command,
-        session.request.host,
-        session.deployment,
-        observations=session._observations,
-    )
-    return session
