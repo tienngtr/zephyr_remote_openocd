@@ -106,6 +106,12 @@ cannot swallow the expected interrupt as an unraisable exception. Keep the real
 signal, ownership, cleanup, mask, and failure-precedence assertions. Tests that
 inject a Python exception or use non-raising signal observers do not need it.
 
+Durable production cancellation regressions use `enabled_cyclic_gc` and the
+shared `tests.cancellation_support.deliver_sigint_in_gc` helper. Deliver the
+native signal inside a real weakref callback and assert cancellation and cleanup
+after the callback returns. This exercises the unraisable boundary with GC
+enabled; these regressions must not use `defer_cyclic_gc`.
+
 * Keep each test focused on one contractual behavior. Setup may involve several
 real production objects, but assertions should have a clear behavioral purpose
 rather than forming a broad snapshot of incidental implementation state.

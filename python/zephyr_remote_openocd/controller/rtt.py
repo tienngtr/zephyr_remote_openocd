@@ -15,6 +15,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import BinaryIO
 
+from zephyr_remote_openocd.controller.cancellation import checkpoint
 from zephyr_remote_openocd.controller.cleanup import _add_failure_note
 
 
@@ -37,6 +38,7 @@ class _RttConnection:
         deadline = time.monotonic() + timeout
         last_error: OSError | None = None
         while time.monotonic() < deadline:
+            checkpoint()
             try:
                 # Keep acquisition and registration together before a pending
                 # SIGINT can escape. Connection setup then remains interruptible.
@@ -45,14 +47,17 @@ class _RttConnection:
                     self.socket = socket.socket()
                 finally:
                     signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+                checkpoint()
                 self.socket.settimeout(0.5)
                 self.socket.connect(("127.0.0.1", port))
+                checkpoint()
                 self.socket.setblocking(False)
                 readable, _, _ = select.select((self.socket,), (), (), 0.25)
                 if readable:
                     self.initial = self.socket.recv(4096)
                     if not self.initial:
                         raise RttClientError("RTT forward could not open the remote channel")
+                checkpoint()
                 return
             except OSError as error:
                 try:

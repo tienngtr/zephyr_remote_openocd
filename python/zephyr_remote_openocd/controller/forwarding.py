@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from zephyr_remote_openocd.controller.authority import SessionError
+from zephyr_remote_openocd.controller.cancellation import checkpoint
 from zephyr_remote_openocd.controller.cleanup import _add_failure_note, _raise_cleanup_errors
 from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec, validated_forwards
 from zephyr_remote_openocd.controller.ssh import (
@@ -117,6 +118,7 @@ class ForwardManager:
         try:
             selector.register(process.stdout, selectors.EVENT_READ)
             while process.poll() is None and time.monotonic() < deadline:
+                checkpoint()
                 remaining = max(0.0, deadline - time.monotonic())
                 if not selector.select(min(0.05, remaining)):
                     continue
@@ -141,6 +143,7 @@ class ForwardManager:
 
     def start(self, forwards: Iterable[ForwardSpec], remote_address: str) -> None:
         """Create and verify local forwards to remote listeners."""
+        checkpoint()
         if self._pending_processes:
             raise SessionError("forward startup rollback is incomplete; close before restarting")
         forward_specs = tuple(forwards)
@@ -174,6 +177,7 @@ class ForwardManager:
                 connected = self._await_ready(
                     process, sentinel, time.monotonic() + FORWARD_START_TIMEOUT
                 )
+                checkpoint()
                 if process.poll() is not None:
                     detail = self._diagnostic(process)
                     prefix = "; ".join(advisories)
@@ -202,6 +206,7 @@ class ForwardManager:
                 pending_processes.clear()
             finally:
                 signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+            checkpoint()
         except BaseException as error:
             # Defer SIGINT through the batch. If entry is interrupted, close()
             # can still reach every transport in the manager-owned pending set.

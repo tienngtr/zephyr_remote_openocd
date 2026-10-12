@@ -11,6 +11,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import BinaryIO, cast
 
+from zephyr_remote_openocd.controller.cancellation import checkpoint
 from zephyr_remote_openocd.controller.staging_spec import StagedDirectory, StagedEntry, StagedFile
 
 
@@ -36,7 +37,9 @@ class _DigestingReader:
         self.byte_count = 0
 
     def read(self, size: int = -1) -> bytes:
+        checkpoint()
         data = self.source.read(size)
+        checkpoint()
         self.byte_count += len(data)
         self.digest.update(data)
         return data
@@ -72,6 +75,7 @@ def build_archive(files: Iterable[StagedEntry], *, spool_limit: int = 1024 * 102
         size = 0
         with tarfile.open(fileobj=stream, mode="w", format=tarfile.PAX_FORMAT) as archive:
             for item in manifest:
+                checkpoint()
                 source = item.source
                 try:
                     status = source.stat()
@@ -94,6 +98,7 @@ def build_archive(files: Iterable[StagedEntry], *, spool_limit: int = 1024 * 102
                 except OSError as error:
                     raise StagingError(f"cannot read staged source {source}: {error}") from error
         stream.seek(0)
+        checkpoint()
         return ArchiveInfo(stream, size, digest.hexdigest(), file_names, directory_names)
     except BaseException:
         stream.close()

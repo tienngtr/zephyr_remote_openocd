@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import io
 import os
 import selectors
 import shlex
@@ -15,6 +16,11 @@ from collections.abc import Callable, Iterable
 from typing import BinaryIO, cast
 
 from zephyr_remote_openocd.controller.authority import SessionAuthority, SessionError
+from zephyr_remote_openocd.controller.cancellation import (
+    checkpoint,
+    current_cancellation,
+    observation_timeout,
+)
 from zephyr_remote_openocd.controller.deployment import DeploymentResult
 from zephyr_remote_openocd.controller.plan import SessionAllocation
 from zephyr_remote_openocd.controller.ssh import ManagedSshProcess, SshCommand, _stop_process
@@ -96,12 +102,16 @@ class HelperConnection:
         helper = self._process_or_error()
         if helper.stdin is None:
             raise SessionError("helper stdin was not captured")
+        interruptible = current_cancellation() is not None
+        command = io.BytesIO() if interruptible else cast(BinaryIO, helper.stdin)
         write_start(
-            cast(BinaryIO, helper.stdin),
+            command,
             process_spec,
             listener_specs,
             preferred_address=preferred_address,
         )
+        if interruptible:
+            self._write_command(cast(BinaryIO, helper.stdin), cast(io.BytesIO, command).getvalue())
         address = (
             self._await_process_ready()
             if process_spec.completion_policy == CompletionPolicy.LIVE_SERVER
@@ -227,7 +237,7 @@ class HelperConnection:
         try:
             message = (
                 read_message(stream)
-                if deadline is None
+                if deadline is None and current_cancellation() is None
                 else self._read_initial_message(stream, deadline)
             )
         except EOFError as error:
@@ -244,17 +254,18 @@ class HelperConnection:
         return message
 
     @staticmethod
-    def _read_initial_message(stream: BinaryIO, deadline: float) -> dict:
+    def _read_initial_message(stream: BinaryIO, deadline: float | None) -> dict:
         descriptor = stream.fileno()
         pending = bytearray()
         selector = selectors.DefaultSelector()
         try:
             selector.register(stream, selectors.EVENT_READ)
             while True:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
+                checkpoint()
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
                     raise TimeoutError("remote helper startup timed out")
-                if not selector.select(remaining):
+                if not selector.select(observation_timeout(remaining)):
                     continue
                 chunk = os.read(descriptor, 1)
                 if not chunk:
@@ -265,9 +276,36 @@ class HelperConnection:
                 if len(pending) > MAX_FRAME_SIZE:
                     raise ProtocolError("protocol frame exceeds the size limit")
                 if chunk == b"\n":
+                    checkpoint()
                     return decode_frame(bytes(pending))
         finally:
             selector.close()
+
+    @staticmethod
+    def _write_command(stream: BinaryIO, payload: bytes) -> None:
+        """Keep a stalled START pipe interruptible without a writer thread."""
+        descriptor = stream.fileno()
+        was_blocking = os.get_blocking(descriptor)
+        selector = selectors.DefaultSelector()
+        try:
+            os.set_blocking(descriptor, False)
+            selector.register(stream, selectors.EVENT_WRITE)
+            remaining = memoryview(payload)
+            while remaining:
+                checkpoint()
+                if not selector.select(observation_timeout(None)):
+                    continue
+                try:
+                    sent = os.write(descriptor, remaining)
+                except BlockingIOError:
+                    continue
+                remaining = remaining[sent:]
+            checkpoint()
+        finally:
+            try:
+                os.set_blocking(descriptor, was_blocking)
+            finally:
+                selector.close()
 
     def _await_process_ready(self) -> str:
         while True:
@@ -290,6 +328,8 @@ class HelperConnection:
             self._reader_thread = reader_thread
         finally:
             signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+
+        checkpoint()
 
     def _dispatch(self, event: dict) -> None:
         if event["type"] == "ATTEMPT" and self._process_start_handler is not None:

@@ -17,6 +17,7 @@ from zephyr_remote_openocd.controller.authority import (
     SessionClosedError,
     SessionError,
 )
+from zephyr_remote_openocd.controller.cancellation import defer_cancellation, observation_timeout
 from zephyr_remote_openocd.controller.deployment import DeploymentResult, deploy_helper
 from zephyr_remote_openocd.controller.forwarding import (
     FORWARD_HEALTH_INTERVAL,
@@ -192,8 +193,11 @@ class SessionController:
             authority=self._authority,
         )
         try:
+            self._authority.operation_status()
             self._helper_connection.acquire()
+            self._authority.operation_status()
             self._stage(self.plan.staged_files)
+            self._authority.operation_status()
             self._start_process(self.plan.forwards)
         except BaseException as error:
             primary = self._authority.resolve_effect_failure(error)
@@ -380,7 +384,7 @@ class SessionController:
                 health_wait if remaining is None else min(remaining, health_wait or remaining)
             )
             try:
-                connection.wait_for_change(wait_timeout)
+                connection.wait_for_change(observation_timeout(wait_timeout))
             except BaseException as error:
                 primary = self._authority.resolve_effect_failure(error)
                 raise primary from primary.__cause__
@@ -388,18 +392,20 @@ class SessionController:
     def close(self) -> None:
         if self.closed:
             return
+        self._authority.account_cancellation()
         previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
         try:
-            self._authority.cancel()
-            # Sample before disposal erases already-exited SSH processes.
-            if self._helper_connection is not None:
-                self._observe_health()
-            for cleanup in (self._forwards.close, self._close_connection):
-                try:
-                    cleanup()
-                except BaseException as error:
-                    self._authority.record_failure("SESSION_CLEANUP_FAILURE", error)
-            self.closed = True
+            with defer_cancellation():
+                self._authority.cancel()
+                # Sample before disposal erases already-exited SSH processes.
+                if self._helper_connection is not None:
+                    self._observe_health()
+                for cleanup in (self._forwards.close, self._close_connection):
+                    try:
+                        cleanup()
+                    except BaseException as error:
+                        self._authority.record_failure("SESSION_CLEANUP_FAILURE", error)
+                self.closed = True
         finally:
             try:
                 signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)

@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import shlex
+import signal
 import socket
 import subprocess
 import sys
@@ -23,6 +24,7 @@ import yaml
 from zephyr_remote_openocd.config import ConfigError, PathMapping, ResolvedRemote
 from zephyr_remote_openocd.controller import session as session_module
 from zephyr_remote_openocd.controller.authority import SessionError
+from zephyr_remote_openocd.controller.cancellation import local_cancellation
 from zephyr_remote_openocd.controller.deployment import DeploymentResult
 from zephyr_remote_openocd.controller.forwarding import ForwardStartError
 from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
@@ -40,6 +42,7 @@ from zephyr_remote_openocd.protocol.arguments import ArgumentTemplate, SessionVa
 from zephyr_remote_openocd.protocol.outcome import Trigger
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 
+from tests.cancellation_support import deliver_sigint_in_gc
 from tests.concurrency_support import ConcurrentSessions
 from tests.forwarding_support import GDB, RTT, TCL, TELNET, ForwardingHarness
 from tests.process_support import cleanup_on_exit, local_transport
@@ -842,6 +845,94 @@ def test_interruption_during_session_acquisition_closes_owned_resources(
     finally:
         if acquired is not None:
             acquired.close()
+
+
+@pytest.mark.usefixtures("enabled_cyclic_gc")
+@pytest.mark.parametrize("command", ("flash", "rtt", "debugserver"))
+def test_runner_latches_gc_callback_ctrl_c_during_staging(
+    runner_api, monkeypatch, tmp_path, command
+):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
+    core, _, remote = runner_api
+    harness = ForwardingHarness(monkeypatch)
+    request = harness.request(forwards=(), auxiliary=())
+    build = tmp_path / "build"
+    (build / "zephyr").mkdir(parents=True)
+    (build / "zephyr/.config").write_text("# CONFIG_DEBUG_THREAD_INFO is not set\n")
+    cfg = core.RunnerConfig(
+        build_dir=str(build),
+        board_dir=str(tmp_path),
+        elf_file=None,
+        exe_file=None,
+        hex_file=None,
+        bin_file=None,
+        uf2_file=None,
+        mot_file=None,
+        file=None,
+        openocd_search=[],
+    )
+    runner = remote.create(cfg, parser_for(remote).parse_args([]))
+    monkeypatch.setattr(runner_module, "_select_remote", lambda *_args: None)
+    monkeypatch.setattr(runner_module, "_build_operation", lambda *_args: (None, request, None))
+    stage = harness.ssh.run_stream
+    start = create_autospec(harness.helper.start_process, side_effect=harness.helper.start_process)
+    monkeypatch.setattr(harness.helper, "start_process", start)
+
+    def stage_and_interrupt(*args, **kwargs):
+        result = stage(*args, **kwargs)
+        deliver_sigint_in_gc()
+        return result
+
+    monkeypatch.setattr(harness.ssh, "run_stream", stage_and_interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        runner.do_run(command)
+    start.assert_not_called()
+    assert harness.helper.close_calls == 1
+
+
+@pytest.mark.usefixtures("defer_cyclic_gc")
+@pytest.mark.parametrize("command", ("debug", "attach", "rtt"))
+def test_gdb_ctrl_c_preserves_builtin_client_semantics_in_cancellation_scope(
+    runner_api, monkeypatch, tmp_path, command
+):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
+    harness = ForwardingHarness(monkeypatch)
+    runner, request, plan = _forwarding_operation(
+        runner_api, monkeypatch, tmp_path, command, harness
+    )
+    original_handler = signal.getsignal(signal.SIGINT)
+    observed = []
+
+    def client(_argv):
+        assert signal.getsignal(signal.SIGINT) is original_handler
+        # Zephyr's public run_client handles the native interruption locally.
+        try:
+            signal.raise_signal(signal.SIGINT)
+        except KeyboardInterrupt:
+            observed.append(True)
+        if command != "rtt":
+            harness.helper.authority.record_terminal(
+                terminal_snapshot(Trigger.CHILD_EXIT, returncode=0)
+            )
+
+    def rtt_client(_port, _poll):
+        harness.helper.authority.record_terminal(
+            terminal_snapshot(Trigger.CHILD_EXIT, returncode=0)
+        )
+        return 0
+
+    monkeypatch.setattr(runner_module, "run_rtt_client", rtt_client)
+
+    runner.run_client.side_effect = client
+    with local_cancellation() as scope:
+        assert scope is not None
+        runner_module._execute_operation(runner, command, request, plan)
+        assert not scope.interrupted
+    assert observed == [True]
+    assert signal.getsignal(signal.SIGINT) is original_handler
+    assert harness.helper.close_calls == 1
 
 
 @pytest.mark.parametrize(

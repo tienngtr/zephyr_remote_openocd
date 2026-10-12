@@ -9,6 +9,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from zephyr_remote_openocd.controller.admission import AdmissionGate
+from zephyr_remote_openocd.controller.cancellation import pending_cancellation
 from zephyr_remote_openocd.controller.cleanup import _add_failure_note
 from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy, Diagnostic, TerminalSnapshot
@@ -154,10 +155,17 @@ class SessionAuthority:
     def publish_failure(self) -> BaseException | None:
         """Return the primary failure and acknowledge its current delivery."""
         with self._changed:
+            self.account_cancellation()
             error = self._failure()
             if error is not None:
                 self._error_reported = True
             return error
+
+    def account_cancellation(self) -> None:
+        """Account a latched signal before publishing or admitting dependent work."""
+        error = pending_cancellation()
+        if error is not None:
+            self.record_failure("LOCAL_CANCELLATION", error, key="local_cancellation")
 
     def operation_status(self) -> int | None:
         """Project one coherent result; failed child status is never filtered out."""
@@ -177,10 +185,12 @@ class SessionAuthority:
     def resolve_optional_failure(self, error: BaseException) -> BaseException | None:
         """Retain advisory detail behind an established fatal outcome, if any."""
         with self._changed:
+            self.account_cancellation()
             return None if self._failure() is None else self.resolve_effect_failure(error)
 
     def take_unreported_failure(self) -> BaseException | None:
         with self._changed:
+            self.account_cancellation()
             return None if self._error_reported else self.publish_failure()
 
     def admit_work(self, required: Iterable[ForwardSpec], forwarded: Iterable[ForwardSpec]) -> None:

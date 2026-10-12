@@ -1395,6 +1395,43 @@ interruption as a diagnostic.
 
 ### 38.1 Local SSH subprocess ownership
 
+#### Durable local Ctrl-C observation
+
+The Zephyr adapter owns a `LocalCancellation` scope from non-recording operation
+planning through final session settlement. Its main-thread SIGINT handler only
+latches the interruption; it never raises or enters a lifecycle authority.
+CPython can dispatch a raising signal handler inside cyclic-GC weakref callbacks
+and discard its exception as unraisable. The latch survives that dispatch
+without changing the interpreter's GC policy.
+
+Synchronous checkpoints convert the latched fact to `KeyboardInterrupt` at
+ordinary operation boundaries. The shared `SessionAuthority` accounts it before
+failure publication or dependent admission, preserving an already-recorded
+primary failure. Acquisition/adoption masks remain in place. Checkpoints defer
+dispatch while SIGINT is masked or cleanup is settling independent owners;
+after settlement the authority accounts any latched interruption before final
+publication. A latch is never cleared by delivery acknowledgement.
+
+Project-owned blocking startup reads, START writes, finite SSH communication,
+and session waits recheck cancellation at intervals of at most 100 ms. RTT uses
+its existing bounded socket/relay waits and checks between them. This bounded
+observation mechanism needs no signal-handler locks, wakeup descriptor, or
+additional observer thread; signals do not interrupt cleanup waits. Ordinary
+timeouts retain their overall deadlines and remain independent of cancellation.
+Archive construction checks between manifest entries and bounded file chunks,
+and before publishing the spool; interruption closes the locally owned spool.
+
+The scope restores the caller's exact SIGINT handler and signal mask. Nested
+operation scopes on the main thread share the enclosing latch. Worker operations
+leave native signal handling to their main-thread caller, retain their independent
+lifecycles, and neither adopt its latch nor replace process-wide handlers.
+Interactive GDB execution temporarily restores the caller's handler and leaves
+Ctrl-C handling to Zephyr's public `run_client`, including the RTT setup client.
+The latch is checked before that handoff and reinstalled afterward; GDB Ctrl-C
+alone is not a local cancellation fact. Physical owners remain responsible for
+bounded rollback and cleanup, and the local authority remains the sole selector
+of the session outcome.
+
 `SshCommand.popen()` starts each long-lived control or forwarding transport with
 SIGINT blocked, while preserving the caller's controlling terminal and
 foreground process group for interactive SSH authentication. The launch thread

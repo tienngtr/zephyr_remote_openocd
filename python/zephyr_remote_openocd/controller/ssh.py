@@ -11,6 +11,12 @@ import time
 from dataclasses import dataclass
 from typing import BinaryIO, Protocol, cast
 
+from zephyr_remote_openocd.controller.cancellation import (
+    checkpoint,
+    current_cancellation,
+    defer_cancellation,
+    observation_timeout,
+)
 from zephyr_remote_openocd.controller.cleanup import _add_failure_note, _raise_cleanup_errors
 
 # SSH diagnostics must never be allowed to fill the OS pipe, but retaining a
@@ -119,19 +125,30 @@ class ManagedSshProcess:
         self._process: subprocess.Popen[bytes] | None = None
         self._drain: _StderrDrain | None = None
 
-    def acquire(self, argv: list[str]) -> None:
+    def acquire(
+        self,
+        argv: list[str],
+        *,
+        stdin: BinaryIO | int = subprocess.PIPE,
+        drain_stderr: bool = True,
+    ) -> None:
         """Populate an already-owned transport; its caller owns rollback."""
         assert self._process is None
         self._process = subprocess.Popen(
             argv,
-            stdin=subprocess.PIPE,
+            stdin=stdin,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
         assert self._process.stderr is not None
-        self._drain = _StderrDrain(cast(BinaryIO, self._process.stderr))
-        self._drain.start()
-        self._process.stderr = None
+        if drain_stderr:
+            self._drain = _StderrDrain(cast(BinaryIO, self._process.stderr))
+            self._drain.start()
+            self._process.stderr = None
+
+    def communicate(self, input_data: bytes | None, timeout: float | None):
+        """Communicate with a finite command whose stderr has no drain."""
+        return self._process_or_error().communicate(input=input_data, timeout=timeout)
 
     def _rollback_acquisition(self, error: BaseException) -> None:
         if self._process is None:
@@ -366,6 +383,10 @@ class SshCommand:
         input_data: bytes | None = None,
         timeout: float = 15,
     ) -> subprocess.CompletedProcess[bytes]:
+        if current_cancellation() is not None:
+            return self._run_interruptible(
+                self.argv(host, remote_command), input_data=input_data, timeout=timeout
+            )
         return subprocess.run(
             self.argv(host, remote_command),
             input=input_data,
@@ -378,6 +399,7 @@ class SshCommand:
         self, host: str, remote_command: str, *, local_forward: SshForwardSpec | None = None
     ) -> ManagedSshProcess:
         """Start a long-lived SSH operation, retaining explicit lifecycle control."""
+        checkpoint()
         # OpenSSH uses the first value of these options. Runner-owned forwarding
         # requirements must precede fixed user arguments and SSH configuration.
         forward_args = local_forward.argv() if local_forward is not None else ()
@@ -406,6 +428,7 @@ class SshCommand:
                     _add_failure_note(
                         acquisition_failure, "SSH signal-mask restoration also failed", error
                     )
+            checkpoint()
             return managed_process
         except BaseException as error:
             # Unmasking can deliver a pending Ctrl-C after acquisition. The
@@ -417,6 +440,10 @@ class SshCommand:
         self, host: str, remote_command: str, stream: BinaryIO, *, timeout: float = 60
     ) -> subprocess.CompletedProcess[bytes]:
         """Run a finite SSH command with a file-backed payload as stdin."""
+        if current_cancellation() is not None:
+            return self._run_interruptible(
+                self.argv(host, remote_command), stdin=stream, timeout=timeout
+            )
         return subprocess.run(
             self.argv(host, remote_command),
             stdin=stream,
@@ -424,3 +451,54 @@ class SshCommand:
             check=False,
             timeout=timeout,
         )
+
+    @staticmethod
+    def _run_interruptible(
+        argv: list[str],
+        *,
+        input_data: bytes | None = None,
+        stdin: BinaryIO | int = subprocess.PIPE,
+        timeout: float,
+    ) -> subprocess.CompletedProcess[bytes]:
+        """Observe cancellation during finite SSH I/O with continuous ownership."""
+        checkpoint()
+        owner = ManagedSshProcess()
+        primary: BaseException | None = None
+        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
+        try:
+            try:
+                owner.acquire(argv, stdin=stdin, drain_stderr=False)
+            finally:
+                signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+            deadline = time.monotonic() + timeout
+            payload = input_data
+            last_timeout: subprocess.TimeoutExpired | None = None
+            while True:
+                checkpoint()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    if last_timeout is not None:
+                        last_timeout.timeout = timeout
+                        raise last_timeout
+                    raise subprocess.TimeoutExpired(argv, timeout)
+                try:
+                    stdout, stderr = owner.communicate(payload, observation_timeout(remaining))
+                    checkpoint()
+                    return subprocess.CompletedProcess(argv, owner.returncode, stdout, stderr)
+                except subprocess.TimeoutExpired as error:
+                    # communicate retains its input offset and captured output
+                    # across waits; resubmitting input would duplicate the payload.
+                    payload = None
+                    last_timeout = error
+        except BaseException as error:
+            primary = error
+            raise
+        finally:
+            if owner._process is not None:
+                try:
+                    with defer_cancellation():
+                        _stop_process(owner)
+                except BaseException as error:
+                    if primary is None:
+                        raise
+                    _add_failure_note(primary, "SSH command cleanup also failed", error)

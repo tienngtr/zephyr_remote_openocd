@@ -16,6 +16,7 @@ from runners.core import FileType  # pylint: disable=no-name-in-module
 from runners.openocd import OpenOcdBinaryRunner  # pylint: disable=no-name-in-module
 
 from zephyr_remote_openocd.config import ConfigError, load_config, resolve_remote
+from zephyr_remote_openocd.controller.cancellation import interactive_client, local_cancellation
 from zephyr_remote_openocd.controller.forwarding import ForwardAdvisory
 from zephyr_remote_openocd.controller.paths import PathPlanner, PathPlanningError
 from zephyr_remote_openocd.controller.plan import SessionPlan
@@ -101,20 +102,22 @@ class RemoteOpenOcdBinaryRunner(OpenOcdBinaryRunner):
 
     def do_run(self, command, **kwargs):
         recording = os.environ.get("ZRO_RECORD") == "1"
-        selected = _select_remote(self, recording)
         if recording:
+            selected = _select_remote(self, True)
             _record_runner(self, command, selected)
             return
-        try:
-            selected, request, plan = _build_operation(self, command, selected)
-        except (
-            ConfigError,
-            FlashPlanError,
-            DebugPlanError,
-            PathPlanningError,
-        ) as error:
-            raise RuntimeError(str(error)) from error
-        _execute_operation(self, command, request, plan)
+        with local_cancellation():
+            selected = _select_remote(self, False)
+            try:
+                selected, request, plan = _build_operation(self, command, selected)
+            except (
+                ConfigError,
+                FlashPlanError,
+                DebugPlanError,
+                PathPlanningError,
+            ) as error:
+                raise RuntimeError(str(error)) from error
+            _execute_operation(self, command, request, plan)
 
 
 def _select_remote(runner, recording):
@@ -195,7 +198,7 @@ def _execute_gdb_client(runner, plan, session):
     returncode = session.poll_operation()
     if returncode is not None:
         raise RuntimeError(f"remote OpenOCD exited before GDB startup with status {returncode}")
-    session.run_local_client(lambda: runner.run_client(list(plan.gdb_argv)))
+    session.run_local_client(lambda: _run_gdb_client(runner, plan))
     return session.poll_operation()
 
 
@@ -206,7 +209,7 @@ def _execute_rtt(runner, plan, session):
     returncode = session.poll_operation()
     if returncode is not None:
         raise RuntimeError(f"remote OpenOCD exited before GDB startup with status {returncode}")
-    session.run_local_client(lambda: runner.run_client(list(plan.gdb_argv)))
+    session.run_local_client(lambda: _run_gdb_client(runner, plan))
     session.make_forwards_optional(
         tuple(forward for forward in plan.forwards if forward.name == "gdb")
     )
@@ -219,6 +222,11 @@ def _execute_rtt(runner, plan, session):
     return session.run_local_client(
         lambda: run_rtt_client(plan.rtt_forward.local_port, session.poll_operation)
     )
+
+
+def _run_gdb_client(runner, plan):
+    with interactive_client():
+        return runner.run_client(list(plan.gdb_argv))
 
 
 def _execute_server(runner, command, plan, session):

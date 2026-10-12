@@ -14,12 +14,13 @@ import tempfile
 import time
 import uuid
 import zipfile
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from pathlib import Path, PurePosixPath
 
 import pytest
 from zephyr_remote_openocd.config import PathMapping
 from zephyr_remote_openocd.controller.authority import SessionError
+from zephyr_remote_openocd.controller.cancellation import local_cancellation
 from zephyr_remote_openocd.controller.deployment import _helper_source, deploy_helper
 from zephyr_remote_openocd.controller.forwarding import ForwardManager
 from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
@@ -38,6 +39,14 @@ from tests.process_support import cleanup_on_exit, read_line, stop_and_close
 
 pytestmark = pytest.mark.ssh
 REMOTE_FAILURE_EXIT_CODE = 7
+
+
+@pytest.fixture(params=(False, True), ids=("caller-handler", "durable-cancellation"))
+def controller_cancellation(request):
+    """Exercise finite I/O and helper startup with the runner's signal scope."""
+    with local_cancellation() if request.param else nullcontext():
+        yield
+
 
 REMOTE_ECHO = b"""\
 import select, socket, sys
@@ -249,7 +258,7 @@ class TestSshTransportIntegration:
             tunnel.stdin.close()
             assert tunnel.wait(timeout=20) == 0
 
-    def test_streaming_preserves_content_and_reports_remote_failure(self):
+    def test_streaming_preserves_content_and_reports_remote_failure(self, controller_cancellation):
         payloads = (
             b"",
             b"small textual input\n",
@@ -275,7 +284,7 @@ class TestSshTransportIntegration:
         )
         assert failed.returncode == REMOTE_FAILURE_EXIT_CODE
 
-    def test_protocol_v1_helper_vertical_slice(self):
+    def test_protocol_v1_helper_vertical_slice(self, controller_cancellation):
         """Exercise the production transport path with an explicit test process."""
         first = deploy_helper(self.ssh, self.host)
         second = deploy_helper(self.ssh, self.host)

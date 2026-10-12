@@ -26,6 +26,20 @@ _HARDWARE_TEST_TIMINGS = pytest.StashKey[list[tuple[str, str, float]]]()
 
 
 @pytest.fixture
+def enabled_cyclic_gc() -> Iterator[None]:
+    """Exercise durable production cancellation with cyclic GC enabled."""
+    was_enabled = gc.isenabled()
+    gc.enable()
+    try:
+        yield
+    finally:
+        if was_enabled:
+            gc.enable()
+        else:
+            gc.disable()
+
+
+@pytest.fixture
 def defer_cyclic_gc() -> Iterator[None]:
     """Keep deliberate native SIGINT delivery out of cyclic-GC callbacks."""
     # CPython can run scheduled cyclic GC inside its native signal checks,
