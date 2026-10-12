@@ -14,7 +14,7 @@ from unittest.mock import create_autospec
 
 import pytest
 
-from tests.hardware.test_real_rtt import TestRealRtt as RttAcceptance
+from tests.acceptance.rtt import RttAcceptance
 from tests.hardware_support import PreparedTarget, RttFixture
 from tests.inventory import BuildEnvironment, InventoryHost, RttOperation, Toolchain
 
@@ -79,9 +79,7 @@ def test_simultaneous_gdb_rtt_acceptance_does_not_require_runner_prose(tmp_path,
             assert signum == signal.SIGKILL
 
         monkeypatch.setattr(os, "killpg", killpg)
-        monkeypatch.setattr(
-            "tests.hardware.test_real_rtt.free_loopback_ports", lambda count: [gdb_port]
-        )
+        monkeypatch.setattr("tests.acceptance.rtt.free_loopback_ports", lambda count: [gdb_port])
         gdb_connection, gdb_peer = socket.socketpair()
         rtt_connection, rtt_peer = socket.socketpair()
         for connection in (gdb_connection, gdb_peer, rtt_connection, rtt_peer):
@@ -97,7 +95,7 @@ def test_simultaneous_gdb_rtt_acceptance_does_not_require_runner_prose(tmp_path,
             return rtt_connection
 
         monkeypatch.setattr(socket, "create_connection", connect)
-        RttAcceptance().test_debugserver_serves_gdb_and_rtt_concurrently(fixture, tmp_path)
+        RttAcceptance().debugserver(fixture, tmp_path)
 
         for environment in launch_environments:
             assert environment["ZEPHYR_BASE"] == str(target.build_environment.zephyr_base)

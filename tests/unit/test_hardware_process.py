@@ -17,9 +17,9 @@ from queue import Queue
 
 import pytest
 
+from tests.acceptance.rtt import RttAcceptance
+from tests.acceptance.semihosting import SemihostingAcceptance
 from tests.forwarding_support import RTT
-from tests.hardware.test_real_rtt import TestRealRtt as RttAcceptance
-from tests.hardware.test_real_semihosting import TestRealSemihosting as SemihostingAcceptance
 from tests.hardware_support import PreparedTarget, RttFixture, SemihostingFixture
 from tests.inventory import BuildEnvironment, InventoryHost, RttOperation, SemihostingOperation
 from tests.process_support import managed_process, read_line
@@ -97,7 +97,7 @@ def test_hardware_cleanup_stops_descendant_after_leader_exit(tmp_path, monkeypat
             AssertionError if operation == "rtt-abort" else subprocess.TimeoutExpired
         ) as raised:
             if operation == "semihosting":
-                SemihostingAcceptance().test_direct_semihosting_console_normal_completion(
+                SemihostingAcceptance().run(
                     SemihostingFixture(target, SemihostingOperation((), (), "ready", SYNC_TIMEOUT))
                 )
             else:
@@ -105,9 +105,9 @@ def test_hardware_cleanup_stops_descendant_after_leader_exit(tmp_path, monkeypat
                     target, RttOperation(RTT.local_port, "pong", "ping", SYNC_TIMEOUT, True, "main")
                 )
                 if operation == "rtt-abort":
-                    RttAcceptance().test_gdb_rtt_server_keeps_gdb_active(fixture, tmp_path, "debug")
+                    RttAcceptance().gdb_server(fixture, tmp_path, "debug")
                 else:
-                    RttAcceptance()._program(fixture)
+                    RttAcceptance().program(fixture)
         if operation != "rtt-abort":
             assert raised.value is timeout
         assert child_pid is not None and child_pidfd is not None

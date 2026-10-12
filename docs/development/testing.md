@@ -89,6 +89,11 @@ their diagnostic drains and data pipes. Test cleanup scopes retain an existing
 assertion or operation failure and attach secondary cleanup diagnostics. Local
 serial-reader tests use the same managed-process ownership as external readers.
 
+Shared hardware operation and acceptance helpers live under
+`tests/acceptance/`. Hardware pytest nodes and local environment, cleanup, and
+GDB/RTT regressions call those helpers directly; pytest test methods are not
+reusable operation APIs.
+
 Tests clear product configuration/recording environment variables and set
 their own values, independently of the developer's shell configuration.
 

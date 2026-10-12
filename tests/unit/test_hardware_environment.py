@@ -9,10 +9,10 @@ from pathlib import Path
 
 import pytest
 
-from tests.hardware.test_real_debug import TestRealOpenOcdDebug as DebugAcceptance
-from tests.hardware.test_real_flash import TestRealOpenOcdFlash as FlashAcceptance
-from tests.hardware.test_real_rtt import TestRealRtt as RttAcceptance
-from tests.hardware.test_real_semihosting import TestRealSemihosting as SemihostingAcceptance
+from tests.acceptance.debug import DebugAcceptance
+from tests.acceptance.flash import FlashAcceptance
+from tests.acceptance.rtt import RttAcceptance
+from tests.acceptance.semihosting import SemihostingAcceptance
 from tests.hardware_support import (
     DebugFixture,
     FlashFixture,
@@ -104,18 +104,18 @@ def test_hardware_launch_uses_selected_environment(tmp_path: Path, monkeypatch, 
                 SerialEndpoint("console", "/unused", 115200, 8, "none", 1, "none"),
                 tmp_path / "before",
             )
-            FlashAcceptance()._flash(fixture, target.build_dir)
+            FlashAcceptance().flash(fixture, target.build_dir)
         elif operation == "debug":
-            DebugAcceptance().test_debug(DebugFixture(target, DebugOperation("main", ())))
+            DebugAcceptance().debug(DebugFixture(target, DebugOperation("main", ())))
         elif operation in ("rtt", "rtt-flash"):
             rtt = RttFixture(target, RttOperation(12345, "pong", "ping", 30, True, "main"))
             if operation == "rtt":
-                with RttAcceptance()._start(rtt, "debugserver"):
+                with RttAcceptance().start(rtt, "debugserver"):
                     pass
             else:
-                RttAcceptance()._program(rtt)
+                RttAcceptance().program(rtt)
         else:
-            SemihostingAcceptance().test_direct_semihosting_console_normal_completion(
+            SemihostingAcceptance().run(
                 SemihostingFixture(target, SemihostingOperation((), (), "ready", 30))
             )
 
