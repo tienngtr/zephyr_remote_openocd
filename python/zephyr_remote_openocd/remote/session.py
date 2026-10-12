@@ -189,11 +189,6 @@ class _SessionObservations:
         with self._changed:
             return None if self._error_reported else self.failure_for_operation()
 
-    def unreported_failure(self) -> BaseException | None:
-        """Inspect pending delivery without acknowledging it for another owner."""
-        with self._changed:
-            return None if self._error_reported else self._failure()
-
     def enter(self, required: Iterable[Service], forwarded: Iterable[Service]) -> None:
         with self._changed:
             error = self.failure_for_operation()

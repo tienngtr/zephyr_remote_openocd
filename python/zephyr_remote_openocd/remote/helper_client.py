@@ -12,7 +12,6 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
 from typing import BinaryIO, cast
 
 from .deploy import DeploymentResult
@@ -37,14 +36,6 @@ HELPER_STOP_TIMEOUT = 15.0
 HELPER_START_TIMEOUT = 10.0
 
 
-@dataclass(frozen=True)
-class _HelperCloseResult:
-    """Pending authority delivery and failures of physical control disposal."""
-
-    error: BaseException | None
-    cleanup_errors: tuple[BaseException, ...]
-
-
 class _HelperClient:
     """Own one helper control connection and its controller-lifetime lease."""
 
@@ -56,14 +47,14 @@ class _HelperClient:
         output_handler: Callable[[str, str, bool], None] | None = None,
         *,
         process_start_handler: Callable[[tuple[str, ...]], None] | None = None,
-        observations: _SessionObservations | None = None,
+        observations: _SessionObservations,
     ) -> None:
         self._ssh_command = ssh_command
         self._host = host
         self._deployment = deployment
         self._output_handler = output_handler
         self._process_start_handler = process_start_handler
-        self._observations = observations if observations is not None else _SessionObservations()
+        self._observations = observations
         self._reader_thread: threading.Thread | None = None
         self._process: ManagedSshProcess | None = None
         self._allocation: SessionAllocation | None = None
@@ -74,12 +65,6 @@ class _HelperClient:
     def allocation(self) -> SessionAllocation:
         assert self._allocation is not None
         return self._allocation
-
-    @property
-    def openocd_returncode(self) -> int | None:
-        ending = self._observations.snapshot().ending
-        result = None if ending is None else ending.outcome.child_result
-        return None if result is None else result.returncode
 
     def start_process(
         self,
@@ -127,10 +112,6 @@ class _HelperClient:
             except BaseException as error:
                 self._observations.record_failure("CONTROL_OBSERVATION_FAILURE", error)
 
-    def recorded_openocd_exit(self) -> int | None:
-        self.observe_status()
-        return self._observations.operation_status()
-
     def wait_for_change(self, timeout: float | None) -> None:
         self._observations.wait_for_change(timeout)
 
@@ -138,17 +119,16 @@ class _HelperClient:
         """Build the public wait timeout using this control process's command."""
         return subprocess.TimeoutExpired(self._process_or_error().args, timeout)
 
-    def close(self) -> _HelperCloseResult:
+    def close(self) -> None:
         """Settle physical resources; all failures belong to the shared authority."""
         if self._closed or self._process is None:
-            return _HelperCloseResult(None, ())
+            return
         helper = self._process_or_error()
         self._request_shutdown(helper)
-        cleanup_errors = self._cleanup_control_process(helper)
+        self._cleanup_control_process(helper)
         self._emit_diagnostic()
         self._resolve_shutdown_result()
         self._closed = True
-        return _HelperCloseResult(self._observations.unreported_failure(), cleanup_errors)
 
     def _request_shutdown(self, helper: ManagedSshProcess) -> None:
         """Half-close stdin while retaining reverse output for bounded shutdown."""
@@ -169,20 +149,17 @@ class _HelperClient:
         except BaseException as error:
             self._observations.record_failure("HELPER_WAIT_FAILURE", error)
 
-    def _cleanup_control_process(self, helper: ManagedSshProcess) -> tuple[BaseException, ...]:
+    def _cleanup_control_process(self, helper: ManagedSshProcess) -> None:
         """Stop the reader and helper process without abandoning cleanup."""
-        cleanup_errors: list[BaseException] = []
         try:
             reader_stopped = self._join_reader()
         except BaseException as error:
             self._observations.record_failure("HELPER_CLEANUP_FAILURE", error)
-            cleanup_errors.append(error)
             reader_stopped = False
         try:
             _stop_process(helper, close_streams=reader_stopped)
         except BaseException as error:
             self._observations.record_failure("HELPER_CLEANUP_FAILURE", error)
-            cleanup_errors.append(error)
 
         if self._reader_thread is not None:
             initially_stopped = reader_stopped
@@ -190,19 +167,15 @@ class _HelperClient:
                 reader_stopped = self._join_reader()
             except BaseException as error:
                 self._observations.record_failure("HELPER_CLEANUP_FAILURE", error)
-                cleanup_errors.append(error)
                 reader_stopped = False
             if reader_stopped and not initially_stopped:
                 try:
                     _stop_process(helper, close_streams=True)
                 except BaseException as error:
                     self._observations.record_failure("HELPER_CLEANUP_FAILURE", error)
-                    cleanup_errors.append(error)
             if not reader_stopped:
                 reader_error = SessionError("helper event reader did not stop")
                 self._observations.record_failure("HELPER_CLEANUP_FAILURE", reader_error)
-                cleanup_errors.append(reader_error)
-        return tuple(cleanup_errors)
 
     def _resolve_shutdown_result(self) -> None:
         """Record missing terminal information independently of transport status."""

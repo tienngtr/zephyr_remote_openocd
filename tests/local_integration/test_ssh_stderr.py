@@ -122,5 +122,6 @@ def _session_with_helper(request, deployment):
         session.request.ssh_command,
         session.request.host,
         session.deployment,
+        observations=session._observations,
     )
     return session

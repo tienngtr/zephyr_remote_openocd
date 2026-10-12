@@ -39,7 +39,7 @@ from zephyr_remote_openocd.remote.backend import (
 )
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
 from zephyr_remote_openocd.remote.forwarding import _ForwardManager
-from zephyr_remote_openocd.remote.helper_client import _HelperClient, _HelperCloseResult
+from zephyr_remote_openocd.remote.helper_client import _HelperClient
 from zephyr_remote_openocd.remote.model import (
     RemoteProcess,
     RemoteSessionRequest,
@@ -52,7 +52,7 @@ from zephyr_remote_openocd.remote.outcome import CompletionPolicy, Trigger
 from zephyr_remote_openocd.remote.paths import REMOTE_ADDRESS_PLACEHOLDER, PathPlanner
 from zephyr_remote_openocd.remote.protocol import encode_message
 from zephyr_remote_openocd.remote.rtt import RttClientError, run_rtt_client
-from zephyr_remote_openocd.remote.session import SessionError
+from zephyr_remote_openocd.remote.session import SessionError, _SessionObservations
 from zephyr_remote_openocd.remote.ssh import (
     ManagedSshProcess,
     SshCommand,
@@ -195,10 +195,12 @@ def test_sigint_during_helper_reader_start_keeps_one_owned_reader(monkeypatch):
         "assert sys.stdin.buffer.read() == b''\n"
         f"os.write(1, {closed!r})\n"
     )
+    observations = _SessionObservations()
     helper = _HelperClient(
         SshCommand((sys.executable, "-u", "-c", code)),
         "local",
         DeploymentResult("/helper.py", "digest", False),
+        observations=observations,
     )
     started: list[threading.Thread] = []
     start = threading.Thread.start
@@ -215,13 +217,12 @@ def test_sigint_during_helper_reader_start_keeps_one_owned_reader(monkeypatch):
         # The transport's stderr reader is already owned. Inject only at the
         # real protocol reader's startup, after Thread.start() has returned.
         monkeypatch.setattr(threading.Thread, "start", interrupt_reader_start)
-        with pytest.raises(KeyboardInterrupt):
+        with pytest.raises(KeyboardInterrupt) as interrupted:
             helper.start_process(TEST_PROCESS, ())
 
-        result = helper.close()
+        helper.close()
 
-        assert result.error is None
-        assert result.cleanup_errors == ()
+        assert observations.failure_for_operation() is interrupted.value
         assert len(started) == 1
         assert not started[0].is_alive()
         assert signal.pthread_sigmask(signal.SIG_BLOCK, set()) == previous_mask
@@ -295,39 +296,48 @@ def test_helper_close_allows_recorded_natural_exit_before_termination(
             os.write(exit_write, b"x")
         return wait(timeout=timeout)
 
+    observations = _SessionObservations()
     try:
         helper = _HelperClient(
-            LocalCommand(), "local", DeploymentResult("/helper.py", "digest", False)
+            LocalCommand(),
+            "local",
+            DeploymentResult("/helper.py", "digest", False),
+            observations=observations,
         )
         helper.acquire()
         helper.start_process(TEST_PROCESS, ())
         # EOF and protocol completion are observed while OS exit remains gated.
         assert helper._join_reader(timeout=5)
+        helper.observe_status()
+        initial_failure = observations.failure_for_operation()
         if openocd_returncode:
             with pytest.raises(SessionError) as observed:
-                helper.recorded_openocd_exit()
+                observations.operation_status()
         else:
-            assert helper.recorded_openocd_exit() == 0
+            assert observations.operation_status() == 0
         assert managed.poll() is None
         monkeypatch.setattr(process, "wait", gated_wait)
         monkeypatch.setattr(process, "terminate", observe_terminate)
 
-        result = helper.close()
+        helper.close()
+        error = observations.failure_for_operation()
 
         assert graceful_wait_started
         assert terminated is transport_timeout
         assert managed.returncode is not None
         if transport_timeout:
             if openocd_returncode:
-                assert result.error is observed.value
-                assert any("timed out" in note for note in result.error.__notes__)
+                assert error is observed.value
+                assert any("timed out" in note for note in error.__notes__)
             else:
-                assert isinstance(result.error, subprocess.TimeoutExpired)
+                assert isinstance(error, subprocess.TimeoutExpired)
         else:
             assert managed.returncode == 0
-            assert result.error is None
-        assert result.cleanup_errors == ()
-        assert helper.openocd_returncode == openocd_returncode
+            assert error is initial_failure
+        ending = observations.snapshot().ending
+        assert ending is not None
+        child_result = ending.outcome.child_result
+        assert (None if child_result is None else child_result.returncode) == openocd_returncode
         assert managed.stdin is not None and managed.stdin.closed
         assert managed.stdout is not None and managed.stdout.closed
     finally:
@@ -346,10 +356,6 @@ class _StagingHelper:
 
     def acquire(self) -> None:
         raise AssertionError("acquire() is not expected in this test")
-
-    @property
-    def openocd_returncode(self) -> int | None:
-        raise AssertionError("openocd_returncode is not expected in this test")
 
     @property
     def allocation(self) -> SessionAllocation:
@@ -376,7 +382,7 @@ class _StagingHelper:
         del timeout
         raise AssertionError("timeout_expired() is not expected in this test")
 
-    def close(self) -> _HelperCloseResult:
+    def close(self) -> None:
         raise AssertionError("close() is not expected in this test")
 
 
@@ -522,9 +528,11 @@ class TestForwardingLifecycle:
                 "remote_workspace": "/workspace",
             },
         )
+        observations = _SessionObservations()
         helper = _helper_client(
             RemoteSessionRequest("target", command, TEST_PROCESS),
             DeploymentResult("/helper.py", "digest", False),
+            observations=observations,
         )
         with patch.object(_HelperClient, "_read_event", side_effect=events):
             try:
@@ -994,8 +1002,12 @@ class TestRttClient:
             helper_client._dispatch(json.loads(terminal_message(Trigger.CHILD_EXIT, returncode=0)))
             return b""
 
+        observations = _SessionObservations()
         helper_client = _HelperClient(
-            SshCommand(), "target", DeploymentResult("/helper.py", "digest", False)
+            SshCommand(),
+            "target",
+            DeploymentResult("/helper.py", "digest", False),
+            observations=observations,
         )
         connection = create_autospec(socket.socket, instance=True, spec_set=True)
         connection.recv.side_effect = recv
@@ -1008,7 +1020,7 @@ class TestRttClient:
                     connection,
                     stream.fileno(),
                     stream,
-                    helper_client.recorded_openocd_exit,
+                    observations.operation_status,
                 ).run()
                 == 0
             )
@@ -2468,21 +2480,24 @@ sys.exit({exit_code})
                     stderr=subprocess.PIPE,
                 )
 
+        observations = _SessionObservations()
         helper_client = _helper_client(
             RemoteSessionRequest("local", LocalCommand(), TEST_PROCESS),
             DeploymentResult("/helper.py", "digest", False),
+            observations=observations,
         )
         try:
             helper_client.acquire()
             if expected is None:
-                result = helper_client.close()
-                assert result.error is None
-                assert helper_client.openocd_returncode == expected_openocd_result
+                helper_client.close()
+                assert observations.failure_for_operation() is None
+                assert observations.operation_status() == expected_openocd_result
             else:
-                result = helper_client.close()
-                assert result.error is not None
+                helper_client.close()
+                error = observations.failure_for_operation()
+                assert error is not None
                 assert all(
-                    fragment in str(result.error) + " ".join(getattr(result.error, "__notes__", ()))
+                    fragment in str(error) + " ".join(getattr(error, "__notes__", ()))
                     for fragment in expected
                 )
         finally:
@@ -2527,9 +2542,11 @@ sys.exit({HELPER_FAILURE_RC})
                 return process
 
         command = LocalCommand()
+        observations = _SessionObservations()
         helper_client = _helper_client(
             RemoteSessionRequest("local", command, TEST_PROCESS),
             DeploymentResult("/helper.py", "digest", False),
+            observations=observations,
         )
         helper_exited = threading.Event()
         drain_events = helper_client._drain_events
@@ -2545,9 +2562,14 @@ sys.exit({HELPER_FAILURE_RC})
                 command.process.wait(timeout=5)
                 helper_exited.set()
                 assert helper_client._join_reader(timeout=5)
+            helper_client.observe_status()
             with pytest.raises(SessionError, match="status 9"):
-                helper_client.recorded_openocd_exit()
-            assert helper_client.openocd_returncode == 0
+                observations.operation_status()
+            ending = observations.snapshot().ending
+            assert ending is not None
+            child_result = ending.outcome.child_result
+            assert child_result is not None
+            assert child_result.returncode == 0
         finally:
             helper_exited.set()
             with suppress(BaseException):
@@ -2589,9 +2611,11 @@ sys.exit({HELPER_FAILURE_RC})
                 required_output_sentinels=(output_sentinel,),
             )
             command = LocalCommand()
+            observations = _SessionObservations()
             helper_client = _helper_client(
                 RemoteSessionRequest("local", command, process=remote_process),
                 DeploymentResult(str(helper), "digest", False),
+                observations=observations,
             )
             child_pid = None
             child_pidfd = None
@@ -2602,9 +2626,9 @@ sys.exit({HELPER_FAILURE_RC})
                 child_pid = int(child_pid_path.read_text(encoding="ascii"))
                 child_pidfd = os.pidfd_open(child_pid)
 
-                result = helper_client.close()
+                helper_client.close()
 
-                assert result.error is None
+                assert observations.failure_for_operation() is None
                 assert command.process.returncode == 0
                 assert not workspace.exists()
                 _assert_pidfd_exited(child_pidfd)
@@ -2676,12 +2700,13 @@ sys.exit({HELPER_FAILURE_RC})
                     backend.close()
 
 
-def _helper_client(request, deployment, output_handler=None):
+def _helper_client(request, deployment, output_handler=None, *, observations):
     return _HelperClient(
         request.ssh_command,
         request.host,
         deployment,
         output_handler=output_handler,
+        observations=observations,
     )
 
 

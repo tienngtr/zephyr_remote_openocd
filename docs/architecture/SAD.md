@@ -1376,8 +1376,8 @@ or control-channel loss. The ownership boundaries are:
 | Remote lifecycle authority | Owns remote phase transitions, attempt admission, outcome selection, workspace lifetime, and cleanup coordination. |
 | Child physical owner | Owns the acquired OpenOCD process group, output relays, termination, reaping, and stream closure; reports facts to the remote authority. |
 
-`RemoteSession.close()` coordinates the subsystem cleanup sequences and chooses
-the primary failure across helper and forwarding cleanup. Failure of one
+`RemoteSession.close()` coordinates the subsystem cleanup sequences and publishes
+the failure selected by its shared `_SessionObservations` authority. Failure of one
 subsystem cleanup does not prevent the other applicable cleanup sequence from
 being attempted. Each owner cleans up the resources it acquired; no owner
 transfers an active resource to another owner merely because cleanup encountered
@@ -1963,6 +1963,11 @@ records at recognition rather than independently projecting precedence through
 a return code or a cleanup result. The first recorded fatal observation remains
 primary. Later failures persist as ordered diagnostics, including their existing
 nested diagnostics; status checks and finalization cannot change that selection.
+`RemoteSession` creates this authority and supplies it to `_HelperClient`;
+the helper cannot create a separate arbiter. Helper shutdown records failures
+directly into that authority and returns no result for its caller to arbitrate.
+Public operation status is projected by the session after collecting physical
+observations, rather than by the helper resource owner.
 Best-effort forwarding remains advisory unless its owned rollback fails or an
 already-established session failure requires retaining it as secondary detail.
 

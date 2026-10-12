@@ -20,7 +20,7 @@ from .forwarding import (
     ForwardStartError,
     _ForwardManager,
 )
-from .helper_client import _HelperClient, _HelperCloseResult
+from .helper_client import _HelperClient
 from .model import (
     RemoteProcess,
     RemoteSessionRequest,
@@ -110,7 +110,7 @@ class _SessionHelper(Protocol):
 
     def timeout_expired(self, timeout: float) -> subprocess.TimeoutExpired: ...
 
-    def close(self) -> _HelperCloseResult: ...
+    def close(self) -> None: ...
 
 
 class _SessionForwards(Protocol):
@@ -407,11 +407,7 @@ class RemoteSession:
     def _close_helper(self) -> None:
         if self._helper is None:
             return
-        result = self._helper.close()
-        if result.error is not None:
-            self._observations.record_failure("HELPER_CLOSE_FAILURE", result.error)
-        for error in result.cleanup_errors:
-            self._observations.record_failure("HELPER_CLEANUP_FAILURE", error)
+        self._helper.close()
 
     def _helper_or_error(self) -> _SessionHelper:
         if self._helper is None:

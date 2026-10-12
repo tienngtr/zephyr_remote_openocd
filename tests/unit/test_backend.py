@@ -12,7 +12,6 @@ from zephyr_remote_openocd.remote import backend as backend_module
 from zephyr_remote_openocd.remote.backend import RemoteSession, query_remote_openocd_version
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
 from zephyr_remote_openocd.remote.forwarding import ForwardFailure
-from zephyr_remote_openocd.remote.helper_client import _HelperCloseResult
 from zephyr_remote_openocd.remote.model import (
     RemoteProcess,
     RemoteSessionRequest,
@@ -36,10 +35,6 @@ HELPER_FAILURE_RC = 17
 class _BlockedHelper:
     def acquire(self) -> None:
         raise AssertionError("acquire() is not expected")
-
-    @property
-    def openocd_returncode(self) -> int | None:
-        raise AssertionError("openocd_returncode is not expected")
 
     @property
     def allocation(self) -> SessionAllocation:
@@ -66,7 +61,7 @@ class _BlockedHelper:
         del timeout
         raise AssertionError("timeout_expired() is not expected")
 
-    def close(self) -> _HelperCloseResult:
+    def close(self) -> None:
         raise AssertionError("close() is not expected")
 
 
@@ -235,8 +230,8 @@ def test_staging_rejects_response_without_lf(monkeypatch):
             return SessionAllocation("session", "/workspace")
 
         @override
-        def close(self) -> _HelperCloseResult:
-            return _HelperCloseResult(None, ())
+        def close(self) -> None:
+            pass
 
     def make_helper(
         _ssh_command,
@@ -265,18 +260,9 @@ def test_staging_rejects_response_without_lf(monkeypatch):
 
 
 def test_closed_session_exposes_only_cached_openocd_result():
-    class Helper(_BlockedHelper):
-        def __init__(self, openocd_returncode: int | None) -> None:
-            self._openocd_returncode = openocd_returncode
-
-        @property
-        @override
-        def openocd_returncode(self) -> int | None:
-            return self._openocd_returncode
-
     session = _make_session()
     session.closed = True
-    session._helper = Helper(None)
+    session._helper = _BlockedHelper()
 
     assert session.openocd_returncode is None
     assert session.check_openocd_exit() is None
@@ -360,9 +346,9 @@ def test_close_attempts_all_cleanup_once_and_preserves_first_failure(failure_pha
 
     class Helper(_BlockedHelper):
         @override
-        def close(self) -> _HelperCloseResult:
+        def close(self) -> None:
             actions.append("helper")
-            return _HelperCloseResult(later_error, ())
+            session._observations.record_failure("HELPER_CLEANUP_FAILURE", later_error)
 
     session._forwards = Forwards()
     session._helper = Helper()
@@ -396,9 +382,9 @@ def test_close_raises_helper_cleanup_only_error_after_closing_session():
 
     class Helper(_BlockedHelper):
         @override
-        def close(self) -> _HelperCloseResult:
+        def close(self) -> None:
             actions.append("helper")
-            return _HelperCloseResult(None, (cleanup_error,))
+            session._observations.record_failure("HELPER_CLEANUP_FAILURE", cleanup_error)
 
     session._forwards = Forwards()
     session._helper = Helper()
@@ -417,11 +403,6 @@ def test_wait_for_openocd_exit_observes_forward_failure():
         def __init__(self, forwards: Forwards) -> None:
             self.forwards = forwards
             self.wait_timeouts: list[float] = []
-
-        @property
-        @override
-        def openocd_returncode(self) -> int | None:
-            return None
 
         @override
         def observe_status(self) -> None:
@@ -469,11 +450,6 @@ def test_wait_for_openocd_exit_raises_helper_timeout_at_deadline(monkeypatch):
             self.wait_timeouts: list[float] = []
             self.expired_timeout: float | None = None
             self.timeout_error = subprocess.TimeoutExpired(("python3", "helper"), requested_timeout)
-
-        @property
-        @override
-        def openocd_returncode(self) -> int | None:
-            return None
 
         @override
         def observe_status(self) -> None:

@@ -111,7 +111,9 @@ def test_runner_logs_effective_remote_argv(
     core, _, remote = runner_api
     harness = ForwardingHarness(monkeypatch)
     harness.helper.allocation = SessionAllocation("session", "/workspace with spaces")
-    harness.helper.on_wait = lambda: setattr(harness.helper, "openocd_returncode", 0)
+    harness.helper.on_wait = lambda: harness.helper.observations.record_terminal(
+        terminal_snapshot(Trigger.CHILD_EXIT, returncode=0)
+    )
     for service in (GDB, TCL, TELNET):
         harness.ssh.process(service)
     harness.ssh.process(GDB).ready = forward_ready
@@ -357,8 +359,8 @@ def test_gdb_execution_reports_session_status(runner_api, monkeypatch):
     session = harness.prepare()
     try:
         session.acquire()
-        runner.run_client.side_effect = lambda _argv: setattr(
-            harness.helper, "openocd_returncode", OPENOCD_FAILURE_RC
+        runner.run_client.side_effect = lambda _argv: harness.helper.observations.record_terminal(
+            terminal_snapshot(Trigger.CHILD_EXIT, returncode=OPENOCD_FAILURE_RC)
         )
         plan = _debug_plan(gdb_argv=("gdb", "zephyr.elf"))
 
@@ -392,7 +394,9 @@ def test_recorded_termination_before_gdb_dispatch_prevents_client_launch(
             if ending == "error":
                 monkeypatch.setattr(harness.helper, "observe_status", Mock(side_effect=failure))
             else:
-                harness.helper.openocd_returncode = ending
+                harness.helper.observations.record_terminal(
+                    terminal_snapshot(Trigger.CHILD_EXIT, returncode=ending)
+                )
 
         runner.require.side_effect = terminate_before_dispatch
         rtt_client = Mock()
@@ -424,7 +428,9 @@ def test_recorded_termination_during_rtt_forward_prevents_rtt_client_launch(
             if ending == "error":
                 monkeypatch.setattr(harness.helper, "observe_status", Mock(side_effect=failure))
             else:
-                harness.helper.openocd_returncode = ending
+                harness.helper.observations.record_terminal(
+                    terminal_snapshot(Trigger.CHILD_EXIT, returncode=ending)
+                )
         return ready(process, sentinel, deadline)
 
     monkeypatch.setattr(
@@ -551,7 +557,9 @@ def test_observed_openocd_failure_retains_forward_exit_before_cleanup(
     session = harness.prepare()
     with cleanup_on_exit(session.close):
         session.acquire()
-        harness.helper.openocd_returncode = OPENOCD_FAILURE_RC
+        harness.helper.observations.record_terminal(
+            terminal_snapshot(Trigger.CHILD_EXIT, returncode=OPENOCD_FAILURE_RC)
+        )
         with pytest.raises(SessionError):
             session.check_openocd_exit()
         assert session.openocd_returncode == OPENOCD_FAILURE_RC
@@ -726,7 +734,9 @@ def test_operation_primary_failure_rules(
 
     def execute_started_operation(*_args):
         if observed_returncode is not None:
-            harness.helper.openocd_returncode = observed_returncode
+            harness.helper.observations.record_terminal(
+                terminal_snapshot(Trigger.CHILD_EXIT, returncode=observed_returncode)
+            )
             session.check_openocd_exit()
         if operation_fails:
             raise operation_error
@@ -734,10 +744,11 @@ def test_operation_primary_failure_rules(
     close_helper = harness.helper.close
 
     def close():
-        result = close_helper()
+        close_helper()
         if cleanup_returncode is not None and session.openocd_returncode is None:
-            harness.helper.openocd_returncode = cleanup_returncode
-        return result
+            harness.helper.observations.record_terminal(
+                terminal_snapshot(Trigger.CHILD_EXIT, returncode=cleanup_returncode)
+            )
 
     monkeypatch.setattr(harness.helper, "close", close)
     monkeypatch.setattr(runner_module.RemoteSession, "prepare", lambda *_args, **_kwargs: session)
@@ -842,7 +853,9 @@ def test_background_openocd_and_operation_failures_share_recognition_order(
     def record_openocd_failure():
         reader_ready.set()
         assert reader_can_record.wait(5)
-        harness.helper.openocd_returncode = OPENOCD_FAILURE_RC
+        harness.helper.observations.record_terminal(
+            terminal_snapshot(Trigger.CHILD_EXIT, returncode=OPENOCD_FAILURE_RC)
+        )
         reader_recorded.set()
 
     reader = threading.Thread(target=record_openocd_failure)
@@ -988,7 +1001,9 @@ def test_requested_rtt_failure_aborts_operation(
         harness.ssh.process(RTT).ready = False
 
     def exit_after_health_observation():
-        harness.helper.openocd_returncode = 0
+        harness.helper.observations.record_terminal(
+            terminal_snapshot(Trigger.CHILD_EXIT, returncode=0)
+        )
 
     def fail_rtt_during_active_operation():
         assert harness.ssh.process(GDB).returncode is None
@@ -1047,7 +1062,9 @@ def test_rtt_cleanup_failure_does_not_replace_observed_openocd_failure(runner_ap
     rtt_cleanup_error = RuntimeError("RTT connection cleanup failed")
 
     def run_rtt(_port, poll):
-        harness.helper.openocd_returncode = OPENOCD_FAILURE_RC
+        harness.helper.observations.record_terminal(
+            terminal_snapshot(Trigger.CHILD_EXIT, returncode=OPENOCD_FAILURE_RC)
+        )
         try:
             return poll()
         finally:

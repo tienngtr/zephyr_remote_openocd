@@ -370,7 +370,9 @@ def test_simultaneous_forward_failures_preserve_required_failure_and_advisories(
         with pytest.raises(SessionError) as first:
             session.check_openocd_exit()
         assert [advisory.service for advisory in harness.advisories] == [TCL]
-        harness.helper.openocd_returncode = 7
+        harness.helper.observations.record_terminal(
+            terminal_snapshot(Trigger.CHILD_EXIT, returncode=7)
+        )
         with pytest.raises(SessionError) as later:
             session.check_openocd_exit()
         assert later.value is first.value
@@ -434,7 +436,9 @@ def test_terminal_recorded_during_forward_health_collection_remains_primary(harn
         process = harness.ssh.process(GDB)
 
         def observe_forward_exit():
-            harness.helper.openocd_returncode = 7
+            harness.helper.observations.record_terminal(
+                terminal_snapshot(Trigger.CHILD_EXIT, returncode=7)
+            )
             return 13
 
         process.mock.poll.side_effect = observe_forward_exit

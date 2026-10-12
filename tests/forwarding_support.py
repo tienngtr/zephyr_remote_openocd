@@ -16,20 +16,16 @@ from zephyr_remote_openocd.remote import backend as backend_module
 from zephyr_remote_openocd.remote.backend import RemoteSession
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
 from zephyr_remote_openocd.remote.forwarding import ForwardAdvisory, _ForwardManager
-from zephyr_remote_openocd.remote.helper_client import _HelperCloseResult
 from zephyr_remote_openocd.remote.model import (
     RemoteProcess,
     RemoteSessionRequest,
     Service,
     SessionAllocation,
 )
-from zephyr_remote_openocd.remote.outcome import Trigger
 from zephyr_remote_openocd.remote.protocol import decode_message, encode_message, write_start
 from zephyr_remote_openocd.remote.session import _SessionObservations
 from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand, SshLocalForward
 from zephyr_remote_openocd.remote_helper import decode_command, materialize_argv
-
-from tests.protocol_support import terminal_snapshot
 
 GDB = Service("gdb", 3333, 3333)
 TCL = Service("tcl", 6333, 6333)
@@ -108,16 +104,6 @@ class ControlledHelper:
         self.services = tuple(services)
         return "127.64.0.1"
 
-    @property
-    def openocd_returncode(self) -> int | None:
-        ending = self.observations.snapshot().ending
-        result = None if ending is None else ending.outcome.child_result
-        return None if result is None else result.returncode
-
-    @openocd_returncode.setter
-    def openocd_returncode(self, status: int) -> None:
-        self.observations.record_terminal(terminal_snapshot(Trigger.CHILD_EXIT, returncode=status))
-
     def observe_status(self) -> None:
         pass
 
@@ -129,9 +115,8 @@ class ControlledHelper:
     def timeout_expired(self, timeout: float) -> subprocess.TimeoutExpired:
         return subprocess.TimeoutExpired(("helper",), timeout)
 
-    def close(self) -> _HelperCloseResult:
+    def close(self) -> None:
         self.close_calls += 1
-        return _HelperCloseResult(None, ())
 
 
 class ControlledSshCommand(SshCommand):
