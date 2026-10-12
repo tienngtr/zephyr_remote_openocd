@@ -41,17 +41,15 @@ from zephyr_remote_openocd.remote.model import (
     StagedDirectory,
     StagedFile,
 )
-from zephyr_remote_openocd.remote.outcome import CompletionPolicy, Trigger
+from zephyr_remote_openocd.remote.outcome import CompletionPolicy
 from zephyr_remote_openocd.remote.paths import (
     REMOTE_ADDRESS_PLACEHOLDER,
     PathPlanner,
     PathPlanningError,
 )
 from zephyr_remote_openocd.remote.protocol import (
-    EventOrder,
     ProtocolError,
     decode_message,
-    decode_single_frame,
     encode_message,
     read_message,
     validate_deployment_response,
@@ -70,7 +68,6 @@ from zephyr_remote_openocd.remote.staging import StagingError, build_archive
 
 from tests.elf_fixtures import ELF_ENTRY_POINT, elf_memory_witness_bytes
 from tests.process_support import read_line
-from tests.protocol_support import terminal_message
 
 TEST_PROCESS = RemoteProcess(("test-process",))
 
@@ -94,103 +91,18 @@ class TestProtocol:
                 write_start(stream, process, ())
             assert stream.getvalue() == b""
 
-    @pytest.mark.parametrize(
-        "response",
-        (
-            pytest.param(encode_message("HELLO").rstrip(b"\n"), id="missing-lf"),
-            pytest.param(encode_message("HELLO") + b"\n", id="multiple-lf"),
-            pytest.param(encode_message("HELLO") + b"{}\n", id="second-object"),
-        ),
-    )
-    def test_decode_single_frame_rejects_extra_or_missing_framing(self, response):
-        with pytest.raises(ProtocolError):
-            decode_single_frame(response)
-
-    def test_decode_single_frame_accepts_one_frame(self):
-        response = encode_message("HELLO", value=3)
-
-        assert decode_single_frame(response) == {"version": 1, "type": "HELLO", "value": 3}
-
-    def test_decode_single_frame_accepts_json_whitespace_around_object(self):
-        body = encode_message("HELLO", value=3)[:-1]
-        response = b" \t" + body + b" \t\r\n"
-        expected = {"version": 1, "type": "HELLO", "value": 3}
-
-        assert decode_single_frame(response) == expected
-        assert read_message(io.BytesIO(response)) == expected
+    def test_read_message_consumes_one_frame_at_a_time_and_reports_eof(self):
+        stream = io.BytesIO(encode_message("HELLO", value=3) + encode_message("HELLO", value=4))
+        assert read_message(stream)["value"] == 3
+        assert read_message(stream)["value"] == 4
+        with pytest.raises(EOFError):
+            read_message(stream)
 
     def test_read_message_rejects_frame_without_lf(self):
         frame = encode_message("HELLO", value=3).rstrip(b"\n")
 
         with pytest.raises(ProtocolError):
             read_message(io.BytesIO(frame))
-
-    def test_round_trip_and_rejections(self):
-        assert decode_message(encode_message("HELLO", value=3))["value"] == 3
-        for invalid in (
-            b"not-json\n",
-            b"[]\n",
-            b'{"version":99,"type":"HELLO"}\n',
-            b'{"version":1.0,"type":"HELLO"}\n',
-            b'{"version":true,"type":"HELLO"}\n',
-        ):
-            with pytest.raises(ProtocolError):
-                decode_message(invalid)
-        with pytest.raises(ProtocolError):
-            encode_message("HELLO", version=1)
-
-    def test_event_order_is_enforced(self):
-        order = EventOrder()
-        with pytest.raises(ProtocolError):
-            order.accept(
-                decode_message(encode_message("READY", remote_address="127.64.1.1", child_pid=1))
-            )
-        order.accept(
-            decode_message(
-                encode_message(
-                    "SESSION_CREATED",
-                    helper="helper",
-                    session_id="session",
-                    remote_workspace="/workspace",
-                )
-            )
-        )
-        order.accept(decode_message(encode_message("ATTEMPT", argv=["openocd"])))
-        order.accept(
-            decode_message(
-                encode_message(
-                    "CHILD_OUTPUT",
-                    stream="stdout",
-                    payload="before-ready",
-                    line_end=False,
-                )
-            )
-        )
-        order.accept(
-            decode_message(encode_message("READY", remote_address="127.64.1.1", child_pid=1))
-        )
-        for stream, payload in (
-            ("stdout", "first"),
-            ("stderr", "still open"),
-            ("stdout", "later output"),
-        ):
-            order.accept(
-                decode_message(
-                    encode_message("CHILD_OUTPUT", stream=stream, payload=payload, line_end=False)
-                )
-            )
-        order.accept(decode_message(terminal_message(Trigger.CHILD_EXIT, returncode=0)))
-        with pytest.raises(ProtocolError):
-            order.accept(
-                decode_message(
-                    encode_message(
-                        "CHILD_OUTPUT",
-                        stream="stderr",
-                        payload="late",
-                        line_end=False,
-                    )
-                )
-            )
 
     @pytest.mark.parametrize("argv", (None, [], [""], "openocd", ["openocd", None], [1]))
     def test_attempt_rejects_invalid_argv(self, argv):
@@ -342,28 +254,6 @@ class TestProtocol:
                 decode_message(
                     encode_message("CHILD_OUTPUT", stream="stdout", payload="", line_end=False)
                 )
-            )
-
-    def test_failing_terminal_rejects_following_events(self):
-        order = EventOrder()
-        order.accept(
-            decode_message(
-                encode_message(
-                    "SESSION_CREATED",
-                    helper="helper",
-                    session_id="session",
-                    remote_workspace="/workspace",
-                )
-            )
-        )
-        order.accept(
-            decode_message(
-                terminal_message(Trigger.HELPER_FAILURE, code="FAILED", message="failed")
-            )
-        )
-        with pytest.raises(ProtocolError):
-            order.accept(
-                decode_message(encode_message("READY", remote_address="127.64.1.1", child_pid=1))
             )
 
 

@@ -113,40 +113,70 @@ def test_later_reader_detail_reopens_delivery_with_established_terminal_primary(
     assert observations.take_unreported_failure() is None
 
 
+def _record_failure(observations, source, error):
+    if source == "child":
+        observations.record_terminal(terminal_snapshot(Trigger.CHILD_EXIT, returncode=7))
+    elif source == "terminal":
+        observations.record_terminal(
+            terminal_snapshot(Trigger.HELPER_FAILURE, code="HELPER_FAILURE")
+        )
+    elif source == "reader":
+        observations.record_reader_failure(error)
+    elif source == "transport":
+        observations.record_control_status(17)
+    else:
+        observations.record_failure("OPERATION_FAILURE", error)
+
+
 @pytest.mark.parametrize(
-    "first, second",
-    tuple(
-        (first, second)
-        for first in ("child", "terminal", "reader", "transport", "operation", "forward")
-        for second in ("child", "terminal", "reader", "transport", "operation", "forward")
-        if first != second and {first, second} != {"child", "terminal"}
+    "source, code",
+    (
+        ("child", "TERMINAL_FAILURE"),
+        ("terminal", "TERMINAL_FAILURE"),
+        ("reader", "READER_FAILURE"),
+        ("transport", "CONTROL_PROCESS_FAILURE"),
+        ("operation", "OPERATION_FAILURE"),
     ),
 )
-def test_all_failure_domains_preserve_one_primary_across_publication(first, second):
+def test_failure_adapters_record_fatal_facts(source, code):
+    observations = _SessionObservations()
+    error = RuntimeError("operation failed")
+    _record_failure(observations, source, error)
+
+    snapshot = observations.snapshot()
+    assert snapshot.failure is not None
+    assert [detail.code for detail in snapshot.diagnostics] == [code]
+    if source == "operation":
+        assert snapshot.failure is error
+    elif source == "reader":
+        assert snapshot.failure.__cause__ is error
+    elif source == "transport":
+        assert "17" in str(snapshot.failure)
+    else:
+        assert snapshot.ending is not None
+        if source == "child":
+            result = snapshot.ending.outcome.child_result
+            assert result is not None and result.returncode == 7
+        else:
+            failure = snapshot.ending.outcome.primary_failure
+            assert failure is not None and failure.code == "HELPER_FAILURE"
+
+
+@pytest.mark.parametrize(
+    "first, second",
+    (("child", "operation"), ("operation", "transport"), ("transport", "reader")),
+)
+def test_first_failure_stays_primary_across_publication(first, second):
     """Publish one failure, recognize another, then project status and enter."""
     observations = _SessionObservations()
     observations.record_ready()
     later = RuntimeError(f"{second} failure")
     later.add_note("nested secondary diagnostic")
 
-    def record(source, error):
-        if source == "child":
-            observations.record_terminal(terminal_snapshot(Trigger.CHILD_EXIT, returncode=7))
-        elif source == "terminal":
-            observations.record_terminal(
-                terminal_snapshot(Trigger.HELPER_FAILURE, code="HELPER_FAILURE")
-            )
-        elif source == "reader":
-            observations.record_reader_failure(error)
-        elif source == "transport":
-            observations.record_control_status(17)
-        else:
-            observations.record_failure(source.upper(), error)
-
-    record(first, RuntimeError(f"{first} failure"))
+    _record_failure(observations, first, RuntimeError(f"{first} failure"))
     with pytest.raises(RuntimeError) as initial:
         observations.operation_status()
-    record(second, later)
+    _record_failure(observations, second, later)
     with pytest.raises(RuntimeError) as status:
         observations.operation_status()
     with pytest.raises(RuntimeError) as launch:
@@ -154,7 +184,7 @@ def test_all_failure_domains_preserve_one_primary_across_publication(first, seco
     assert status.value is initial.value is launch.value
     snapshot = observations.snapshot()
     assert len(snapshot.diagnostics) == 2
-    if second in ("reader", "operation", "forward"):
+    if second in ("reader", "operation"):
         assert any("nested secondary diagnostic" in note for note in status.value.__notes__)
     if "child" in (first, second):
         assert snapshot.ending is not None

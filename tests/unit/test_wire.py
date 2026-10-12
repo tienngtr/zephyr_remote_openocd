@@ -49,6 +49,8 @@ def _terminal():
         b'{"version":1,"type":"START"}\n\n',
         b'\xff\n',
         b'"scalar"\n',
+        b'not-json\n',
+        b'{"version":1.0,"type":"START"}\n',
     ),
 )
 def test_protocol_rejects_invalid_framing_and_json(frame):
@@ -221,3 +223,45 @@ def test_terminal_history_preserves_partial_startup_and_output_paths(
     )
     order.accept(_event("SESSION_ENDED", **terminal_fields(snapshot)))
     assert order.ended
+
+
+def test_frame_round_trip_accepts_json_whitespace_and_reserves_envelope_fields():
+    frame = encode_frame("HELLO", value=3)
+    assert decode_frame(b" \t" + frame[:-1] + b" \t\r\n") == {
+        "version": 1,
+        "type": "HELLO",
+        "value": 3,
+    }
+    with pytest.raises(ProtocolError):
+        encode_frame("HELLO", version=1)
+
+
+@pytest.mark.parametrize("trigger", (Trigger.CHILD_EXIT, Trigger.HELPER_FAILURE))
+def test_terminal_ends_event_history(trigger):
+    order = EventOrder()
+    order.accept(
+        _event("SESSION_CREATED", helper="helper", session_id="session", remote_workspace="/work")
+    )
+    if trigger == Trigger.CHILD_EXIT:
+        order.accept(_event("ATTEMPT", argv=["openocd"]))
+        order.accept(
+            _event("CHILD_OUTPUT", stream="stdout", payload="before ready", line_end=False)
+        )
+        order.accept(_event("READY", remote_address="127.64.0.1", child_pid=1))
+        for stream in ("stdout", "stderr", "stdout"):
+            order.accept(
+                _event("CHILD_OUTPUT", stream=stream, payload="after ready", line_end=False)
+            )
+        snapshot = _terminal()
+    else:
+        snapshot = TerminalSnapshot(
+            Outcome(trigger, Diagnostic("FAILED", "controlled failure")),
+            CleanupReport("not_acquired", "confirmed"),
+        )
+    order.accept(_event("SESSION_ENDED", **terminal_fields(snapshot)))
+    for following in (
+        _event("CHILD_OUTPUT", stream="stderr", payload="late", line_end=False),
+        _event("READY", remote_address="127.64.0.1", child_pid=1),
+    ):
+        with pytest.raises(ProtocolError):
+            order.accept(following)

@@ -111,13 +111,44 @@ def test_session_validates_reserved_services_without_forwarding_them(monkeypatch
         session.close()
 
 
-def test_version_query_reports_ssh_failure_status_and_diagnostic(monkeypatch):
-    ssh_exit_status = 23
-
-    class FailedCommand(SshCommand):
-        def __init__(self):
-            super().__init__(("fake-ssh", "-F", "test-config"))
-
+@pytest.mark.parametrize(
+    "returncode, stdout, stderr, diagnostics",
+    (
+        pytest.param(
+            23,
+            b"",
+            b"Permission denied while querying remote OpenOCD",
+            ("23", "Permission denied"),
+            id="ssh-failure",
+        ),
+        pytest.param(
+            HELPER_FAILURE_RC,
+            encode_message("ERROR", code="HELPER_ERROR", message="version probe failed"),
+            b"",
+            (str(HELPER_FAILURE_RC), "HELPER_ERROR", "version probe failed"),
+            id="helper-error",
+        ),
+        pytest.param(
+            HELPER_FAILURE_RC,
+            b"not a protocol frame\n",
+            b"transport failed",
+            (str(HELPER_FAILURE_RC), "transport failed"),
+            id="malformed-failure-frame",
+        ),
+        pytest.param(
+            0,
+            encode_message("OPENOCD_VERSION", output="OpenOCD 0.12.0").rstrip(b"\n"),
+            b"",
+            (),
+            id="missing-lf",
+        ),
+    ),
+)
+def test_version_query_rejects_failed_or_malformed_response(
+    monkeypatch, returncode, stdout, stderr, diagnostics
+):
+    class ReplyCommand(SshCommand):
+        @override
         def run(
             self,
             host: str,
@@ -128,88 +159,18 @@ def test_version_query_reports_ssh_failure_status_and_diagnostic(monkeypatch):
         ) -> subprocess.CompletedProcess[bytes]:
             assert host == "target"
             assert "openocd-version" in remote_command
-            return subprocess.CompletedProcess(
-                remote_command,
-                ssh_exit_status,
-                b"",
-                b"Permission denied while querying remote OpenOCD",
-            )
+            return subprocess.CompletedProcess(remote_command, returncode, stdout, stderr)
 
     monkeypatch.setattr(
         backend_module,
         "deploy_helper",
         lambda _ssh_command, _host: DeploymentResult("/helper.py", "digest", False),
     )
-
     with pytest.raises(SessionError) as raised:
-        query_remote_openocd_version(FailedCommand(), "target", ("openocd",))
-
-    message = str(raised.value)
-    assert str(ssh_exit_status) in message
-    assert "Permission denied" in message
-
-
-def test_version_query_reports_helper_error_frame(monkeypatch):
-    response = encode_message("ERROR", code="HELPER_ERROR", message="version probe failed")
-
-    class FailedCommand(SshCommand):
-        def run(self, host, remote_command, *, input_data=None, timeout=15):
-            return subprocess.CompletedProcess(remote_command, HELPER_FAILURE_RC, response, b"")
-
-    monkeypatch.setattr(
-        backend_module,
-        "deploy_helper",
-        lambda _ssh_command, _host: DeploymentResult("/helper.py", "digest", False),
-    )
-
-    with pytest.raises(SessionError) as raised:
-        query_remote_openocd_version(FailedCommand(), "target", ("openocd",))
-
-    message = str(raised.value)
-    assert f"({HELPER_FAILURE_RC})" in message
-    assert "HELPER_ERROR" in message
-    assert "version probe failed" in message
-
-
-def test_version_query_falls_back_to_stderr_for_malformed_failure_frame(monkeypatch):
-    class FailedCommand(SshCommand):
-        def run(self, host, remote_command, *, input_data=None, timeout=15):
-            return subprocess.CompletedProcess(
-                remote_command,
-                HELPER_FAILURE_RC,
-                b"not a protocol frame\n",
-                b"transport failed",
-            )
-
-    monkeypatch.setattr(
-        backend_module,
-        "deploy_helper",
-        lambda _ssh_command, _host: DeploymentResult("/helper.py", "digest", False),
-    )
-
-    with pytest.raises(SessionError) as raised:
-        query_remote_openocd_version(FailedCommand(), "target", ("openocd",))
-
-    message = str(raised.value)
-    assert f"({HELPER_FAILURE_RC})" in message
-    assert "transport failed" in message
-
-
-def test_version_query_rejects_response_without_lf(monkeypatch):
-    response = encode_message("OPENOCD_VERSION", output="OpenOCD 0.12.0").rstrip(b"\n")
-
-    class ReplyCommand(SshCommand):
-        def run(self, host, remote_command, *, input_data=None, timeout=15):
-            return subprocess.CompletedProcess(remote_command, 0, response, b"")
-
-    monkeypatch.setattr(
-        backend_module,
-        "deploy_helper",
-        lambda _ssh_command, _host: DeploymentResult("/helper.py", "digest", False),
-    )
-
-    with pytest.raises(SessionError):
-        query_remote_openocd_version(ReplyCommand(), "target", ("openocd",))
+        query_remote_openocd_version(
+            ReplyCommand(("fake-ssh", "-F", "test-config")), "target", ("openocd",)
+        )
+    assert all(detail in str(raised.value) for detail in diagnostics)
 
 
 def test_staging_rejects_response_without_lf(monkeypatch):

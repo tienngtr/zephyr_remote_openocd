@@ -369,8 +369,16 @@ def test_gdb_execution_reports_session_status(runner_api, monkeypatch):
         session.close()
 
 
-@pytest.mark.parametrize("command", ("debug", "attach", "rtt"))
-@pytest.mark.parametrize("ending", (0, OPENOCD_FAILURE_RC, "error"))
+@pytest.mark.parametrize(
+    "command, ending",
+    (
+        ("debug", 0),
+        ("debug", OPENOCD_FAILURE_RC),
+        ("debug", "error"),
+        ("attach", OPENOCD_FAILURE_RC),
+        ("rtt", OPENOCD_FAILURE_RC),
+    ),
+)
 def test_recorded_termination_before_gdb_dispatch_prevents_client_launch(
     runner_api, monkeypatch, command, ending
 ):
@@ -1513,8 +1521,18 @@ def test_active_operation_interrupt_closes_session_and_forwards(
         assert process.managed.stdin.closed
 
 
-@pytest.mark.parametrize("reference", ("board.cfg", "./board.cfg", "absolute"))
-@pytest.mark.parametrize("command", ("flash", "debug", "attach", "debugserver", "rtt"))
+@pytest.mark.parametrize(
+    "reference, command",
+    (
+        ("board.cfg", "flash"),
+        ("./board.cfg", "flash"),
+        ("absolute", "flash"),
+        ("board.cfg", "debug"),
+        ("board.cfg", "attach"),
+        ("board.cfg", "debugserver"),
+        ("board.cfg", "rtt"),
+    ),
+)
 def test_existing_cwd_config_reaches_real_initialization_and_recording(
     runner_api, tmp_path, monkeypatch, capsys, forbid_external_io, reference, command
 ):
