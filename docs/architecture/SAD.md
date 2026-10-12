@@ -1393,6 +1393,25 @@ Any interruption delivered by mask restoration is reported after these
 attempts; an earlier cleanup failure remains primary and retains the
 interruption as a diagnostic.
 
+Local controller interruption handling relies on the supported host Python
+runtime to deliver Ctrl-C into application control flow. The SIGINT masks around
+resource acquisition and cleanup protect ownership transitions; they are not a
+replacement signal-dispatch subsystem. Once an interruption reaches controller
+code, the ownership and bounded-cleanup rules in this section apply regardless
+of where it was delivered.
+
+CPython can, in a narrow runtime interleaving, dispatch a pending SIGINT while
+cyclic GC is invoking a weakref callback and report the resulting
+`KeyboardInterrupt` as unraisable instead of propagating it to the surrounding
+operation. The controller does not disable cyclic GC, maintain a second durable
+cancellation latch, poll otherwise blocking I/O solely to replay such a signal,
+or otherwise promise stronger host-runtime SIGINT delivery. Zephyr's built-in
+`openocd` runner likewise relies on ordinary Python/subprocess interruption
+semantics for non-interactive commands. If the host runtime consumes one
+interrupt, a later Ctrl-C remains subject to the normal runtime behavior.
+Interactive GDB retains the separate signal semantics described by
+REQ-FUNC-HELP-013.
+
 ### 38.1 Local SSH subprocess ownership
 
 `SshCommand.popen()` starts each long-lived control or forwarding transport with

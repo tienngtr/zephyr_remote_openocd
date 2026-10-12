@@ -1491,11 +1491,18 @@ adoption.
 
 ### REQ-FUNC-HELP-013
 
-User interruption of a local `flash`, `rtt`, or `debugserver` operation,
-including Ctrl-C, SHALL terminate that operation and initiate bounded session
-closure under REQ-FUNC-HELP-010. The cleanup attempt SHALL cover session
-resources already acquired, including when interruption occurs during startup.
-Cleanup failures SHALL remain visible under REQ-FUNC-HELP-011.
+Local `flash`, `rtt`, and `debugserver` operations SHALL use the supported
+host Python runtime's ordinary interruption semantics. When a user interruption,
+including Ctrl-C, is delivered to runner application control flow, it SHALL
+terminate that operation and initiate bounded session closure under
+REQ-FUNC-HELP-010. The cleanup attempt SHALL cover session resources already
+acquired, including when interruption occurs during startup. Cleanup failures
+SHALL remain visible under REQ-FUNC-HELP-011.
+
+The runner is not required to detect or replay an asynchronous interruption
+that the host Python runtime consumes before delivering it to runner application
+control flow. This delivery boundary SHALL NOT weaken ownership or cleanup
+requirements once the interruption is observed.
 
 During `debug` or `attach`, Ctrl-C handled by interactive GDB SHALL retain the
 normal GDB interaction semantics of the built-in `openocd` runner from the
