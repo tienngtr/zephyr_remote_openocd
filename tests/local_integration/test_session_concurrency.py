@@ -29,6 +29,7 @@ from tests.support import ROOT
 pytestmark = pytest.mark.local
 
 
+@pytest.mark.usefixtures("defer_cyclic_gc")
 @pytest.mark.parametrize("phase", ("acquire-return", "caller-resumption"))
 def test_interruption_after_session_acquisition_cleans_helper_and_child(tmp_path: Path, phase: str):
     (tmp_path / "home").mkdir()

@@ -210,6 +210,7 @@ def test_owned_output_reader_defers_sigint_to_process_owner(monkeypatch):
     assert owner.process.stdout is not None and owner.process.stdout.closed
 
 
+@pytest.mark.usefixtures("defer_cyclic_gc")
 @pytest.mark.timeout(TEST_BACKSTOP_TIMEOUT)
 def test_process_acquisition_interrupt_reaps_created_group(monkeypatch):
     original_popen = subprocess.Popen

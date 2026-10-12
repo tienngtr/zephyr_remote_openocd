@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 import errno
+import gc
 import socket
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -21,6 +23,26 @@ from tests.inventory import Inventory, InventoryError, load_inventory
 
 _HARDWARE_BUILD_TIMINGS = pytest.StashKey[list[BuildTiming]]()
 _HARDWARE_TEST_TIMINGS = pytest.StashKey[list[tuple[str, str, float]]]()
+
+
+@pytest.fixture
+def defer_cyclic_gc() -> Iterator[None]:
+    """Keep deliberate native SIGINT delivery out of cyclic-GC callbacks."""
+    # CPython can run scheduled cyclic GC inside its native signal checks,
+    # including pthread_sigmask() and raise_signal(). A weakref callback can
+    # then consume KeyboardInterrupt as an unraisable exception. These tests
+    # must retain real signal delivery and resource ownership assertions, so
+    # defer cyclic GC for their scope instead of injecting a Python exception.
+    # Opt in explicitly; ordinary tests still run with the caller's GC policy.
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        yield
+    finally:
+        if was_enabled:
+            gc.enable()
+        else:
+            gc.disable()
 
 
 @pytest.fixture(autouse=True)

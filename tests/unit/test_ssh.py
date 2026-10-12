@@ -132,6 +132,7 @@ def test_long_lived_launch_restores_calling_thread_signal_mask(tmp_path, start_f
         executor.submit(launch).result(timeout=30)
 
 
+@pytest.mark.usefixtures("defer_cyclic_gc")
 @pytest.mark.parametrize("interrupt_boundary", ["spawn", "unmasked"])
 def test_sigint_during_launch_reaps_acquired_transport(monkeypatch, interrupt_boundary):
     popen = subprocess.Popen
@@ -243,6 +244,7 @@ def test_stderr_owner_construction_failure_disposes_raw_transport(
     _assert_transport_disposed(acquired_transports)
 
 
+@pytest.mark.usefixtures("defer_cyclic_gc")
 def test_failed_stderr_construction_retains_primary_when_unmasking_delivers_sigint(
     monkeypatch, acquired_transports
 ):

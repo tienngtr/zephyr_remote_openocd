@@ -99,6 +99,13 @@ deterministically and assert which outcome becomes primary and which
 diagnostics remain visible. A race test should be explainable as a concrete
 event sequence before it is encoded as test machinery.
 
+Tests that deliberately deliver native SIGINT through a raising Python handler
+use `@pytest.mark.usefixtures("defer_cyclic_gc")`. The shared fixture defers
+cyclic GC and restores its prior state so an unrelated GC weakref callback
+cannot swallow the expected interrupt as an unraisable exception. Keep the real
+signal, ownership, cleanup, mask, and failure-precedence assertions. Tests that
+inject a Python exception or use non-raising signal observers do not need it.
+
 * Keep each test focused on one contractual behavior. Setup may involve several
 real production objects, but assertions should have a clear behavioral purpose
 rather than forming a broad snapshot of incidental implementation state.

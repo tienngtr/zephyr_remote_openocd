@@ -96,6 +96,7 @@ class _BlockedSshCommand(SshCommand):
         raise AssertionError("run_stream() is not expected in this test")
 
 
+@pytest.mark.usefixtures("defer_cyclic_gc")
 @pytest.mark.parametrize("phase", ("before-control", "control-launch", "allocation", "ready"))
 def test_interrupted_helper_acquisition_cleans_owned_control_process(tmp_path, monkeypatch, phase):
     helper_path = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
@@ -130,7 +131,8 @@ def test_interrupted_helper_acquisition_cleans_owned_control_process(tmp_path, m
         if phase == "before-control":
             raise interruption
         original_acquire(client)
-        raise interruption
+        if phase == "ready":
+            raise interruption
 
     monkeypatch.setattr(HelperConnection, "acquire", acquire_and_interrupt)
     monkeypatch.setattr(HelperConnection, "_read_initial_message", staticmethod(read_and_interrupt))
@@ -158,6 +160,7 @@ def test_interrupted_helper_acquisition_cleans_owned_control_process(tmp_path, m
             _stop_process(managed)
 
 
+@pytest.mark.usefixtures("defer_cyclic_gc")
 def test_sigint_during_helper_reader_start_keeps_one_owned_reader(monkeypatch):
     created = encode_frame(
         "SESSION_CREATED", helper="test", session_id="session", remote_workspace="/workspace"
@@ -653,6 +656,7 @@ class TestForwardingLifecycle:
                         stream.close()
 
 
+@pytest.mark.usefixtures("defer_cyclic_gc")
 @pytest.mark.parametrize(
     ("phase", "cleanup_fails", "sigint_blocked"),
     (

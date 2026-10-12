@@ -348,6 +348,7 @@ def test_failed_later_forward_batch_preserves_committed_processes(monkeypatch):
     assert [process.close_stderr_calls for process in failed_processes] == [1, 1]
 
 
+@pytest.mark.usefixtures("defer_cyclic_gc")
 @pytest.mark.parametrize("phase", ("launch-handoff", "commit-handoff", "readiness"))
 def test_sigint_during_forward_start_preserves_cleanup_ownership(monkeypatch, phase):
     forward = ForwardSpec("gdb", 32265, 3333)
@@ -435,6 +436,7 @@ def test_sigint_during_forward_start_preserves_cleanup_ownership(monkeypatch, ph
             _stop_process(process)
 
 
+@pytest.mark.usefixtures("defer_cyclic_gc")
 @pytest.mark.parametrize("cleanup_fails", (False, True))
 def test_sigint_between_pending_forward_rollbacks_reaps_and_closes_both(monkeypatch, cleanup_fails):
     popen = subprocess.Popen
@@ -558,6 +560,7 @@ def test_sigint_between_pending_forward_rollbacks_reaps_and_closes_both(monkeypa
                 _stop_process(process)
 
 
+@pytest.mark.usefixtures("defer_cyclic_gc")
 @pytest.mark.parametrize("cleanup_fails", (False, True))
 def test_sigint_at_forward_rollback_entry_keeps_both_transports_owned(monkeypatch, cleanup_fails):
     popen = subprocess.Popen

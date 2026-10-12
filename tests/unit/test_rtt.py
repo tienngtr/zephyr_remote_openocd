@@ -106,6 +106,7 @@ def test_connection_closes_when_stdin_has_no_descriptor(connection_boundary: Mag
     connection_boundary.close.assert_called_once()
 
 
+@pytest.mark.usefixtures("defer_cyclic_gc")
 @pytest.mark.parametrize(
     "phase",
     ("socket-handoff", "connect", "initial-readiness", "acquire-return", "caller-resumption"),
