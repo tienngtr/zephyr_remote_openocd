@@ -191,7 +191,7 @@ def test_runner_logs_effective_argv_when_remote_startup_fails(
 ):
     from zephyr_remote_openocd.zephyr44 import runner as runner_module
 
-    helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+    helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
     environment = {**os.environ, "XDG_RUNTIME_DIR": str(tmp_path)}
 
     class LocalHelperCommand(SshCommand):

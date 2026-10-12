@@ -3,6 +3,14 @@
 """Semantic transitions on real lifecycle objects, without physical adapters."""
 
 import pytest
+from zephyr_remote_openocd.helper.lifecycle import (
+    Active,
+    Closed,
+    LifecycleAuthority,
+    LifecycleError,
+    Starting,
+    Terminating,
+)
 from zephyr_remote_openocd.protocol.outcome import (
     ChildResult,
     CleanupReport,
@@ -11,22 +19,14 @@ from zephyr_remote_openocd.protocol.outcome import (
     Trigger,
 )
 from zephyr_remote_openocd.protocol.process import ProcessSpec
-from zephyr_remote_openocd.remote.lifecycle import (
-    Active,
-    Closed,
-    LifecycleError,
-    RemoteLifecycle,
-    Starting,
-    Terminating,
-)
 
 CONFIRMED = CleanupReport("confirmed", "confirmed")
 
 
 def _starting(
     *, markers: tuple[str, ...] = (), policy: CompletionPolicy = CompletionPolicy.LIVE_SERVER
-) -> RemoteLifecycle[ProcessSpec]:
-    lifecycle = RemoteLifecycle[ProcessSpec]()
+) -> LifecycleAuthority[ProcessSpec]:
+    lifecycle = LifecycleAuthority[ProcessSpec]()
     lifecycle.start(
         ProcessSpec(("openocd",), required_output_sentinels=markers, completion_policy=policy)
     )
@@ -35,7 +35,7 @@ def _starting(
 
 def _owned(
     *, markers: tuple[str, ...] = (), policy: CompletionPolicy = CompletionPolicy.LIVE_SERVER
-) -> RemoteLifecycle[ProcessSpec]:
+) -> LifecycleAuthority[ProcessSpec]:
     lifecycle = _starting(markers=markers, policy=policy)
     assert lifecycle.enter_attempt(admitted=True)
     assert lifecycle.adopt_attempt()

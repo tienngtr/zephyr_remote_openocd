@@ -91,7 +91,7 @@ class Closed:
     local_diagnostics: tuple[Diagnostic, ...] = ()
 
 
-type RemotePhase[RequestT: StartupRequest] = (
+type LifecyclePhase[RequestT: StartupRequest] = (
     Created | Starting[RequestT] | Active[RequestT] | Terminating | Closed
 )
 
@@ -100,14 +100,14 @@ class LifecycleError(RuntimeError):
     """A coordinator requested an invalid lifecycle operation."""
 
 
-class RemoteLifecycle[RequestT: StartupRequest]:
+class LifecycleAuthority[RequestT: StartupRequest]:
     """One transition authority; immutable phase data prevents shadow state."""
 
     def __init__(self) -> None:
-        self._state: RemotePhase[RequestT] = Created()
+        self._state: LifecyclePhase[RequestT] = Created()
 
     @property
-    def state(self) -> RemotePhase[RequestT]:
+    def state(self) -> LifecyclePhase[RequestT]:
         return self._state
 
     def start(self, request: RequestT) -> None:

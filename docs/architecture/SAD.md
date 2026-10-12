@@ -1541,7 +1541,7 @@ remote OpenOCD termination.
 ### 38.2 Remote lifecycle authority
 
 The lifecycle model in
-[`remote/lifecycle.py`](../../python/zephyr_remote_openocd/remote/lifecycle.py)
+[`helper/lifecycle.py`](../../python/zephyr_remote_openocd/helper/lifecycle.py)
 implements a pure transition authority with immutable phase and attempt records.
 Its read-only request role keeps the validated concrete request available to the
 coordinator without coupling the model to Zephyr or physical owners. Attempt

@@ -13,8 +13,7 @@ from importlib.resources import files
 
 from zephyr_remote_openocd.protocol.responses import validate_deployment_response
 from zephyr_remote_openocd.protocol.wire import ProtocolError, decode_frame
-
-from .ssh import SshCommand
+from zephyr_remote_openocd.remote.ssh import SshCommand
 
 BOOTSTRAP = r'''import fcntl,hashlib,json,os,pathlib,sys,tempfile,time
 STALE_HELPER_AGE_SECONDS=24*60*60
@@ -73,19 +72,15 @@ def _helper_source() -> bytes:
     try:
         package = files("zephyr_remote_openocd")
         entries = {
-            "__main__.py": package.joinpath("remote_helper.py").read_bytes(),
-            "zephyr_remote_openocd/__init__.py": b"",
-            "zephyr_remote_openocd/remote/__init__.py": b"",
+            "__main__.py": package.joinpath("helper", "__main__.py").read_bytes(),
+            "zephyr_remote_openocd/__init__.py": package.joinpath("__init__.py").read_bytes(),
         }
-        for module in ("lifecycle",):
-            entries[f"zephyr_remote_openocd/remote/{module}.py"] = package.joinpath(
-                "remote", f"{module}.py"
-            ).read_bytes()
-        for source_module in package.joinpath("protocol").iterdir():
-            if source_module.name.endswith(".py"):
-                entries[f"zephyr_remote_openocd/protocol/{source_module.name}"] = (
-                    source_module.read_bytes()
-                )
+        for directory in ("helper", "protocol"):
+            for module in package.joinpath(directory).iterdir():
+                if module.name.endswith(".py"):
+                    entries[f"zephyr_remote_openocd/{directory}/{module.name}"] = (
+                        module.read_bytes()
+                    )
         # Python executes a zip application regardless of filename extension.
         # Fixed metadata makes its digest depend only on canonical source bytes.
         output = io.BytesIO()

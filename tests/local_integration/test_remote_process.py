@@ -28,7 +28,7 @@ from typing import Any, BinaryIO, override
 from unittest.mock import create_autospec, patch
 
 import pytest
-from zephyr_remote_openocd import remote_helper
+from zephyr_remote_openocd.helper import workspace as helper_workspace_module
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy, Trigger
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.protocol.wire import decode_terminal, encode_frame
@@ -104,7 +104,7 @@ class _BlockedSshCommand(SshCommand):
 
 @pytest.mark.parametrize("phase", ("before-control", "control-launch", "allocation", "ready"))
 def test_interrupted_helper_acquisition_cleans_owned_control_process(tmp_path, monkeypatch, phase):
-    helper_path = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+    helper_path = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
     environment = {**os.environ, "XDG_RUNTIME_DIR": str(tmp_path)}
     managed_processes: list[ManagedSshProcess] = []
     workspaces: list[Path] = []
@@ -676,7 +676,7 @@ def test_sigint_during_session_close_cleans_owned_transports(
 ):
     processes: list[ManagedSshProcess] = []
     control_processes: list[ManagedSshProcess] = []
-    helper_path = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+    helper_path = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
     environment = {**os.environ, "XDG_RUNTIME_DIR": str(tmp_path)}
     popen = subprocess.Popen
     sigmask = signal.pthread_sigmask
@@ -1093,19 +1093,19 @@ def helper_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterato
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
-    _session_id, workspace, owner_lock = remote_helper.new_workspace()
+    _session_id, workspace, owner_lock = helper_workspace_module.new_workspace()
     try:
         yield workspace
     finally:
         try:
-            remote_helper.remove_workspace(workspace)
+            helper_workspace_module.remove_workspace(workspace)
         finally:
             owner_lock.close()
 
 
 class TestRealProcessHelper:
     def test_helper_materializes_only_explicit_runner_owned_arguments(self, tmp_path):
-        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         runtime = tmp_path / "runtime {workspace} {address}"
         runtime.mkdir()
         literal_file = tmp_path / "literal {workspace} {address}"
@@ -1197,17 +1197,20 @@ class TestRealProcessHelper:
 
     @pytest.mark.parametrize("pause", ("upload", "admission", "extraction"))
     def test_staging_and_cleanup_share_workspace_lifetime(self, tmp_path, pause):
-        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         environment = os.environ.copy()
         environment["XDG_RUNTIME_DIR"] = str(tmp_path)
         # Hooks only pause real I/O boundaries; both processes run the real helper.
         control_script = """
-import fcntl, runpy, sys, time
+import fcntl, sys, time
+from pathlib import Path
 from types import SimpleNamespace
-helper = runpy.run_path(sys.argv[1])
+sys.path.insert(0, str(Path(sys.argv[1]).resolve().parents[2]))
+from zephyr_remote_openocd.helper.control import control
+from zephyr_remote_openocd.helper import workspace
 # Hold helper deadlines steady during the success handshake; OS/asyncio clocks
 # remain real, and process/pipe deadlines are generous deadlock backstops.
-helper['control'].__globals__['time'] = SimpleNamespace(
+workspace.time = SimpleNamespace(
     time=time.time, sleep=time.sleep, monotonic=lambda: 0.0,
 )
 original = fcntl.flock
@@ -1220,11 +1223,13 @@ def flock(stream, operation):
         print('CLEANUP', file=sys.stderr, flush=True)
     return original(stream, operation)
 fcntl.flock = flock
-helper['control']()
+control()
 """
         stage_script = """
-import fcntl, os, runpy, sys, shutil, tarfile
-helper = runpy.run_path(sys.argv[1])
+import fcntl, os, sys, shutil, tarfile
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]).resolve().parents[2]))
+from zephyr_remote_openocd.helper.staging import stage
 original = shutil.copyfileobj if sys.argv[3] == 'upload' else tarfile.open
 def pause(*args, **kwargs):
     if sys.argv[3] == 'upload':
@@ -1246,7 +1251,7 @@ else:
             os.read(int(sys.argv[4]), 1)
         return original_flock(stream, operation)
     fcntl.flock = flock
-helper['stage'](sys.argv[2])
+stage(sys.argv[2])
 """
         archive = io.BytesIO()
         with tarfile.open(fileobj=archive, mode="w") as contents:
@@ -1328,7 +1333,7 @@ helper['stage'](sys.argv[2])
     def test_helper_normalizes_permissions_for_cleanup(
         self, helper_workspace, file_mode, expected_mode
     ):
-        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         archive_stream = io.BytesIO()
         with tarfile.open(fileobj=archive_stream, mode="w", format=tarfile.PAX_FORMAT) as archive:
             payload = tarfile.TarInfo("restricted/payload")
@@ -1357,7 +1362,7 @@ helper['stage'](sys.argv[2])
         shutil.rmtree(workspace)
 
     def test_helper_stages_large_archive_through_spooled_stdin(self, tmp_path, helper_workspace):
-        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         payload = bytes(range(256)) * 8192
         source = tmp_path / "firmware.bin"
         source.write_bytes(payload)
@@ -1388,7 +1393,7 @@ helper['stage'](sys.argv[2])
         assert (workspace / "staged" / "firmware.bin").read_bytes() == payload
 
     def test_helper_stages_empty_search_root(self, tmp_path, helper_workspace):
-        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         local_root = tmp_path / "empty-search"
         local_root.mkdir()
         planner = PathPlanner(())
@@ -1415,7 +1420,7 @@ helper['stage'](sys.argv[2])
         assert (workspace / "staged" / "trees" / "search_0").is_dir()
 
     def test_helper_stages_empty_and_nested_directories(self, tmp_path, helper_workspace):
-        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         local_root = tmp_path / "search"
         (local_root / "empty").mkdir(parents=True)
         (local_root / "nested" / "also-empty").mkdir(parents=True)
@@ -1463,7 +1468,7 @@ helper['stage'](sys.argv[2])
     def test_helper_stages_multiple_files_with_interspersed_directories(
         self, tmp_path, helper_workspace
     ):
-        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         tree = tmp_path / "tree"
         nested = tree / "nested directory"
         nested.mkdir(parents=True)
@@ -1534,7 +1539,7 @@ helper['stage'](sys.argv[2])
         ),
     )
     def test_helper_rejects_unsafe_staging_members(self, helper_workspace, members):
-        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         workspace = helper_workspace
         environment = os.environ.copy()
 
@@ -1672,7 +1677,7 @@ helper['stage'](sys.argv[2])
             query_remote_openocd_version(LocalCommand(), "local", ("openocd",))
 
     def test_helper_applies_requested_environment_before_child_executes(self):
-        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
             environment["XDG_RUNTIME_DIR"] = directory
@@ -1713,7 +1718,7 @@ helper['stage'](sys.argv[2])
                         stream.close()
 
     def test_helper_preserves_inherited_environment_when_request_omits_name(self):
-        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
             environment["XDG_RUNTIME_DIR"] = directory
@@ -1768,7 +1773,7 @@ helper['stage'](sys.argv[2])
         ),
     )
     def test_helper_rejects_invalid_command_frame(self, frame, close_input):
-        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
             environment["XDG_RUNTIME_DIR"] = directory
@@ -1804,7 +1809,7 @@ helper['stage'](sys.argv[2])
         with socket.socket() as probe:
             probe.bind(("127.64.0.1", 0))
             remote_port = probe.getsockname()[1]
-        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
             environment["XDG_RUNTIME_DIR"] = directory
@@ -1874,7 +1879,7 @@ helper['stage'](sys.argv[2])
                     os.close(child_pidfd)
 
     def test_helper_version_operation_is_structured(self):
-        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         result = subprocess.run(
             [sys.executable, str(helper), "openocd-version", sys.executable],
             capture_output=True,
@@ -1887,7 +1892,7 @@ helper['stage'](sys.argv[2])
 
     @pytest.mark.parametrize("failure", ("diagnostic", "tcp-bind"))
     def test_helper_does_not_repeat_spawned_startup_work(self, requires_loopback_listener, failure):
-        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
             environment["XDG_RUNTIME_DIR"] = directory
@@ -1970,7 +1975,7 @@ helper['stage'](sys.argv[2])
                         stream.close()
 
     def test_output_exit_status_and_workspace_cleanup(self):
-        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
             environment["XDG_RUNTIME_DIR"] = directory
@@ -2019,7 +2024,7 @@ helper['stage'](sys.argv[2])
 
     @pytest.mark.parametrize("shutdown", ("eof", "signal"))
     def test_helper_cleans_up_while_protocol_output_pipe_is_full(self, tmp_path, shutdown):
-        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         child_pid_file = tmp_path / "child.pid"
         environment = os.environ.copy()
         environment["XDG_RUNTIME_DIR"] = str(tmp_path)
@@ -2093,7 +2098,7 @@ helper['stage'](sys.argv[2])
                     stream.close()
 
     def test_helper_signal_cleans_child_and_workspace(self):
-        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
             environment["XDG_RUNTIME_DIR"] = directory
@@ -2143,7 +2148,7 @@ helper['stage'](sys.argv[2])
 
     @pytest.mark.parametrize("close_input", (True, False), ids=("eof", "unexpected-input"))
     def test_pending_readiness_shutdown_cleans_child_and_workspace(self, tmp_path, close_input):
-        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         environment = os.environ.copy()
         environment["XDG_RUNTIME_DIR"] = str(tmp_path)
         process = subprocess.Popen(
@@ -2206,7 +2211,7 @@ helper['stage'](sys.argv[2])
                 os.close(child_pidfd)
 
     def test_helper_eof_cleans_child_and_workspace(self):
-        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
             environment["XDG_RUNTIME_DIR"] = directory
@@ -2247,7 +2252,7 @@ helper['stage'](sys.argv[2])
                     os.close(child_pidfd)
 
     def test_partial_openocd_start_cleans_child_and_workspace(self):
-        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
             environment["XDG_RUNTIME_DIR"] = directory
@@ -2292,7 +2297,7 @@ helper['stage'](sys.argv[2])
                         stream.close()
 
     def test_backend_publishes_child_failure_and_relays_output(self):
-        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
             environment["XDG_RUNTIME_DIR"] = directory
@@ -2360,7 +2365,7 @@ helper['stage'](sys.argv[2])
             assert backend.openocd_returncode == sample_openocd_exit_code
 
     def test_backend_surfaces_helper_descendant_warning(self):
-        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
             environment["XDG_RUNTIME_DIR"] = directory
@@ -2569,7 +2574,7 @@ sys.exit({HELPER_FAILURE_RC})
                 helper_client.close()
 
     def test_helper_client_close_waits_for_child_kill_fallback(self):
-        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
             environment["XDG_RUNTIME_DIR"] = directory
@@ -2629,7 +2634,7 @@ sys.exit({HELPER_FAILURE_RC})
                     os.close(child_pidfd)
 
     def test_backend_reader_failure_requires_lifecycle_cleanup(self):
-        helper = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
+        helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
             environment["XDG_RUNTIME_DIR"] = directory

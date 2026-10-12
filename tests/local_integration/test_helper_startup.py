@@ -82,7 +82,7 @@ def test_empty_materialized_executable_fails_without_invalid_start_event(tmp_pat
     wire = io.BytesIO()
     write_start(wire, request, ())
     with managed_process(
-        [sys.executable, str(ROOT / "python/zephyr_remote_openocd/remote_helper.py"), "control"],
+        [sys.executable, str(ROOT / "python/zephyr_remote_openocd/helper/__main__.py"), "control"],
         env={**os.environ, "XDG_RUNTIME_DIR": str(tmp_path)},
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,

@@ -1,0 +1,253 @@
+# SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
+
+import errno
+import os
+from pathlib import Path
+
+import pytest
+from zephyr_remote_openocd.helper import staging as helper_staging
+from zephyr_remote_openocd.helper import workspace as workspace_module
+
+
+@pytest.mark.parametrize("storage", ("runtime", "cache"))
+def test_workspace_uses_isolated_first_format_root(tmp_path, monkeypatch, storage):
+    monkeypatch.setattr(workspace_module.Path, "home", lambda: tmp_path / "home")
+    if storage == "runtime":
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+        expected_root = tmp_path / "zephyr_remote_openocd-sessions-v1"
+    else:
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+        expected_root = tmp_path / "home/.cache/zephyr_remote_openocd/sessions-v1"
+    _session_id, workspace, lock = workspace_module.new_workspace()
+    try:
+        assert workspace_module.WORKSPACE_STORAGE_VERSION == 1
+        assert workspace.parent == expected_root
+        assert (workspace / "staged").is_dir()
+        unowned = tmp_path / "unowned-session"
+        unowned.mkdir()
+        with pytest.raises(ValueError):
+            helper_staging.stage(unowned)
+    finally:
+        try:
+            workspace_module.remove_workspace(workspace)
+        finally:
+            lock.close()
+
+
+def test_new_workspace_reclaims_only_unlocked_stale_sessions(tmp_path, monkeypatch):
+    monkeypatch.setattr(workspace_module, 'workspace_root', lambda: tmp_path)
+    _stale_id, stale, stale_lock = workspace_module.new_workspace()
+    _active_id, active, active_lock = workspace_module.new_workspace()
+    stale_lock.close()
+    old = 1.0
+    os.utime(stale, (old, old))
+    os.utime(active, (old, old))
+
+    _new_id, new, new_lock = workspace_module.new_workspace()
+    try:
+        assert not stale.exists()
+        assert active.exists()
+        assert new.exists()
+    finally:
+        active_lock.close()
+        new_lock.close()
+
+
+def test_reclaimer_removes_stale_directory_without_lock(tmp_path):
+    abandoned = tmp_path / "abandoned"
+    abandoned.mkdir()
+    os.utime(abandoned, (1.0, 1.0))
+
+    workspace_module.reclaim_stale_workspaces(tmp_path, now=workspace_module.STALE_SESSION_AGE + 2)
+
+    assert not abandoned.exists()
+
+
+def test_reclaimer_continues_after_stale_lock_error(tmp_path, monkeypatch):
+    blocked = tmp_path / "blocked"
+    blocked.mkdir()
+    (blocked / workspace_module.SESSION_LOCK).touch()
+    removable = tmp_path / "removable"
+    removable.mkdir()
+    (removable / workspace_module.SESSION_LOCK).touch()
+    old = 1.0
+    os.utime(blocked, (old, old))
+    os.utime(removable, (old, old))
+
+    original_flock = workspace_module.fcntl.flock
+
+    def fail_blocked_lock(stream, operation):
+        if (
+            Path(stream.name).name == workspace_module.SESSION_LOCK
+            and Path(stream.name).parent.name == blocked.name
+        ):
+            raise PermissionError("injected stale-lock failure")
+        return original_flock(stream, operation)
+
+    monkeypatch.setattr(workspace_module.fcntl, "flock", fail_blocked_lock)
+    workspace_module.reclaim_stale_workspaces(tmp_path, now=workspace_module.STALE_SESSION_AGE + 2)
+
+    assert blocked.exists()
+    assert not removable.exists()
+
+
+@pytest.mark.parametrize("source", ("marker", "lock", "metadata-workspace"))
+@pytest.mark.parametrize("error_number", (errno.EACCES, errno.EIO))
+def test_reclaimer_retains_entries_when_inspection_fails(
+    tmp_path, monkeypatch, source, error_number
+):
+    monkeypatch.setattr(workspace_module, 'workspace_root', lambda: tmp_path)
+    _session_id, workspace, owner_lock = workspace_module.new_workspace()
+    owner_lock.close()
+    marker = workspace / workspace_module.UNCONFIRMED_CHILD
+    if source == "marker":
+        marker.touch()
+        uncertain = marker
+    elif source == "lock":
+        uncertain = workspace / workspace_module.SESSION_LOCK
+    else:
+        uncertain = workspace
+    metadata = (workspace_module._lease_path(workspace), workspace_module._closure_path(workspace))
+    metadata[1].touch()
+    inputs = workspace / "staged/child-input"
+    inputs.write_bytes(b"retain uncertain inputs")
+    for path in (workspace, *metadata):
+        os.utime(path, (1.0, 1.0))
+
+    original_stat = os.stat
+    original_lstat = os.lstat
+
+    def inspect(operation, path, *args, **kwargs):
+        if path == uncertain or path == str(uncertain):
+            raise OSError(error_number, "injected filesystem inspection failure")
+        return operation(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            os,
+            "stat",
+            lambda *args, **kwargs: inspect(original_stat, *args, **kwargs),
+        )
+        patch.setattr(
+            os,
+            "lstat",
+            lambda *args, **kwargs: inspect(original_lstat, *args, **kwargs),
+        )
+        workspace_module.reclaim_stale_workspaces(
+            tmp_path, now=workspace_module.STALE_SESSION_AGE + 2
+        )
+
+    assert inputs.read_bytes() == b"retain uncertain inputs"
+    assert all(path.is_file() for path in metadata)
+    if source == "marker":
+        assert marker.is_file()
+
+
+def test_reclaimer_inspects_residual_marker_after_session_lock_handoff(tmp_path, monkeypatch):
+    monkeypatch.setattr(workspace_module, 'workspace_root', lambda: tmp_path)
+    _session_id, workspace, owner_lock = workspace_module.new_workspace()
+    marker = workspace / workspace_module.UNCONFIRMED_CHILD
+    os.utime(workspace, (1.0, 1.0))
+    original_flock = workspace_module.fcntl.flock
+
+    def finish_owner_before_lock_acquisition(stream, operation):
+        if Path(stream.name) == workspace / workspace_module.SESSION_LOCK:
+            marker.touch()
+            owner_lock.close()
+        return original_flock(stream, operation)
+
+    monkeypatch.setattr(workspace_module.fcntl, "flock", finish_owner_before_lock_acquisition)
+    try:
+        workspace_module.reclaim_stale_workspaces(
+            tmp_path, now=workspace_module.STALE_SESSION_AGE + 2
+        )
+        assert owner_lock.closed
+        assert marker.is_file()
+        assert (workspace / "staged").is_dir()
+    finally:
+        owner_lock.close()
+
+
+def test_new_workspace_removes_partial_directory_on_initialization_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(workspace_module, 'workspace_root', lambda: tmp_path)
+    path_type = type(tmp_path)
+    original_mkdir = path_type.mkdir
+    failure = OSError("injected staging-directory failure")
+
+    def fail_staging_directory(path, *args, **kwargs):
+        if path.name == "staged":
+            raise failure
+        return original_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(path_type, "mkdir", fail_staging_directory)
+
+    with pytest.raises(OSError) as raised:
+        workspace_module.new_workspace()
+
+    assert raised.value is failure
+    assert tuple(tmp_path.iterdir()) == ()
+
+
+def test_workspace_allocation_rollback_preserves_primary_and_cleans_independently(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(workspace_module, 'workspace_root', lambda: tmp_path)
+    original_mkdir = Path.mkdir
+    original_open = Path.open
+    locks = []
+    primary = OSError("staged directory creation failed")
+    secondary = KeyboardInterrupt("allocation lock close interrupted")
+    secondary.add_note("lock rollback retained detail")
+
+    def mkdir(path, *args, **kwargs):
+        if path.name == "staged":
+            raise primary
+        return original_mkdir(path, *args, **kwargs)
+
+    def open_path(path, *args, **kwargs):
+        stream = original_open(path, *args, **kwargs)
+        if path.name == workspace_module.SESSION_LOCK:
+            locks.append(stream)
+            close = stream.close
+
+            def close_then_interrupt():
+                close()
+                raise secondary
+
+            monkeypatch.setattr(stream, "close", close_then_interrupt)
+        return stream
+
+    monkeypatch.setattr(Path, "mkdir", mkdir)
+    monkeypatch.setattr(Path, "open", open_path)
+    with pytest.raises(BaseException) as raised:
+        workspace_module.new_workspace()
+    assert raised.value is primary
+    assert locks and all(lock.closed for lock in locks)
+    assert not tuple(tmp_path.iterdir())
+    assert any(str(secondary) in note for note in primary.__notes__)
+    assert any(secondary.__notes__[0] in note for note in primary.__notes__)
+
+
+@pytest.mark.parametrize("suffix", ("lease", "closed"))
+def test_reclaimer_removes_orphaned_lease_but_preserves_live_workspace(
+    tmp_path, monkeypatch, suffix
+):
+    monkeypatch.setattr(workspace_module, 'workspace_root', lambda: tmp_path)
+    _session_id, workspace, owner_lock = workspace_module.new_workspace()
+    try:
+        with workspace_module._stage_lease(workspace):
+            orphan = tmp_path / f".removed.{suffix}"
+            orphan.write_bytes(b"closed")
+            live_lease = workspace_module._lease_path(workspace)
+            for path in (orphan, live_lease):
+                os.utime(path, (1.0, 1.0))
+            workspace_module.reclaim_stale_workspaces(
+                tmp_path, now=workspace_module.STALE_SESSION_AGE + 2
+            )
+            assert not orphan.exists()
+            assert live_lease.exists()
+            assert workspace.is_dir()
+    finally:
+        owner_lock.close()

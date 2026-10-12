@@ -12,7 +12,8 @@ from typing import BinaryIO, cast, override
 from unittest.mock import Mock, create_autospec
 
 import pytest
-from zephyr_remote_openocd.protocol.commands import write_start
+from zephyr_remote_openocd.protocol.arguments import materialize_argv
+from zephyr_remote_openocd.protocol.commands import decode_command, write_start
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.protocol.wire import decode_frame, encode_frame
 from zephyr_remote_openocd.remote import backend as backend_module
@@ -22,7 +23,6 @@ from zephyr_remote_openocd.remote.forwarding import ForwardAdvisory, _ForwardMan
 from zephyr_remote_openocd.remote.model import RemoteSessionRequest, Service, SessionAllocation
 from zephyr_remote_openocd.remote.session import _SessionObservations
 from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand, SshLocalForward
-from zephyr_remote_openocd.remote_helper import decode_command, materialize_argv
 
 GDB = Service("gdb", 3333, 3333)
 TCL = Service("tcl", 6333, 6333)
