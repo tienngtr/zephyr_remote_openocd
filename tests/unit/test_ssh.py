@@ -13,7 +13,7 @@ import threading
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, BinaryIO, cast, override
-from unittest.mock import patch
+from unittest.mock import create_autospec, patch
 
 import pytest
 from zephyr_remote_openocd.remote import backend as backend_module
@@ -31,8 +31,10 @@ from zephyr_remote_openocd.remote.outcome import Trigger
 from zephyr_remote_openocd.remote.protocol import encode_message
 from zephyr_remote_openocd.remote.session import SessionError
 from zephyr_remote_openocd.remote.ssh import (
+    ManagedSshProcess,
     SshCommand,
     SshLocalForward,
+    SshProcessStartError,
     _stop_process,
 )
 
@@ -186,6 +188,119 @@ def test_sigint_during_launch_reaps_acquired_transport(monkeypatch, interrupt_bo
             for stream in (process.stdin, process.stdout, process.stderr):
                 if stream is not None:
                     stream.close()
+
+
+@pytest.fixture
+def acquired_transports(monkeypatch) -> Iterator[list[subprocess.Popen[bytes]]]:
+    """Capture real subprocess acquisition and provide assertion-failure cleanup."""
+    popen = subprocess.Popen
+    processes: list[subprocess.Popen[bytes]] = []
+
+    def launch(*args, **kwargs):
+        process = popen(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(ssh_module.subprocess, "Popen", launch)
+    try:
+        yield processes
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=30)
+            for stream in (process.stdin, process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
+
+
+def _assert_transport_disposed(processes: list[subprocess.Popen[bytes]]) -> None:
+    assert len(processes) == 1
+    process = processes[0]
+    assert process.returncode is not None
+    assert all(
+        stream is not None and stream.closed
+        for stream in (process.stdin, process.stdout, process.stderr)
+    )
+
+
+@pytest.mark.parametrize("acquisition", ("launch", "adopt"))
+@pytest.mark.parametrize("failure_type", (MemoryError, KeyboardInterrupt, OSError))
+def test_stderr_owner_construction_failure_disposes_raw_transport(
+    monkeypatch, acquired_transports, acquisition, failure_type
+):
+    failure = failure_type("stderr owner construction failed")
+    monkeypatch.setattr(
+        ssh_module.threading, "Thread", create_autospec(threading.Thread, side_effect=failure)
+    )
+    command = SshCommand((sys.executable, "-c", "import sys; sys.stdin.buffer.read()"))
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+
+    with pytest.raises((failure_type, SshProcessStartError)) as raised:
+        if acquisition == "launch":
+            command.popen("host", "serve")
+        else:
+            process = subprocess.Popen(
+                command.argv("host", "serve"),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            ManagedSshProcess.from_popen(process)
+
+    if isinstance(raised.value, SshProcessStartError):
+        assert raised.value.cause is failure and not raised.value.cleanup_errors
+    else:
+        assert raised.value is failure
+    assert signal.pthread_sigmask(signal.SIG_BLOCK, set()) == previous_mask
+    _assert_transport_disposed(acquired_transports)
+
+
+@pytest.mark.parametrize("failure_type", (MemoryError, KeyboardInterrupt))
+def test_existing_process_adoption_rolls_back_when_wrapper_construction_fails(
+    monkeypatch, acquired_transports, failure_type
+):
+    failure = failure_type("transport wrapper construction failed")
+    monkeypatch.setattr(
+        ManagedSshProcess,
+        "__init__",
+        create_autospec(ManagedSshProcess.__init__, side_effect=failure),
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdin.buffer.read()"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    with pytest.raises(failure_type) as raised:
+        ManagedSshProcess.from_popen(process)
+    assert raised.value is failure
+    _assert_transport_disposed(acquired_transports)
+
+
+def test_failed_stderr_construction_retains_primary_when_unmasking_delivers_sigint(
+    monkeypatch, acquired_transports
+):
+    failure = MemoryError("stderr owner construction failed")
+
+    def fail_constructor(*_args, **_kwargs):
+        signal.raise_signal(signal.SIGINT)
+        raise failure
+
+    monkeypatch.setattr(ssh_module.threading, "Thread", fail_constructor)
+    original_mask = signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGINT})
+    expected_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+    try:
+        with pytest.raises(MemoryError) as raised:
+            SshCommand((sys.executable, "-c", "import sys; sys.stdin.buffer.read()")).popen(
+                "host", "serve"
+            )
+        assert raised.value is failure and raised.value.__notes__
+        assert signal.SIGINT not in signal.sigpending()
+        assert signal.pthread_sigmask(signal.SIG_BLOCK, set()) == expected_mask
+        _assert_transport_disposed(acquired_transports)
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, original_mask)
 
 
 def test_run_stream_passes_file_as_stdin_and_captures_output(tmp_path):
@@ -549,7 +664,10 @@ def test_acquisition_rollback_uses_bounded_process_waits(monkeypatch):
     assert process.stdin.closed and process.stdout.closed and process.stderr.closed
 
 
-def test_acquisition_rollback_attempts_every_stream_and_retains_all_failures(monkeypatch):
+@pytest.mark.parametrize("failure_phase", ("drain-construction", "drain-start"))
+def test_acquisition_rollback_attempts_every_stream_and_retains_all_failures(
+    monkeypatch, failure_phase
+):
     startup_error = OSError("stderr drain startup failed")
     terminate_error = OSError("process terminate failed")
     kill_error = OSError("process kill failed")
@@ -592,7 +710,14 @@ def test_acquisition_rollback_attempts_every_stream_and_retains_all_failures(mon
         raise startup_error
 
     monkeypatch.setattr(ssh_module.subprocess, "Popen", lambda *_args, **_kwargs: process)
-    monkeypatch.setattr(ssh_module._StderrDrain, "start", fail_start)
+    if failure_phase == "drain-construction":
+        monkeypatch.setattr(
+            ssh_module.threading,
+            "Thread",
+            create_autospec(threading.Thread, side_effect=startup_error),
+        )
+    else:
+        monkeypatch.setattr(ssh_module._StderrDrain, "start", fail_start)
     with pytest.raises(ssh_module.SshProcessStartError) as raised:
         SshCommand(("configured-ssh",)).popen("host", "ignored")
 

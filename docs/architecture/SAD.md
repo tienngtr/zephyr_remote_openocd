@@ -1408,6 +1408,18 @@ and explicit cleanup. Existing threads' masks and process-wide signal handlers
 remain unchanged. Keeping the transports in the foreground group preserves
 terminal authentication without introducing background-group SIGTTIN reads.
 
+The transport wrapper is resource-free and owned before `Popen` begins.
+Acquisition populates that owner with the raw process before stderr-drain
+construction, then records the drain before starting its thread. Before a drain
+exists, rollback closes the raw stderr pipe directly; after drain adoption,
+only the drain closes that pipe. Constructor and thread-start failures use the
+same bounded process termination and independent stream cleanup as other
+acquisition failures. They require no replacement wrapper or drain. The
+existing-process `from_popen()` adoption path separately retains raw rollback
+through wrapper construction. A pending interruption during signal-mask
+restoration cannot replace an already established acquisition failure; it is
+retained as secondary detail before rollback.
+
 The inherited mask is a launch-time mitigation, not unconditional SIGINT
 isolation. Terminal SIGINT intended for GDB leaves a transport unaffected
 while its client retains SIGINT blocking. The executed client or wrapper can
@@ -1657,7 +1669,7 @@ not by cancelling its awaiter.
 
 | Resource acquisition | Immediate / partial owner | Transfer and rollback |
 | --- | --- | --- |
-| Local SSH Popen | Configured transport launch guard | Managed process/drain adoption inside the guard; launch or mask-restoration failure terminates/reaps and closes owned streams. |
+| Local SSH Popen | Prepared managed transport inside the configured launch guard | Raw acquisition populates that existing owner before drain construction; launch or mask-restoration failure terminates/reaps and independently closes owned streams, using raw stderr until a drain owns it. |
 | Workspace, lease metadata, session lock | Allocation rollback scope, including partially created artifacts | Remote coordinator adoption transfers all artifacts; setup failure attempts workspace and lock cleanup independently. |
 | Remote address lease | Current attempt acquisition scope | Transfer to child attempt only with continuous reachability; failed materialization/spawn releases it, normal cleanup releases it after child settlement. |
 | Child Popen and its pipes | Native interruption-safe acquisition ticket | Child physical owner adopts inside rollback guard; interruption on either side disposes the group, reaps, and settles pipes. |
