@@ -186,7 +186,7 @@ def test_sigint_during_helper_reader_start_keeps_one_owned_reader(monkeypatch):
     ready = encode_message("ATTEMPT", argv=["test-process"]) + encode_message(
         "READY", remote_address="127.64.0.1", child_pid=1
     )
-    closed = terminal_message(Trigger.CONTROLLER_EOF, returncode=None)
+    closed = terminal_message(Trigger.CONTROLLER_EOF, returncode=None, child_acquired=True)
     code = (
         "import json,os,sys\n"
         f"os.write(1, {created!r})\n"

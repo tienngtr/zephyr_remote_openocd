@@ -145,3 +145,79 @@ def test_order_rejects_invalid_attempt_and_ready_histories(violation):
         invalid = _event("SESSION_ENDED", **terminal_fields(_terminal()))
     with pytest.raises(ProtocolError):
         order.accept(invalid)
+
+
+@pytest.mark.parametrize(
+    "policy, history, child_disposal, workspace_disposal",
+    tuple(
+        (policy, history, child_disposal, workspace_disposal)
+        for policy in CompletionPolicy
+        for history, child_disposal, workspace_disposal in (
+            (("SESSION_CREATED",), "not_acquired", "not_created"),
+            (("SESSION_CREATED", "ATTEMPT", "READY"), "not_acquired", "confirmed"),
+            (("SESSION_CREATED", "ATTEMPT", "CHILD_OUTPUT"), "not_acquired", "confirmed"),
+        )
+        if "READY" not in history or policy == CompletionPolicy.LIVE_SERVER
+    ),
+)
+def test_terminal_disposal_must_agree_with_observed_history(
+    history, child_disposal, workspace_disposal, policy
+):
+    order = EventOrder(policy)
+    events = {
+        "SESSION_CREATED": _event(
+            "SESSION_CREATED", helper="helper", session_id="session", remote_workspace="/work"
+        ),
+        "ATTEMPT": _event("ATTEMPT", argv=["openocd"]),
+        "READY": _event("READY", remote_address="127.64.0.1", child_pid=1),
+        "CHILD_OUTPUT": _event("CHILD_OUTPUT", stream="stdout", payload="started", line_end=True),
+    }
+    for kind in history:
+        order.accept(events[kind])
+    snapshot = TerminalSnapshot(
+        Outcome(Trigger.CONTROLLER_EOF), CleanupReport(child_disposal, workspace_disposal)
+    )
+    # The frame is internally consistent; only the preceding history refutes it.
+    terminal = _event("SESSION_ENDED", **terminal_fields(snapshot))
+    assert decode_terminal(terminal) == snapshot
+    with pytest.raises(ProtocolError):
+        order.accept(terminal)
+
+
+@pytest.mark.parametrize(
+    "history, child_disposal, workspace_disposal",
+    (
+        ((), "not_acquired", "not_created"),
+        ((), "not_acquired", "confirmed"),
+        (("SESSION_CREATED",), "not_acquired", "confirmed"),
+        (("SESSION_CREATED", "ATTEMPT"), "not_acquired", "confirmed"),
+        (("SESSION_CREATED", "ATTEMPT", "CHILD_OUTPUT"), "confirmed", "confirmed"),
+    ),
+    ids=(
+        "creation-failure",
+        "creation-publication-failure",
+        "before-start",
+        "failed-spawn",
+        "child-output",
+    ),
+)
+@pytest.mark.parametrize("policy", tuple(CompletionPolicy))
+def test_terminal_history_preserves_partial_startup_and_output_paths(
+    history, child_disposal, workspace_disposal, policy
+):
+    order = EventOrder(policy)
+    events = {
+        "SESSION_CREATED": _event(
+            "SESSION_CREATED", helper="helper", session_id="session", remote_workspace="/work"
+        ),
+        "ATTEMPT": _event("ATTEMPT", argv=["openocd"]),
+        "CHILD_OUTPUT": _event("CHILD_OUTPUT", stream="stdout", payload="started", line_end=True),
+    }
+    for kind in history:
+        order.accept(events[kind])
+    snapshot = TerminalSnapshot(
+        Outcome(Trigger.HELPER_FAILURE, Diagnostic("FAILED", "controlled failure")),
+        CleanupReport(child_disposal, workspace_disposal),
+    )
+    order.accept(_event("SESSION_ENDED", **terminal_fields(snapshot)))
+    assert order.ended

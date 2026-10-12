@@ -287,13 +287,14 @@ _FIELDS = {
 
 
 class EventOrder:
-    """Validate single-attempt admission, operation policy, and terminal uniqueness."""
+    """Validate admission and terminal claims against the observed history."""
 
     def __init__(self, policy: CompletionPolicy = CompletionPolicy.LIVE_SERVER) -> None:
         self.policy = policy
         self.created = False
         self.attempted = False
         self.ready = False
+        self.child_output_seen = False
         self.ended = False
 
     def accept(self, message: dict[str, Any]) -> None:
@@ -316,8 +317,16 @@ class EventOrder:
         elif kind == "CHILD_OUTPUT":
             if not self.attempted:
                 raise ProtocolError("output from an unadmitted attempt")
+            self.child_output_seen = True
         elif kind == "SESSION_ENDED":
-            result = decode_terminal(message).outcome.child_result
+            snapshot = decode_terminal(message)
+            result = snapshot.outcome.child_result
             if result is not None and not self.attempted:
                 raise ProtocolError("child result without an admitted attempt")
+            if self.created and snapshot.cleanup.workspace_disposal == "not_created":
+                raise ProtocolError("created workspace reported as not created")
+            if (
+                self.ready or self.child_output_seen
+            ) and snapshot.cleanup.child_disposal == "not_acquired":
+                raise ProtocolError("observed child reported as not acquired")
             self.ended = True

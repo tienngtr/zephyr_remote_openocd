@@ -261,6 +261,11 @@ earlier or during cleanup. A `child_exit` trigger requires a non-null genuine
 child result.
 `not_acquired`/`not_created` exclude corresponding residuals,
 and a non-null child result is incompatible with `child_disposal: not_acquired`.
+Disposal claims must also agree with earlier session events: SESSION_CREATED
+rules out `workspace_disposal: not_created`, while READY or CHILD_OUTPUT rules
+out `child_disposal: not_acquired`. ATTEMPT alone does not prove child acquisition.
+Creation can fail after acquiring a workspace but before admitting SESSION_CREATED,
+so a terminal-only history may still report confirmed workspace disposal.
 
 A native SIGINT/SIGTERM received by the helper is a helper/session failure,
 under either completion policy. When the authority accounts it, the signal

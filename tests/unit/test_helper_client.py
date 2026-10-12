@@ -228,7 +228,9 @@ def test_helper_client_sends_preference_and_reports_attempt_before_startup_error
     client, helper_process = _open_helper_client_with_events(
         encode_message("ATTEMPT", argv=list(first)),
         encode_message("CHILD_OUTPUT", stream="stderr", payload="bind collision", line_end=True),
-        terminal_message(Trigger.HELPER_FAILURE, code="FAILED", message="startup failed"),
+        terminal_message(
+            Trigger.HELPER_FAILURE, code="FAILED", message="startup failed", child_acquired=True
+        ),
         process_start_handler=observed.append,
         observations=observations,
     )
@@ -397,6 +399,46 @@ def test_open_rejects_initial_frame_without_lf():
         _open_helper_client(_EventProcess((payload,)), observations=_SessionObservations())
 
 
+@pytest.mark.parametrize("policy", tuple(CompletionPolicy))
+@pytest.mark.parametrize("contradiction", ("child", "workspace"))
+def test_contradictory_terminal_is_reader_failure_and_never_published(policy, contradiction):
+    terminal = decode_message(
+        terminal_message(Trigger.CONTROLLER_EOF, child_acquired=contradiction != "child")
+    )
+    if contradiction == "workspace":
+        terminal["cleanup"]["workspace_disposal"] = "not_created"
+    evidence = (
+        encode_message("READY", remote_address="127.64.0.1", child_pid=1)
+        if policy == CompletionPolicy.LIVE_SERVER
+        else encode_message("CHILD_OUTPUT", stream="stdout", payload="started", line_end=True)
+    )
+    observations = _SessionObservations()
+    client, process = _open_helper_client_with_events(
+        encode_message("ATTEMPT", argv=["child"]),
+        evidence,
+        encode_message(
+            "SESSION_ENDED", **{k: v for k, v in terminal.items() if k not in {"version", "type"}}
+        ),
+        observations=observations,
+    )
+    try:
+        client.start_process(RemoteProcess(("child",), completion_policy=policy), ())
+        assert client._join_reader(5)
+        with pytest.raises(SessionError) as reported:
+            observations.operation_status()
+        assert isinstance(reported.value.__cause__, ProtocolError)
+        assert observations.snapshot().ending is None
+        client.close()
+        assert observations.snapshot().failure is reported.value
+        assert any(
+            detail.code == "MISSING_TERMINAL" for detail in observations.snapshot().diagnostics
+        )
+        assert process.stdin.closed
+        assert process.stdout.closed
+    finally:
+        client.close()
+
+
 @pytest.mark.timeout(10)
 def test_session_observations_project_exit_while_reader_remains_alive(helper_client):
     helper_client, observations = helper_client
@@ -509,7 +551,7 @@ def test_controller_eof_terminal_prevents_dependent_entry():
     helper_client, _process = _open_helper_client_with_events(
         encode_message("ATTEMPT", argv=["child"]),
         encode_message("READY", remote_address="127.64.0.1", child_pid=1),
-        terminal_message(Trigger.CONTROLLER_EOF, returncode=None),
+        terminal_message(Trigger.CONTROLLER_EOF, returncode=None, child_acquired=True),
         observations=observations,
     )
     helper_client.start_process(RemoteProcess(("child",)), ())
@@ -530,7 +572,9 @@ def test_helper_shutdown_retains_observed_background_failure():
     helper_client, process = _open_helper_client_with_events(
         encode_message("ATTEMPT", argv=["child"]),
         encode_message("READY", remote_address="127.64.0.1", child_pid=1),
-        terminal_message(Trigger.HELPER_FAILURE, code="FAILED", message="background failed"),
+        terminal_message(
+            Trigger.HELPER_FAILURE, code="FAILED", message="background failed", child_acquired=True
+        ),
         observations=observations,
     )
     helper_client.start_process(RemoteProcess(("child",)), ())
@@ -556,7 +600,9 @@ def test_close_records_background_and_cleanup_failures(monkeypatch, cleanup_fail
     helper_client, process = _open_helper_client_with_events(
         encode_message("ATTEMPT", argv=["child"]),
         encode_message("READY", remote_address="127.64.0.1", child_pid=1),
-        terminal_message(Trigger.HELPER_FAILURE, code="FAILED", message="background failed"),
+        terminal_message(
+            Trigger.HELPER_FAILURE, code="FAILED", message="background failed", child_acquired=True
+        ),
         observations=observations,
     )
     helper_client.start_process(RemoteProcess(("child",)), ())

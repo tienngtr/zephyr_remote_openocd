@@ -1313,6 +1313,10 @@ The selected internal helper wire format and behavior are specified solely in
 that contract; it does not duplicate message fields, framing, state
 transitions, ordering, validation, or frame-size limits. The deployed client
 and helper implement one strict matching contract.
+The shared wire validator checks both individual event structure and consistency
+with previously observed acquisition evidence. Contradictory terminal disposal
+claims are rejected before the helper client can publish a remote outcome;
+they enter the existing reader/protocol-failure path instead.
 
 ## 37. Remote Session Storage
 

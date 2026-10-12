@@ -19,13 +19,16 @@ def terminal_snapshot(
     *,
     returncode: int | None = None,
     termination_requested: bool = False,
+    child_acquired: bool = False,
     code: str | None = None,
     message: str = "controlled failure",
 ) -> TerminalSnapshot:
     result = None if returncode is None else ChildResult(returncode, termination_requested)
     return TerminalSnapshot(
         Outcome(trigger, None if code is None else Diagnostic(code, message), child_result=result),
-        CleanupReport("not_acquired" if result is None else "confirmed", "confirmed"),
+        CleanupReport(
+            "confirmed" if child_acquired or result is not None else "not_acquired", "confirmed"
+        ),
     )
 
 
