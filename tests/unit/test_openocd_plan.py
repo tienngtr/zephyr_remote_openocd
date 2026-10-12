@@ -7,11 +7,11 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 from zephyr_remote_openocd.config import PathMapping
-from zephyr_remote_openocd.controller.model import StagedDirectory, StagedFile
 from zephyr_remote_openocd.controller.paths import PathPlanner, PathPlanningError
+from zephyr_remote_openocd.controller.staging_spec import StagedDirectory, StagedFile
 from zephyr_remote_openocd.openocd.command import plan_openocd_base, plan_support_paths
 from zephyr_remote_openocd.protocol.arguments import materialize_argv, materialize_path
-from zephyr_remote_openocd.protocol.commands import decode_command, write_start
+from zephyr_remote_openocd.protocol.commands import _decode_start, write_start
 from zephyr_remote_openocd.protocol.process import ProcessSpec, RequiredPathSpec
 from zephyr_remote_openocd.protocol.wire import decode_frame
 
@@ -39,7 +39,7 @@ def test_search_tree_token_text_remains_literal_through_helper_materialization(
         ),
         (),
     )
-    request = decode_command(decode_frame(stream.getvalue()))
+    request = _decode_start(decode_frame(stream.getvalue()))
     workspace = "/runtime/{address}/{workspace}/session"
     argv = materialize_argv(
         request.argv,

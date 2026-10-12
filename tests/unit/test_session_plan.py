@@ -3,20 +3,46 @@
 from __future__ import annotations
 
 import pytest
-from zephyr_remote_openocd.controller.model import Service, SessionPlan
+from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
+from zephyr_remote_openocd.controller.plan import SessionPlan
 from zephyr_remote_openocd.controller.ssh import SshCommand
+from zephyr_remote_openocd.protocol.listeners import ListenerSpec
 from zephyr_remote_openocd.protocol.process import ProcessSpec, RequiredPathSpec
 
 TEST_PROCESS = ProcessSpec(("test-process",))
 
 
-class TestRemoteModels:
+class TestSessionSpecifications:
+    def test_reserved_listener_has_no_local_forward_requirement(self):
+        forward = ForwardSpec("gdb", 12345, 3333)
+        reserved = ListenerSpec("rtt", 12345)
+        plan = SessionPlan(
+            "host",
+            SshCommand(),
+            TEST_PROCESS,
+            forwards=(forward,),
+            reserved_listeners=(reserved,),
+        )
+        assert plan.forwards == (forward,)
+        assert plan.listeners == (forward.listener, reserved)
+
+    @pytest.mark.parametrize("reserved", (ListenerSpec("gdb", 5555), ListenerSpec("rtt", 3333)))
+    def test_reserved_listener_cannot_conflict_with_forwarded_listener(self, reserved):
+        with pytest.raises(ValueError):
+            SessionPlan(
+                "host",
+                SshCommand(),
+                TEST_PROCESS,
+                forwards=(ForwardSpec("gdb", 12345, 3333),),
+                reserved_listeners=(reserved,),
+            )
+
     @pytest.mark.parametrize(
         "auxiliary",
         (
-            (Service("unknown", 5555, 5555),),
-            (Service("tcl", 6334, 6333),),
-            (Service("tcl", 6333, 6333), Service("tcl", 6333, 6333)),
+            (ForwardSpec("unknown", 5555, 5555),),
+            (ForwardSpec("tcl", 6334, 6333),),
+            (ForwardSpec("tcl", 6333, 6333), ForwardSpec("tcl", 6333, 6333)),
         ),
         ids=("unknown", "different-port", "duplicate"),
     )
@@ -26,14 +52,14 @@ class TestRemoteModels:
                 "host",
                 SshCommand(),
                 TEST_PROCESS,
-                services=(Service("gdb", 3333, 3333), Service("tcl", 6333, 6333)),
-                auxiliary_services=auxiliary,
+                forwards=(ForwardSpec("gdb", 3333, 3333), ForwardSpec("tcl", 6333, 6333)),
+                auxiliary_forwards=auxiliary,
             )
 
     def test_request_defaults_to_required_services(self):
-        service = Service("tcl", 6333, 6333)
+        forward = ForwardSpec("tcl", 6333, 6333)
         assert (
-            SessionPlan("host", SshCommand(), TEST_PROCESS, services=(service,)).auxiliary_services
+            SessionPlan("host", SshCommand(), TEST_PROCESS, forwards=(forward,)).auxiliary_forwards
             == ()
         )
 
@@ -96,4 +122,4 @@ class TestRemoteModels:
     )
     def test_service_rejects_invalid_values(self, arguments):
         with pytest.raises(ValueError):
-            Service(*arguments)
+            ForwardSpec(*arguments)

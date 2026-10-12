@@ -15,12 +15,12 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python"))
 from zephyr_remote_openocd.helper import control as helper_control
-from zephyr_remote_openocd.helper import workspace as helper_workspace
+from zephyr_remote_openocd.helper import workspace as workspace_module
 
 
 def main() -> None:
     boundary, action, gate = sys.argv[1:]
-    original_new = helper_workspace.new_workspace
+    original_new = workspace_module.new_workspace
     original_queue = asyncio.Queue
     original_loop = asyncio.events.new_event_loop
     original_signal = signal.signal
@@ -70,7 +70,7 @@ def main() -> None:
 
     status = 0
     with (
-        patch.object(helper_workspace, 'new_workspace', allocate),
+        patch.object(workspace_module, 'new_workspace', allocate),
         patch.object(asyncio, "Queue", queue),
         patch.object(asyncio.events, "new_event_loop", loop),
         patch.object(signal, "signal", install),
@@ -88,7 +88,7 @@ def main() -> None:
                 json.dumps(
                     {
                         "workspace_remaining": workspace.exists(),
-                        "lease_remaining": helper_workspace._lease_path(workspace).exists(),
+                        "lease_remaining": workspace_module._lease_path(workspace).exists(),
                         "lock_closed": lock.closed,
                         "handlers_restored": all(
                             signal.getsignal(signum) == handler

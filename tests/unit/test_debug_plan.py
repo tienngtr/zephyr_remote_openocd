@@ -7,7 +7,7 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 from zephyr_remote_openocd.config import PathMapping
-from zephyr_remote_openocd.controller.model import Service
+from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
 from zephyr_remote_openocd.controller.paths import (
     REMOTE_ADDRESS_PLACEHOLDER,
     PathPlanner,
@@ -19,10 +19,8 @@ from zephyr_remote_openocd.openocd.debug import (
     parse_openocd_version,
     thread_info_enabled,
 )
+from zephyr_remote_openocd.protocol.listeners import ListenerSpec
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
-from zephyr_remote_openocd.protocol.process import ProcessSpec
-
-TEST_PROCESS = ProcessSpec(("test-process",))
 
 
 class TestDebugPlanning:
@@ -73,11 +71,11 @@ class TestDebugPlanning:
                 PathPlanner(()),
             )
             assert debug.gdb_argv is not None
-            services = {item.name: item for item in debug.services}
-            assert services == {
-                "gdb": Service("gdb", 3333, 3333),
-                "tcl": Service("tcl", 6333, 6333),
-                "telnet": Service("telnet", 4444, 4444),
+            forwards = {item.name: item for item in debug.forwards}
+            assert forwards == {
+                "gdb": ForwardSpec("gdb", 3333, 3333),
+                "tcl": ForwardSpec("tcl", 6333, 6333),
+                "telnet": ForwardSpec("telnet", 4444, 4444),
             }
             assert debug.gdb_argv[-6:] == (
                 "-ex",
@@ -108,9 +106,9 @@ class TestDebugPlanning:
             assert "reset init" in server.process.argv
             for plan in (debug, attach, server):
                 assert plan.process.completion_policy == CompletionPolicy.LIVE_SERVER
-                assert plan.auxiliary_services == (
-                    Service("tcl", 6333, 6333),
-                    Service("telnet", 4444, 4444),
+                assert plan.auxiliary_forwards == (
+                    ForwardSpec("tcl", 6333, 6333),
+                    ForwardSpec("telnet", 4444, 4444),
                 )
 
     @pytest.mark.parametrize(
@@ -202,16 +200,17 @@ class TestDebugPlanning:
         assert "tcl_port disabled" in plan.process.argv
         assert "telnet_port disabled" in plan.process.argv
         if command == "debugserver":
-            assert plan.services == (Service("gdb", 3344, 3344),)
+            assert plan.forwards == (ForwardSpec("gdb", 3344, 3344),)
             assert plan.gdb_argv is None
-            assert not plan.reserved_services
+            assert not plan.reserved_listeners
         else:
-            assert plan.services == (Service("gdb", 3345, 3345),)
+            assert plan.forwards == (ForwardSpec("gdb", 3345, 3345),)
             assert plan.gdb_argv is not None
             assert "target extended-remote 127.0.0.1:3345" in plan.gdb_argv
-            assert Service("gdb_base", 3344, 3344) in plan.reserved_services
+            assert ListenerSpec("gdb_base", 3344) in plan.reserved_listeners
             if command == "rtt":
-                assert plan.rtt_service in plan.reserved_services
+                assert plan.rtt_forward is not None
+                assert plan.rtt_forward.listener in plan.reserved_listeners
 
     @pytest.mark.parametrize("client_port", ("disabled", "invalid", 4444))
     def test_debugserver_ignores_unused_gdb_client_port(self, tmp_path: Path, client_port):
@@ -219,7 +218,7 @@ class TestDebugPlanning:
             self.inputs(tmp_path, command="debugserver", gdb_client_port=client_port),
             PathPlanner(()),
         )
-        assert next(service for service in plan.services if service.name == "gdb") == Service(
+        assert next(forward for forward in plan.forwards if forward.name == "gdb") == ForwardSpec(
             "gdb", 3333, 3333
         )
         assert plan.gdb_argv is None
@@ -301,19 +300,19 @@ class TestDebugPlanning:
             )
             assert plan.gdb_argv is not None
             assert plan.process.completion_policy == CompletionPolicy.LIVE_SERVER
-            services = {item.name: item for item in plan.services}
-            assert services == {
-                "gdb": Service("gdb", 3333, 3333),
-                "tcl": Service("tcl", 6333, 6333),
-                "telnet": Service("telnet", 4444, 4444),
+            forwards = {item.name: item for item in plan.forwards}
+            assert forwards == {
+                "gdb": ForwardSpec("gdb", 3333, 3333),
+                "tcl": ForwardSpec("tcl", 6333, 6333),
+                "telnet": ForwardSpec("telnet", 4444, 4444),
             }
-            assert plan.rtt_service == Service("rtt", 5566, 5566)
-            assert plan.reserved_services == (Service("rtt", 5566, 5566),)
-            assert plan.auxiliary_services == (
-                Service("tcl", 6333, 6333),
-                Service("telnet", 4444, 4444),
+            assert plan.rtt_forward == ForwardSpec("rtt", 5566, 5566)
+            assert plan.reserved_listeners == (ListenerSpec("rtt", 5566),)
+            assert plan.auxiliary_forwards == (
+                ForwardSpec("tcl", 6333, 6333),
+                ForwardSpec("telnet", 4444, 4444),
             )
-            assert plan.rtt_service not in plan.services
+            assert plan.rtt_forward not in plan.forwards
             assert plan.rtt_setup == "batch_gdb"
             assert plan.launches_rtt_client
             assert "--batch" in plan.gdb_argv
@@ -336,11 +335,11 @@ class TestDebugPlanning:
                     ),
                     PathPlanner(()),
                 )
-                services = {item.name: item for item in plan.services}
-                assert services["rtt"] == Service("rtt", 5577, 5577)
-                assert plan.auxiliary_services == (
-                    Service("tcl", 6333, 6333),
-                    Service("telnet", 4444, 4444),
+                forwards = {item.name: item for item in plan.forwards}
+                assert forwards["rtt"] == ForwardSpec("rtt", 5577, 5577)
+                assert plan.auxiliary_forwards == (
+                    ForwardSpec("tcl", 6333, 6333),
+                    ForwardSpec("telnet", 4444, 4444),
                 )
                 assert "rtt server start 5577 0" in plan.process.argv
                 assert plan.rtt_setup == "openocd_startup"

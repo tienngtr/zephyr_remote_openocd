@@ -18,7 +18,8 @@ from zephyr_remote_openocd.controller import forwarding as forwarding_module
 from zephyr_remote_openocd.controller.authority import SessionError
 from zephyr_remote_openocd.controller.deployment import DeploymentResult
 from zephyr_remote_openocd.controller.forwarding import ForwardFailure, ForwardManager
-from zephyr_remote_openocd.controller.model import Service, SessionPlan
+from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
+from zephyr_remote_openocd.controller.plan import SessionPlan
 from zephyr_remote_openocd.controller.session import SessionController
 from zephyr_remote_openocd.controller.ssh import (
     SSH_STDERR_TAIL_BYTES,
@@ -58,42 +59,42 @@ class _ForwardCommand(SshCommand):
 
 
 def test_forward_health_reports_service_identity_once(monkeypatch):
-    services = (Service("gdb", 32100, 3333), Service("tcl", 32101, 6333))
+    forwards = (ForwardSpec("gdb", 32100, 3333), ForwardSpec("tcl", 32101, 6333))
     processes = (_ForwardProcess(None), _ForwardProcess(None))
     manager = ForwardManager(_ForwardCommand(*processes), "host")
     monkeypatch.setattr(ForwardManager, "_preflight", staticmethod(lambda _service: None))
     monkeypatch.setattr(ForwardManager, "_await_ready", staticmethod(lambda *_args: True))
-    manager.start(services, "127.64.0.1")
+    manager.start(forwards, "127.64.0.1")
     for process in processes:
         process.returncode = FORWARD_FAILURE_RC
     failures: list[ForwardFailure] = []
     manager.check_health(failures.append)
-    assert tuple(failure.service for failure in failures) == services
+    assert tuple(failure.forward for failure in failures) == forwards
     assert all(failure.returncode == FORWARD_FAILURE_RC for failure in failures)
     assert all(failure.diagnostic == "" for failure in failures)
     repeated: list[ForwardFailure] = []
     manager.check_health(repeated.append)
     assert not repeated
-    assert manager.services == services
+    assert manager.forwards == forwards
     manager.close()
     assert [process.close_stderr_calls for process in processes] == [1, 1]
 
 
 @pytest.mark.parametrize("rollback_fails", (False, True))
 def test_failed_start_exposes_rollback_outcome(monkeypatch, rollback_fails):
-    service = Service("tcl", 32101, 6333)
+    forward = ForwardSpec("tcl", 32101, 6333)
     cleanup_error = RuntimeError("rollback cleanup failed")
     process = _ForwardProcess(None, close_stderr_error=cleanup_error if rollback_fails else None)
     manager = ForwardManager(_ForwardCommand(process), "host")
     monkeypatch.setattr(ForwardManager, "_preflight", staticmethod(lambda _service: None))
     monkeypatch.setattr(ForwardManager, "_await_ready", staticmethod(lambda *_args: False))
     with pytest.raises(SessionError) as raised:
-        manager.start((service,), "127.64.0.1")
+        manager.start((forward,), "127.64.0.1")
     error = raised.value
     assert isinstance(error, forwarding_module.ForwardStartError)
-    assert error.service == service
-    assert service.name in str(error)
-    assert f"127.0.0.1:{service.local_port}" in str(error)
+    assert error.forward == forward
+    assert forward.name in str(error)
+    assert f"127.0.0.1:{forward.local_port}" in str(error)
     assert isinstance(error.cause, SessionError)
     assert error.cleanup_errors == ((cleanup_error,) if rollback_fails else ())
     assert not manager.has_forwards
@@ -112,13 +113,13 @@ def test_process_creation_failure_has_service_identity_without_ownership(monkeyp
         ) -> Any:
             raise cause
 
-    service = Service("tcl", 32101, 6333)
+    forward = ForwardSpec("tcl", 32101, 6333)
     manager = ForwardManager(Command(), "host")
     monkeypatch.setattr(ForwardManager, "_preflight", staticmethod(lambda _service: None))
     with pytest.raises(SessionError) as raised:
-        manager.start((service,), "127.64.0.1")
+        manager.start((forward,), "127.64.0.1")
     assert isinstance(raised.value, forwarding_module.ForwardStartError)
-    assert raised.value.service == service
+    assert raised.value.forward == forward
     assert raised.value.cause is cause
     assert raised.value.cleanup_errors == ()
     assert not manager.has_forwards
@@ -198,8 +199,8 @@ def test_initial_start_forward_failure_associates_all_preflight_advisories_with_
 ):
     first_port, second_port = 32133, 32144
     _patch_preflight_socket(monkeypatch, {first_port, second_port})
-    first = Service("tcl", first_port, 6333)
-    second = Service("telnet", second_port, 4444)
+    first = ForwardSpec("tcl", first_port, 6333)
+    second = ForwardSpec("telnet", second_port, 4444)
     command = _ForwardCommand(_ForwardProcess(7))
     manager = ForwardManager(command, "host")
     try:
@@ -218,37 +219,37 @@ def test_initial_start_forward_failure_associates_all_preflight_advisories_with_
 def test_dynamic_forward_failure_identifies_service_and_local_port(monkeypatch):
     port = 32155
     _patch_preflight_socket(monkeypatch, set())
-    service = Service("rtt", port, 5555)
+    forward = ForwardSpec("rtt", port, 5555)
     manager = ForwardManager(_ForwardCommand(_ForwardProcess(9)), "host")
     try:
         with pytest.raises(SessionError) as raised:
-            manager.start((service,), "127.64.0.1")
+            manager.start((forward,), "127.64.0.1")
 
         message = str(raised.value)
-        assert service.name in message
+        assert forward.name in message
         assert f"127.0.0.1:{port}" in message
     finally:
         manager.close()
 
 
 def test_forward_manager_rejects_a_service_already_forwarded(monkeypatch):
-    service = Service("gdb", 32177, 3333)
+    forward = ForwardSpec("gdb", 32177, 3333)
     command = _ForwardCommand(_ForwardProcess(None))
     manager = ForwardManager(command, "host")
     monkeypatch.setattr(ForwardManager, "_preflight", staticmethod(lambda _service: None))
     monkeypatch.setattr(ForwardManager, "_await_ready", staticmethod(lambda *_args: True))
 
     try:
-        manager.start((service,), "127.64.0.1")
+        manager.start((forward,), "127.64.0.1")
         with pytest.raises(SessionError):
-            manager.start((service,), "127.64.0.1")
+            manager.start((forward,), "127.64.0.1")
         assert len(command.calls) == 1
     finally:
         manager.close()
 
 
 def test_failed_forward_batch_rolls_back_all_processes(monkeypatch):
-    services = (Service("gdb", 32188, 3333), Service("tcl", 32199, 6333))
+    forwards = (ForwardSpec("gdb", 32188, 3333), ForwardSpec("tcl", 32199, 6333))
     failed_processes = (_ForwardProcess(None), _ForwardProcess(None))
     command = _ForwardCommand(*failed_processes)
     manager = ForwardManager(command, "host")
@@ -261,7 +262,7 @@ def test_failed_forward_batch_rolls_back_all_processes(monkeypatch):
     )
 
     with pytest.raises(SessionError):
-        manager.start(services, "127.64.0.1")
+        manager.start(forwards, "127.64.0.1")
 
     assert [process.terminate_calls for process in failed_processes] == [1, 1]
     assert [process.close_stderr_calls for process in failed_processes] == [1, 1]
@@ -272,7 +273,7 @@ def test_failed_forward_batch_rolls_back_all_processes(monkeypatch):
 
 
 def test_failed_forward_batch_keeps_startup_error_and_cleanup_diagnostics(monkeypatch):
-    services = (Service("gdb", 32210, 3333), Service("tcl", 32221, 6333))
+    forwards = (ForwardSpec("gdb", 32210, 3333), ForwardSpec("tcl", 32221, 6333))
     first_cleanup_error = RuntimeError("first rollback failed")
     first_stream_error = RuntimeError("first stream cleanup failed")
     second_cleanup_error = RuntimeError("second rollback failed")
@@ -299,7 +300,7 @@ def test_failed_forward_batch_keeps_startup_error_and_cleanup_diagnostics(monkey
     monkeypatch.setattr(ForwardManager, "_await_ready", staticmethod(await_ready))
 
     with pytest.raises(KeyboardInterrupt) as raised:
-        manager.start(services, "127.64.0.1")
+        manager.start(forwards, "127.64.0.1")
 
     assert raised.value is startup_error
     assert [process.terminate_calls for process in processes] == [1, 1]
@@ -314,8 +315,8 @@ def test_failed_forward_batch_keeps_startup_error_and_cleanup_diagnostics(monkey
 
 
 def test_failed_later_forward_batch_preserves_committed_processes(monkeypatch):
-    committed_service = Service("gdb", 32232, 3333)
-    failed_services = (Service("tcl", 32243, 6333), Service("telnet", 32254, 4444))
+    committed_service = ForwardSpec("gdb", 32232, 3333)
+    failed_forwards = (ForwardSpec("tcl", 32243, 6333), ForwardSpec("telnet", 32254, 4444))
     committed_process = _ForwardProcess(None)
     failed_processes = (_ForwardProcess(None), _ForwardProcess(None))
     manager = ForwardManager(
@@ -332,7 +333,7 @@ def test_failed_later_forward_batch_preserves_committed_processes(monkeypatch):
 
     manager.start((committed_service,), "127.64.0.1")
     with pytest.raises(SessionError):
-        manager.start(failed_services, "127.64.0.1")
+        manager.start(failed_forwards, "127.64.0.1")
 
     assert committed_process.terminate_calls == 0
     assert [process.terminate_calls for process in failed_processes] == [1, 1]
@@ -349,7 +350,7 @@ def test_failed_later_forward_batch_preserves_committed_processes(monkeypatch):
 
 @pytest.mark.parametrize("phase", ("launch-handoff", "commit-handoff", "readiness"))
 def test_sigint_during_forward_start_preserves_cleanup_ownership(monkeypatch, phase):
-    service = Service("gdb", 32265, 3333)
+    forward = ForwardSpec("gdb", 32265, 3333)
     popen = subprocess.Popen
     read = os.read
     sigmask = signal.pthread_sigmask
@@ -358,7 +359,7 @@ def test_sigint_during_forward_start_preserves_cleanup_ownership(monkeypatch, ph
     previous_mask = sigmask(signal.SIG_BLOCK, {signal.SIGUSR1})
     expected_mask = sigmask(signal.SIG_BLOCK, set())
     requested = False
-    services_at_delivery: tuple[Service, ...] = ()
+    forwards_at_delivery: tuple[ForwardSpec, ...] = ()
 
     def request_interrupt():
         nonlocal requested
@@ -399,8 +400,8 @@ def test_sigint_during_forward_start_preserves_cleanup_ownership(monkeypatch, ph
         return sigmask(how, mask)
 
     def handle_interrupt(_signum, _frame):
-        nonlocal services_at_delivery
-        services_at_delivery = manager.services
+        nonlocal forwards_at_delivery
+        forwards_at_delivery = manager.forwards
         raise KeyboardInterrupt
 
     monkeypatch.setattr(subprocess, "Popen", launch)
@@ -410,16 +411,16 @@ def test_sigint_during_forward_start_preserves_cleanup_ownership(monkeypatch, ph
     signal.signal(signal.SIGINT, handle_interrupt)
     try:
         with pytest.raises(KeyboardInterrupt):
-            manager.start((service,), "127.64.0.1")
+            manager.start((forward,), "127.64.0.1")
         assert requested
         assert sigmask(signal.SIG_BLOCK, set()) == expected_mask
         if phase == "commit-handoff":
-            assert services_at_delivery == (service,)
+            assert forwards_at_delivery == (forward,)
             repeated: list[ForwardFailure] = []
             manager.check_health(repeated.append)
             assert not repeated
         else:
-            assert services_at_delivery == ()
+            assert forwards_at_delivery == ()
         manager.close()
         assert managed_processes
         for process in managed_processes:
@@ -527,7 +528,9 @@ def test_sigint_between_pending_forward_rollbacks_reaps_and_closes_both(monkeypa
     try:
         sys.settrace(interrupt_between_rollbacks)
         try:
-            manager.start((Service("gdb", 32266, 3333), Service("rtt", 32267, 5555)), "127.64.0.1")
+            manager.start(
+                (ForwardSpec("gdb", 32266, 3333), ForwardSpec("rtt", 32267, 5555)), "127.64.0.1"
+            )
         except BaseException as error:
             failure = error
         finally:
@@ -636,13 +639,13 @@ def test_sigint_at_forward_rollback_entry_keeps_both_transports_owned(monkeypatc
         try:
             with pytest.raises(KeyboardInterrupt) as raised:
                 manager.start(
-                    (Service("gdb", 32268, 3333), Service("rtt", 32269, 5555)), "127.64.0.1"
+                    (ForwardSpec("gdb", 32268, 3333), ForwardSpec("rtt", 32269, 5555)), "127.64.0.1"
                 )
         finally:
             sys.settrace(previous_trace)
         assert raised.value is interruption
         assert requested and both_live_at_delivery
-        assert manager.services == ()
+        assert manager.forwards == ()
 
         restart_failure = None
         try:

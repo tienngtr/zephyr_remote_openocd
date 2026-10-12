@@ -7,14 +7,15 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from zephyr_remote_openocd.controller.model import (
-    DuplicateServiceError,
-    Service,
-    validated_services,
-)
+from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec, validated_forwards
 from zephyr_remote_openocd.controller.paths import PathPlanner
 from zephyr_remote_openocd.openocd.command import plan_openocd_base
 from zephyr_remote_openocd.protocol.arguments import ArgumentTemplate, SessionValue
+from zephyr_remote_openocd.protocol.listeners import (
+    DuplicateEndpointError,
+    ListenerSpec,
+    validated_listeners,
+)
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 
@@ -93,29 +94,29 @@ class DebugInputs:
 class DebugPlan:
     process: ProcessSpec
     staged_files: tuple
-    services: tuple[Service, ...]
+    forwards: tuple[ForwardSpec, ...]
     gdb_argv: tuple[str, ...] | None
     thread_info_requested: bool
     openocd_version: OpenOcdVersion | None
     rtos_awareness: bool
-    rtt_service: Service | None
+    rtt_forward: ForwardSpec | None
     rtt_setup: str | None
     launches_rtt_client: bool
-    auxiliary_services: tuple[Service, ...] = ()
-    reserved_services: tuple[Service, ...] = ()
+    auxiliary_forwards: tuple[ForwardSpec, ...] = ()
+    reserved_listeners: tuple[ListenerSpec, ...] = ()
 
 
 @dataclass(frozen=True)
-class DebugServicePlan:
-    """Validated OpenOCD and optional RTT service allocation."""
+class DebugEndpointPlan:
+    """Validated debug listeners and their local forwarding requirements."""
 
     gdb_base_port: int
     gdb_endpoint_port: int
     remote_tcl: int | None
     remote_telnet: int | None
-    services: tuple[Service, ...]
-    rtt_service: Service | None
-    reserved_services: tuple[Service, ...]
+    forwards: tuple[ForwardSpec, ...]
+    rtt_forward: ForwardSpec | None
+    reserved_listeners: tuple[ListenerSpec, ...]
 
 
 def _port(value: int | str, name: str, *, required: bool = False) -> int | None:
@@ -141,7 +142,7 @@ def _validate_debug_inputs(inputs: DebugInputs) -> None:
         raise DebugPlanError(f"unsupported session debug command: {inputs.command}")
 
 
-def _plan_debug_services(inputs: DebugInputs) -> DebugServicePlan:
+def _plan_debug_endpoints(inputs: DebugInputs) -> DebugEndpointPlan:
     gdb_base_port = _port(inputs.gdb_port, "gdb_port", required=True)
     gdb_endpoint_port = (
         gdb_base_port
@@ -151,50 +152,52 @@ def _plan_debug_services(inputs: DebugInputs) -> DebugServicePlan:
     remote_tcl = _port(inputs.tcl_port, "tcl_port")
     remote_telnet = _port(inputs.telnet_port, "telnet_port")
     assert gdb_base_port is not None and gdb_endpoint_port is not None
-    services = [Service("gdb", gdb_endpoint_port, gdb_endpoint_port)]
+    forwards = [ForwardSpec("gdb", gdb_endpoint_port, gdb_endpoint_port)]
     # A different client port selects another target listener; it does not
     # remap the base listener. Preflight both without forwarding the base.
-    reserved: tuple[Service, ...] = (
-        (Service("gdb_base", gdb_base_port, gdb_base_port),)
-        if gdb_endpoint_port != gdb_base_port
-        else ()
+    reserved: tuple[ListenerSpec, ...] = (
+        (ListenerSpec("gdb_base", gdb_base_port),) if gdb_endpoint_port != gdb_base_port else ()
     )
     if remote_tcl is not None:
-        services.append(Service("tcl", remote_tcl, remote_tcl))
+        forwards.append(ForwardSpec("tcl", remote_tcl, remote_tcl))
     if remote_telnet is not None:
-        services.append(Service("telnet", remote_telnet, remote_telnet))
+        forwards.append(ForwardSpec("telnet", remote_telnet, remote_telnet))
     try:
-        validated_services((*services, *reserved))
-    except DuplicateServiceError as error:
+        validated_forwards(forwards)
+        validated_listeners((*(forward.listener for forward in forwards), *reserved))
+    except DuplicateEndpointError as error:
         raise DebugPlanError(str(error)) from error
 
     rtt_requested = inputs.command == "rtt" or inputs.rtt_server
-    rtt_service = None
+    rtt_forward = None
     if rtt_requested:
         if inputs.rtt_address is None:
             raise DebugPlanError("RTT control block not found")
         rtt_port = _port(inputs.rtt_port, "rtt_port", required=True)
         assert rtt_port is not None
-        if any(service.remote_port == rtt_port for service in (*services, *reserved)):
+        if any(
+            forward.remote_port == rtt_port
+            for forward in (*(forward.listener for forward in forwards), *reserved)
+        ):
             raise DebugPlanError("rtt_port conflicts with an enabled OpenOCD service port")
-        rtt_service = Service("rtt", rtt_port, rtt_port)
+        rtt_forward = ForwardSpec("rtt", rtt_port, rtt_port)
         if inputs.command != "rtt":
-            services.append(rtt_service)
+            forwards.append(rtt_forward)
         else:
-            reserved += (rtt_service,)
-    return DebugServicePlan(
+            reserved += (rtt_forward.listener,)
+    return DebugEndpointPlan(
         gdb_base_port,
         gdb_endpoint_port,
         remote_tcl,
         remote_telnet,
-        tuple(services),
-        rtt_service,
+        tuple(forwards),
+        rtt_forward,
         reserved,
     )
 
 
 def _server_commands(
-    inputs: DebugInputs, services: DebugServicePlan, rtos: bool
+    inputs: DebugInputs, endpoint_plan: DebugEndpointPlan, rtos: bool
 ) -> tuple[str, ...]:
     commands: list[str] = _commands(inputs.pre_init)
     if rtos:
@@ -208,7 +211,7 @@ def _server_commands(
     elif not inputs.no_halt:
         commands.extend(("-c", "halt"))
     if inputs.rtt_server and inputs.command != "rtt":
-        assert inputs.rtt_address is not None and services.rtt_service is not None
+        assert inputs.rtt_address is not None and endpoint_plan.rtt_forward is not None
         commands.extend(
             (
                 "-c",
@@ -216,15 +219,15 @@ def _server_commands(
                 "-c",
                 "rtt start",
                 "-c",
-                f"rtt server start {services.rtt_service.remote_port} {RTT_CHANNEL}",
+                f"rtt server start {endpoint_plan.rtt_forward.remote_port} {RTT_CHANNEL}",
             )
         )
     commands.extend(("-c", f"echo {inputs.startup_complete_sentinel}"))
     return tuple(commands)
 
 
-def _rtt_client_commands(inputs: DebugInputs, services: DebugServicePlan) -> tuple[str, ...]:
-    assert inputs.rtt_address is not None and services.rtt_service is not None
+def _rtt_client_commands(inputs: DebugInputs, endpoint_plan: DebugEndpointPlan) -> tuple[str, ...]:
+    assert inputs.rtt_address is not None and endpoint_plan.rtt_forward is not None
     return (
         "-ex",
         f'monitor rtt setup 0x{inputs.rtt_address:x} 0x{RTT_SEARCH_RANGE_SIZE:x} "SEGGER RTT"',
@@ -233,7 +236,7 @@ def _rtt_client_commands(inputs: DebugInputs, services: DebugServicePlan) -> tup
         "-ex",
         "monitor rtt start",
         "-ex",
-        f"monitor rtt server start {services.rtt_service.remote_port} {RTT_CHANNEL}",
+        f"monitor rtt server start {endpoint_plan.rtt_forward.remote_port} {RTT_CHANNEL}",
         "-ex",
         "detach",
         "-ex",
@@ -241,7 +244,7 @@ def _rtt_client_commands(inputs: DebugInputs, services: DebugServicePlan) -> tup
     )
 
 
-def _client_argv(inputs: DebugInputs, services: DebugServicePlan) -> tuple[str, ...] | None:
+def _client_argv(inputs: DebugInputs, endpoint_plan: DebugEndpointPlan) -> tuple[str, ...] | None:
     if inputs.command == "debugserver":
         return None
     if not inputs.gdb:
@@ -254,14 +257,18 @@ def _client_argv(inputs: DebugInputs, services: DebugServicePlan) -> tuple[str, 
     if inputs.tui:
         client.append("-tui")
     client.extend(
-        ("-ex", f"target extended-remote 127.0.0.1:{services.gdb_endpoint_port}", inputs.elf_file)
+        (
+            "-ex",
+            f"target extended-remote 127.0.0.1:{endpoint_plan.gdb_endpoint_port}",
+            inputs.elf_file,
+        )
     )
     if inputs.command == "debug" and inputs.load:
         client.extend(("-ex", "load"))
     for command in inputs.gdb_init:
         client.extend(("-ex", command))
     if inputs.command == "rtt":
-        client.extend(_rtt_client_commands(inputs, services))
+        client.extend(_rtt_client_commands(inputs, endpoint_plan))
     return tuple(client)
 
 
@@ -279,15 +286,17 @@ def build_debug_plan(
     environment: tuple[tuple[str, str], ...] = (),
 ) -> DebugPlan:
     _validate_debug_inputs(inputs)
-    services = _plan_debug_services(inputs)
-    tcl_port = services.remote_tcl if services.remote_tcl is not None else "disabled"
-    telnet_port = services.remote_telnet if services.remote_telnet is not None else "disabled"
+    endpoint_plan = _plan_debug_endpoints(inputs)
+    tcl_port = endpoint_plan.remote_tcl if endpoint_plan.remote_tcl is not None else "disabled"
+    telnet_port = (
+        endpoint_plan.remote_telnet if endpoint_plan.remote_telnet is not None else "disabled"
+    )
     pre_config_commands = (
         f"lappend post_init_commands {{echo {inputs.openocd_init_sentinel}}}",
         ArgumentTemplate(("bindto ", SessionValue.ADDRESS)),
         f"tcl_port {tcl_port}",
         f"telnet_port {telnet_port}",
-        f"gdb_port {services.gdb_base_port}",
+        f"gdb_port {endpoint_plan.gdb_base_port}",
     )
     base = plan_openocd_base(
         inputs.executable,
@@ -298,8 +307,8 @@ def build_debug_plan(
         pre_config_commands,
     )
     rtos = thread_info_enabled(inputs.thread_info_requested, inputs.openocd_version)
-    argv = base.argv + _server_commands(inputs, services, rtos)
-    gdb_argv = _client_argv(inputs, services)
+    argv = base.argv + _server_commands(inputs, endpoint_plan, rtos)
+    gdb_argv = _client_argv(inputs, endpoint_plan)
 
     process = ProcessSpec(
         argv,
@@ -314,14 +323,14 @@ def build_debug_plan(
     return DebugPlan(
         process,
         tuple(planner.staged_files),
-        services.services,
+        endpoint_plan.forwards,
         gdb_argv,
         inputs.thread_info_requested,
         inputs.openocd_version,
         rtos,
-        services.rtt_service,
+        endpoint_plan.rtt_forward,
         _rtt_setup(inputs),
         inputs.command == "rtt",
-        tuple(service for service in services.services if service.name in {"tcl", "telnet"}),
-        services.reserved_services,
+        tuple(forward for forward in endpoint_plan.forwards if forward.name in {"tcl", "telnet"}),
+        endpoint_plan.reserved_listeners,
     )

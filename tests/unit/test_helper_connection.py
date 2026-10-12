@@ -30,7 +30,7 @@ from zephyr_remote_openocd.protocol.arguments import (
     materialize_argv,
     materialize_path,
 )
-from zephyr_remote_openocd.protocol.commands import decode_command, write_start
+from zephyr_remote_openocd.protocol.commands import _decode_start, write_start
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy, Trigger
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.protocol.wire import ProtocolError, decode_frame, encode_frame
@@ -238,7 +238,7 @@ def test_helper_client_sends_preference_and_reports_attempt_before_startup_error
     try:
         with pytest.raises(SessionError):
             client.start_process(ProcessSpec(("openocd",)), (), preferred_address="127.64.0.1")
-        request = decode_command(decode_frame(bytes(helper_process.stdin.written)))
+        request = _decode_start(decode_frame(bytes(helper_process.stdin.written)))
         assert request.preferred_address == "127.64.0.1"
         assert observed == [first]
     finally:
@@ -270,7 +270,7 @@ def test_explicit_session_values_are_not_recursively_expanded():
     )
     stream = io.BytesIO()
     write_start(stream, process, ())
-    request = decode_command(decode_frame(stream.getvalue()))
+    request = _decode_start(decode_frame(stream.getvalue()))
     argv = materialize_argv(
         request.argv,
         workspace=r'/runtime/[review] $value "quoted" \backslash {workspace} {address}/session',
@@ -353,7 +353,7 @@ def test_flash_paths_are_quoted_after_session_allocation(
         assert client._join_reader()
         with pytest.raises(SessionError):
             authority.operation_status()
-        request = decode_command(
+        request = _decode_start(
             decode_frame(bytes(process.stdin.written).splitlines(keepends=True)[0])
         )
         argv = materialize_argv(
@@ -428,7 +428,7 @@ def test_contradictory_terminal_is_reader_failure_and_never_published(policy, co
         with pytest.raises(SessionError) as reported:
             authority.operation_status()
         assert isinstance(reported.value.__cause__, ProtocolError)
-        assert authority.snapshot().ending is None
+        assert authority.snapshot().terminal is None
         client.close()
         assert authority.snapshot().failure is reported.value
         assert any(detail.code == "MISSING_TERMINAL" for detail in authority.snapshot().diagnostics)
@@ -456,7 +456,7 @@ def test_session_observations_project_exit_while_reader_remains_alive(helper_cli
     assert close_recorded.wait(5)
     try:
         assert reader.is_alive()
-        assert authority.snapshot().ending.outcome.child_result.returncode == OPENOCD_FAILURE_RC
+        assert authority.snapshot().terminal.outcome.child_result.returncode == OPENOCD_FAILURE_RC
         with pytest.raises(SessionError, match="exit status 7"):
             authority.operation_status()
     finally:
@@ -637,7 +637,7 @@ def test_reader_failure_takes_precedence_over_known_openocd_result(helper_client
     authority.record_reader_failure(reader_error)
     authority.record_terminal(terminal_snapshot(Trigger.CHILD_EXIT, returncode=OPENOCD_FAILURE_RC))
 
-    assert authority.snapshot().ending.outcome.child_result.returncode == OPENOCD_FAILURE_RC
+    assert authority.snapshot().terminal.outcome.child_result.returncode == OPENOCD_FAILURE_RC
     with pytest.raises(SessionError) as raised:
         authority.operation_status()
 
@@ -684,9 +684,9 @@ def test_terminal_failure_stays_primary_after_trailing_protocol_failure(
         ) in str(error)
         assert error.__cause__ is None
         assert any("helper event stream failed" in note for note in error.__notes__)
-        ending = authority.snapshot().ending
-        assert ending is not None
-        child_result = ending.outcome.child_result
+        terminal_snapshot = authority.snapshot().terminal
+        assert terminal_snapshot is not None
+        child_result = terminal_snapshot.outcome.child_result
         assert (None if child_result is None else child_result.returncode) == (
             None if terminal_failure == "startup" else OPENOCD_FAILURE_RC
         )
@@ -1284,10 +1284,10 @@ def test_child_and_control_status_use_one_persistent_arbitration_path(helper_cli
     assert any(
         ("status 1" if child_first else "exit status 7") in note for note in initial.value.__notes__
     )
-    assert authority.snapshot().ending.outcome.child_result.returncode == 7
+    assert authority.snapshot().terminal.outcome.child_result.returncode == 7
     with pytest.raises(SessionError) as gate:
         authority.admit_work((), ())
     assert gate.value is initial.value
     helper_client.close()
     assert authority.snapshot().failure is initial.value
-    assert authority.snapshot().ending.outcome.child_result.returncode == 7
+    assert authority.snapshot().terminal.outcome.child_result.returncode == 7

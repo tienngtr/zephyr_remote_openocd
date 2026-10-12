@@ -8,7 +8,8 @@ from pathlib import Path
 
 import pytest
 from zephyr_remote_openocd.controller.deployment import DeploymentResult
-from zephyr_remote_openocd.controller.model import Service, SessionPlan
+from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
+from zephyr_remote_openocd.controller.plan import SessionPlan
 from zephyr_remote_openocd.controller.session import SessionController
 from zephyr_remote_openocd.controller.ssh import (
     SSH_STDERR_TAIL_BYTES,
@@ -85,12 +86,12 @@ def fake_ssh_command(tmp_path: Path) -> SshCommand:
     return SshCommand((str(executable),))
 
 
-def request(command: SshCommand, *, services=()):
+def request(command: SshCommand, *, forwards=()):
     return SessionPlan(
         "fake-host",
         command,
         process=ProcessSpec((sys.executable, "-c", "pass")),
-        services=tuple(services),
+        forwards=tuple(forwards),
     )
 
 
@@ -114,14 +115,14 @@ def test_control_progresses_when_configured_ssh_stderr_exceeds_pipe_capacity(tmp
         return transport
 
     monkeypatch.setattr(SshCommand, "popen", record_transport)
-    backend = SessionController(request(fake_ssh_command(tmp_path)), deployment())
+    session_controller = SessionController(request(fake_ssh_command(tmp_path)), deployment())
     try:
-        backend.acquire()
-        assert backend.descriptor is not None
-        assert backend.descriptor.remote_address == "127.64.0.1"
+        session_controller.acquire()
+        assert session_controller.descriptor is not None
+        assert session_controller.descriptor.remote_address == "127.64.0.1"
     finally:
-        backend.close()
-    assert backend.closed
+        session_controller.close()
+    assert session_controller.closed
     assert len(transports) == 1
     control = transports[0]
     assert control.poll() == 0
@@ -134,15 +135,15 @@ def test_forward_progresses_when_configured_ssh_stderr_exceeds_pipe_capacity(tmp
     # The fake SSH endpoint exercises forwarding readiness and stderr draining;
     # the readiness sentinel does not require an actual forwarded listener.
     local_port = 45678
-    service = Service("gdb", local_port, 3333)
-    backend = SessionController(
-        request(fake_ssh_command(tmp_path), services=(service,)), deployment()
+    forward = ForwardSpec("gdb", local_port, 3333)
+    session_controller = SessionController(
+        request(fake_ssh_command(tmp_path), forwards=(forward,)), deployment()
     )
     try:
-        backend.acquire()
-        assert backend.descriptor is not None
-        assert backend.descriptor.remote_address == "127.64.0.1"
-        assert backend.forwarded_services == (service,)
+        session_controller.acquire()
+        assert session_controller.descriptor is not None
+        assert session_controller.descriptor.remote_address == "127.64.0.1"
+        assert session_controller.forwarded_specs == (forward,)
     finally:
-        backend.close()
-    assert backend.closed
+        session_controller.close()
+    assert session_controller.closed

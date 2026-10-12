@@ -13,9 +13,11 @@ from zephyr_remote_openocd.controller import session as session_module
 from zephyr_remote_openocd.controller.authority import SessionClosedError, SessionError
 from zephyr_remote_openocd.controller.deployment import DeploymentResult
 from zephyr_remote_openocd.controller.forwarding import ForwardFailure
-from zephyr_remote_openocd.controller.model import Service, SessionAllocation, SessionPlan
+from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
+from zephyr_remote_openocd.controller.plan import SessionAllocation, SessionPlan
 from zephyr_remote_openocd.controller.session import SessionController, query_remote_openocd_version
 from zephyr_remote_openocd.controller.ssh import SshCommand
+from zephyr_remote_openocd.protocol.listeners import ListenerSpec
 from zephyr_remote_openocd.protocol.outcome import Trigger
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.protocol.wire import ProtocolError, encode_frame
@@ -40,11 +42,11 @@ class _BlockedHelper:
     def start_process(
         self,
         process: ProcessSpec,
-        services: Iterable[Service],
+        listeners: Iterable[ListenerSpec],
         *,
         preferred_address: str | None = None,
     ) -> str:
-        del process, services, preferred_address
+        del process, listeners, preferred_address
         raise AssertionError("start_process() is not expected")
 
     def observe_status(self) -> None:
@@ -70,15 +72,15 @@ class _PreparedHelper(_BlockedHelper):
 
 class _BlockedForwards:
     @property
-    def services(self) -> tuple[Service, ...]:
+    def forwards(self) -> tuple[ForwardSpec, ...]:
         raise AssertionError("services is not expected")
 
     @property
     def has_forwards(self) -> bool:
         raise AssertionError("has_forwards is not expected")
 
-    def start(self, services: Iterable[Service], remote_address: str) -> None:
-        del services, remote_address
+    def start(self, forwards: Iterable[ForwardSpec], remote_address: str) -> None:
+        del forwards, remote_address
         raise AssertionError("start() is not expected")
 
     def check_health(self, report: Callable[[ForwardFailure], None]) -> None:
@@ -96,14 +98,14 @@ def _make_session() -> SessionController:
 
 def test_session_validates_reserved_services_without_forwarding_them(monkeypatch):
     harness = ForwardingHarness(monkeypatch)
-    gdb = Service("gdb", 3333, 3333)
-    rtt = Service("rtt", 5566, 5566)
-    request = replace(harness.request((gdb,), ()), reserved_services=(rtt,))
+    gdb = ForwardSpec("gdb", 3333, 3333)
+    rtt = ForwardSpec("rtt", 5566, 5566)
+    request = replace(harness.request((gdb,), ()), reserved_listeners=(rtt.listener,))
     session = SessionController.prepare(request)
     try:
         session.acquire()
-        assert harness.helper.services == (gdb, rtt)
-        assert session.forwarded_services == (gdb,)
+        assert harness.helper.listeners == (gdb.listener, rtt.listener)
+        assert session.forwarded_specs == (gdb,)
     finally:
         session.close()
 
@@ -223,7 +225,7 @@ def test_staging_rejects_response_without_lf(monkeypatch):
 def test_closed_session_exposes_only_cached_openocd_result():
     session = _make_session()
     session.closed = True
-    session._helper = _BlockedHelper()
+    session._helper_connection = _BlockedHelper()
 
     assert session.openocd_returncode is None
     assert session.poll_operation() is None
@@ -253,7 +255,7 @@ def test_check_openocd_exit_propagates_helper_observation_failure():
             raise observation_error
 
     session = _make_session()
-    session._helper = Helper()
+    session._helper_connection = Helper()
 
     with pytest.raises(SessionError) as raised:
         session.poll_operation()
@@ -276,7 +278,7 @@ def test_check_openocd_exit_propagates_forward_failure_after_successful_openocd_
 
     session = _make_session()
     session._authority.record_terminal(terminal_snapshot(Trigger.CHILD_EXIT, returncode=0))
-    session._helper = Helper()
+    session._helper_connection = Helper()
     session._forwards = Forwards()
 
     with pytest.raises(SessionError) as raised:
@@ -312,7 +314,7 @@ def test_close_attempts_all_cleanup_once_and_preserves_first_failure(failure_pha
             session._authority.record_failure("HELPER_CLEANUP_FAILURE", later_error)
 
     session._forwards = Forwards()
-    session._helper = Helper()
+    session._helper_connection = Helper()
 
     with pytest.raises(RuntimeError) as raised:
         session.close()
@@ -348,7 +350,7 @@ def test_close_raises_helper_cleanup_only_error_after_closing_session():
             session._authority.record_failure("HELPER_CLEANUP_FAILURE", cleanup_error)
 
     session._forwards = Forwards()
-    session._helper = Helper()
+    session._helper_connection = Helper()
 
     with pytest.raises(RuntimeError) as raised:
         session.close()
@@ -392,7 +394,7 @@ def test_wait_for_openocd_exit_observes_forward_failure():
     session = _make_session()
     forwards = Forwards()
     helper = Helper(forwards)
-    session._helper = helper
+    session._helper_connection = helper
     session._forwards = forwards
 
     with pytest.raises(SessionError):
@@ -439,7 +441,7 @@ def test_wait_for_openocd_exit_raises_helper_timeout_at_deadline(monkeypatch):
 
     helper = Helper()
     session = _make_session()
-    session._helper = helper
+    session._helper_connection = helper
     session._forwards = Forwards()
     monkeypatch.setattr(session_module.time, "monotonic", lambda: clock[0])
 
@@ -454,17 +456,17 @@ def test_wait_for_openocd_exit_raises_helper_timeout_at_deadline(monkeypatch):
 
 def test_forward_uses_allocated_remote_address_and_requested_services(monkeypatch):
     harness = ForwardingHarness(monkeypatch)
-    requested_services = (
-        Service("gdb", 3333, 3333),
-        Service("telnet", 4444, 4444),
+    requested_forwards = (
+        ForwardSpec("gdb", 3333, 3333),
+        ForwardSpec("telnet", 4444, 4444),
     )
     session = harness.prepare((), ())
     try:
         session.acquire()
-        for service in requested_services:
-            harness.ssh.process(service)
+        for forward in requested_forwards:
+            harness.ssh.process(forward)
         # The controlled SSH boundary checks the allocated destination address.
-        session.forward(requested_services)
-        assert session.forwarded_services == requested_services
+        session.forward(requested_forwards)
+        assert session.forwarded_specs == requested_forwards
     finally:
         session.close()

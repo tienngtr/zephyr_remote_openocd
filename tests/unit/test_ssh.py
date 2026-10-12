@@ -21,8 +21,9 @@ from zephyr_remote_openocd.controller import ssh as ssh_module
 from zephyr_remote_openocd.controller.authority import SessionError
 from zephyr_remote_openocd.controller.deployment import DeploymentResult
 from zephyr_remote_openocd.controller.forwarding import ForwardManager
+from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
 from zephyr_remote_openocd.controller.helper_connection import HelperConnection
-from zephyr_remote_openocd.controller.model import Service, SessionPlan
+from zephyr_remote_openocd.controller.plan import SessionPlan
 from zephyr_remote_openocd.controller.session import SessionController
 from zephyr_remote_openocd.controller.ssh import (
     SshCommand,
@@ -518,7 +519,7 @@ def test_initial_forward_failure_consumes_session_close_event(monkeypatch):
         "host",
         command,
         ProcessSpec(("child",)),
-        services=(Service("gdb", 3333, 3333),),
+        forwards=(ForwardSpec("gdb", 3333, 3333),),
     )
     deployment = DeploymentResult("/helper.py", "digest", False)
     dispatch = HelperConnection._dispatch
@@ -534,7 +535,7 @@ def test_initial_forward_failure_consumes_session_close_event(monkeypatch):
         if event["type"] == "SESSION_ENDED":
             close_seen.set()
 
-    def fail_forwards(_manager, _services, _address):
+    def fail_forwards(_manager, _forwards, _address):
         assert close_seen.wait(5)
         raise forward_error
 

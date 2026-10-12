@@ -11,7 +11,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import BinaryIO, cast
 
-from zephyr_remote_openocd.controller.model import StagedDirectory, StagedEntry, StagedFile
+from zephyr_remote_openocd.controller.staging_spec import StagedDirectory, StagedEntry, StagedFile
 
 
 class StagingError(RuntimeError):

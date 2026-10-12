@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 
 import pytest
-from zephyr_remote_openocd.controller.model import Service
+from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
 from zephyr_remote_openocd.protocol import commands as protocol_commands
 from zephyr_remote_openocd.protocol.commands import write_start
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
@@ -74,7 +74,7 @@ class TestProtocol:
             literal_prefix=2,
             completion_policy=CompletionPolicy.PROCESS_EXIT,
         )
-        forwards = (Service("gdb", 12345, 3333), Service("rtt", 12346, 5566))
+        forwards = (ForwardSpec("gdb", 12345, 3333), ForwardSpec("rtt", 12346, 5566))
         write_start(
             stream,
             process,

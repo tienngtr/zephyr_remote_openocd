@@ -6,7 +6,7 @@ import threading
 
 import pytest
 from zephyr_remote_openocd.controller.authority import SessionAuthority, SessionError
-from zephyr_remote_openocd.controller.model import Service
+from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
 from zephyr_remote_openocd.protocol.outcome import Trigger
 
 from tests.protocol_support import terminal_snapshot
@@ -28,11 +28,11 @@ def test_recorded_fact_prevents_dependent_entry_after_ready(fact):
 
 def test_ready_requires_required_forwarding_at_entry():
     authority = SessionAuthority()
-    service = Service("gdb", 3333, 3333)
+    forward = ForwardSpec("gdb", 3333, 3333)
     authority.record_ready()
     with pytest.raises(SessionError):
-        authority.admit_work((service,), ())
-    authority.admit_work((service,), (service,))
+        authority.admit_work((forward,), ())
+    authority.admit_work((forward,), (forward,))
 
 
 @pytest.mark.timeout(10)
@@ -151,12 +151,12 @@ def test_failure_adapters_record_fatal_facts(source, code):
     elif source == "transport":
         assert "17" in str(snapshot.failure)
     else:
-        assert snapshot.ending is not None
+        assert snapshot.terminal is not None
         if source == "child":
-            result = snapshot.ending.outcome.child_result
+            result = snapshot.terminal.outcome.child_result
             assert result is not None and result.returncode == 7
         else:
-            failure = snapshot.ending.outcome.primary_failure
+            failure = snapshot.terminal.outcome.primary_failure
             assert failure is not None and failure.code == "HELPER_FAILURE"
 
 
@@ -185,9 +185,9 @@ def test_first_failure_stays_primary_across_publication(first, second):
     if second in ("reader", "operation"):
         assert any("nested secondary diagnostic" in note for note in status.value.__notes__)
     if "child" in (first, second):
-        assert snapshot.ending is not None
-        assert snapshot.ending.outcome.child_result is not None
-        assert snapshot.ending.outcome.child_result.returncode == 7
+        assert snapshot.terminal is not None
+        assert snapshot.terminal.outcome.child_result is not None
+        assert snapshot.terminal.outcome.child_result.returncode == 7
     notes = tuple(status.value.__notes__)
     with pytest.raises(RuntimeError) as repeated:
         authority.operation_status()

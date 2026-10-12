@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 from zephyr_remote_openocd.controller.admission import AdmissionGate
 from zephyr_remote_openocd.controller.cleanup import _add_failure_note
-from zephyr_remote_openocd.controller.model import Service
+from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy, Diagnostic, TerminalSnapshot
 
 
@@ -39,7 +39,7 @@ class _FailureRecord:
 
 @dataclass(frozen=True, slots=True)
 class SessionSnapshot:
-    ending: TerminalSnapshot | None
+    terminal: TerminalSnapshot | None
     closing: bool
     failure: BaseException | None
     diagnostics: tuple[Diagnostic, ...]
@@ -54,7 +54,7 @@ class SessionAuthority:
     """
 
     def __init__(self) -> None:
-        self._ending: TerminalSnapshot | None = None
+        self._terminal: TerminalSnapshot | None = None
         self._failures: dict[object, _FailureRecord] = {}
         self._closing = False
         self._error_reported = False
@@ -68,7 +68,7 @@ class SessionAuthority:
     def snapshot(self) -> SessionSnapshot:
         with self._changed:
             return SessionSnapshot(
-                self._ending,
+                self._terminal,
                 self._closing,
                 self._failure(),
                 tuple(record.diagnostic for record in self._failures.values()),
@@ -102,7 +102,7 @@ class SessionAuthority:
 
     def record_terminal(self, snapshot: TerminalSnapshot) -> None:
         with self._changed:
-            self._ending = snapshot
+            self._terminal = snapshot
             if snapshot.operation_failed(self._policy):
                 outcome = snapshot.outcome
                 details = tuple(
@@ -165,7 +165,7 @@ class SessionAuthority:
             error = self.publish_failure()
             if error is not None:
                 raise error
-            result = None if self._ending is None else self._ending.outcome.child_result
+            result = None if self._terminal is None else self._terminal.outcome.child_result
             return None if result is None else result.returncode
 
     def resolve_effect_failure(self, error: BaseException) -> BaseException:
@@ -183,12 +183,12 @@ class SessionAuthority:
         with self._changed:
             return None if self._error_reported else self.publish_failure()
 
-    def admit_work(self, required: Iterable[Service], forwarded: Iterable[Service]) -> None:
+    def admit_work(self, required: Iterable[ForwardSpec], forwarded: Iterable[ForwardSpec]) -> None:
         with self._changed:
             error = self.publish_failure()
             if error is not None:
                 raise error
-            if self._closing or self._ending is not None:
+            if self._closing or self._terminal is not None:
                 raise SessionClosedError("operation no longer permits dependent launch")
             ticket = self._gate.prepare(required)
             self._gate.observe_forwarded(forwarded)
@@ -197,5 +197,5 @@ class SessionAuthority:
 
     def wait_for_change(self, timeout: float | None) -> None:
         with self._changed:
-            if self._ending is None and not self._failures and not self._closing:
+            if self._terminal is None and not self._failures and not self._closing:
                 self._changed.wait(timeout)

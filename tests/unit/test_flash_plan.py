@@ -15,11 +15,8 @@ from zephyr_remote_openocd.controller.paths import (
 from zephyr_remote_openocd.openocd import flash as flash_module
 from zephyr_remote_openocd.openocd.flash import FlashInputs, build_flash_plan
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
-from zephyr_remote_openocd.protocol.process import ProcessSpec
 
 from tests.elf_fixtures import ELF_ENTRY_POINT, elf_memory_witness_bytes
-
-TEST_PROCESS = ProcessSpec(("test-process",))
 
 
 class TestFlashPlanning:

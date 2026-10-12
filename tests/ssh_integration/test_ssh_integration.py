@@ -22,10 +22,12 @@ from zephyr_remote_openocd.config import PathMapping
 from zephyr_remote_openocd.controller.authority import SessionError
 from zephyr_remote_openocd.controller.deployment import _helper_source, deploy_helper
 from zephyr_remote_openocd.controller.forwarding import ForwardManager
-from zephyr_remote_openocd.controller.model import Service, SessionPlan, StagedFile
+from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
 from zephyr_remote_openocd.controller.paths import PathPlanner
+from zephyr_remote_openocd.controller.plan import SessionPlan
 from zephyr_remote_openocd.controller.session import SessionController
 from zephyr_remote_openocd.controller.ssh import SshCommand, SshForwardSpec
+from zephyr_remote_openocd.controller.staging_spec import StagedFile
 from zephyr_remote_openocd.protocol.arguments import ArgumentTemplate, SessionValue
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
 from zephyr_remote_openocd.protocol.process import ProcessSpec
@@ -75,31 +77,32 @@ while True:
 """
 
 REMOTE_WORKSPACE_RECLAMATION = """
-import json, os, runpy, sys, tempfile
+import json, os, sys, tempfile
 from contextlib import ExitStack
 
-helper = runpy.run_path(sys.argv[1], run_name='qualification')
+sys.path.insert(0, sys.argv[1])
+from zephyr_remote_openocd.helper import workspace as helper
 with tempfile.TemporaryDirectory(prefix='zro qualification ') as directory:
     os.environ['XDG_RUNTIME_DIR'] = directory
     with ExitStack() as owners:
         workspaces = {}
         for name in ('active', 'inactive', 'unconfirmed'):
-            _, work, lock = helper['new_workspace']()
+            _, work, lock = helper.new_workspace()
             owners.enter_context(lock)
             (work / 'staged' / 'input.bin').write_bytes(b'required input')
             workspaces[name] = work
             if name == 'unconfirmed':
-                (work / helper['UNCONFIRMED_CHILD']).touch()
+                (work / helper.UNCONFIRMED_CHILD).touch()
             if name != 'active':
                 lock.close()
         for work in workspaces.values():
             os.utime(work, (1, 1))
-        _, _, lock = helper['new_workspace']()
+        _, _, lock = helper.new_workspace()
         owners.enter_context(lock)
         inactive = workspaces['inactive']
         active_input = workspaces['active'] / 'staged' / 'input.bin'
         unconfirmed_input = workspaces['unconfirmed'] / 'staged' / 'input.bin'
-        inactive_metadata = (helper['_lease_path'](inactive), helper['_closure_path'](inactive))
+        inactive_metadata = (helper._lease_path(inactive), helper._closure_path(inactive))
         print(json.dumps({
             'active_retained': active_input.read_bytes() == b'required input',
             'unconfirmed_retained': unconfirmed_input.read_bytes() == b'required input',
@@ -196,15 +199,15 @@ class TestSshTransportIntegration:
                 listener.listen()
             else:
                 listener.close()
-            service = Service("gdb", port, 3333)
+            forward = ForwardSpec("gdb", port, 3333)
             try:
                 if occupied:
                     with pytest.raises(SessionError):
-                        manager.start((service,), "127.0.0.1")
+                        manager.start((forward,), "127.0.0.1")
                     assert not manager.has_forwards
                 else:
-                    manager.start((service,), "127.0.0.1")
-                    assert manager.services == (service,)
+                    manager.start((forward,), "127.0.0.1")
+                    assert manager.forwards == (forward,)
                     # Verify a listener exists immediately after actual readiness.
                     with socket.create_connection(("127.0.0.1", port), timeout=20):
                         pass
@@ -287,7 +290,7 @@ class TestSshTransportIntegration:
                 self.ssh,
                 session_echo_process(),
                 (StagedFile(source, PurePosixPath("nested/payload.bin")),),
-                (Service("gdb", local_port, 3333),),
+                (ForwardSpec("gdb", local_port, 3333),),
             )
             session = SessionController.prepare(request)
             with cleanup_on_exit(session.close):
@@ -339,7 +342,7 @@ class TestSshTransportIntegration:
                     self.host,
                     self.ssh,
                     session_echo_process(),
-                    services=(Service("gdb", first_port, 3333),),
+                    forwards=(ForwardSpec("gdb", first_port, 3333),),
                 )
             )
             resources.enter_context(cleanup_on_exit(first.close))
@@ -349,7 +352,7 @@ class TestSshTransportIntegration:
                     self.host,
                     self.ssh,
                     session_echo_process(),
-                    services=(Service("gdb", second_port, 3333),),
+                    forwards=(ForwardSpec("gdb", second_port, 3333),),
                 )
             )
             resources.enter_context(cleanup_on_exit(second.close))
@@ -393,12 +396,12 @@ collision.listen()
                 (5, ArgumentTemplate((SessionValue.WORKSPACE, "/first-address"))),
             ),
         )
-        service = Service("gdb", free_loopback_port(), 3333)
+        forward = ForwardSpec("gdb", free_loopback_port(), 3333)
         attempts: list[tuple[str, ...]] = []
         output: list[str] = []
         with pytest.raises(SessionError):
             session = SessionController.prepare(
-                SessionPlan(self.host, self.ssh, process, services=(service,))
+                SessionPlan(self.host, self.ssh, process, forwards=(forward,))
             )
             with cleanup_on_exit(session.close):
                 session.acquire(
@@ -412,7 +415,7 @@ collision.listen()
         result = self.ssh.run(self.host, f"test ! -e {shlex.quote(workspace)}", timeout=20)
         assert result.returncode == 0, result.stderr.decode(errors="replace")
         with socket.socket() as local_listener:
-            local_listener.bind(("127.0.0.1", service.local_port))
+            local_listener.bind(("127.0.0.1", forward.local_port))
 
     def test_helper_revision_repair_preserves_active_session(self):
         """Deploy and repair a distinct bundle while the current revision is live."""
@@ -420,7 +423,7 @@ collision.listen()
             self.host,
             self.ssh,
             session_echo_process(),
-            services=(Service("gdb", free_loopback_port(), 3333),),
+            forwards=(ForwardSpec("gdb", free_loopback_port(), 3333),),
         )
         session = SessionController.prepare(request)
         with cleanup_on_exit(session.close), ExitStack() as resources:
@@ -477,7 +480,7 @@ collision.listen()
             event = decode_frame(response.stdout)
             validate_openocd_version_response(event)
             assert event["type"] == "OPENOCD_VERSION"
-            wait_for_echo(request.services[0].local_port, b"active_revision_survived", 20)
+            wait_for_echo(request.forwards[0].local_port, b"active_revision_survived", 20)
 
     def test_deployed_helper_reclaims_only_inactive_workspace_storage(self):
         """Use the deployed bundle and real locks in a test-owned remote root."""
@@ -516,7 +519,7 @@ collision.listen()
             self.host,
             ssh,
             session_echo_process(),
-            services=(Service("gdb", local_port, 3333),),
+            forwards=(ForwardSpec("gdb", local_port, 3333),),
         )
         master = ssh.popen(self.host, "printf 'ZRO_MASTER_READY\\n'; cat >/dev/null")
         with cleanup_on_exit(lambda: stop_and_close(master)):
@@ -562,7 +565,10 @@ collision.listen()
         ssh = RecordingSshCommand(self.ssh_settings.ssh_command)
         session = SessionController.prepare(
             SessionPlan(
-                self.host, ssh, session_echo_process(), services=(Service("gdb", local_port, 3333),)
+                self.host,
+                ssh,
+                session_echo_process(),
+                forwards=(ForwardSpec("gdb", local_port, 3333),),
             )
         )
         try:
@@ -605,7 +611,10 @@ collision.listen()
         ssh = RecordingSshCommand(self.ssh_settings.ssh_command)
         session = SessionController.prepare(
             SessionPlan(
-                self.host, ssh, session_echo_process(), services=(Service("gdb", local_port, 3333),)
+                self.host,
+                ssh,
+                session_echo_process(),
+                forwards=(ForwardSpec("gdb", local_port, 3333),),
             )
         )
         try:

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from zephyr_remote_openocd.config import PathMapping
-from zephyr_remote_openocd.controller.model import StagedDirectory, StagedEntry, StagedFile
+from zephyr_remote_openocd.controller.staging_spec import StagedDirectory, StagedEntry, StagedFile
 from zephyr_remote_openocd.protocol.arguments import ArgumentTemplate, SessionValue
 from zephyr_remote_openocd.protocol.process import RequiredPathSpec
 

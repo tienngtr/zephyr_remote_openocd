@@ -15,14 +15,10 @@ from pathlib import Path, PurePosixPath
 from runners.core import FileType  # pylint: disable=no-name-in-module
 from runners.openocd import OpenOcdBinaryRunner  # pylint: disable=no-name-in-module
 
-from zephyr_remote_openocd.config import (
-    ConfigError,
-    load_config,
-    resolve_remote,
-)
+from zephyr_remote_openocd.config import ConfigError, load_config, resolve_remote
 from zephyr_remote_openocd.controller.forwarding import ForwardAdvisory
-from zephyr_remote_openocd.controller.model import SessionPlan
 from zephyr_remote_openocd.controller.paths import PathPlanner, PathPlanningError
+from zephyr_remote_openocd.controller.plan import SessionPlan
 from zephyr_remote_openocd.controller.rtt import run_rtt_client
 from zephyr_remote_openocd.controller.session import SessionController, query_remote_openocd_version
 from zephyr_remote_openocd.controller.ssh import SshCommand
@@ -187,7 +183,7 @@ def _finalize_operation(session):
 def _execute_started_operation(runner, command, plan, session):
     if command == "rtt":
         return _execute_rtt(runner, plan, session)
-    _report_rtt_service(runner, plan, session)
+    _report_rtt_forward(runner, plan, session)
     if command in {"debug", "attach"}:
         return _execute_gdb_client(runner, plan, session)
     return _execute_server(runner, command, plan, session)
@@ -205,30 +201,30 @@ def _execute_gdb_client(runner, plan, session):
 
 def _execute_rtt(runner, plan, session):
     assert plan is not None and plan.gdb_argv is not None
-    assert plan.rtt_service is not None
+    assert plan.rtt_forward is not None
     runner.require(plan.gdb_argv[0])
     returncode = session.poll_operation()
     if returncode is not None:
         raise RuntimeError(f"remote OpenOCD exited before GDB startup with status {returncode}")
     session.run_local_client(lambda: runner.run_client(list(plan.gdb_argv)))
     session.make_forwards_optional(
-        tuple(service for service in plan.services if service.name == "gdb")
+        tuple(forward for forward in plan.forwards if forward.name == "gdb")
     )
-    session.forward((plan.rtt_service,), required=True)
-    _report_rtt_service(runner, plan, session)
+    session.forward((plan.rtt_forward,), required=True)
+    _report_rtt_forward(runner, plan, session)
 
     returncode = session.poll_operation()
     if returncode is not None:
         raise RuntimeError(f"remote OpenOCD exited before RTT startup with status {returncode}")
     return session.run_local_client(
-        lambda: run_rtt_client(plan.rtt_service.local_port, session.poll_operation)
+        lambda: run_rtt_client(plan.rtt_forward.local_port, session.poll_operation)
     )
 
 
 def _execute_server(runner, command, plan, session):
     if command == "debugserver":
         assert plan is not None
-        gdb = next(item for item in plan.services if item.name == "gdb")
+        gdb = next(item for item in plan.forwards if item.name == "gdb")
         runner.logger.info(
             "Remote OpenOCD GDB forwarding established at 127.0.0.1:%s",
             gdb.local_port,
@@ -236,25 +232,25 @@ def _execute_server(runner, command, plan, session):
     return session.wait_for_openocd_exit()
 
 
-def _report_rtt_service(runner, plan, session):
-    if plan is not None and plan.rtt_service in session.forwarded_services:
+def _report_rtt_forward(runner, plan, session):
+    if plan is not None and plan.rtt_forward in session.forwarded_specs:
         runner.logger.info(
             "Remote OpenOCD RTT forwarding established at 127.0.0.1:%s",
-            plan.rtt_service.local_port,
+            plan.rtt_forward.local_port,
         )
 
 
 def _report_forward_advisory(runner, advisory: ForwardAdvisory) -> None:
     runner.logger.warning(
         "Best-effort %s forwarding %s failure on 127.0.0.1:%s: %s",
-        advisory.service.name,
+        advisory.forward.name,
         advisory.phase,
-        advisory.service.local_port,
+        advisory.forward.local_port,
         advisory.failure,
     )
     for note in getattr(advisory.failure, "__notes__", ()):
         runner.logger.warning(
-            "Best-effort %s forwarding diagnostic: %s", advisory.service.name, note
+            "Best-effort %s forwarding diagnostic: %s", advisory.forward.name, note
         )
 
 
@@ -327,14 +323,14 @@ def _record_operation(runner, command, selected):
 
 
 def _recorded_rtt(runner, command, plan):
-    service = plan.rtt_service
+    forward = plan.rtt_forward
     return {
-        "enabled": service is not None,
-        "address": runner.get_rtt_address() if service is not None else None,
-        "port": service.local_port if service is not None else None,
+        "enabled": forward is not None,
+        "address": runner.get_rtt_address() if forward is not None else None,
+        "port": forward.local_port if forward is not None else None,
         "setup": plan.rtt_setup,
         "service_phase": ("deferred" if command == "rtt" else "initial")
-        if service is not None
+        if forward is not None
         else None,
         "launches_local_client": plan.launches_rtt_client,
     }
@@ -490,9 +486,9 @@ def _debug_request(runner, selected, plan):
         SshCommand(selected.ssh_command),
         plan.process,
         plan.staged_files,
-        plan.services,
-        plan.auxiliary_services,
-        plan.reserved_services,
+        plan.forwards,
+        plan.auxiliary_forwards,
+        plan.reserved_listeners,
     )
 
 
@@ -515,17 +511,17 @@ def _request_record(request):
                 "name": item.name,
                 "local_port": item.local_port,
                 "remote_port": item.remote_port,
-                "criticality": "auxiliary" if item in request.auxiliary_services else "required",
+                "criticality": "auxiliary" if item in request.auxiliary_forwards else "required",
             }
-            for item in request.services
+            for item in request.forwards
         ],
         "reserved_services": [
             {
                 "name": item.name,
-                "local_port": item.local_port,
+                "local_port": item.remote_port,
                 "remote_port": item.remote_port,
             }
-            for item in request.reserved_services
+            for item in request.reserved_listeners
         ],
     }
     if request.process is not None:

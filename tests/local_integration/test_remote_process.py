@@ -35,15 +35,10 @@ from zephyr_remote_openocd.controller import session as session_module
 from zephyr_remote_openocd.controller.authority import SessionAuthority, SessionError
 from zephyr_remote_openocd.controller.deployment import DeploymentResult
 from zephyr_remote_openocd.controller.forwarding import ForwardManager
+from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
 from zephyr_remote_openocd.controller.helper_connection import HelperConnection
-from zephyr_remote_openocd.controller.model import (
-    Service,
-    SessionAllocation,
-    SessionPlan,
-    StagedDirectory,
-    StagedFile,
-)
 from zephyr_remote_openocd.controller.paths import REMOTE_ADDRESS_PLACEHOLDER, PathPlanner
+from zephyr_remote_openocd.controller.plan import SessionAllocation, SessionPlan
 from zephyr_remote_openocd.controller.rtt import RttClientError, run_rtt_client
 from zephyr_remote_openocd.controller.session import SessionController, query_remote_openocd_version
 from zephyr_remote_openocd.controller.ssh import (
@@ -53,7 +48,9 @@ from zephyr_remote_openocd.controller.ssh import (
     _stop_process,
 )
 from zephyr_remote_openocd.controller.staging import build_archive
-from zephyr_remote_openocd.helper import workspace as helper_workspace_module
+from zephyr_remote_openocd.controller.staging_spec import StagedDirectory, StagedFile
+from zephyr_remote_openocd.helper import workspace as workspace_module
+from zephyr_remote_openocd.protocol.listeners import ListenerSpec
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy, Trigger
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.protocol.wire import decode_terminal, encode_frame
@@ -309,9 +306,9 @@ def test_helper_close_allows_recorded_natural_exit_before_termination(
         else:
             assert managed.returncode == 0
             assert error is initial_failure
-        ending = authority.snapshot().ending
-        assert ending is not None
-        child_result = ending.outcome.child_result
+        terminal = authority.snapshot().terminal
+        assert terminal is not None
+        child_result = terminal.outcome.child_result
         assert (None if child_result is None else child_result.returncode) == openocd_returncode
         assert managed.stdin is not None and managed.stdin.closed
         assert managed.stdout is not None and managed.stdout.closed
@@ -339,11 +336,11 @@ class _StagingHelper:
     def start_process(
         self,
         process: ProcessSpec,
-        services: Iterable[Service],
+        listeners: Iterable[ListenerSpec],
         *,
         preferred_address: str | None = None,
     ) -> str:
-        del process, services, preferred_address
+        del process, listeners, preferred_address
         raise AssertionError("start_process() is not expected in this test")
 
     def observe_status(self) -> None:
@@ -373,7 +370,7 @@ def start_frame(
     *,
     environment=None,
     required_paths=None,
-    services=(),
+    listeners=(),
     required_output_sentinels=(),
     readiness_timeout=30.0,
     literal_prefix=0,
@@ -387,7 +384,7 @@ def start_frame(
         argv=list(argv),
         environment={} if environment is None else environment,
         required_paths=[] if required_paths is None else required_paths,
-        services=list(services),
+        services=list(listeners),
         required_output_sentinels=list(required_output_sentinels),
         readiness_timeout=readiness_timeout,
         literal_prefix=literal_prefix,
@@ -474,18 +471,18 @@ class TestForwardingLifecycle:
         process = self.Process()
         command = self.Command(process)
         session = self.session(command)
-        service = Service("gdb", self.port(), 3333)
+        forward = ForwardSpec("gdb", self.port(), 3333)
         with (
             patch.object(ForwardManager, "_await_ready", return_value=True),
             patch(
                 "zephyr_remote_openocd.controller.forwarding.socket.create_connection"
             ) as connect,
         ):
-            session._forwards.start((service,), "127.64.1.1")
+            session._forwards.start((forward,), "127.64.1.1")
         connect.assert_not_called()
         remote_command = command.calls[0][1]
         assert remote_command.startswith("python3 -c ")
-        assert command.calls[0][2] == SshForwardSpec(service.local_port, "127.64.1.1", 3333)
+        assert command.calls[0][2] == SshForwardSpec(forward.local_port, "127.64.1.1", 3333)
         session._forwards.close()
         assert process.terminate_calls == 1
 
@@ -574,7 +571,7 @@ class TestForwardingLifecycle:
         stale.stdout = os.fdopen(read_fd, "rb")
         command = self.Command(stale)
         session = self.session(command)
-        service = Service("gdb", 32155, 3333)
+        forward = ForwardSpec("gdb", 32155, 3333)
         monkeypatch.setattr(
             ForwardManager,
             "_preflight",
@@ -582,10 +579,10 @@ class TestForwardingLifecycle:
         )
         try:
             with pytest.raises(SessionError) as raised:
-                session._forwards.start((service,), "127.64.1.1")
+                session._forwards.start((forward,), "127.64.1.1")
             message = str(raised.value)
-            assert service.name in message
-            assert f"127.0.0.1:{service.local_port}" in message
+            assert forward.name in message
+            assert f"127.0.0.1:{forward.local_port}" in message
         finally:
             os.close(write_fd)
         session._forwards.close()
@@ -631,7 +628,7 @@ class TestForwardingLifecycle:
         monkeypatch.setattr(ForwardManager, "_await_ready", staticmethod(lambda *_args: True))
         try:
             manager.start(
-                (Service("gdb", 32155, 3333), Service("tcl", 32156, 6666)),
+                (ForwardSpec("gdb", 32155, 3333), ForwardSpec("tcl", 32156, 6666)),
                 "127.64.1.1",
             )
 
@@ -720,7 +717,7 @@ def test_sigint_during_session_close_cleans_owned_transports(
                 ),
                 required_output_sentinels=("child-ready",),
             ),
-            services=(Service("gdb", 32155, 3333), Service("tcl", 32156, 6666)),
+            forwards=(ForwardSpec("gdb", 32155, 3333), ForwardSpec("tcl", 32156, 6666)),
         ),
         DeploymentResult(str(helper_path), "digest", False),
     )
@@ -796,7 +793,7 @@ def test_sigint_during_session_close_cleans_owned_transports(
         assert session.closed
         assert not workspace.exists()
         assert not manager.has_forwards
-        assert manager.services == ()
+        assert manager.forwards == ()
         assert closed_at_delivery == (not sigint_blocked)
         session.close()
     finally:
@@ -1092,12 +1089,12 @@ def helper_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterato
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
-    _session_id, workspace, owner_lock = helper_workspace_module.new_workspace()
+    _session_id, workspace, owner_lock = workspace_module.new_workspace()
     try:
         yield workspace
     finally:
         try:
-            helper_workspace_module.remove_workspace(workspace)
+            workspace_module.remove_workspace(workspace)
         finally:
             owner_lock.close()
 
@@ -1578,7 +1575,7 @@ stage(sys.argv[2])
         ),
         ids=("wrong-byte-count", "missing-type", "invalid-utf8"),
     )
-    def test_backend_rejects_invalid_staging_confirmation(self, response):
+    def test_controller_rejects_invalid_staging_confirmation(self, response):
         class LocalCommand(_BlockedSshCommand):
             def run_stream(self, host, command, stream, timeout=60):
                 stream.read()
@@ -1591,11 +1588,11 @@ stage(sys.argv[2])
                 SessionPlan("local", LocalCommand(), TEST_PROCESS),
                 DeploymentResult("/helper.py", "digest", False),
             )
-            session._helper = _StagingHelper()
+            session._helper_connection = _StagingHelper()
             with pytest.raises(SessionError, match="invalid remote staging response"):
                 session._stage((StagedFile(source, PurePosixPath("firmware.bin")),))
 
-    def test_backend_rejects_staging_confirmation_with_wrong_digest(self, tmp_path):
+    def test_controller_rejects_staging_confirmation_with_wrong_digest(self, tmp_path):
         different_payload_digest = hashlib.sha256(b"different firmware").hexdigest()
         response = encode_frame(
             "STAGED",
@@ -1616,12 +1613,12 @@ stage(sys.argv[2])
             SessionPlan("local", LocalCommand(), TEST_PROCESS),
             DeploymentResult("/helper.py", "digest", False),
         )
-        session._helper = _StagingHelper()
+        session._helper_connection = _StagingHelper()
 
         with pytest.raises(SessionError):
             session._stage((StagedFile(source, PurePosixPath("firmware.bin")),))
 
-    def test_backend_reports_nonzero_staging_command_and_closes_archive(self):
+    def test_controller_reports_nonzero_staging_command_and_closes_archive(self):
         diagnostic = "staging destination is unavailable"
         staging_ssh_exit_status = 23
         response = encode_frame("ERROR", code="HELPER_ERROR", message=diagnostic)
@@ -1642,7 +1639,7 @@ stage(sys.argv[2])
                 SessionPlan("local", command, TEST_PROCESS),
                 DeploymentResult("/helper.py", "digest", False),
             )
-            session._helper = _StagingHelper()
+            session._helper_connection = _StagingHelper()
 
             with pytest.raises(SessionError) as raised:
                 session._stage((StagedFile(source, PurePosixPath("firmware.bin")),))
@@ -1653,7 +1650,7 @@ stage(sys.argv[2])
             assert diagnostic in message
             assert command.stream is not None and command.stream.closed
 
-    def test_backend_wraps_invalid_utf8_version_response(self, monkeypatch):
+    def test_controller_wraps_invalid_utf8_version_response(self, monkeypatch):
         class LocalCommand(_BlockedSshCommand):
             def run(
                 self,
@@ -1842,7 +1839,7 @@ stage(sys.argv[2])
                             first_sentinel,
                             second_sentinel,
                         ],
-                        services=[{"name": "tcl", "remote_port": remote_port}],
+                        listeners=[{"name": "tcl", "remote_port": remote_port}],
                         required_output_sentinels=(first_sentinel, second_sentinel),
                         readiness_timeout=5,
                     )
@@ -1937,7 +1934,7 @@ stage(sys.argv[2])
                             str(remote_port),
                             failure,
                         ],
-                        services=[{"name": "tcl", "remote_port": remote_port}],
+                        listeners=[{"name": "tcl", "remote_port": remote_port}],
                         environment={"ZRO_COLLISION_STATE": str(state)},
                         required_output_sentinels=(output_sentinel,),
                         argv_templates=[{"index": 2, "parts": [{"session": "address"}]}],
@@ -2295,7 +2292,7 @@ stage(sys.argv[2])
                     if stream is not None and not stream.closed:
                         stream.close()
 
-    def test_backend_publishes_child_failure_and_relays_output(self):
+    def test_controller_publishes_child_failure_and_relays_output(self):
         helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
@@ -2334,17 +2331,17 @@ stage(sys.argv[2])
             request = SessionPlan("local", LocalCommand(), process=remote_process)
             deployment = DeploymentResult(str(helper), "digest", False)
             with patch.object(session_module, "deploy_helper", return_value=deployment):
-                backend = SessionController.prepare(request)
+                session_controller = SessionController.prepare(request)
             try:
-                backend.acquire(
+                session_controller.acquire(
                     output_handler=lambda stream, payload, line_end: output.append(
                         (stream, payload, line_end)
                     ),
                 )
-                assert backend.descriptor is None
+                assert session_controller.descriptor is None
                 with pytest.raises(SessionError, match="exit status 6") as initial:
-                    backend.wait_for_openocd_exit(5)
-                assert backend.openocd_returncode == sample_openocd_exit_code
+                    session_controller.wait_for_openocd_exit(5)
+                assert session_controller.openocd_returncode == sample_openocd_exit_code
                 assert [
                     (payload, line_end)
                     for stream, payload, line_end in output
@@ -2357,13 +2354,13 @@ stage(sys.argv[2])
                 ] == []
             finally:
                 with pytest.raises(SessionError) as final:
-                    backend.finish()
+                    session_controller.finish()
             assert final.value is initial.value
             assert any("status 1" in note for note in final.value.__notes__)
-            assert backend.closed
-            assert backend.openocd_returncode == sample_openocd_exit_code
+            assert session_controller.closed
+            assert session_controller.openocd_returncode == sample_openocd_exit_code
 
-    def test_backend_surfaces_helper_descendant_warning(self):
+    def test_controller_surfaces_helper_descendant_warning(self):
         helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
@@ -2396,18 +2393,18 @@ stage(sys.argv[2])
                 required_output_sentinels=("ZRO_DESCENDANT_READY",),
             )
             output = []
-            backend = _session_with_helper(
+            session_controller = _session_with_helper(
                 SessionPlan("local", LocalCommand(), process=remote_process),
                 DeploymentResult(str(helper), "digest", False),
                 lambda stream, payload, line_end: output.append((stream, payload, line_end)),
             )
             try:
-                backend._helper_or_error().acquire()
-                backend._start_process(())
-                backend.close()
+                session_controller._connection_or_error().acquire()
+                session_controller._start_process(())
+                session_controller.close()
             finally:
                 with suppress(BaseException):
-                    backend.close()
+                    session_controller.close()
 
             warning = "warning: terminating remaining OpenOCD process-group members:"
             assert any(
@@ -2562,9 +2559,9 @@ sys.exit({HELPER_FAILURE_RC})
             helper_client.observe_status()
             with pytest.raises(SessionError, match="status 9"):
                 authority.operation_status()
-            ending = authority.snapshot().ending
-            assert ending is not None
-            child_result = ending.outcome.child_result
+            terminal = authority.snapshot().terminal
+            assert terminal is not None
+            child_result = terminal.outcome.child_result
             assert child_result is not None
             assert child_result.returncode == 0
         finally:
@@ -2632,7 +2629,7 @@ sys.exit({HELPER_FAILURE_RC})
                         signal.pidfd_send_signal(child_pidfd, signal.SIGKILL)
                     os.close(child_pidfd)
 
-    def test_backend_reader_failure_requires_lifecycle_cleanup(self):
+    def test_controller_reader_failure_requires_lifecycle_cleanup(self):
         helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
@@ -2670,25 +2667,25 @@ sys.exit({HELPER_FAILURE_RC})
             def fail_on_output(_stream, _payload, _line_end):
                 raise output_error
 
-            backend = _session_with_helper(
+            session_controller = _session_with_helper(
                 request,
                 DeploymentResult(str(helper), "digest", False),
                 fail_on_output,
             )
             try:
-                backend._helper_or_error().acquire()
-                backend._stage(())
-                backend._start_process(())
+                session_controller._connection_or_error().acquire()
+                session_controller._stage(())
+                session_controller._start_process(())
                 with pytest.raises(SessionError) as raised:
-                    backend.wait_for_openocd_exit(5)
+                    session_controller.wait_for_openocd_exit(5)
                 assert raised.value.__cause__ is output_error
-                assert not backend.closed
+                assert not session_controller.closed
                 with pytest.raises(SessionError) as raised:
-                    backend.close()
+                    session_controller.close()
                 assert raised.value.__cause__ is output_error
             finally:
                 with suppress(BaseException):
-                    backend.close()
+                    session_controller.close()
 
 
 def _helper_client(request, deployment, output_handler=None, *, authority):
@@ -2703,7 +2700,7 @@ def _helper_client(request, deployment, output_handler=None, *, authority):
 
 def _session_with_helper(request, deployment, output_handler=None):
     session = SessionController(request, deployment)
-    session._helper = HelperConnection(
+    session._helper_connection = HelperConnection(
         request.ssh_command,
         request.host,
         deployment,

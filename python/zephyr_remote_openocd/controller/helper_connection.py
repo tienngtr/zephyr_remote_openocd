@@ -16,9 +16,10 @@ from typing import BinaryIO, cast
 
 from zephyr_remote_openocd.controller.authority import SessionAuthority, SessionError
 from zephyr_remote_openocd.controller.deployment import DeploymentResult
-from zephyr_remote_openocd.controller.model import Service, SessionAllocation
+from zephyr_remote_openocd.controller.plan import SessionAllocation
 from zephyr_remote_openocd.controller.ssh import ManagedSshProcess, SshCommand, _stop_process
 from zephyr_remote_openocd.protocol.commands import write_start
+from zephyr_remote_openocd.protocol.listeners import ListenerSpec
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.protocol.wire import (
@@ -70,40 +71,40 @@ class HelperConnection:
 
     def start_process(
         self,
-        process: ProcessSpec,
-        services: Iterable[Service],
+        process_spec: ProcessSpec,
+        listeners: Iterable[ListenerSpec],
         *,
         preferred_address: str | None = None,
     ) -> str | None:
         try:
-            return self._start_process(process, services, preferred_address=preferred_address)
+            return self._start_process(process_spec, listeners, preferred_address=preferred_address)
         except BaseException as error:
             primary = self._authority.resolve_effect_failure(error)
             raise primary from primary.__cause__
 
     def _start_process(
         self,
-        process: ProcessSpec,
-        services: Iterable[Service],
+        process_spec: ProcessSpec,
+        listeners: Iterable[ListenerSpec],
         *,
         preferred_address: str | None = None,
     ) -> str | None:
-        self._authority.set_policy(process.completion_policy)
+        self._authority.set_policy(process_spec.completion_policy)
         assert self._order is not None
-        self._order.policy = process.completion_policy
-        service_list = tuple(services)
+        self._order.policy = process_spec.completion_policy
+        listener_specs = tuple(listeners)
         helper = self._process_or_error()
         if helper.stdin is None:
             raise SessionError("helper stdin was not captured")
         write_start(
             cast(BinaryIO, helper.stdin),
-            process,
-            (service.listener for service in service_list),
+            process_spec,
+            listener_specs,
             preferred_address=preferred_address,
         )
         address = (
             self._await_process_ready()
-            if process.completion_policy == CompletionPolicy.LIVE_SERVER
+            if process_spec.completion_policy == CompletionPolicy.LIVE_SERVER
             else None
         )
         self._start_event_drain()
@@ -184,7 +185,7 @@ class HelperConnection:
 
     def _resolve_shutdown_result(self) -> None:
         """Record missing terminal information independently of transport status."""
-        if self._authority.snapshot().ending is None:
+        if self._authority.snapshot().terminal is None:
             self._authority.record_failure(
                 "MISSING_TERMINAL",
                 SessionError("helper shutdown did not produce SESSION_ENDED"),
@@ -306,7 +307,7 @@ class HelperConnection:
                 self._dispatch(self._read_event())
         except BaseException as error:
             snapshot = self._authority.snapshot()
-            if isinstance(error.__cause__, EOFError) and snapshot.ending is not None:
+            if isinstance(error.__cause__, EOFError) and snapshot.terminal is not None:
                 return
             self._authority.record_reader_failure(error)
 

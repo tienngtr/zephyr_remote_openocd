@@ -16,18 +16,20 @@ from zephyr_remote_openocd.controller import session as session_module
 from zephyr_remote_openocd.controller.authority import SessionAuthority
 from zephyr_remote_openocd.controller.deployment import DeploymentResult
 from zephyr_remote_openocd.controller.forwarding import ForwardAdvisory, ForwardManager
-from zephyr_remote_openocd.controller.model import Service, SessionAllocation, SessionPlan
+from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
+from zephyr_remote_openocd.controller.plan import SessionAllocation, SessionPlan
 from zephyr_remote_openocd.controller.session import SessionController
 from zephyr_remote_openocd.controller.ssh import ManagedSshProcess, SshCommand, SshForwardSpec
 from zephyr_remote_openocd.protocol.arguments import materialize_argv
 from zephyr_remote_openocd.protocol.commands import decode_command, write_start
+from zephyr_remote_openocd.protocol.listeners import ListenerSpec
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.protocol.wire import decode_frame, encode_frame
 
-GDB = Service("gdb", 3333, 3333)
-TCL = Service("tcl", 6333, 6333)
-TELNET = Service("telnet", 4444, 4444)
-RTT = Service("rtt", 5555, 5555)
+GDB = ForwardSpec("gdb", 3333, 3333)
+TCL = ForwardSpec("tcl", 6333, 6333)
+TELNET = ForwardSpec("telnet", 4444, 4444)
+RTT = ForwardSpec("rtt", 5555, 5555)
 
 
 class ControlledForward:
@@ -68,7 +70,7 @@ class ControlledHelper:
 
     def __init__(self) -> None:
         self._authority: SessionAuthority | None = None
-        self.services: tuple[Service, ...] = ()
+        self.listeners: tuple[ListenerSpec, ...] = ()
         self.close_calls = 0
         self.on_wait: Callable[[], None] | None = None
         self.process_start_handler: Callable[[tuple[str, ...]], None] | None = None
@@ -89,7 +91,7 @@ class ControlledHelper:
     def start_process(
         self,
         process: ProcessSpec,
-        services: Iterable[Service],
+        listeners: Iterable[ListenerSpec],
         *,
         preferred_address: str | None = None,
     ) -> str:
@@ -107,7 +109,7 @@ class ControlledHelper:
                     argv_templates=request.argv_templates,
                 )
             )
-        self.services = tuple(services)
+        self.listeners = tuple(listeners)
         return "127.64.0.1"
 
     def observe_status(self) -> None:
@@ -132,10 +134,10 @@ class ControlledSshCommand(SshCommand):
         super().__init__(("configured-ssh",))
         object.__setattr__(self, "processes", {})
 
-    def process(self, service: Service) -> ControlledForward:
-        if service.local_port not in self.processes:
-            self.processes[service.local_port] = ControlledForward()
-        return self.processes[service.local_port]
+    def process(self, forward: ForwardSpec) -> ControlledForward:
+        if forward.local_port not in self.processes:
+            self.processes[forward.local_port] = ControlledForward()
+        return self.processes[forward.local_port]
 
     @override
     def popen(
@@ -203,25 +205,25 @@ class ForwardingHarness:
 
     def request(
         self,
-        services: tuple[Service, ...] = (GDB, TCL, TELNET),
-        auxiliary: tuple[Service, ...] = (TCL, TELNET),
+        forwards: tuple[ForwardSpec, ...] = (GDB, TCL, TELNET),
+        auxiliary: tuple[ForwardSpec, ...] = (TCL, TELNET),
     ) -> SessionPlan:
-        for service in services:
-            self.ssh.process(service)
+        for forward in forwards:
+            self.ssh.process(forward)
         return SessionPlan(
             "host",
             self.ssh,
             ProcessSpec(("openocd",)),
-            services=services,
-            auxiliary_services=auxiliary,
+            forwards=forwards,
+            auxiliary_forwards=auxiliary,
         )
 
     def prepare(
         self,
-        services: tuple[Service, ...] = (GDB, TCL, TELNET),
-        auxiliary: tuple[Service, ...] = (TCL, TELNET),
+        forwards: tuple[ForwardSpec, ...] = (GDB, TCL, TELNET),
+        auxiliary: tuple[ForwardSpec, ...] = (TCL, TELNET),
     ) -> SessionController:
         return SessionController.prepare(
-            self.request(services, auxiliary),
+            self.request(forwards, auxiliary),
             advisory_handler=self.advisories.append,
         )

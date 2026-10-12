@@ -3,7 +3,7 @@
 """Pure local launch eligibility for the controller-lease client.
 
 The coordinator must account for recorded fatal observations at execution
-entry through the same authority boundary. The session observations serialize
+entry through the same authority boundary. The session authority serializes
 reader facts and execution entry through one shared authority; this pure gate
 itself owns no synchronization.
 """
@@ -11,7 +11,7 @@ itself owns no synchronization.
 from collections.abc import Iterable
 from enum import Enum, auto
 
-from zephyr_remote_openocd.controller.model import Service
+from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
 from zephyr_remote_openocd.protocol.outcome import Diagnostic
 
 
@@ -38,8 +38,8 @@ class AdmissionGate:
     def __init__(self) -> None:
         self._phase = AdmissionPhase.OPENING
         self._ticket: int | None = None
-        self._required: frozenset[Service] = frozenset()
-        self._forwarded: frozenset[Service] = frozenset()
+        self._required: frozenset[ForwardSpec] = frozenset()
+        self._forwarded: frozenset[ForwardSpec] = frozenset()
         self._remote_ready = False
         self._failure: Diagnostic | None = None
 
@@ -51,19 +51,19 @@ class AdmissionGate:
     def failure(self) -> Diagnostic | None:
         return self._failure
 
-    def prepare(self, required_services: Iterable[Service]) -> int:
+    def prepare(self, required_forwards: Iterable[ForwardSpec]) -> int:
         if self._phase in (AdmissionPhase.CANCELLING, AdmissionPhase.ENDED):
             raise LaunchDenied("operation no longer permits dependent launch")
         self._ticket = (self._ticket or 0) + 1
-        self._required = frozenset(required_services)
+        self._required = frozenset(required_forwards)
         self._phase = AdmissionPhase.OPENING
         return self._ticket
 
     def observe_remote_ready(self) -> None:
         self._remote_ready = True
 
-    def observe_forwarded(self, services: Iterable[Service]) -> None:
-        self._forwarded = frozenset(services)
+    def observe_forwarded(self, forwards: Iterable[ForwardSpec]) -> None:
+        self._forwarded = frozenset(forwards)
 
     def enter(self, ticket: int) -> bool:
         if (

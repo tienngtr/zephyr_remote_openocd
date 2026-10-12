@@ -16,17 +16,14 @@ import pytest
 from zephyr_remote_openocd.controller import deployment as deploy_module
 from zephyr_remote_openocd.controller.deployment import _helper_source
 from zephyr_remote_openocd.controller.ssh import SshCommand, SshForwardSpec
-from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.protocol.wire import (
     encode_frame,
 )
 
 from tests.process_support import managed_process, read_line
 
-TEST_PROCESS = ProcessSpec(("test-process",))
 
-
-def test_missing_packaged_remote_helper_is_actionable(monkeypatch, tmp_path):
+def test_missing_packaged_helper_is_actionable(monkeypatch, tmp_path):
     monkeypatch.setattr(deploy_module, "files", lambda _package: tmp_path)
     with pytest.raises(deploy_module.DeploymentError, match="packaged remote helper"):
         _helper_source()

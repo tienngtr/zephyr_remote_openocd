@@ -8,11 +8,8 @@ import tempfile
 from pathlib import Path, PurePosixPath
 
 import pytest
-from zephyr_remote_openocd.controller.model import StagedDirectory, StagedFile
 from zephyr_remote_openocd.controller.staging import StagingError, build_archive
-from zephyr_remote_openocd.protocol.process import ProcessSpec
-
-TEST_PROCESS = ProcessSpec(("test-process",))
+from zephyr_remote_openocd.controller.staging_spec import StagedDirectory, StagedFile
 
 
 class TestStaging:
