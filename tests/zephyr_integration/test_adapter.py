@@ -24,7 +24,12 @@ from zephyr_remote_openocd.config import ConfigError, PathMapping, ResolvedRemot
 from zephyr_remote_openocd.remote import RemoteSession
 from zephyr_remote_openocd.remote import backend as backend_module
 from zephyr_remote_openocd.remote.arguments import ArgumentTemplate, SessionValue
-from zephyr_remote_openocd.remote.debug import DebugInputs, DebugPlan, build_debug_plan
+from zephyr_remote_openocd.remote.debug import (
+    DebugInputs,
+    DebugPlan,
+    OpenOcdVersion,
+    build_debug_plan,
+)
 from zephyr_remote_openocd.remote.deploy import DeploymentResult
 from zephyr_remote_openocd.remote.forwarding import ForwardStartError
 from zephyr_remote_openocd.remote.model import (
@@ -592,45 +597,61 @@ def test_observed_openocd_failure_retains_forward_exit_before_cleanup(
 def test_operation_build_queries_version_without_session(runner_api, monkeypatch, tmp_path):
     from zephyr_remote_openocd.zephyr44 import runner as runner_module
 
-    runner = Mock()
-    runner.thread_info_enabled = True
+    core, _, remote = runner_api
+    build = tmp_path / "build"
+    (build / "zephyr").mkdir(parents=True)
+    (build / "zephyr" / ".config").write_text("CONFIG_DEBUG_THREAD_INFO=y\n")
+    image = build / "zephyr" / "zephyr.elf"
+    image.write_bytes(b"planning does not read ELF contents")
+    cfg = core.RunnerConfig(
+        build_dir=str(build),
+        board_dir=str(tmp_path),
+        elf_file=str(image),
+        exe_file=None,
+        hex_file=None,
+        bin_file=None,
+        uf2_file=None,
+        mot_file=None,
+        file=None,
+        gdb="gdb",
+        openocd="openocd",
+        openocd_search=[],
+    )
+    runner = remote.create(cfg, parser_for(remote).parse_args([]))
     selected = ResolvedRemote(
         "lab",
         tmp_path / "config.yaml",
         "host",
-        ("openocd", "-f", "board.cfg"),
-        ("ssh", "-F", "config"),
+        ("openocd",),
+        ("configured-ssh", "-F", "config"),
         (),
         (),
     )
-    query = Mock(return_value="Open On-Chip Debugger 0.12.0")
-    request = Mock()
-    plan = Mock()
-    versions = []
-
-    def capture_plan(_runner, command, _selected, version):
-        assert command == "debug"
-        versions.append(version)
-        return plan
-
+    query = create_autospec(
+        runner_module.query_remote_openocd_version,
+        return_value="Open On-Chip Debugger 0.12.0",
+    )
     monkeypatch.setattr(runner_module, "query_remote_openocd_version", query)
-    monkeypatch.setattr(runner_module, "_debug_plan", capture_plan)
-    monkeypatch.setattr(runner_module, "_debug_request", lambda *_args: request)
-    monkeypatch.setattr(
-        runner_module.RemoteSession,
-        "prepare",
-        Mock(side_effect=AssertionError("operation construction prepared a session")),
-    )
 
-    result = runner_module._build_operation(runner, "debug", selected)
+    def forbid_prepare(*_args, **_kwargs):
+        raise AssertionError("operation planning must not prepare a session")
 
-    assert result == (selected, request, plan)
+    monkeypatch.setattr(RemoteSession, "prepare", forbid_prepare)
+    resolved, request, plan = runner_module._build_operation(runner, "debug", selected)
+    assert resolved == selected
+    assert plan.thread_info_requested
+    assert plan.openocd_version == OpenOcdVersion(0, 12, 0, "Open On-Chip Debugger 0.12.0")
+    assert plan.rtos_awareness
+    assert "$_TARGETNAME configure -rtos Zephyr" in plan.process.argv
+    assert request.process == plan.process
+    assert request.services == plan.services
+    assert request.host == selected.remote_host
+    assert request.ssh_command == SshCommand(selected.ssh_command)
     query.assert_called_once_with(
         SshCommand(selected.ssh_command),
         selected.remote_host,
         selected.openocd_command,
     )
-    assert len(versions) == 1
 
 
 @pytest.mark.parametrize(
@@ -1084,21 +1105,38 @@ def test_rtt_cleanup_failure_does_not_replace_observed_openocd_failure(runner_ap
     assert all(process.returncode is not None for process in harness.ssh.processes.values())
 
 
-def test_debugserver_execution_reports_gdb_service_and_waits(runner_api):
+@pytest.mark.parametrize("returncode", (0, OPENOCD_FAILURE_RC))
+def test_debugserver_execution_reports_gdb_service_and_waits(
+    runner_api, monkeypatch, tmp_path, caplog, returncode
+):
     from zephyr_remote_openocd.zephyr44 import runner as runner_module
 
-    runner = Mock()
-    session = Mock()
-    session.wait_for_openocd_exit.return_value = OPENOCD_FAILURE_RC
-    gdb_service = Service("gdb", 3333, 3333)
-    plan = _debug_plan(services=(gdb_service,))
-
-    returncode = runner_module._execute_server(runner, "debugserver", plan, session)
-
-    runner.logger.info.assert_called_once()
-    assert 3333 in runner.logger.info.call_args.args
-    session.wait_for_openocd_exit.assert_called_once_with()
-    assert returncode == OPENOCD_FAILURE_RC
+    harness = ForwardingHarness(monkeypatch)
+    runner, request, plan = _forwarding_operation(
+        runner_api, monkeypatch, tmp_path, "debugserver", harness
+    )
+    harness.helper.on_wait = lambda: harness.helper.observations.record_terminal(
+        terminal_snapshot(Trigger.CHILD_EXIT, returncode=returncode)
+    )
+    session = RemoteSession.prepare(request)
+    with cleanup_on_exit(session.close):
+        session.acquire()
+        with caplog.at_level(logging.INFO, logger=runner.logger.name):
+            if returncode == 0:
+                assert runner_module._execute_server(runner, "debugserver", plan, session) == 0
+            else:
+                with pytest.raises(SessionError) as raised:
+                    runner_module._execute_server(runner, "debugserver", plan, session)
+                assert raised.value is harness.helper.observations.snapshot().failure
+                ending = harness.helper.observations.snapshot().ending
+                assert ending is not None and ending.outcome.child_result is not None
+                assert ending.outcome.child_result.returncode == returncode
+    assert any(
+        "GDB" in record.getMessage() and f"127.0.0.1:{GDB.local_port}" in record.getMessage()
+        for record in caplog.records
+    )
+    runner.run_client.assert_not_called()
+    assert harness.helper.close_calls == 1
 
 
 def parser_for(runner):

@@ -85,34 +85,21 @@ def _build_module(build: Path, *, home: Path, override: str) -> subprocess.Compl
     )
 
 
-def test_cmake_empty_config_override_uses_default_path(tmp_path: Path):
-    default = tmp_path / "home" / ".config" / "zephyr_remote_openocd" / "config.yaml"
-    default.parent.mkdir(parents=True)
-    default.write_text("default_runner: remote_openocd\n")
-
-    result, report = _configure_module(tmp_path, "")
-
-    assert result.returncode == 0, result.stdout
-    assert report.read_text().splitlines() == [str(default), "remote_openocd"]
-
-
-def test_cmake_tilde_config_override_tracks_expanded_path(tmp_path: Path):
-    selected = tmp_path / "home" / "custom.yaml"
+@pytest.mark.parametrize(
+    "override, home_name, relative_path",
+    (
+        ("", "home", ".config/zephyr_remote_openocd/config.yaml"),
+        ("~/custom.yaml", "home", "custom.yaml"),
+        ("~/custom.yaml", r"home\1", "custom.yaml"),
+    ),
+    ids=("default-location", "tilde-expansion", "literal-home"),
+)
+def test_cmake_configuration_path_resolution(tmp_path: Path, override, home_name, relative_path):
+    selected = tmp_path / home_name / relative_path
     selected.parent.mkdir(parents=True)
     selected.write_text("default_runner: remote_openocd\n")
 
-    result, report = _configure_module(tmp_path, "~/custom.yaml")
-
-    assert result.returncode == 0, result.stdout
-    assert report.read_text().splitlines() == [str(selected), "remote_openocd"]
-
-
-def test_cmake_tilde_expansion_treats_home_as_literal(tmp_path: Path):
-    selected = tmp_path / "home\\1" / "custom.yaml"
-    selected.parent.mkdir(parents=True)
-    selected.write_text("default_runner: remote_openocd\n")
-
-    result, report = _configure_module(tmp_path, "~/custom.yaml", home_name="home\\1")
+    result, report = _configure_module(tmp_path, override, home_name=home_name)
 
     assert result.returncode == 0, result.stdout
     assert report.read_text().splitlines() == [str(selected), "remote_openocd"]
