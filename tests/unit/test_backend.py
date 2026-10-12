@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import subprocess
 from collections.abc import Callable, Iterable
 from dataclasses import replace
@@ -19,7 +20,7 @@ from zephyr_remote_openocd.remote.model import (
     SessionAllocation,
 )
 from zephyr_remote_openocd.remote.outcome import Trigger
-from zephyr_remote_openocd.remote.protocol import encode_message
+from zephyr_remote_openocd.remote.protocol import ProtocolError, encode_message
 from zephyr_remote_openocd.remote.session import SessionClosedError, SessionError
 from zephyr_remote_openocd.remote.ssh import SshCommand
 
@@ -175,7 +176,7 @@ def test_version_query_rejects_failed_or_malformed_response(
 
 def test_staging_rejects_response_without_lf(monkeypatch):
     response = encode_message(
-        "STAGED", byte_count=0, sha256="0" * 64, files=[], directories=[]
+        "STAGED", byte_count=0, sha256=hashlib.sha256(b"").hexdigest(), files=[], directories=[]
     ).rstrip(b"\n")
     deployment = DeploymentResult("/helper.py", "digest", False)
 
@@ -185,6 +186,8 @@ def test_staging_rejects_response_without_lf(monkeypatch):
             return subprocess.CompletedProcess(remote_command, 0, response, b"")
 
     class Helper(_PreparedHelper):
+        # start_process() inherits the explicit forbidden-operation guard.
+        # A framing regression must fail there, rather than at another check.
         @property
         @override
         def allocation(self) -> SessionAllocation:
@@ -214,10 +217,11 @@ def test_staging_rejects_response_without_lf(monkeypatch):
     monkeypatch.setattr(backend_module, "_HelperClient", make_helper)
     request = RemoteSessionRequest("target", ReplyCommand(), RemoteProcess(("openocd",)))
 
-    with pytest.raises(SessionError):
+    with pytest.raises(SessionError) as raised:
         session = RemoteSession.prepare(request)
         with cleanup_on_exit(session.close):
             session.acquire()
+    assert isinstance(raised.value.__cause__, ProtocolError)
 
 
 def test_closed_session_exposes_only_cached_openocd_result():

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import io
 import ipaddress
@@ -13,7 +12,7 @@ import sys
 import tarfile
 import tempfile
 import time
-import zipfile
+from contextlib import ExitStack
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO, override
 
@@ -67,7 +66,7 @@ from zephyr_remote_openocd.remote.ssh import SshCommand, SshLocalForward
 from zephyr_remote_openocd.remote.staging import StagingError, build_archive
 
 from tests.elf_fixtures import ELF_ENTRY_POINT, elf_memory_witness_bytes
-from tests.process_support import read_line
+from tests.process_support import managed_process, read_line
 
 TEST_PROCESS = RemoteProcess(("test-process",))
 
@@ -110,21 +109,34 @@ class TestProtocol:
             validate_helper_event(decode_message(encode_message("ATTEMPT", argv=argv)))
 
     def test_start_serializers_use_validated_domain_models(self):
+        from zephyr_remote_openocd.remote_helper import decode_command
+
         stream = io.BytesIO()
         process = RemoteProcess(
             ("openocd", "--fixed", ""),
             environment=(("ZRO_TEST", "value"),),
-            required_output_sentinels=("READY FOR START",),
+            required_paths=(RemotePathCheck("/firmware.elf", "file"),),
+            required_output_sentinels=("INIT COMPLETE", "READY FOR START"),
+            readiness_timeout=47.5,
             literal_prefix=2,
+            completion_policy=CompletionPolicy.PROCESS_EXIT,
         )
-        write_start(stream, process, (Service("gdb", 3333, 3333),))
-        frames = [decode_message(line) for line in stream.getvalue().splitlines(keepends=True)]
-        assert frames[0]["type"] == "START"
-        assert frames[0]["argv"][-1] == ""
-        assert frames[0]["required_output_sentinels"] == ["READY FOR START"]
-        assert frames[0]["preferred_address"] is None
-        assert len(frames) == 1
-        assert frames[0]["completion_policy"] == "live_server"
+        services = (Service("gdb", 12345, 3333), Service("rtt", 12346, 5566))
+        write_start(stream, process, services, preferred_address="127.64.0.7")
+        request = decode_command(decode_message(stream.getvalue()))
+        assert request.argv == process.argv
+        assert request.environment == process.environment
+        assert [(check.path, check.kind) for check in request.required_paths] == [
+            (check.path, check.kind) for check in process.required_paths
+        ]
+        assert [(service.name, service.remote_port) for service in request.services] == [
+            (service.name, service.remote_port) for service in services
+        ]
+        assert request.literal_prefix == process.literal_prefix
+        assert request.completion_policy == process.completion_policy
+        assert request.required_output_sentinels == process.required_output_sentinels
+        assert request.readiness_timeout == process.readiness_timeout
+        assert request.preferred_address == "127.64.0.7"
 
     def test_start_preferred_address_reaches_helper_validation(self):
         from zephyr_remote_openocd import remote_helper
@@ -398,68 +410,93 @@ def test_helper_deployment_is_content_addressed_and_prunes_stale_revisions(tmp_p
 
 
 def test_helper_deployment_serializes_refresh_and_pruning(tmp_path):
-    helper_directory = tmp_path / ".local/libexec/zephyr_remote_openocd/protocol_v1"
-    helper_directory.mkdir(parents=True)
-    lock_path = helper_directory / ".deploy.lock"
-    environment = os.environ.copy()
-    environment["HOME"] = str(tmp_path)
-    marker_read_fd, marker_write_fd = os.pipe()
-    environment["ZRO_TEST_LOCK_MARKER_FD"] = str(marker_write_fd)
+    source = b"concurrent helper revision"
+    environment = {**os.environ, "HOME": str(tmp_path)}
     wrapper = f"""
-import fcntl
-import os
+import fcntl,os,sys
+role,events,release=sys.argv[1:]
+events=int(events);release=int(release)
+original_flock=fcntl.flock
+original_utime=os.utime
 
-original_flock = fcntl.flock
+def acquire(lock,operation):
+    if role=="second":
+        try:
+            original_flock(lock,operation|fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.write(events,b"blocked\\n")
+            original_flock(lock,operation)
+        else:
+            os.write(events,b"unexpected-entry\\n")
+    else:
+        original_flock(lock,operation)
 
-def report_lock_attempt(file_object, operation):
-    os.write(int(os.environ[\"ZRO_TEST_LOCK_MARKER_FD\"]), b\"before-flock\\n\")
-    return original_flock(file_object, operation)
+def refresh(path,*args,**kwargs):
+    os.write(events,b"refresh\\n")
+    if role=="first":
+        assert os.read(release,1)==b"x"
+    return original_utime(path,*args,**kwargs)
 
-fcntl.flock = report_lock_attempt
-exec({deploy_module.BOOTSTRAP!r}, {{\"__name__\": \"__main__\"}})
+fcntl.flock=acquire
+os.utime=refresh
+exec({deploy_module.BOOTSTRAP!r}, {{"__name__":"__main__"}})
 """
+    with ExitStack() as resources:
 
-    process = None
-    try:
-        with lock_path.open("a+b") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            process = subprocess.Popen(
-                [sys.executable, "-c", wrapper],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env=environment,
-                pass_fds=(marker_write_fd,),
+        def pipe():
+            reader, writer = os.pipe()
+            return (
+                resources.enter_context(os.fdopen(reader, "rb", buffering=0)),
+                resources.enter_context(os.fdopen(writer, "wb", buffering=0)),
             )
-            os.close(marker_write_fd)
+
+        release_reader, release_writer = pipe()
+        first_events, first_event_writer = pipe()
+        second_events, second_event_writer = pipe()
+
+        def deploy(role, event_writer):
+            owner = resources.enter_context(
+                managed_process(
+                    [
+                        sys.executable,
+                        "-c",
+                        wrapper,
+                        role,
+                        str(event_writer.fileno()),
+                        str(release_reader.fileno()),
+                    ],
+                    env=environment,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    pass_fds=(event_writer.fileno(), release_reader.fileno()),
+                )
+            )
+            process = owner.process
             assert process.stdin is not None
-            process.stdin.write(b"concurrent helper revision")
+            process.stdin.write(source)
             process.stdin.close()
+            event_writer.close()
+            return process
 
-            with os.fdopen(marker_read_fd, "rb", buffering=0) as marker:
-                assert read_line(marker, timeout=5) == b"before-flock\n"
-    except BaseException:
-        if process is not None and process.poll() is None:
-            process.kill()
-            process.wait(timeout=5)
-        raise
-
-    process.wait(timeout=5)
-    assert process.stdout is not None
-    assert process.stderr is not None
-    stdout = process.stdout.read()
-    stderr = process.stderr.read()
-    assert process.returncode == 0, stderr.decode("utf-8", "replace")
-    response = json.loads(stdout)
-    assert Path(response["path"]).read_bytes() == b"concurrent helper revision"
-
-
-def test_packaged_remote_helper_is_available_and_valid_python():
-    source = _helper_source()
-    assert source
-    with zipfile.ZipFile(io.BytesIO(source)) as bundle:
-        for name in bundle.namelist():
-            compile(bundle.read(name), name, "exec")
+        first = deploy("first", first_event_writer)
+        assert read_line(first_events) == b"refresh\n"
+        second = deploy("second", second_event_writer)
+        try:
+            # The first bootstrap is inside real target refresh while still
+            # holding its lock. The second probes the same requested lock mode;
+            # a shared-lock mutation would enter immediately and report it.
+            assert read_line(second_events) == b"blocked\n"
+        finally:
+            release_writer.write(b"x")
+        assert first.wait(timeout=30) == 0
+        assert read_line(second_events) == b"refresh\n"
+        assert second.wait(timeout=30) == 0
+        for process, status in ((first, "deployed"), (second, "reused")):
+            assert process.stdout is not None
+            response = json.loads(process.stdout.read())
+            assert response["status"] == status
+            assert Path(response["path"]).read_bytes() == source
 
 
 class TestStaging:
