@@ -1984,8 +1984,13 @@ also closes dependent-work admission.
 
 Delivery acknowledgement is separate from failure retention. Repeated cleanup
 does not replay an already-delivered failure unless newly recorded secondary
-information reopens delivery. Helper cleanup reports pending delivery without
-acknowledging it on behalf of the session. The session's finalization publishes
+information reopens delivery. `snapshot().failure` inspects the retained failure
+without acknowledging it; `publish_failure()` explicitly acknowledges delivery,
+and `take_unreported_failure()` delivers only when acknowledgement is pending.
+Reader failures use the same keyed failure record as every other source, retaining
+their original exception as the cause rather than in separate reader state.
+Helper cleanup records facts without acknowledging delivery on behalf of the
+session. The session's finalization publishes
 the complete authority result after independently settling its owned resources,
 regardless of earlier delivery. The Zephyr adapter records local operation
 exceptions and asks the session to finalize; it does not reconstruct precedence

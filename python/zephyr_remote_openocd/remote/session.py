@@ -40,7 +40,6 @@ class _FailureRecord:
 @dataclass(frozen=True, slots=True)
 class _SessionSnapshot:
     ending: TerminalSnapshot | None
-    reader_failure: BaseException | None
     closing: bool
     failure: BaseException | None
     diagnostics: tuple[Diagnostic, ...]
@@ -56,7 +55,6 @@ class _SessionObservations:
 
     def __init__(self) -> None:
         self._ending: TerminalSnapshot | None = None
-        self._reader_failure: BaseException | None = None
         self._failures: dict[object, _FailureRecord] = {}
         self._closing = False
         self._error_reported = False
@@ -71,7 +69,6 @@ class _SessionObservations:
         with self._changed:
             return _SessionSnapshot(
                 self._ending,
-                self._reader_failure,
                 self._closing,
                 self._failure(),
                 tuple(record.diagnostic for record in self._failures.values()),
@@ -139,16 +136,12 @@ class _SessionObservations:
             self._changed.notify_all()
 
     def record_reader_failure(self, error: BaseException) -> None:
-        with self._changed:
-            if self._reader_failure is not None:
-                return
-            self._reader_failure = error
-            reader = SessionError(
-                "helper event stream failed: "
-                + _render_diagnostic(Diagnostic.from_exception("READER_FAILURE", error))
-            )
-            reader.__cause__ = error
-            self.record_failure("READER_FAILURE", reader, key="reader")
+        reader = SessionError(
+            "helper event stream failed: "
+            + _render_diagnostic(Diagnostic.from_exception("READER_FAILURE", error))
+        )
+        reader.__cause__ = error
+        self.record_failure("READER_FAILURE", reader, key="reader")
 
     def record_control_status(self, status: int | None) -> None:
         if status not in (None, 0):
@@ -158,7 +151,8 @@ class _SessionObservations:
                 key="control_status",
             )
 
-    def failure_for_operation(self) -> BaseException | None:
+    def publish_failure(self) -> BaseException | None:
+        """Return the primary failure and acknowledge its current delivery."""
         with self._changed:
             error = self._failure()
             if error is not None:
@@ -168,7 +162,7 @@ class _SessionObservations:
     def operation_status(self) -> int | None:
         """Project one coherent result; failed child status is never filtered out."""
         with self._changed:
-            error = self.failure_for_operation()
+            error = self.publish_failure()
             if error is not None:
                 raise error
             result = None if self._ending is None else self._ending.outcome.child_result
@@ -178,7 +172,7 @@ class _SessionObservations:
         """Record a failed effect and publish the authority's selected failure."""
         with self._changed:
             self.record_failure("OPERATION_FAILURE", error)
-            return self.failure_for_operation() or error
+            return self.publish_failure() or error
 
     def arbitrate_advisory(self, error: BaseException) -> BaseException | None:
         """Retain advisory detail behind an established fatal outcome, if any."""
@@ -187,11 +181,11 @@ class _SessionObservations:
 
     def take_unreported_failure(self) -> BaseException | None:
         with self._changed:
-            return None if self._error_reported else self.failure_for_operation()
+            return None if self._error_reported else self.publish_failure()
 
     def enter(self, required: Iterable[Service], forwarded: Iterable[Service]) -> None:
         with self._changed:
-            error = self.failure_for_operation()
+            error = self.publish_failure()
             if error is not None:
                 raise error
             if self._closing or self._ending is not None:

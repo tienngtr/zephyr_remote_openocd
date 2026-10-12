@@ -453,7 +453,7 @@ def test_close_reaps_natural_exit_before_transport_cleanup(monkeypatch, helper_c
     observations.record_terminal(terminal_snapshot(Trigger.CHILD_EXIT, returncode=0))
 
     helper_client.close()
-    error = observations.failure_for_operation()
+    error = observations.snapshot().failure
 
     assert error is None
     assert natural_exit_reaped.is_set()
@@ -493,7 +493,7 @@ def test_helper_shutdown_retains_established_failure():
     with pytest.raises(SessionError) as reported:
         observations.operation_status()
     helper_client.close()
-    error = observations.failure_for_operation()
+    error = observations.snapshot().failure
 
     assert error is reported.value
     commands = [
@@ -541,7 +541,7 @@ def test_helper_shutdown_retains_observed_background_failure():
             observations.operation_status()
 
     helper_client.close()
-    assert observations.failure_for_operation() is reported.value
+    assert observations.snapshot().failure is reported.value
     commands = [
         decode_message(bytes(line))["type"]
         for line in process.stdin.written.splitlines(keepends=True)
@@ -572,7 +572,7 @@ def test_close_records_background_and_cleanup_failures(monkeypatch, cleanup_fail
         monkeypatch.setattr(helper_client_module, "_stop_process", fail_stop)
 
     helper_client.close()
-    error = observations.failure_for_operation()
+    error = observations.snapshot().failure
 
     assert isinstance(error, SessionError)
     assert "background failed" in str(error)
@@ -631,10 +631,10 @@ def test_terminal_failure_stays_primary_after_trailing_protocol_failure(
                 observations.operation_status()
             error = raised.value
             client.close()
-            assert observations.failure_for_operation() is error
+            assert observations.snapshot().failure is error
         else:
             client.close()
-            error = observations.failure_for_operation()
+            error = observations.snapshot().failure
         assert isinstance(error, SessionError)
         assert (
             "startup failed" if terminal_failure == "startup" else "remote OpenOCD failed"
@@ -687,7 +687,7 @@ def test_close_preserves_terminal_failure_before_shutdown(
     helper_client._process = cast(ManagedSshProcess, process)
 
     helper_client.close()
-    error = observations.failure_for_operation()
+    error = observations.snapshot().failure
 
     assert isinstance(error, SessionError)
     assert ("startup failed" if terminal_failure == "startup" else "remote OpenOCD failed") in str(
@@ -730,7 +730,7 @@ def test_close_keeps_shutdown_failure_primary_when_forced_cleanup_also_fails(hel
 
     observations.record_terminal(terminal_snapshot(Trigger.CONTROLLER_EOF))
     helper_client.close()
-    error = observations.failure_for_operation()
+    error = observations.snapshot().failure
 
     assert error is graceful_stop_error
     assert any("15.0" in note for note in graceful_stop_error.__notes__)
@@ -758,7 +758,7 @@ def test_close_cleans_up_helper_when_initial_status_observation_fails(helper_cli
 
     observations.record_terminal(terminal_snapshot(Trigger.CONTROLLER_EOF))
     helper_client.close()
-    error = observations.failure_for_operation()
+    error = observations.snapshot().failure
 
     assert error is observation_error
     assert process.returncode == 0
@@ -794,7 +794,7 @@ def test_close_cleans_up_helper_when_reader_join_fails(helper_client):
     observations.record_terminal(terminal_snapshot(Trigger.CHILD_EXIT, returncode=0))
 
     helper_client.close()
-    error = observations.failure_for_operation()
+    error = observations.snapshot().failure
 
     assert error is join_error
     assert process.stdin.closed
@@ -829,7 +829,7 @@ def test_close_preserves_cleanup_error_when_final_status_observation_fails(helpe
     observations.record_terminal(terminal_snapshot(Trigger.CHILD_EXIT, returncode=0))
 
     helper_client.close()
-    error = observations.failure_for_operation()
+    error = observations.snapshot().failure
 
     assert error is cleanup_error
     assert process.stdin.closed
@@ -849,7 +849,7 @@ def test_close_closes_streams_when_reader_thread_does_not_start(monkeypatch, hel
     monkeypatch.setattr(threading.Thread, "start", fail_start)
 
     helper_client.close()
-    error = observations.failure_for_operation()
+    error = observations.snapshot().failure
 
     assert error is reader_start_error
     assert process.stdin.closed
@@ -914,7 +914,7 @@ def test_close_forces_cleanup_after_helper_wait_failure(
     helper_client._process = cast(ManagedSshProcess, process)
 
     helper_client.close()
-    error = observations.failure_for_operation()
+    error = observations.snapshot().failure
 
     assert error is (stdin_close_error if stdin_close_fails else wait_error)
     if stdin_close_fails:
@@ -965,7 +965,7 @@ def test_helper_close_keeps_reader_owned_stdout_open_until_reader_stops(helper_c
     helper._reader_thread = reader
 
     helper.close()
-    error = observations.failure_for_operation()
+    error = observations.snapshot().failure
 
     assert error is None
 
@@ -1002,7 +1002,7 @@ def test_helper_close_retains_nested_process_cleanup_diagnostics(helper_client):
     observations.record_terminal(terminal_snapshot(Trigger.CONTROLLER_EOF, returncode=None))
 
     helper.close()
-    error = observations.failure_for_operation()
+    error = observations.snapshot().failure
 
     assert isinstance(error, SessionError)
     notes = error.__notes__
@@ -1212,7 +1212,7 @@ def test_helper_client_output_delivery_does_not_retain_event_history():
         assert observations.operation_status() == 0
     finally:
         helper_client.close()
-        assert observations.failure_for_operation() is None
+        assert observations.snapshot().failure is None
 
 
 @pytest.mark.parametrize("child_first", (True, False), ids=("child-first", "transport-first"))
@@ -1246,5 +1246,5 @@ def test_child_and_control_status_use_one_persistent_arbitration_path(helper_cli
         observations.enter((), ())
     assert gate.value is initial.value
     helper_client.close()
-    assert observations.failure_for_operation() is initial.value
+    assert observations.snapshot().failure is initial.value
     assert observations.snapshot().ending.outcome.child_result.returncode == 7

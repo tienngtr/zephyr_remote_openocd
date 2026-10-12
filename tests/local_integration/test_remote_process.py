@@ -222,7 +222,7 @@ def test_sigint_during_helper_reader_start_keeps_one_owned_reader(monkeypatch):
 
         helper.close()
 
-        assert observations.failure_for_operation() is interrupted.value
+        assert observations.snapshot().failure is interrupted.value
         assert len(started) == 1
         assert not started[0].is_alive()
         assert signal.pthread_sigmask(signal.SIG_BLOCK, set()) == previous_mask
@@ -309,7 +309,7 @@ def test_helper_close_allows_recorded_natural_exit_before_termination(
         # EOF and protocol completion are observed while OS exit remains gated.
         assert helper._join_reader(timeout=5)
         helper.observe_status()
-        initial_failure = observations.failure_for_operation()
+        initial_failure = observations.snapshot().failure
         if openocd_returncode:
             with pytest.raises(SessionError) as observed:
                 observations.operation_status()
@@ -320,7 +320,7 @@ def test_helper_close_allows_recorded_natural_exit_before_termination(
         monkeypatch.setattr(process, "terminate", observe_terminate)
 
         helper.close()
-        error = observations.failure_for_operation()
+        error = observations.snapshot().failure
 
         assert graceful_wait_started
         assert terminated is transport_timeout
@@ -2490,11 +2490,11 @@ sys.exit({exit_code})
             helper_client.acquire()
             if expected is None:
                 helper_client.close()
-                assert observations.failure_for_operation() is None
+                assert observations.snapshot().failure is None
                 assert observations.operation_status() == expected_openocd_result
             else:
                 helper_client.close()
-                error = observations.failure_for_operation()
+                error = observations.snapshot().failure
                 assert error is not None
                 assert all(
                     fragment in str(error) + " ".join(getattr(error, "__notes__", ()))
@@ -2628,7 +2628,7 @@ sys.exit({HELPER_FAILURE_RC})
 
                 helper_client.close()
 
-                assert observations.failure_for_operation() is None
+                assert observations.snapshot().failure is None
                 assert command.process.returncode == 0
                 assert not workspace.exists()
                 _assert_pidfd_exited(child_pidfd)
@@ -2711,7 +2711,7 @@ def _helper_client(request, deployment, output_handler=None, *, observations):
 
 
 def _session_with_helper(request, deployment, output_handler=None):
-    session = RemoteSession(request, deployment, output_handler)
+    session = RemoteSession(request, deployment)
     session._helper = _HelperClient(
         request.ssh_command,
         request.host,

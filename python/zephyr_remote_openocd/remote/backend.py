@@ -136,7 +136,6 @@ class RemoteSession:
         self,
         request: RemoteSessionRequest,
         deployment: DeploymentResult,
-        output_handler: Callable[[str, str, bool], None] | None = None,
         *,
         advisory_handler: Callable[[ForwardAdvisory], None] | None = None,
     ) -> None:
@@ -351,7 +350,7 @@ class RemoteSession:
             self.close()
         except BaseException as error:
             self.record_operation_failure(error)
-        failure = self._observations.failure_for_operation()
+        failure = self._observations.publish_failure()
         if failure is not None:
             raise failure
 

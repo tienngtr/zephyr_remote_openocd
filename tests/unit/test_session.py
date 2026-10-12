@@ -66,14 +66,41 @@ def test_queued_launch_rechecks_fatal_fact_at_execution_entry():
 def test_reported_terminal_failure_is_not_replayed_during_close():
     observations = _SessionObservations()
     observations.record_terminal(terminal_snapshot(Trigger.HELPER_FAILURE, code="FAILED"))
-    assert observations.failure_for_operation() is not None
+    failure = observations.snapshot().failure
+    assert failure is not None
+    assert observations.publish_failure() is failure
+    assert observations.take_unreported_failure() is None
+
+
+def test_failure_inspection_does_not_acknowledge_delivery():
+    observations = _SessionObservations()
+    observations.record_reader_failure(RuntimeError("reader failed"))
+    failure = observations.snapshot().failure
+    assert failure is not None
+    assert observations.snapshot().failure is failure
+    assert observations.take_unreported_failure() is failure
+    assert observations.take_unreported_failure() is None
+
+
+def test_repeated_reader_failure_retains_first_fact_without_reopening_delivery():
+    observations = _SessionObservations()
+    first = RuntimeError("first reader failure")
+    observations.record_reader_failure(first)
+    published = observations.publish_failure()
+    assert published is not None and published.__cause__ is first
+
+    observations.record_reader_failure(RuntimeError("later reader failure"))
+
+    snapshot = observations.snapshot()
+    assert snapshot.failure is published
+    assert len(snapshot.diagnostics) == 1
     assert observations.take_unreported_failure() is None
 
 
 def test_later_reader_detail_reopens_delivery_with_established_terminal_primary():
     observations = _SessionObservations()
     observations.record_terminal(terminal_snapshot(Trigger.STARTUP_FAILURE, code="STARTUP_FAILURE"))
-    first = observations.failure_for_operation()
+    first = observations.publish_failure()
     assert first is not None
     reader = RuntimeError("trailing protocol corruption")
     reader.add_note("retained reader detail")

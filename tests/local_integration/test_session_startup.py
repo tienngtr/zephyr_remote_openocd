@@ -15,6 +15,7 @@ from zephyr_remote_openocd.remote.backend import RemoteSession
 from zephyr_remote_openocd.remote.forwarding import _ForwardManager
 from zephyr_remote_openocd.remote.helper_client import _HelperClient
 from zephyr_remote_openocd.remote.model import RemoteProcess, RemoteSessionRequest, Service
+from zephyr_remote_openocd.remote.protocol import ProtocolError
 from zephyr_remote_openocd.remote.session import SessionError
 from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand, SshLocalForward
 
@@ -159,7 +160,7 @@ def test_failure_recorded_during_forward_readiness_remains_primary(
             session.forward((Service("rtt", 45678, 5555),), required=required)
         if ending == "reader":
             assert "READER_FAILURE" in str(raised.value)
-            assert raised.value.__cause__ is session._observations.snapshot().reader_failure
+            assert isinstance(raised.value.__cause__, ProtocolError)
         elif ending == "error":
             assert "CLEANUP_FAILED" in str(raised.value)
         else:

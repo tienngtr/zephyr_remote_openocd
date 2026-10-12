@@ -211,11 +211,11 @@ class _HelperClient:
         created = self._read_event(time.monotonic() + HELPER_START_TIMEOUT)
         if created["type"] == "SESSION_ENDED":
             self._dispatch(created)
-            error = self._observations.failure_for_operation()
+            error = self._observations.publish_failure()
             raise error or SessionError("helper ended before session creation")
         self._allocation = SessionAllocation(created["session_id"], created["remote_workspace"])
 
-    def _read_event(self, deadline: float | None = None, *, report_error: bool = True) -> dict:
+    def _read_event(self, deadline: float | None = None) -> dict:
         helper = self._process_or_error()
         stream = cast(BinaryIO, helper.stdout)
         try:
@@ -270,7 +270,7 @@ class _HelperClient:
             if event["type"] == "READY":
                 return event["remote_address"]
             if event["type"] == "SESSION_ENDED":
-                error = self._observations.failure_for_operation()
+                error = self._observations.publish_failure()
                 raise error or SessionError("remote process ended before READY")
 
     def _start_event_drain(self) -> None:
@@ -298,7 +298,7 @@ class _HelperClient:
     def _drain_events(self) -> None:
         try:
             while True:
-                self._dispatch(self._read_event(report_error=False))
+                self._dispatch(self._read_event())
         except BaseException as error:
             snapshot = self._observations.snapshot()
             if isinstance(error.__cause__, EOFError) and snapshot.ending is not None:
