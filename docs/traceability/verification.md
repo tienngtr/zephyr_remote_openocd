@@ -38,15 +38,13 @@ injects real SIGINT after launch and verifies rollback before publication,
 including graceful child SIGINT delivery and caller handler restoration.
 
 External acceptance also depends on test-resource cleanup.
-[`test_concurrent_ssh_harness_closes_every_acquired_session`](../../tests/unit/test_ssh_harness_cleanup.py)
-and [`test_configured_ssh_harness_preserves_failure_and_closes_transports`](../../tests/unit/test_ssh_harness_cleanup.py)
-exercise second-acquisition failure, independent cleanup failures, and primary
-assertion preservation through maintained SSH callers.
+[`test_cleanup_scopes_attempt_all_owners_and_preserve_primary`](../../tests/unit/test_harness_cleanup.py)
+exercises acquisition failure, independent cleanup failures, interruption, and
+primary assertion preservation through the shared test cleanup context.
 [Local harness cleanup regressions](../../tests/local_integration/test_harness_cleanup.py)
 exercise real managed subprocesses, independent pipe cleanup after diagnostic
-drain failure, finite escalation waits, and the flash reader caller.
-[`test_external_master_input_close_failure_does_not_skip_process_cleanup`](../../tests/unit/test_ssh_harness_cleanup.py)
-protects the external sharing-master caller's primary failure and cleanup.
+drain or input-close failure, finite escalation waits, and primary failure
+preservation. SSH and hardware callers consume these shared cleanup helpers.
 
 ## Implementation coverage
 

@@ -37,13 +37,11 @@ from zephyr_remote_openocd.remote.protocol import (
     validate_openocd_version_response,
 )
 from zephyr_remote_openocd.remote.ssh import (
-    ManagedSshProcess,
     SshCommand,
     SshLocalForward,
-    _stop_process,
 )
 
-from tests.process_support import cleanup_on_exit, read_line
+from tests.process_support import cleanup_on_exit, read_line, stop_and_close
 
 pytestmark = pytest.mark.ssh
 REMOTE_FAILURE_EXIT_CODE = 7
@@ -161,11 +159,6 @@ def wait_for_echo(port: int, payload: bytes, timeout: float):
             last_error = error
             time.sleep(0.1)
     raise AssertionError(f"forwarded endpoint was not ready: {last_error}")
-
-
-def stop_and_close(process: ManagedSshProcess | None) -> None:
-    if process is not None:
-        _stop_process(process)
 
 
 class TestConfiguredSshIntegration:

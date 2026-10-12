@@ -7,27 +7,14 @@ from __future__ import annotations
 import math
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
 from zephyr_remote_openocd.remote.ssh import SshCommand, _stop_process
 
-from tests.hardware import test_real_flash as flash_harness
-from tests.hardware_support import FlashFixture, PreparedTarget
-from tests.inventory import (
-    BuildEnvironment,
-    FlashOperation,
-    InventoryHost,
-    SerialEndpoint,
-    SerialExpectation,
-)
-from tests.process_support import local_transport, read_line
-from tests.serial_reader import stop_reader
-from tests.ssh_integration.test_ssh_integration import stop_and_close
+from tests.process_support import cleanup_on_exit, read_line, stop_and_close
 
 
-@pytest.mark.parametrize("cleanup", (stop_reader, stop_and_close))
-def test_harness_cleanup_attempts_data_pipes_after_stderr_failure(monkeypatch, cleanup):
+def test_harness_cleanup_attempts_data_pipes_after_stderr_failure(monkeypatch):
     process = SshCommand((sys.executable, "-c", "pass")).popen("controlled-host", "unused")
     failure = OSError("stderr cleanup failed")
     close_stderr = process.close_stderr
@@ -41,7 +28,7 @@ def test_harness_cleanup_attempts_data_pipes_after_stderr_failure(monkeypatch, c
         with monkeypatch.context() as effects:
             effects.setattr(process, "close_stderr", close_then_fail)
             with pytest.raises(OSError) as raised:
-                cleanup(process)
+                stop_and_close(process)
         assert raised.value is failure
         assert process.stdin is not None and process.stdin.closed
         assert process.stdout is not None and process.stdout.closed
@@ -49,8 +36,7 @@ def test_harness_cleanup_attempts_data_pipes_after_stderr_failure(monkeypatch, c
         _stop_process(process)
 
 
-@pytest.mark.parametrize("cleanup", (stop_reader, stop_and_close))
-def test_harness_cleanup_escalation_uses_finite_waits(monkeypatch, cleanup):
+def test_harness_cleanup_escalation_uses_finite_waits(monkeypatch):
     code = (
         "import signal;signal.signal(signal.SIGTERM,signal.SIG_IGN);"
         "print('ready',flush=True);signal.pause()"
@@ -77,7 +63,7 @@ def test_harness_cleanup_escalation_uses_finite_waits(monkeypatch, cleanup):
         with monkeypatch.context() as effects:
             effects.setattr(process, "wait", wait_process)
             effects.setattr(process, "kill", kill_process)
-            cleanup(process)
+            stop_and_close(process)
         assert killed and process.poll() is not None
         assert process.stdin is not None and process.stdin.closed
         assert process.stdout is not None and process.stdout.closed
@@ -88,49 +74,36 @@ def test_harness_cleanup_escalation_uses_finite_waits(monkeypatch, cleanup):
         _stop_process(process)
 
 
-def test_flash_serial_cleanup_preserves_assertion_failure(tmp_path, monkeypatch):
-    target = PreparedTarget(
-        "target:profile",
-        "target",
-        "profile",
-        InventoryHost("host", "controlled-host", ("openocd",), ("controlled-ssh",), (), ()),
-        BuildEnvironment("build", tmp_path, Path("west"), ()),
-        None,
-        tmp_path,
-        tmp_path / "config.yaml",
-        (),
-        (),
-    )
-    fixture = FlashFixture(
-        target,
-        FlashOperation("precondition", SerialExpectation("console", "ready", 30), (), False),
-        SerialEndpoint("console", "/unused", 115200, 8, "none", 1, "none"),
-        tmp_path,
-    )
-    reader = local_transport([sys.executable, "-c", "print('{\"type\":\"ERROR\"}',flush=True)"])
-    close_stderr = reader.close_stderr
-    failure = OSError("serial reader cleanup failed")
+@pytest.mark.parametrize("failed_pipe", ("stdin", "stderr"))
+def test_process_cleanup_scope_preserves_assertion_and_closes_pipes(monkeypatch, failed_pipe):
+    process = SshCommand((sys.executable, "-c", "pass")).popen("controlled-host", "unused")
+    primary = AssertionError("observation failed")
+    failure = OSError(f"{failed_pipe} cleanup failed")
+    failure.add_note("nested pipe cleanup diagnostic")
+    assert process.stdin is not None
+    close_pipe = process.stdin.close if failed_pipe == "stdin" else process.close_stderr
 
     def close_then_fail():
-        close_stderr()
+        close_pipe()
         raise failure
 
     try:
-        reader.wait(timeout=30)
+        process.wait(timeout=30)
         with monkeypatch.context() as effects:
-            effects.setattr(SshCommand, "popen", lambda *_args, **_kwargs: reader)
-            effects.setattr(
-                flash_harness,
-                "run_process",
-                lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, ""),
-            )
-            effects.setattr(reader, "close_stderr", close_then_fail)
-            with pytest.raises(AssertionError) as raised:
-                flash_harness.TestRealOpenOcdFlash().test_configured_target_flashes_and_emits_fresh_serial_output(
-                    fixture
-                )
-        assert any(str(failure) in note for note in raised.value.__notes__)
-        assert reader.stdin is not None and reader.stdin.closed
-        assert reader.stdout is not None and reader.stdout.closed
+            if failed_pipe == "stdin":
+                effects.setattr(process.stdin, "close", close_then_fail)
+            else:
+                effects.setattr(process, "close_stderr", close_then_fail)
+            with (
+                pytest.raises(AssertionError) as raised,
+                cleanup_on_exit(lambda: stop_and_close(process)),
+            ):
+                raise primary
+            assert raised.value is primary
+            assert any(str(failure) in note for note in primary.__notes__)
+            assert any("nested pipe cleanup diagnostic" in note for note in primary.__notes__)
+            assert process.poll() is not None
+            assert process.stdin is not None and process.stdin.closed
+            assert process.stdout is not None and process.stdout.closed
     finally:
-        _stop_process(reader)
+        _stop_process(process)

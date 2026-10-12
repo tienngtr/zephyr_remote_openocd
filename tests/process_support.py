@@ -17,7 +17,7 @@ from typing import IO
 from unittest.mock import patch
 
 from zephyr_remote_openocd.remote.cleanup import _add_failure_note
-from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand
+from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand, _stop_process
 
 PROCESS_CLEANUP_TIMEOUT = 10
 
@@ -268,6 +268,12 @@ def cleanup_on_exit(cleanup: Callable[[], None]) -> Iterator[None]:
             if primary is None:
                 raise
             _add_failure_note(primary, "test cleanup also failed", error)
+
+
+def stop_and_close(process: ManagedSshProcess | None) -> None:
+    """Stop an owned SSH test process and independently close its pipes."""
+    if process is not None:
+        _stop_process(process)
 
 
 def read_line(stream, timeout=30):
