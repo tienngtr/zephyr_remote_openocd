@@ -36,11 +36,11 @@ from zephyr_remote_openocd.remote.model import (
 from zephyr_remote_openocd.remote.outcome import Trigger
 from zephyr_remote_openocd.remote.paths import PathPlanner
 from zephyr_remote_openocd.remote.session import SessionError
-from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand
+from zephyr_remote_openocd.remote.ssh import SshCommand
 
 from tests.concurrency_support import ConcurrentSessions
 from tests.forwarding_support import GDB, RTT, TCL, TELNET, ForwardingHarness
-from tests.process_support import cleanup_on_exit
+from tests.process_support import cleanup_on_exit, local_transport
 from tests.protocol_support import terminal_snapshot
 from tests.support import ROOT, env_path
 
@@ -198,14 +198,8 @@ def test_runner_logs_effective_argv_when_remote_startup_fails(
         def popen(self, host, remote_command, *, local_forward=None):
             del host, remote_command
             assert local_forward is None
-            return ManagedSshProcess.from_popen(
-                subprocess.Popen(
-                    [sys.executable, str(helper), "control"],
-                    env=environment,
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                )
+            return local_transport(
+                [sys.executable, str(helper), "control"], environment=environment
             )
 
         @override

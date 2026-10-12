@@ -11,13 +11,33 @@ import signal
 import subprocess
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from typing import IO
+from unittest.mock import patch
 
 from zephyr_remote_openocd.remote.cleanup import _add_failure_note
+from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand
 
 PROCESS_CLEANUP_TIMEOUT = 10
+
+
+def local_transport(
+    argv: Iterable[str],
+    *,
+    environment: Mapping[str, str] | None = None,
+    pass_fds: tuple[int, ...] = (),
+) -> ManagedSshProcess:
+    """Exercise SSH acquisition with a local command at the Popen boundary."""
+    popen = subprocess.Popen
+
+    def launch(args: list[str], **kwargs) -> subprocess.Popen[bytes]:
+        # Strip only the synthetic host/remote-command arguments. Production
+        # supplies pipe capture and owns acquisition, masking, and rollback.
+        return popen(args[:-2], env=environment, pass_fds=pass_fds, **kwargs)
+
+    with patch.object(subprocess, "Popen", launch):
+        return SshCommand(tuple(argv)).popen("local-test", "unused")
 
 
 class ProcessOutputMonitor:

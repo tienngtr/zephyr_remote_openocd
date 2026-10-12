@@ -62,7 +62,7 @@ from zephyr_remote_openocd.remote.ssh import (
 from zephyr_remote_openocd.remote.staging import build_archive
 from zephyr_remote_openocd.remote.wire import decode_terminal
 
-from tests.process_support import cleanup_on_exit, read_line, read_lines
+from tests.process_support import cleanup_on_exit, local_transport, read_line, read_lines
 from tests.protocol_support import terminal_message
 from tests.support import ROOT
 
@@ -107,7 +107,6 @@ class _BlockedSshCommand(SshCommand):
 def test_interrupted_helper_acquisition_cleans_owned_control_process(tmp_path, monkeypatch, phase):
     helper_path = ROOT / "python/zephyr_remote_openocd/remote_helper.py"
     environment = {**os.environ, "XDG_RUNTIME_DIR": str(tmp_path)}
-    processes: list[subprocess.Popen[bytes]] = []
     managed_processes: list[ManagedSshProcess] = []
     workspaces: list[Path] = []
     interruption = KeyboardInterrupt()
@@ -119,15 +118,9 @@ def test_interrupted_helper_acquisition_cleans_owned_control_process(tmp_path, m
         def popen(self, host, remote_command, *, local_forward=None):
             del host, remote_command
             assert local_forward is None
-            process = subprocess.Popen(
-                [sys.executable, str(helper_path), "control"],
-                env=environment,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+            managed = local_transport(
+                [sys.executable, str(helper_path), "control"], environment=environment
             )
-            processes.append(process)
-            managed = ManagedSshProcess.from_popen(process)
             managed_processes.append(managed)
             if phase == "control-launch":
                 signal.raise_signal(signal.SIGINT)
@@ -162,21 +155,14 @@ def test_interrupted_helper_acquisition_cleans_owned_control_process(tmp_path, m
         if phase != "control-launch":
             assert raised.value is interruption
         assert session.closed
-        assert all(process.poll() is not None for process in processes)
+        assert all(process.poll() is not None for process in managed_processes)
         assert all(not workspace.exists() for workspace in workspaces)
         for managed in managed_processes:
             assert managed.stdin is not None and managed.stdin.closed
             assert managed.stdout is not None and managed.stdout.closed
     finally:
-        for process in processes:
-            if process.poll() is None:
-                process.kill()
-            process.wait(timeout=5)
         for managed in managed_processes:
-            managed.close_stderr()
-            for stream in (managed.stdin, managed.stdout):
-                if stream is not None:
-                    stream.close()
+            _stop_process(managed)
 
 
 def test_sigint_during_helper_reader_start_keeps_one_owned_reader(monkeypatch):
@@ -259,15 +245,8 @@ def test_helper_close_allows_recorded_natural_exit_before_termination(
     code = (
         f"import os\nos.write(1, {events!r})\nos.close(1)\nos.close(2)\nos.read({exit_read}, 1)\n"
     )
-    process = subprocess.Popen(
-        [sys.executable, "-c", code],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        pass_fds=(exit_read,),
-    )
+    managed = local_transport([sys.executable, "-c", code], pass_fds=(exit_read,))
     os.close(exit_read)
-    managed = ManagedSshProcess.from_popen(process)
 
     class LocalCommand(_BlockedSshCommand):
         @override
@@ -278,8 +257,8 @@ def test_helper_close_allows_recorded_natural_exit_before_termination(
 
     terminated = False
     graceful_wait_started = False
-    wait = process.wait
-    terminate = process.terminate
+    wait = managed.wait
+    terminate = managed.terminate
 
     def observe_terminate() -> None:
         nonlocal terminated
@@ -292,7 +271,7 @@ def test_helper_close_allows_recorded_natural_exit_before_termination(
             assert timeout is not None and 0 < timeout <= helper_client_module.HELPER_STOP_TIMEOUT
             graceful_wait_started = True
             if transport_timeout:
-                raise subprocess.TimeoutExpired(process.args, timeout)
+                raise subprocess.TimeoutExpired(managed.args, timeout)
             os.write(exit_write, b"x")
         return wait(timeout=timeout)
 
@@ -316,8 +295,8 @@ def test_helper_close_allows_recorded_natural_exit_before_termination(
         else:
             assert observations.operation_status() == 0
         assert managed.poll() is None
-        monkeypatch.setattr(process, "wait", gated_wait)
-        monkeypatch.setattr(process, "terminate", observe_terminate)
+        monkeypatch.setattr(managed, "wait", gated_wait)
+        monkeypatch.setattr(managed, "terminate", observe_terminate)
 
         helper.close()
         error = observations.snapshot().failure
@@ -342,8 +321,8 @@ def test_helper_close_allows_recorded_natural_exit_before_termination(
         assert managed.stdout is not None and managed.stdout.closed
     finally:
         os.close(exit_write)
-        if process.poll() is None:
-            process.kill()
+        if managed.poll() is None:
+            managed.kill()
         wait(timeout=5)
         managed.close_stderr()
         for stream in (managed.stdin, managed.stdout):
@@ -391,10 +370,6 @@ def _assert_pidfd_exited(pidfd, timeout=5):
     poller.register(pidfd, select.POLLIN)
     if not poller.poll(timeout * 1000):
         raise AssertionError("process survived cleanup")
-
-
-def managed_popen(*args, **kwargs):
-    return ManagedSshProcess.from_popen(subprocess.Popen(*args, **kwargs))
 
 
 def start_frame(
@@ -640,17 +615,11 @@ class TestForwardingLifecycle:
                 del host, remote_command, local_forward
                 return self.processes.pop(0)
 
-        failed = managed_popen(
+        failed = local_transport(
             [sys.executable, "-c", "import sys; sys.stdin.buffer.read()"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
         )
-        healthy = managed_popen(
+        healthy = local_transport(
             [sys.executable, "-c", "import sys; sys.stdin.buffer.read()"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
         )
 
         def fail_terminate() -> None:
@@ -2296,12 +2265,9 @@ helper['stage'](sys.argv[2])
                 argv_prefix = ("local_test",)
 
                 def popen(inner, host, remote_command, *, local_forward=None):  # pylint: disable=no-self-argument
-                    return managed_popen(
+                    return local_transport(
                         [sys.executable, str(helper), "control"],
-                        env=environment,
-                        stdin=subprocess.PIPE,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
+                        environment=environment,
                     )
 
                 def run_stream(inner, host, remote_command, stream, timeout=60):  # pylint: disable=no-self-argument
@@ -2368,12 +2334,9 @@ helper['stage'](sys.argv[2])
                 argv_prefix = ("local_test",)
 
                 def popen(inner, host, remote_command, *, local_forward=None):  # pylint: disable=no-self-argument
-                    return managed_popen(
+                    return local_transport(
                         [sys.executable, str(helper), "control"],
-                        env=environment,
-                        stdin=subprocess.PIPE,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
+                        environment=environment,
                     )
 
             child_code = (
@@ -2473,11 +2436,8 @@ sys.exit({exit_code})
 
         class LocalCommand(_BlockedSshCommand):
             def popen(inner, host, remote_command, *, local_forward=None):  # pylint: disable=no-self-argument
-                return managed_popen(
+                return local_transport(
                     [sys.executable, "-c", helper_code],
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
                 )
 
         observations = _SessionObservations()
@@ -2532,11 +2492,8 @@ sys.exit({HELPER_FAILURE_RC})
             process: Any = None
 
             def popen(inner, host, remote_command, *, local_forward=None):  # pylint: disable=no-self-argument
-                process = managed_popen(
+                process = local_transport(
                     [sys.executable, "-c", helper_code],
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
                 )
                 inner.process = process
                 return process
@@ -2587,12 +2544,9 @@ sys.exit({HELPER_FAILURE_RC})
                 process: Any = None
 
                 def popen(inner, host, remote_command, *, local_forward=None):  # pylint: disable=no-self-argument
-                    process = managed_popen(
+                    process = local_transport(
                         [sys.executable, str(helper), "control"],
-                        env=environment,
-                        stdin=subprocess.PIPE,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
+                        environment=environment,
                     )
                     inner.process = process
                     return process
@@ -2646,12 +2600,9 @@ sys.exit({HELPER_FAILURE_RC})
 
             class LocalCommand(_BlockedSshCommand):
                 def popen(inner, host, remote_command, *, local_forward=None):  # pylint: disable=no-self-argument
-                    return managed_popen(
+                    return local_transport(
                         [sys.executable, str(helper), "control"],
-                        env=environment,
-                        stdin=subprocess.PIPE,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
+                        environment=environment,
                     )
 
                 def run_stream(inner, host, remote_command, stream, timeout=60):  # pylint: disable=no-self-argument

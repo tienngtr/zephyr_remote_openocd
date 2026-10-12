@@ -8,9 +8,8 @@ import signal
 import subprocess
 import threading
 import time
-from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import IO, BinaryIO, Protocol, cast
+from typing import BinaryIO, Protocol, cast
 
 from .cleanup import _add_failure_note, _raise_cleanup_errors
 
@@ -116,8 +115,8 @@ class _StderrDrain:
 class ManagedSshProcess:
     """Long-lived SSH process with an explicitly owned stderr drain."""
 
-    def __init__(self, process: subprocess.Popen[bytes] | None = None):
-        self._process = process
+    def __init__(self) -> None:
+        self._process: subprocess.Popen[bytes] | None = None
         self._drain: _StderrDrain | None = None
 
     def acquire(self, argv: list[str]) -> None:
@@ -129,40 +128,10 @@ class ManagedSshProcess:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        self._start_stderr()
-
-    def _start_stderr(self) -> None:
-        process = self._process_or_error()
-        assert process.stderr is not None
-        self._drain = _StderrDrain(cast(BinaryIO, process.stderr))
+        assert self._process.stderr is not None
+        self._drain = _StderrDrain(cast(BinaryIO, self._process.stderr))
         self._drain.start()
-        process.stderr = None
-
-    @classmethod
-    def from_popen(cls, process: subprocess.Popen[bytes]) -> ManagedSshProcess:
-        """Adopt an existing process, retaining raw rollback during construction."""
-        managed = None
-        try:
-            managed = cls(process)
-            managed._start_stderr()
-            return managed
-        except BaseException as error:
-            if managed is not None:
-                managed._rollback_acquisition(error)
-            else:
-                # Raw ownership does not depend on constructing this wrapper.
-                termination = _terminate_process(process)
-                cleanup_errors = (
-                    *(
-                        (termination.primary_error,)
-                        if termination.primary_error is not None
-                        else ()
-                    ),
-                    *termination.secondary_errors,
-                    *_close_streams((process.stderr, process.stdin, process.stdout)),
-                )
-                _record_startup_cleanup(error, cleanup_errors)
-            raise
+        self._process.stderr = None
 
     def _rollback_acquisition(self, error: BaseException) -> None:
         if self._process is None:
@@ -173,7 +142,10 @@ class ManagedSshProcess:
             *termination.secondary_errors,
             *_close_process_streams(self, close_streams=True),
         )
-        _record_startup_cleanup(error, cleanup_errors)
+        for cleanup_failure in cleanup_errors:
+            _add_failure_note(error, "SSH process startup cleanup failed", cleanup_failure)
+        if isinstance(error, (OSError, subprocess.SubprocessError)):
+            raise SshProcessStartError(error, cleanup_errors) from error
 
     def _process_or_error(self) -> subprocess.Popen[bytes]:
         assert self._process is not None
@@ -218,8 +190,14 @@ class ManagedSshProcess:
             self._process.stderr.close()
 
 
-class _ProcessTermination(Protocol):
-    """Termination operations shared by raw and managed subprocess owners."""
+class _ProcessControl(Protocol):
+    """Process operations and resources needed during SSH cleanup."""
+
+    @property
+    def stdin(self) -> BinaryIO | None: ...
+
+    @property
+    def stdout(self) -> BinaryIO | None: ...
 
     def poll(self) -> int | None: ...
 
@@ -228,16 +206,6 @@ class _ProcessTermination(Protocol):
     def terminate(self) -> None: ...
 
     def kill(self) -> None: ...
-
-
-class _ProcessControl(_ProcessTermination, Protocol):
-    """Owned data streams and diagnostic drain needed during SSH cleanup."""
-
-    @property
-    def stdin(self) -> BinaryIO | None: ...
-
-    @property
-    def stdout(self) -> BinaryIO | None: ...
 
     def close_stderr(self) -> None: ...
 
@@ -250,7 +218,7 @@ class _TerminationResult:
     secondary_errors: tuple[BaseException, ...]
 
 
-def _terminate_process(process: _ProcessTermination) -> _TerminationResult:
+def _terminate_process(process: _ProcessControl) -> _TerminationResult:
     """Stop one process, escalating from graceful termination to a kill."""
     primary_error: BaseException | None = None
     secondary_errors: list[BaseException] = []
@@ -317,27 +285,6 @@ def _terminate_process(process: _ProcessTermination) -> _TerminationResult:
     return _TerminationResult(primary_error, tuple(secondary_errors))
 
 
-def _close_streams(streams: Iterable[IO[bytes] | None]) -> tuple[BaseException, ...]:
-    errors: list[BaseException] = []
-    for stream in streams:
-        if stream is None or stream.closed:
-            continue
-        try:
-            stream.close()
-        except BaseException as error:
-            errors.append(error)
-    return tuple(errors)
-
-
-def _record_startup_cleanup(
-    error: BaseException, cleanup_errors: tuple[BaseException, ...]
-) -> None:
-    for cleanup_failure in cleanup_errors:
-        _add_failure_note(error, "SSH process startup cleanup failed", cleanup_failure)
-    if isinstance(error, (OSError, subprocess.SubprocessError)):
-        raise SshProcessStartError(error, cleanup_errors) from error
-
-
 def _close_process_streams(
     process: _ProcessControl, *, close_streams: bool
 ) -> tuple[BaseException, ...]:
@@ -349,7 +296,13 @@ def _close_process_streams(
     except BaseException as error:
         cleanup_errors.append(error)
     if close_streams:
-        cleanup_errors.extend(_close_streams((process.stdin, process.stdout)))
+        for stream in (process.stdin, process.stdout):
+            if stream is None or stream.closed:
+                continue
+            try:
+                stream.close()
+            except BaseException as error:
+                cleanup_errors.append(error)
     return tuple(cleanup_errors)
 
 

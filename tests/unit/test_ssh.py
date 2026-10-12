@@ -31,7 +31,6 @@ from zephyr_remote_openocd.remote.outcome import Trigger
 from zephyr_remote_openocd.remote.protocol import encode_message
 from zephyr_remote_openocd.remote.session import SessionError
 from zephyr_remote_openocd.remote.ssh import (
-    ManagedSshProcess,
     SshCommand,
     SshLocalForward,
     SshProcessStartError,
@@ -224,10 +223,9 @@ def _assert_transport_disposed(processes: list[subprocess.Popen[bytes]]) -> None
     )
 
 
-@pytest.mark.parametrize("acquisition", ("launch", "adopt"))
 @pytest.mark.parametrize("failure_type", (MemoryError, KeyboardInterrupt, OSError))
 def test_stderr_owner_construction_failure_disposes_raw_transport(
-    monkeypatch, acquired_transports, acquisition, failure_type
+    monkeypatch, acquired_transports, failure_type
 ):
     failure = failure_type("stderr owner construction failed")
     monkeypatch.setattr(
@@ -237,44 +235,13 @@ def test_stderr_owner_construction_failure_disposes_raw_transport(
     previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
 
     with pytest.raises((failure_type, SshProcessStartError)) as raised:
-        if acquisition == "launch":
-            command.popen("host", "serve")
-        else:
-            process = subprocess.Popen(
-                command.argv("host", "serve"),
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
-            ManagedSshProcess.from_popen(process)
+        command.popen("host", "serve")
 
     if isinstance(raised.value, SshProcessStartError):
         assert raised.value.cause is failure and not raised.value.cleanup_errors
     else:
         assert raised.value is failure
     assert signal.pthread_sigmask(signal.SIG_BLOCK, set()) == previous_mask
-    _assert_transport_disposed(acquired_transports)
-
-
-@pytest.mark.parametrize("failure_type", (MemoryError, KeyboardInterrupt))
-def test_existing_process_adoption_rolls_back_when_wrapper_construction_fails(
-    monkeypatch, acquired_transports, failure_type
-):
-    failure = failure_type("transport wrapper construction failed")
-    monkeypatch.setattr(
-        ManagedSshProcess,
-        "__init__",
-        create_autospec(ManagedSshProcess.__init__, side_effect=failure),
-    )
-    process = subprocess.Popen(
-        [sys.executable, "-c", "import sys; sys.stdin.buffer.read()"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    with pytest.raises(failure_type) as raised:
-        ManagedSshProcess.from_popen(process)
-    assert raised.value is failure
     _assert_transport_disposed(acquired_transports)
 
 

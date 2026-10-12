@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from zephyr_remote_openocd.remote.ssh import ManagedSshProcess, SshCommand, _stop_process
+from zephyr_remote_openocd.remote.ssh import SshCommand, _stop_process
 
 from tests.hardware import test_real_flash as flash_harness
 from tests.hardware_support import FlashFixture, PreparedTarget
@@ -21,7 +21,7 @@ from tests.inventory import (
     SerialEndpoint,
     SerialExpectation,
 )
-from tests.process_support import read_line
+from tests.process_support import local_transport, read_line
 from tests.serial_reader import stop_reader
 from tests.ssh_integration.test_ssh_integration import stop_and_close
 
@@ -107,13 +107,7 @@ def test_flash_serial_cleanup_preserves_assertion_failure(tmp_path, monkeypatch)
         SerialEndpoint("console", "/unused", 115200, 8, "none", 1, "none"),
         tmp_path,
     )
-    raw = subprocess.Popen(
-        [sys.executable, "-c", "print('{\"type\":\"ERROR\"}',flush=True)"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    reader = ManagedSshProcess.from_popen(raw)
+    reader = local_transport([sys.executable, "-c", "print('{\"type\":\"ERROR\"}',flush=True)"])
     close_stderr = reader.close_stderr
     failure = OSError("serial reader cleanup failed")
 

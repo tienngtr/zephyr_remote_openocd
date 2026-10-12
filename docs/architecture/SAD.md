@@ -1415,10 +1415,10 @@ exists, rollback closes the raw stderr pipe directly; after drain adoption,
 only the drain closes that pipe. Constructor and thread-start failures use the
 same bounded process termination and independent stream cleanup as other
 acquisition failures. They require no replacement wrapper or drain. The
-existing-process `from_popen()` adoption path separately retains raw rollback
-through wrapper construction. A pending interruption during signal-mask
-restoration cannot replace an already established acquisition failure; it is
-retained as secondary detail before rollback.
+resource-free wrapper has one acquisition path, populated by transport launch.
+A pending interruption during signal-mask restoration cannot replace an
+already established acquisition failure; it is retained as secondary detail
+before rollback.
 
 The inherited mask is a launch-time mitigation, not unconditional SIGINT
 isolation. Terminal SIGINT intended for GDB leaves a transport unaffected
