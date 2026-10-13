@@ -114,15 +114,27 @@ def test_bare_alternate_executable_is_resolved_through_path(tmp_path, monkeypatc
     assert json.loads(result.stdout) == ["--fixed", "target", "remote command"]
 
 
-@pytest.mark.parametrize("start_failure", [False, True])
-def test_long_lived_launch_restores_calling_thread_signal_mask(tmp_path, start_failure):
+@pytest.mark.parametrize(
+    "start_failure, search_path",
+    ((False, False), (True, False), (True, True)),
+    ids=("success", "missing-executable", "missing-executable-search-path"),
+)
+def test_long_lived_launch_restores_calling_thread_signal_mask(
+    tmp_path, monkeypatch, start_failure, search_path
+):
+    if search_path:
+        # A bare executable uses the real fork/exec search path even on newer
+        # runtimes whose absolute-path launches can use posix_spawn.
+        monkeypatch.setenv("PATH", str(tmp_path))
+
     def launch():
         original = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGUSR1})
         expected = signal.pthread_sigmask(signal.SIG_BLOCK, set())
         try:
             if start_failure:
+                executable = "missing-ssh" if search_path else str(tmp_path / "missing-ssh")
                 with pytest.raises(FileNotFoundError):
-                    SshCommand((str(tmp_path / "missing-ssh"),)).popen("host", "serve")
+                    SshCommand((executable,)).popen("host", "serve")
             else:
                 process = SshCommand((sys.executable, "-c", "pass")).popen("host", "serve")
                 _stop_process(process)
@@ -663,6 +675,7 @@ def test_acquisition_rollback_attempts_every_stream_and_retains_all_failures(
 
     class Process:
         pid = 1
+        returncode = None
         stdin = FailingStream(stdin_error)
         stdout = FailingStream(stdout_error)
         stderr = FailingStream(stderr_error)

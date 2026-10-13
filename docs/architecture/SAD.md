@@ -1432,7 +1432,9 @@ initializer's return or the normal managed-owner assignment. This ownership
 does not depend on the launching thread's SIGINT mask preventing Python-level
 interruption. Rollback checks whether the raw instance has a child PID before
 attempting process disposal; a failure before child creation retains normal
-`Popen` constructor cleanup. This subtype is part of the existing transport
+`Popen` constructor cleanup. If failed fork/exec initialization has already
+reaped the child and closed every pipe, with no stderr drain acquired, rollback
+preserves the original launch exception. This subtype is part of the existing transport
 acquisition path, not a separate acquisition API or lifecycle authority.
 
 Acquisition then records the stderr drain before starting its thread. Before a

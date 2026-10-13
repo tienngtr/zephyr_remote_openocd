@@ -131,6 +131,17 @@ class ManagedSshProcess:
     def _rollback_acquisition(self, error: BaseException) -> None:
         if self._process is None or getattr(self._process, "pid", None) is None:
             return
+        # Failed fork/exec initialization can already reap the child and close
+        # all pipes. With no drain to settle, preserve that original launch error.
+        if (
+            self._drain is None
+            and self._process.returncode is not None
+            and all(
+                stream is None or stream.closed
+                for stream in (self._process.stdin, self._process.stdout, self._process.stderr)
+            )
+        ):
+            return
         termination = _terminate_process(self)
         cleanup_errors = (
             *((termination.primary_error,) if termination.primary_error is not None else ()),
