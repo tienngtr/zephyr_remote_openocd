@@ -2,12 +2,16 @@
 
 name: Install Python and developer PyPI packages
 description: Set up Python and install repository developer pip packages
+inputs:
+  python-version:
+    description: Python version to install
+    default: "3.12"
 runs:
   using: composite
   steps:
     - uses: actions/setup-python@v7
       with:
-        python-version: "3.12"
+        python-version: ${{ inputs.python-version }}
         cache: pip
         cache-dependency-path: requirements_dev.txt
     - name: Install developer pip packages

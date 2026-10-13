@@ -19,15 +19,31 @@ jobs:
         run: python scripts/contributor/static_check.py
 
   self-contained-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+        include:
+          # Measure coverage on the minimum supported version, like the
+          # external layers; branch arcs differ across interpreter versions.
+          - python-version: "3.12"
+            coverage: true
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/install-python-tools
+        with:
+          python-version: ${{ matrix.python-version }}
       - name: Run self-contained tests
+        if: ${{ !matrix.coverage }}
+        run: pytest
+      - name: Run self-contained tests with coverage
+        if: ${{ matrix.coverage }}
         env:
           COVERAGE_FILE: .coverage.self-contained-tests
         run: pytest --cov --cov-config=.coveragerc --cov-report=
       - uses: actions/upload-artifact@v7
+        if: ${{ matrix.coverage }}
         with:
           name: coverage-self-contained-tests
           path: .coverage.self-contained-tests
