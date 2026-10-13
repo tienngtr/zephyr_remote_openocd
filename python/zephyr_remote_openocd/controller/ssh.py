@@ -8,7 +8,7 @@ import signal
 import subprocess
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from types import FrameType
@@ -200,7 +200,7 @@ class ManagedSshProcess:
 
 
 @contextmanager
-def _defer_spawn_sigint() -> Iterator[None]:
+def _defer_spawn_sigint() -> Generator[None, None, None]:
     """Defer Python SIGINT dispatch until the native child handle is published."""
     # Python signal handlers execute only on the main thread. Worker launches
     # cannot receive their exceptions and must not change process-wide handlers.

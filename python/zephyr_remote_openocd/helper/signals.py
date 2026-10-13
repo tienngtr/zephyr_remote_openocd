@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import signal
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
 from contextlib import contextmanager
 from types import FrameType
 
@@ -40,7 +40,7 @@ class _SessionSignals:
                 yield exc
 
     @contextmanager
-    def commit(self) -> Iterator[None]:
+    def commit(self) -> Generator[None, None, None]:
         """Serialize native signal delivery with a synchronous lifecycle commit."""
         previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT, signal.SIGTERM})
         try:

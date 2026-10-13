@@ -11,7 +11,7 @@ import socket
 import sys
 import termios
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from typing import BinaryIO
 
@@ -73,7 +73,7 @@ class _RttConnection:
 
 
 @contextmanager
-def _terminal_mode(input_fd: int) -> Iterator[None]:
+def _terminal_mode(input_fd: int) -> Generator[None, None, None]:
     """Own noncanonical/no-echo input and restore it even if setup fails."""
     original_terminal = None
     primary_failure: BaseException | None = None

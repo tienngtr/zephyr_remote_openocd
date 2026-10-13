@@ -10,7 +10,7 @@ import secrets
 import shutil
 import stat
 import time
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager, suppress
 from pathlib import Path
 
@@ -44,7 +44,7 @@ def _closure_path(work: Path) -> Path:
 
 
 @contextmanager
-def _stage_lease(work: Path) -> Iterator[None]:
+def _stage_lease(work: Path) -> Generator[None, None, None]:
     # Acquire ownership before checking closure. If cleanup wins before this
     # check, reject; if it wins afterwards, our shared lease prevents removal.
     # Allocation creates the lease. A delayed upload must not recreate metadata

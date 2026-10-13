@@ -11,7 +11,7 @@ import signal
 import subprocess
 import threading
 import time
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterable, Mapping
 from contextlib import contextmanager
 from typing import IO
 from unittest.mock import patch
@@ -184,7 +184,7 @@ class ProcessScope:
 
 
 @contextmanager
-def managed_process(args, **kwargs) -> Iterator[ProcessScope]:
+def managed_process(args, **kwargs) -> Generator[ProcessScope, None, None]:
     """Acquire and clean up a command without replacing an existing failure."""
     owner = None
     primary = None
@@ -254,7 +254,7 @@ def assert_semihosting_acceptance(returncode: int | None, output: str, pattern: 
 
 
 @contextmanager
-def cleanup_on_exit(cleanup: Callable[[], None]) -> Iterator[None]:
+def cleanup_on_exit(cleanup: Callable[[], None]) -> Generator[None, None, None]:
     """Attempt owned test cleanup without replacing an active failure."""
     primary = None
     try:
