@@ -8,7 +8,10 @@ import signal
 import subprocess
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
+from types import FrameType
 from typing import BinaryIO, Protocol, cast
 
 from zephyr_remote_openocd.controller.cleanup import _add_failure_note, _raise_cleanup_errors
@@ -196,6 +199,45 @@ class ManagedSshProcess:
             self._process.stderr.close()
 
 
+@contextmanager
+def _defer_spawn_sigint() -> Iterator[None]:
+    """Defer Python SIGINT dispatch until the native child handle is published."""
+    # Python signal handlers execute only on the main thread. Worker launches
+    # cannot receive their exceptions and must not change process-wide handlers.
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous_handler = signal.getsignal(signal.SIGINT)
+    if not callable(previous_handler):
+        # Preserve ignored SIGINT, including interactive GDB's parent behavior,
+        # and native default dispositions without inventing Python dispatch.
+        yield
+        return
+
+    pending: tuple[int, FrameType | None] | None = None
+    primary: BaseException | None = None
+
+    def defer(signum: int, frame: FrameType | None) -> None:
+        nonlocal pending
+        pending = (signum, frame)
+
+    try:
+        signal.signal(signal.SIGINT, defer)
+        yield
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        try:
+            signal.signal(signal.SIGINT, previous_handler)
+            if pending is not None:
+                previous_handler(*pending)
+        except BaseException as error:
+            if primary is None:
+                raise
+            _add_failure_note(primary, "SSH deferred SIGINT delivery also failed", error)
+
+
 class _OwnedSshPopen(subprocess.Popen[bytes]):
     """Register the raw owner before initialization can create a subprocess."""
 
@@ -203,12 +245,13 @@ class _OwnedSshPopen(subprocess.Popen[bytes]):
         # Registration precedes the effect. A BaseException at the base
         # constructor's return cannot prevent rollback from finding this object.
         owner._process = self
-        super().__init__(
-            argv,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
+        with _defer_spawn_sigint():
+            super().__init__(
+                argv,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
 
 
 class _ProcessControl(Protocol):
@@ -404,8 +447,9 @@ class SshCommand:
         forward_args = local_forward.argv() if local_forward is not None else ()
         argv = [self.argv_prefix[0], *forward_args, *self.argv_prefix[1:], host, remote_command]
         # Keep the controlling terminal and foreground group for SSH prompts.
-        # The child inherits this thread's blocked SIGINT across exec; changing
-        # a process-wide handler or running Python in preexec_fn is unsafe here.
+        # The child inherits this thread's blocked SIGINT across exec. A narrow
+        # Python-handler scope also protects native spawn/PID publication;
+        # masking this thread alone cannot prevent dispatch via another thread.
         managed_process = ManagedSshProcess()
         previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
         acquisition_failure: BaseException | None = None

@@ -1394,9 +1394,9 @@ attempts; an earlier cleanup failure remains primary and retains the
 interruption as a diagnostic.
 
 Local controller interruption handling relies on the supported host Python
-runtime to deliver Ctrl-C into application control flow. The SIGINT masks around
-resource acquisition and cleanup protect ownership transitions; they are not a
-replacement signal-dispatch subsystem. Once an interruption reaches controller
+runtime to deliver Ctrl-C into application control flow. The SIGINT masks and
+narrow subprocess-launch handler scope protect ownership transitions; they are
+not a replacement signal-dispatch subsystem. Once an interruption reaches controller
 code, the ownership and bounded-cleanup rules in this section apply regardless
 of where it was delivered.
 
@@ -1420,19 +1420,36 @@ foreground process group for interactive SSH authentication. The launch thread
 temporarily blocks SIGINT so the child inherits that mask across exec, then
 establishes managed ownership and starts the stderr drain before restoring its
 exact previous mask. The drain inherits blocked SIGINT and stops through pipe EOF
-and explicit cleanup. Existing threads' masks and process-wide signal handlers
-remain unchanged. Keeping the transports in the foreground group preserves
-terminal authentication without introducing background-group SIGTTIN reads.
+and explicit cleanup. Existing threads' masks remain unchanged. Keeping the
+transports in the foreground group preserves terminal authentication without
+introducing background-group SIGTTIN reads.
+
+The launch thread's mask does not prevent Python-level SIGINT dispatch caused
+by another unmasked thread. While the real `Popen` initializer runs on the main
+thread, a transient non-raising SIGINT handler therefore records delivery
+instead of invoking the caller's Python handler. The scope covers native child
+creation through CPython's PID publication. On exit, it restores and invokes
+the prior handler for an observed signal inside the existing acquisition
+rollback guard. Ignored or native-default SIGINT dispositions remain unchanged;
+worker-thread launches do not change handlers because Python dispatches signal
+handlers on the main thread. The scope ends before stderr-drain setup and does
+not extend into interactive GDB, introduce a durable cancellation latch, or
+create another lifecycle authority. A prior acquisition failure remains primary
+if restored-handler delivery also raises; that interruption becomes secondary
+diagnostic detail.
 
 The transport wrapper is resource-free and owned before `Popen` begins.
 Its private `Popen` subtype registers the resource-free raw instance with that
-wrapper before invoking the standard-library initializer. The wrapper therefore
-already reaches the subprocess and pipes if a `BaseException` interrupts the
-initializer's return or the normal managed-owner assignment. This ownership
-does not depend on the launching thread's SIGINT mask preventing Python-level
-interruption. Rollback checks whether the raw instance has a child PID before
-attempting process disposal; a failure before child creation retains normal
-`Popen` constructor cleanup. If failed fork/exec initialization has already
+wrapper before invoking the standard-library initializer. This reference alone
+is not a usable process cleanup handle until CPython publishes the PID; the
+handler scope protects that internal interval against runner-owned asynchronous
+interruption. Once the initializer returns, the wrapper reaches the subprocess
+and pipes even if any `BaseException` interrupts the return, normal managed-owner
+assignment, or subsequent setup. The contract does not claim recovery from an
+arbitrary exception synthetically injected inside CPython before PID publication.
+Rollback checks whether the raw instance has a child PID before attempting
+process disposal; normal pre-publication constructor failures retain
+standard-library cleanup. If failed fork/exec initialization has already
 reaped the child and closed every pipe, with no stderr drain acquired, rollback
 preserves the original launch exception. This subtype is part of the existing transport
 acquisition path, not a separate acquisition API or lifecycle authority.

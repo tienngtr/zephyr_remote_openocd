@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import dis
 import os
 import signal
 import subprocess
@@ -16,6 +17,135 @@ import pytest
 from zephyr_remote_openocd.controller.ssh import SshCommand
 
 pytestmark = pytest.mark.local
+
+
+@pytest.mark.usefixtures("defer_cyclic_gc")
+@pytest.mark.parametrize("search_path", (False, True), ids=("absolute", "search-path"))
+@pytest.mark.parametrize("setup_failure", (False, True), ids=("interrupt", "primary-error"))
+def test_sigint_before_internal_pid_publication_reaps_transport(
+    tmp_path, monkeypatch, search_path, setup_failure
+):
+    processes: list[subprocess.Popen[bytes]] = []
+    child_pid = None
+    requested = threading.Event()
+    delivered = threading.Event()
+    stopping = threading.Event()
+    previous_trace = sys.gettrace()
+    caller_frame = sys._getframe()
+    previous_opcodes = caller_frame.f_trace_opcodes
+    previous_handler = signal.getsignal(signal.SIGINT)
+    previous_mask = signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGINT})
+    failure = MemoryError("constructor return failed")
+    handler_pids = []
+    pid_stores = {
+        method.__code__: {
+            instruction.offset
+            for instruction in dis.get_instructions(method)
+            if instruction.opname == "STORE_ATTR" and instruction.argval == "pid"
+        }
+        for method in (
+            subprocess.Popen._execute_child,  # type: ignore[attr-defined]
+            subprocess.Popen._posix_spawn,  # type: ignore[attr-defined]
+        )
+    }
+    assert all(pid_stores.values()), "runtime PID publication boundary was not found"
+
+    def handle_interrupt(signum, frame):
+        handler_pids.append(processes[0].pid)
+        signal.default_int_handler(signum, frame)
+
+    def send_interrupt():
+        if requested.wait(30) and not stopping.is_set():
+            os.kill(os.getpid(), signal.SIGINT)
+        delivered.set()
+
+    def interrupt_at_publication(frame, event, _arg):
+        nonlocal child_pid
+        if frame.f_code in pid_stores:
+            frame.f_trace_opcodes = True
+            if event == "opcode" and frame.f_lasti in pid_stores[frame.f_code] and not processes:
+                process = frame.f_locals["self"]
+                processes.append(process)
+                assert process.pid is None
+                assert signal.SIGINT in signal.pthread_sigmask(signal.SIG_BLOCK, set())
+                # The real child acknowledges execution independently of stdin
+                # and remains alive even when constructor cleanup closes pipes.
+                child_pid = int(os.read(process.stdout.fileno(), 64).strip())
+                requested.set()
+                assert delivered.wait(30), "native signal was not sent"
+        if (
+            setup_failure
+            and processes
+            and event == "return"
+            and frame.f_code is subprocess.Popen.__init__.__code__
+        ):
+            raise failure
+        return interrupt_at_publication
+
+    executable = sys.executable
+    if search_path:
+        # Bare executable lookup exercises fork/exec on runtimes that select
+        # posix_spawn for absolute paths, without replacing either backend.
+        executable = "transport-python"
+        (tmp_path / executable).symlink_to(sys.executable)
+        monkeypatch.setenv("PATH", str(tmp_path))
+    command = SshCommand(
+        (executable, "-c", "import os, signal; print(os.getpid(), flush=True); signal.pause()")
+    )
+    signal.signal(signal.SIGINT, handle_interrupt)
+    sender = threading.Thread(target=send_interrupt)
+    sender.start()
+    try:
+        # Python 3.12 enables opcode events only if a frame requests them before
+        # settrace; restore the caller's setting along with its trace function.
+        caller_frame.f_trace_opcodes = True
+        sys.settrace(interrupt_at_publication)
+        try:
+            with pytest.raises((MemoryError, KeyboardInterrupt)) as raised:
+                command.popen("unused-host", "unused-command")
+        finally:
+            sys.settrace(previous_trace)
+            caller_frame.f_trace_opcodes = previous_opcodes
+
+        assert len(processes) == 1 and child_pid is not None
+        process = processes[0]
+        assert process.pid == child_pid and process.returncode is not None
+        with pytest.raises(ChildProcessError):
+            os.waitpid(child_pid, os.WNOHANG)
+        assert all(
+            stream is not None and stream.closed
+            for stream in (process.stdin, process.stdout, process.stderr)
+        )
+        assert handler_pids == [child_pid]
+        assert signal.getsignal(signal.SIGINT) is handle_interrupt
+        assert signal.pthread_sigmask(signal.SIG_BLOCK, set()) == previous_mask - {signal.SIGINT}
+        if setup_failure:
+            assert raised.value is failure
+            assert any("SIGINT" in note for note in failure.__notes__)
+        else:
+            assert isinstance(raised.value, KeyboardInterrupt)
+    finally:
+        sys.settrace(previous_trace)
+        caller_frame.f_trace_opcodes = previous_opcodes
+        stopping.set()
+        requested.set()
+        sender.join(30)
+        assert not sender.is_alive()
+        signal.signal(signal.SIGINT, previous_handler)
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+        if child_pid is not None:
+            try:
+                waited_pid, _status = os.waitpid(child_pid, os.WNOHANG)
+            except ChildProcessError:
+                pass
+            else:
+                if waited_pid == 0:
+                    os.kill(child_pid, signal.SIGKILL)
+                    os.waitpid(child_pid, 0)
+        for process in processes:
+            for stream in (process.stdin, process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
 
 
 @pytest.mark.usefixtures("defer_cyclic_gc")

@@ -1483,6 +1483,14 @@ cleanup owner, including partial construction and interruption immediately
 before or after ownership transfer. Child leader exit SHALL NOT by itself
 establish settlement of descendants, descriptors, or acquisition producers.
 
+During session-owned process creation in standard-library/native code,
+runner-owned asynchronous interruption SHALL be deferred until the runtime
+publishes a usable process cleanup handle. This includes local SIGINT/`KeyboardInterrupt` and the remote
+helper's supported handled signals. At project-controlled ownership handoffs
+and setup after `Popen` returns, rollback SHALL cover any `BaseException`.
+This contract does not require recovery from arbitrary exceptions synthetically
+injected inside CPython before it publishes the process cleanup handle.
+
 Local session and RTT connection acquisition SHALL populate a resource-free
 owner already held within the caller's cleanup scope. Acquisition SHALL NOT
 transfer a newly live session or connected socket to the caller through a
