@@ -16,6 +16,8 @@ from typing import cast
 import pytest
 from zephyr_remote_openocd.controller.ssh import SshCommand
 
+from tests.process_support import read_line
+
 pytestmark = pytest.mark.local
 
 
@@ -70,7 +72,7 @@ def test_sigint_before_internal_pid_publication_reaps_transport(
                 assert signal.SIGINT in signal.pthread_sigmask(signal.SIG_BLOCK, set())
                 # The real child acknowledges execution independently of stdin
                 # and remains alive even when constructor cleanup closes pipes.
-                child_pid = int(os.read(process.stdout.fileno(), 64).strip())
+                child_pid = int(read_line(process.stdout).strip())
                 requested.set()
                 assert delivered.wait(30), "native signal was not sent"
         if (
