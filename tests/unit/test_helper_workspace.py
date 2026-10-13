@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import errno
+import io
 import os
+import sys
+import tarfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from zephyr_remote_openocd.helper import staging as helper_staging
@@ -93,6 +97,19 @@ def test_reclaimer_continues_after_stale_lock_error(tmp_path, monkeypatch):
     assert not removable.exists()
 
 
+def _fail_inspection(patch, uncertain, error_number):
+    original_stat = os.stat
+    original_lstat = os.lstat
+
+    def inspect(operation, path, *args, **kwargs):
+        if path == uncertain or path == str(uncertain):
+            raise OSError(error_number, "injected filesystem inspection failure")
+        return operation(path, *args, **kwargs)
+
+    patch.setattr(os, "stat", lambda *args, **kwargs: inspect(original_stat, *args, **kwargs))
+    patch.setattr(os, "lstat", lambda *args, **kwargs: inspect(original_lstat, *args, **kwargs))
+
+
 @pytest.mark.parametrize("source", ("marker", "lock", "metadata-workspace"))
 @pytest.mark.parametrize("error_number", (errno.EACCES, errno.EIO))
 def test_reclaimer_retains_entries_when_inspection_fails(
@@ -116,25 +133,8 @@ def test_reclaimer_retains_entries_when_inspection_fails(
     for path in (workspace, *metadata):
         os.utime(path, (1.0, 1.0))
 
-    original_stat = os.stat
-    original_lstat = os.lstat
-
-    def inspect(operation, path, *args, **kwargs):
-        if path == uncertain or path == str(uncertain):
-            raise OSError(error_number, "injected filesystem inspection failure")
-        return operation(path, *args, **kwargs)
-
     with monkeypatch.context() as patch:
-        patch.setattr(
-            os,
-            "stat",
-            lambda *args, **kwargs: inspect(original_stat, *args, **kwargs),
-        )
-        patch.setattr(
-            os,
-            "lstat",
-            lambda *args, **kwargs: inspect(original_lstat, *args, **kwargs),
-        )
+        _fail_inspection(patch, uncertain, error_number)
         workspace_module.reclaim_stale_workspaces(
             tmp_path, now=workspace_module.STALE_SESSION_AGE + 2
         )
@@ -251,3 +251,54 @@ def test_reclaimer_removes_orphaned_lease_but_preserves_live_workspace(
             assert workspace.is_dir()
     finally:
         owner_lock.close()
+
+
+@pytest.mark.parametrize("error_number", (errno.EACCES, errno.EIO))
+def test_closed_admission_rejects_stage_when_closure_inspection_fails(
+    tmp_path, monkeypatch, capsys, error_number
+):
+    monkeypatch.setattr(workspace_module, 'workspace_root', lambda: tmp_path)
+    _session_id, workspace, owner_lock = workspace_module.new_workspace()
+    try:
+        workspace_module.close_staging_admission(workspace)
+        upload = io.BytesIO()
+        with tarfile.open(fileobj=upload, mode="w") as archive:
+            member = tarfile.TarInfo("late-upload.txt")
+            member.size = len(b"late")
+            archive.addfile(member, io.BytesIO(b"late"))
+        monkeypatch.setattr(sys, "stdin", SimpleNamespace(buffer=io.BytesIO(upload.getvalue())))
+        # Failed inspection is not confirmed absence on any supported Python.
+        with monkeypatch.context() as patch:
+            _fail_inspection(patch, workspace_module._closure_path(workspace), error_number)
+            with pytest.raises(OSError):
+                helper_staging.stage(workspace)
+
+        assert not tuple((workspace / "staged").iterdir())
+        assert capsys.readouterr().out == ""
+    finally:
+        try:
+            workspace_module.remove_workspace(workspace)
+        finally:
+            owner_lock.close()
+
+
+def test_workspace_removal_retains_closure_when_workspace_inspection_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr(workspace_module, 'workspace_root', lambda: tmp_path)
+    _session_id, workspace, owner_lock = workspace_module.new_workspace()
+    owner_lock.close()
+    closure = workspace_module._closure_path(workspace)
+
+    def vanished_entry(_path):
+        raise FileNotFoundError("injected concurrent entry removal")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(workspace_module.shutil, "rmtree", vanished_entry)
+        _fail_inspection(patch, workspace, errno.EIO)
+        with pytest.raises(OSError) as raised:
+            workspace_module.remove_workspace(workspace)
+
+    assert not isinstance(raised.value, FileNotFoundError)
+    assert workspace.is_dir()
+    assert closure.is_file()
+    workspace_module.remove_workspace(workspace)
+    assert tuple(tmp_path.iterdir()) == ()

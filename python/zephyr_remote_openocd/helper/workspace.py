@@ -54,7 +54,7 @@ def _stage_lease(work: Path) -> Generator[None, None, None]:
             fcntl.flock(lease, fcntl.LOCK_SH | fcntl.LOCK_NB)
         except BlockingIOError:
             raise ValueError("workspace cleanup has begun") from None
-        if _closure_path(work).exists() or not work.is_dir():
+        if not _path_absent(_closure_path(work)) or not work.is_dir():
             raise ValueError("workspace is not an active helper session")
         yield
 
@@ -78,7 +78,7 @@ def remove_workspace(work: Path) -> None:
         try:
             shutil.rmtree(work)
         except FileNotFoundError:
-            if work.exists():
+            if not _path_absent(work):
                 raise
         errors = []
         for metadata in (_closure_path(work), _lease_path(work)):
