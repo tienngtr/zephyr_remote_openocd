@@ -223,6 +223,8 @@ def test_auxiliary_factory_rollback_outcome_is_preserved(harness, monkeypatch, c
     cleanup_error = OSError("acquired SSH process kill failed")
 
     class AcquiredProcess:
+        pid = 1
+
         def __init__(self):
             self.stdin = io.BytesIO()
             self.stdout = io.BytesIO()
@@ -257,7 +259,7 @@ def test_auxiliary_factory_rollback_outcome_is_preserved(harness, monkeypatch, c
     try:
         session.acquire()
         monkeypatch.setattr(ControlledSshCommand, "popen", SshCommand.popen)
-        monkeypatch.setattr(ssh_module.subprocess, "Popen", lambda *_args, **_kwargs: acquired)
+        monkeypatch.setattr(ssh_module, "_OwnedSshPopen", lambda *_args: acquired)
         monkeypatch.setattr(ssh_module._StderrDrain, "start", fail_drain_start)
         if cleanup_fails:
             with pytest.raises(ForwardStartError) as raised:

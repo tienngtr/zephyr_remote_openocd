@@ -678,7 +678,7 @@ def test_sigint_during_session_close_cleans_owned_transports(
     control_processes: list[ManagedSshProcess] = []
     helper_path = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
     environment = {**os.environ, "XDG_RUNTIME_DIR": str(tmp_path)}
-    popen = subprocess.Popen
+    initialize = subprocess.Popen.__init__
     sigmask = signal.pthread_sigmask
     previous_handler = signal.getsignal(signal.SIGINT)
     caller_mask = {signal.SIGUSR1, signal.SIGINT} if sigint_blocked else {signal.SIGUSR1}
@@ -702,12 +702,12 @@ def test_sigint_during_session_close_cleans_owned_transports(
         def run_stream(self, host, remote_command, stream, *, timeout=60):
             return SshCommand.run_stream(self, host, remote_command, stream, timeout=timeout)
 
-    def launch(argv, **kwargs):
+    def launch(process, argv, **kwargs):
         # Replace only SSH execution with local Python; the session, helper,
         # staging, readiness, and all transport cleanup use production code.
         remote_argv = shlex.split(argv[-1])
         assert remote_argv[0] == "python3"
-        return popen([sys.executable, "-u", *remote_argv[1:]], env=environment, **kwargs)
+        initialize(process, [sys.executable, "-u", *remote_argv[1:]], env=environment, **kwargs)
 
     session = SessionController(
         SessionPlan(
@@ -757,7 +757,7 @@ def test_sigint_during_session_close_cleans_owned_transports(
         closed_at_delivery = session.closed
         raise interruption
 
-    monkeypatch.setattr(subprocess, "Popen", launch)
+    monkeypatch.setattr(subprocess.Popen, "__init__", launch)
     monkeypatch.setattr(ForwardManager, "_preflight", staticmethod(lambda _service: None))
     signal.signal(signal.SIGINT, handle_interrupt)
     try:

@@ -1425,9 +1425,18 @@ remain unchanged. Keeping the transports in the foreground group preserves
 terminal authentication without introducing background-group SIGTTIN reads.
 
 The transport wrapper is resource-free and owned before `Popen` begins.
-Acquisition populates that owner with the raw process before stderr-drain
-construction, then records the drain before starting its thread. Before a drain
-exists, rollback closes the raw stderr pipe directly; after drain adoption,
+Its private `Popen` subtype registers the resource-free raw instance with that
+wrapper before invoking the standard-library initializer. The wrapper therefore
+already reaches the subprocess and pipes if a `BaseException` interrupts the
+initializer's return or the normal managed-owner assignment. This ownership
+does not depend on the launching thread's SIGINT mask preventing Python-level
+interruption. Rollback checks whether the raw instance has a child PID before
+attempting process disposal; a failure before child creation retains normal
+`Popen` constructor cleanup. This subtype is part of the existing transport
+acquisition path, not a separate acquisition API or lifecycle authority.
+
+Acquisition then records the stderr drain before starting its thread. Before a
+drain exists, rollback closes the raw stderr pipe directly; after drain adoption,
 only the drain closes that pipe. Constructor and thread-start failures use the
 same bounded process termination and independent stream cleanup as other
 acquisition failures. They require no replacement wrapper or drain. The

@@ -29,14 +29,14 @@ def local_transport(
     pass_fds: tuple[int, ...] = (),
 ) -> ManagedSshProcess:
     """Exercise SSH acquisition with a local command at the Popen boundary."""
-    popen = subprocess.Popen
+    initialize = subprocess.Popen.__init__
 
-    def launch(args: list[str], **kwargs) -> subprocess.Popen[bytes]:
+    def launch(process: subprocess.Popen[bytes], args: list[str], **kwargs) -> None:
         # Strip only the synthetic host/remote-command arguments. Production
         # supplies pipe capture and owns acquisition, masking, and rollback.
-        return popen(args[:-2], env=environment, pass_fds=pass_fds, **kwargs)
+        initialize(process, args[:-2], env=environment, pass_fds=pass_fds, **kwargs)
 
-    with patch.object(subprocess, "Popen", launch):
+    with patch.object(subprocess.Popen, "__init__", launch):
         return SshCommand(tuple(argv)).popen("local-test", "unused")
 
 

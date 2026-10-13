@@ -122,19 +122,14 @@ class ManagedSshProcess:
     def acquire(self, argv: list[str]) -> None:
         """Populate an already-owned transport; its caller owns rollback."""
         assert self._process is None
-        self._process = subprocess.Popen(
-            argv,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
+        self._process = _OwnedSshPopen(self, argv)
         assert self._process.stderr is not None
         self._drain = _StderrDrain(cast(BinaryIO, self._process.stderr))
         self._drain.start()
         self._process.stderr = None
 
     def _rollback_acquisition(self, error: BaseException) -> None:
-        if self._process is None:
+        if self._process is None or getattr(self._process, "pid", None) is None:
             return
         termination = _terminate_process(self)
         cleanup_errors = (
@@ -188,6 +183,21 @@ class ManagedSshProcess:
             self._drain.close()
         elif self._process is not None and self._process.stderr is not None:
             self._process.stderr.close()
+
+
+class _OwnedSshPopen(subprocess.Popen[bytes]):
+    """Register the raw owner before initialization can create a subprocess."""
+
+    def __init__(self, owner: ManagedSshProcess, argv: list[str]) -> None:
+        # Registration precedes the effect. A BaseException at the base
+        # constructor's return cannot prevent rollback from finding this object.
+        owner._process = self
+        super().__init__(
+            argv,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
 
 
 class _ProcessControl(Protocol):

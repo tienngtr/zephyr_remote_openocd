@@ -352,7 +352,7 @@ def test_failed_later_forward_batch_preserves_committed_processes(monkeypatch):
 @pytest.mark.parametrize("phase", ("launch-handoff", "commit-handoff", "readiness"))
 def test_sigint_during_forward_start_preserves_cleanup_ownership(monkeypatch, phase):
     forward = ForwardSpec("gdb", 32265, 3333)
-    popen = subprocess.Popen
+    initialize = subprocess.Popen.__init__
     read = os.read
     sigmask = signal.pthread_sigmask
     managed_processes: list[ManagedSshProcess] = []
@@ -380,11 +380,11 @@ def test_sigint_during_forward_start_preserves_cleanup_ownership(monkeypatch, ph
 
     manager = ForwardManager(InterruptingCommand(), "host")
 
-    def launch(argv, **kwargs):
+    def launch(process, argv, **kwargs):
         # Substitute the executable only; production transport management,
         # readiness observation, and cleanup still operate on a real child.
         code = shlex.split(argv[-1])[2]
-        return popen([sys.executable, "-u", "-c", code], **kwargs)
+        initialize(process, [sys.executable, "-u", "-c", code], **kwargs)
 
     def read_readiness(descriptor, size):
         if phase == "readiness" and any(
@@ -405,7 +405,7 @@ def test_sigint_during_forward_start_preserves_cleanup_ownership(monkeypatch, ph
         forwards_at_delivery = manager.forwards
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(subprocess, "Popen", launch)
+    monkeypatch.setattr(subprocess.Popen, "__init__", launch)
     monkeypatch.setattr(os, "read", read_readiness)
     monkeypatch.setattr(signal, "pthread_sigmask", restore_signal_mask)
     monkeypatch.setattr(ForwardManager, "_preflight", staticmethod(lambda _service: None))
@@ -439,7 +439,7 @@ def test_sigint_during_forward_start_preserves_cleanup_ownership(monkeypatch, ph
 @pytest.mark.usefixtures("defer_cyclic_gc")
 @pytest.mark.parametrize("cleanup_fails", (False, True))
 def test_sigint_between_pending_forward_rollbacks_reaps_and_closes_both(monkeypatch, cleanup_fails):
-    popen = subprocess.Popen
+    initialize = subprocess.Popen.__init__
     sigmask = signal.pthread_sigmask
     previous_handler = signal.getsignal(signal.SIGINT)
     previous_mask = sigmask(signal.SIG_BLOCK, {signal.SIGUSR1})
@@ -471,12 +471,11 @@ def test_sigint_between_pending_forward_rollbacks_reaps_and_closes_both(monkeypa
     manager = ForwardManager(Command(), "target")
     await_ready = ForwardManager._await_ready
 
-    def launch(argv, **kwargs):
+    def launch(process, argv, **kwargs):
         code = shlex.split(argv[-1])[2]
-        process = popen([sys.executable, "-u", "-c", code], **kwargs)
+        initialize(process, [sys.executable, "-u", "-c", code], **kwargs)
         assert process.stderr is not None
         stderr_streams.append(process.stderr)
-        return process
 
     def observe_readiness(process, sentinel, deadline):
         assert await_ready(process, sentinel, deadline)
@@ -522,7 +521,7 @@ def test_sigint_between_pending_forward_rollbacks_reaps_and_closes_both(monkeypa
         closed_at_delivery = all_closed()
         raise interruption
 
-    monkeypatch.setattr(subprocess, "Popen", launch)
+    monkeypatch.setattr(subprocess.Popen, "__init__", launch)
     monkeypatch.setattr(ForwardManager, "_preflight", staticmethod(lambda _service: None))
     monkeypatch.setattr(ForwardManager, "_await_ready", staticmethod(observe_readiness))
     signal.signal(signal.SIGINT, handle_interrupt)
@@ -563,7 +562,7 @@ def test_sigint_between_pending_forward_rollbacks_reaps_and_closes_both(monkeypa
 @pytest.mark.usefixtures("defer_cyclic_gc")
 @pytest.mark.parametrize("cleanup_fails", (False, True))
 def test_sigint_at_forward_rollback_entry_keeps_both_transports_owned(monkeypatch, cleanup_fails):
-    popen = subprocess.Popen
+    initialize = subprocess.Popen.__init__
     await_ready = ForwardManager._await_ready
     sigmask = signal.pthread_sigmask
     previous_mask = sigmask(signal.SIG_BLOCK, {signal.SIGUSR1})
@@ -599,12 +598,11 @@ def test_sigint_at_forward_rollback_entry_keeps_both_transports_owned(monkeypatc
     )
     manager = session._forwards
 
-    def launch(argv, **kwargs):
+    def launch(process, argv, **kwargs):
         code = shlex.split(argv[-1])[2]
-        process = popen([sys.executable, "-u", "-c", code], **kwargs)
+        initialize(process, [sys.executable, "-u", "-c", code], **kwargs)
         assert process.stderr is not None
         stderr_streams.append(process.stderr)
-        return process
 
     def observe_readiness(process, sentinel, deadline):
         assert await_ready(process, sentinel, deadline)
@@ -633,7 +631,7 @@ def test_sigint_at_forward_rollback_entry_keeps_both_transports_owned(monkeypatc
         )
         raise interruption
 
-    monkeypatch.setattr(subprocess, "Popen", launch)
+    monkeypatch.setattr(subprocess.Popen, "__init__", launch)
     monkeypatch.setattr(ForwardManager, "_preflight", staticmethod(lambda _service: None))
     monkeypatch.setattr(ForwardManager, "_await_ready", staticmethod(observe_readiness))
     signal.signal(signal.SIGINT, handle_interrupt)

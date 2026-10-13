@@ -42,11 +42,13 @@ def test_forward_manager_preserves_effective_forwarding_requirements(tmp_path, f
     # Capture the actual subprocess argv from the real manager and transport.
     # No process is acquired, so no lifecycle double or readiness bypass is needed.
     with (
-        patch("subprocess.Popen", autospec=True, side_effect=OSError("capture argv")) as popen,
+        patch(
+            "subprocess.Popen.__init__", autospec=True, side_effect=OSError("capture argv")
+        ) as popen,
         pytest.raises(SessionError),
     ):
         manager.start((forward,), "127.64.0.1")
-    argv = popen.call_args.args[0]
+    argv = popen.call_args.args[1]
     result = subprocess.run(
         [argv[0], "-G", *argv[1:]],
         capture_output=True,

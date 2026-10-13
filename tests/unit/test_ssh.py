@@ -12,6 +12,7 @@ import sys
 import threading
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from types import FrameType
 from typing import Any, BinaryIO, cast, override
 from unittest.mock import create_autospec, patch
 
@@ -86,11 +87,12 @@ def test_fixed_arguments_are_preserved_without_a_shell():
     ]
 
 
-@patch("subprocess.Popen", autospec=True)
+@patch("subprocess.Popen.__init__", autospec=True, side_effect=OSError("capture argv"))
 def test_long_lived_process_preserves_explicit_path_and_fixed_arguments(popen):
-    popen.return_value.stderr = io.BytesIO()
-    SshCommand(("/opt/client/custom-ssh", "-F", "/a file")).popen("host", "serve")
+    with pytest.raises(OSError):
+        SshCommand(("/opt/client/custom-ssh", "-F", "/a file")).popen("host", "serve")
     popen.assert_called_once_with(
+        popen.call_args.args[0],
         ["/opt/client/custom-ssh", "-F", "/a file", "host", "serve"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -135,18 +137,17 @@ def test_long_lived_launch_restores_calling_thread_signal_mask(tmp_path, start_f
 @pytest.mark.usefixtures("defer_cyclic_gc")
 @pytest.mark.parametrize("interrupt_boundary", ["spawn", "unmasked"])
 def test_sigint_during_launch_reaps_acquired_transport(monkeypatch, interrupt_boundary):
-    popen = subprocess.Popen
+    initialize = subprocess.Popen.__init__
     pthread_sigmask = signal.pthread_sigmask
     previous_trace = sys.gettrace()
     acquired = []
     unmasked = False
 
-    def launch(*args, **kwargs):
-        process = popen(*args, **kwargs)
+    def launch(process, *args, **kwargs):
+        initialize(process, *args, **kwargs)
         acquired.append(process)
         if interrupt_boundary == "spawn":
             signal.raise_signal(signal.SIGINT)
-        return process
 
     def restore_mask(how, mask):
         nonlocal unmasked
@@ -164,7 +165,7 @@ def test_sigint_during_launch_reaps_acquired_transport(monkeypatch, interrupt_bo
             signal.raise_signal(signal.SIGINT)
         return interrupt_after_unmask
 
-    monkeypatch.setattr(subprocess, "Popen", launch)
+    monkeypatch.setattr(subprocess.Popen, "__init__", launch)
     if interrupt_boundary == "unmasked":
         monkeypatch.setattr(signal, "pthread_sigmask", restore_mask)
         sys.settrace(interrupt_after_unmask)
@@ -189,20 +190,20 @@ def test_sigint_during_launch_reaps_acquired_transport(monkeypatch, interrupt_bo
 
 
 @pytest.fixture
-def acquired_transports(monkeypatch) -> Iterator[list[subprocess.Popen[bytes]]]:
+def acquired_transports() -> Iterator[list[subprocess.Popen[bytes]]]:
     """Capture real subprocess acquisition and provide assertion-failure cleanup."""
-    popen = subprocess.Popen
+    previous_profile = sys.getprofile()
     processes: list[subprocess.Popen[bytes]] = []
 
-    def launch(*args, **kwargs):
-        process = popen(*args, **kwargs)
-        processes.append(process)
-        return process
+    def observe_acquisition(frame: FrameType, event: str, _arg: object) -> None:
+        if event == "return" and frame.f_code is subprocess.Popen.__init__.__code__:
+            processes.append(cast(subprocess.Popen[bytes], frame.f_locals["self"]))
 
-    monkeypatch.setattr(ssh_module.subprocess, "Popen", launch)
+    sys.setprofile(observe_acquisition)
     try:
         yield processes
     finally:
+        sys.setprofile(previous_profile)
         for process in processes:
             if process.poll() is None:
                 process.kill()
@@ -556,6 +557,8 @@ def test_initial_forward_failure_consumes_session_close_event(monkeypatch):
 
 def test_drain_startup_error_is_primary_when_process_cleanup_fails(monkeypatch):
     class Process:
+        pid = 1
+
         def __init__(self):
             self.stdin = io.BytesIO()
             self.stdout = io.BytesIO()
@@ -582,7 +585,7 @@ def test_drain_startup_error_is_primary_when_process_cleanup_fails(monkeypatch):
     def fail_start(_drain):
         raise startup_error
 
-    monkeypatch.setattr(ssh_module.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(ssh_module, "_OwnedSshPopen", lambda *_args: process)
     monkeypatch.setattr(ssh_module._StderrDrain, "start", fail_start)
     with pytest.raises(RuntimeError) as raised:
         SshCommand(("fake-ssh",)).popen("host", "ignored")
@@ -596,6 +599,7 @@ def test_acquisition_rollback_uses_bounded_process_waits(monkeypatch):
     wait_errors: list[subprocess.TimeoutExpired] = []
 
     class Process:
+        pid = 1
         stdin = io.BytesIO()
         stdout = io.BytesIO()
         stderr = io.BytesIO()
@@ -620,7 +624,7 @@ def test_acquisition_rollback_uses_bounded_process_waits(monkeypatch):
     def fail_start(_drain):
         raise startup_error
 
-    monkeypatch.setattr(ssh_module.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(ssh_module, "_OwnedSshPopen", lambda *_args: process)
     monkeypatch.setattr(ssh_module._StderrDrain, "start", fail_start)
     with pytest.raises(ssh_module.SshProcessStartError) as raised:
         SshCommand(("configured-ssh",)).popen("host", "ignored")
@@ -658,6 +662,7 @@ def test_acquisition_rollback_attempts_every_stream_and_retains_all_failures(
             raise self.error
 
     class Process:
+        pid = 1
         stdin = FailingStream(stdin_error)
         stdout = FailingStream(stdout_error)
         stderr = FailingStream(stderr_error)
@@ -679,7 +684,7 @@ def test_acquisition_rollback_attempts_every_stream_and_retains_all_failures(
     def fail_start(_drain):
         raise startup_error
 
-    monkeypatch.setattr(ssh_module.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(ssh_module, "_OwnedSshPopen", lambda *_args: process)
     if failure_phase == "drain-construction":
         monkeypatch.setattr(
             ssh_module.threading,
