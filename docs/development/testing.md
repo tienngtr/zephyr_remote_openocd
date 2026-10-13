@@ -26,7 +26,7 @@ Tcl regressions assert the exact escaping syntax through planning, client
 serialization, and explicit helper template materialization; no Tcl interpreter
 is required.
 GitHub Actions runs four independent validation jobs: the self-contained suite
-on Python 3.12, 3.13, and 3.14, static checks, the SSH suite against an isolated SSH server container, and the full
+on Python 3.12, 3.13, 3.14, and 3.15, static checks, the SSH suite against an isolated SSH server container, and the full
 Zephyr 4.4.x integration suite with a real workspace and SDK. That suite runs
 real Zephyr CMake configuration and west runner commands in recording mode;
 it does not compile or execute firmware. The SSH server has its own filesystem,
