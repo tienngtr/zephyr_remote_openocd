@@ -88,13 +88,20 @@ def test_acquisition_rejects_helper_termination_recorded_during_forwarding(
     class Command(SshCommand):
         @override
         def popen(
-            self, host: str, remote_command: str, *, local_forward: SshForwardSpec | None = None
+            self,
+            host: str,
+            remote_command: str,
+            *,
+            local_forward: SshForwardSpec | None = None,
+            on_acquired=None,
         ) -> ManagedSshProcess:
             if local_forward is not None:
                 with (tmp_path / "gate").open("wb", buffering=0) as gate:
                     gate.write(b"x")
                 assert recorded.wait(30), "helper event reader did not record the terminal event"
-            process = super().popen(host, remote_command, local_forward=local_forward)
+            process = super().popen(
+                host, remote_command, local_forward=local_forward, on_acquired=on_acquired
+            )
             transports.append(process)
             return process
 
@@ -205,12 +212,17 @@ def test_recorded_terminal_prevents_new_forward_entry(
     class Command(SshCommand):
         @override
         def popen(
-            self, host: str, remote_command: str, *, local_forward: SshForwardSpec | None = None
+            self,
+            host: str,
+            remote_command: str,
+            *,
+            local_forward: SshForwardSpec | None = None,
+            on_acquired=None,
         ) -> ManagedSshProcess:
             if local_forward is not None:
                 forward_entries.append(local_forward)
                 raise OSError("later forward creation failure")
-            return super().popen(host, remote_command)
+            return super().popen(host, remote_command, on_acquired=on_acquired)
 
     session = SessionController.prepare(
         SessionPlan("controlled-host", Command((str(peer),)), ProcessSpec(("openocd",)))

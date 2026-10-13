@@ -52,10 +52,18 @@ class _ForwardCommand(SshCommand):
 
     @override
     def popen(
-        self, host: str, remote_command: str, *, local_forward: SshForwardSpec | None = None
+        self,
+        host: str,
+        remote_command: str,
+        *,
+        local_forward: SshForwardSpec | None = None,
+        on_acquired=None,
     ) -> Any:
         self.calls.append((host, remote_command, local_forward))
-        return next(self.processes)
+        acquired_process = next(self.processes)
+        if on_acquired is not None:
+            on_acquired(acquired_process)
+        return acquired_process
 
 
 def test_forward_health_reports_service_identity_once(monkeypatch):
@@ -109,7 +117,12 @@ def test_process_creation_failure_has_service_identity_without_ownership(monkeyp
     class Command(_ForwardCommand):
         @override
         def popen(
-            self, host: str, remote_command: str, *, local_forward: SshForwardSpec | None = None
+            self,
+            host: str,
+            remote_command: str,
+            *,
+            local_forward: SshForwardSpec | None = None,
+            on_acquired=None,
         ) -> Any:
             raise cause
 
@@ -370,9 +383,16 @@ def test_sigint_during_forward_start_preserves_cleanup_ownership(monkeypatch, ph
     class InterruptingCommand(SshCommand):
         @override
         def popen(
-            self, host: str, remote_command: str, *, local_forward: SshForwardSpec | None = None
+            self,
+            host: str,
+            remote_command: str,
+            *,
+            local_forward: SshForwardSpec | None = None,
+            on_acquired=None,
         ) -> ManagedSshProcess:
-            process = super().popen(host, remote_command, local_forward=local_forward)
+            process = super().popen(
+                host, remote_command, local_forward=local_forward, on_acquired=on_acquired
+            )
             managed_processes.append(process)
             if phase == "launch-handoff":
                 request_interrupt()
@@ -455,8 +475,10 @@ def test_sigint_between_pending_forward_rollbacks_reaps_and_closes_both(monkeypa
 
     class Command(SshCommand):
         @override
-        def popen(self, host, remote_command, *, local_forward=None):
-            process = super().popen(host, remote_command, local_forward=local_forward)
+        def popen(self, host, remote_command, *, local_forward=None, on_acquired=None):
+            process = super().popen(
+                host, remote_command, local_forward=local_forward, on_acquired=on_acquired
+            )
             processes.append(process)
             if cleanup_fails and len(processes) == 1:
                 close_stderr = process.close_stderr
@@ -579,8 +601,10 @@ def test_sigint_at_forward_rollback_entry_keeps_both_transports_owned(monkeypatc
 
     class Command(SshCommand):
         @override
-        def popen(self, host, remote_command, *, local_forward=None):
-            process = super().popen(host, remote_command, local_forward=local_forward)
+        def popen(self, host, remote_command, *, local_forward=None, on_acquired=None):
+            process = super().popen(
+                host, remote_command, local_forward=local_forward, on_acquired=on_acquired
+            )
             processes.append(process)
             if cleanup_fails and len(processes) == 1:
                 close_stderr = process.close_stderr

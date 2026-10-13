@@ -197,11 +197,13 @@ def test_runner_logs_effective_argv_when_remote_startup_fails(
 
     class LocalHelperCommand(SshCommand):
         @override
-        def popen(self, host, remote_command, *, local_forward=None):
+        def popen(self, host, remote_command, *, local_forward=None, on_acquired=None):
             del host, remote_command
             assert local_forward is None
             return local_transport(
-                [sys.executable, str(helper), "control"], environment=environment
+                [sys.executable, str(helper), "control"],
+                environment=environment,
+                on_acquired=on_acquired,
             )
 
         @override

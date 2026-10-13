@@ -555,8 +555,10 @@ collision.listen()
                 super().__post_init__()
                 object.__setattr__(self, "helper_processes", [])
 
-            def popen(self, host, remote_command, *, local_forward=None):
-                process = super().popen(host, remote_command, local_forward=local_forward)
+            def popen(self, host, remote_command, *, local_forward=None, on_acquired=None):
+                process = super().popen(
+                    host, remote_command, local_forward=local_forward, on_acquired=on_acquired
+                )
                 if remote_command.endswith(" control"):
                     self.helper_processes.append(process)
                 return process
@@ -601,8 +603,10 @@ collision.listen()
                 super().__post_init__()
                 object.__setattr__(self, "forwards", [])
 
-            def popen(self, host, remote_command, *, local_forward=None):
-                process = super().popen(host, remote_command, local_forward=local_forward)
+            def popen(self, host, remote_command, *, local_forward=None, on_acquired=None):
+                process = super().popen(
+                    host, remote_command, local_forward=local_forward, on_acquired=on_acquired
+                )
                 if local_forward is not None:
                     self.forwards.append(process)
                 return process

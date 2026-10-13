@@ -80,7 +80,12 @@ class _BlockedSshCommand(SshCommand):
 
     @override
     def popen(
-        self, host: str, remote_command: str, *, local_forward: SshForwardSpec | None = None
+        self,
+        host: str,
+        remote_command: str,
+        *,
+        local_forward: SshForwardSpec | None = None,
+        on_acquired=None,
     ) -> ManagedSshProcess:
         raise AssertionError("popen() is not expected in this test")
 
@@ -109,11 +114,13 @@ def test_interrupted_helper_acquisition_cleans_owned_control_process(tmp_path, m
 
     class LocalCommand(_BlockedSshCommand):
         @override
-        def popen(self, host, remote_command, *, local_forward=None):
+        def popen(self, host, remote_command, *, local_forward=None, on_acquired=None):
             del host, remote_command
             assert local_forward is None
             managed = local_transport(
-                [sys.executable, str(helper_path), "control"], environment=environment
+                [sys.executable, str(helper_path), "control"],
+                environment=environment,
+                on_acquired=on_acquired,
             )
             managed_processes.append(managed)
             if phase == "control-launch":
@@ -247,9 +254,17 @@ def test_helper_close_allows_recorded_natural_exit_before_termination(
     class LocalCommand(_BlockedSshCommand):
         @override
         def popen(
-            self, host: str, remote_command: str, *, local_forward: SshForwardSpec | None = None
+            self,
+            host: str,
+            remote_command: str,
+            *,
+            local_forward: SshForwardSpec | None = None,
+            on_acquired=None,
         ) -> ManagedSshProcess:
-            return managed
+            acquired_process = managed
+            if on_acquired is not None:
+                on_acquired(acquired_process)
+            return acquired_process
 
     terminated = False
     graceful_wait_started = False
@@ -451,9 +466,12 @@ class TestForwardingLifecycle:
             object.__setattr__(self, "process", process)
             object.__setattr__(self, "calls", [])
 
-        def popen(self, host, remote_command, *, local_forward=None):
+        def popen(self, host, remote_command, *, local_forward=None, on_acquired=None):
             self.calls.append((host, remote_command, local_forward))
-            return self.process
+            acquired_process = self.process
+            if on_acquired is not None:
+                on_acquired(acquired_process)
+            return acquired_process
 
     @staticmethod
     def session(command):
@@ -609,9 +627,13 @@ class TestForwardingLifecycle:
                 remote_command: str,
                 *,
                 local_forward: SshForwardSpec | None = None,
+                on_acquired=None,
             ) -> ManagedSshProcess:
                 del host, remote_command, local_forward
-                return self.processes.pop(0)
+                acquired_process = self.processes.pop(0)
+                if on_acquired is not None:
+                    on_acquired(acquired_process)
+                return acquired_process
 
         failed = local_transport(
             [sys.executable, "-c", "import sys; sys.stdin.buffer.read()"],
@@ -692,8 +714,10 @@ def test_sigint_during_session_close_cleans_owned_transports(
 
     class LocalCommand(_BlockedSshCommand):
         @override
-        def popen(self, host, remote_command, *, local_forward=None):
-            process = SshCommand.popen(self, host, remote_command, local_forward=local_forward)
+        def popen(self, host, remote_command, *, local_forward=None, on_acquired=None):
+            process = SshCommand.popen(
+                self, host, remote_command, local_forward=local_forward, on_acquired=on_acquired
+            )
             owned = control_processes if local_forward is None else processes
             owned.append(process)
             return process
@@ -2305,10 +2329,11 @@ stage(sys.argv[2])
             class LocalCommand(_BlockedSshCommand):
                 argv_prefix = ("local_test",)
 
-                def popen(inner, host, remote_command, *, local_forward=None):  # pylint: disable=no-self-argument
+                def popen(inner, host, remote_command, *, local_forward=None, on_acquired=None):  # pylint: disable=no-self-argument
                     return local_transport(
                         [sys.executable, str(helper), "control"],
                         environment=environment,
+                        on_acquired=on_acquired,
                     )
 
                 def run_stream(inner, host, remote_command, stream, timeout=60):  # pylint: disable=no-self-argument
@@ -2374,10 +2399,11 @@ stage(sys.argv[2])
             class LocalCommand(_BlockedSshCommand):
                 argv_prefix = ("local_test",)
 
-                def popen(inner, host, remote_command, *, local_forward=None):  # pylint: disable=no-self-argument
+                def popen(inner, host, remote_command, *, local_forward=None, on_acquired=None):  # pylint: disable=no-self-argument
                     return local_transport(
                         [sys.executable, str(helper), "control"],
                         environment=environment,
+                        on_acquired=on_acquired,
                     )
 
             child_code = (
@@ -2476,10 +2502,8 @@ sys.exit({exit_code})
 """
 
         class LocalCommand(_BlockedSshCommand):
-            def popen(inner, host, remote_command, *, local_forward=None):  # pylint: disable=no-self-argument
-                return local_transport(
-                    [sys.executable, "-c", helper_code],
-                )
+            def popen(inner, host, remote_command, *, local_forward=None, on_acquired=None):  # pylint: disable=no-self-argument
+                return local_transport([sys.executable, "-c", helper_code], on_acquired=on_acquired)
 
         authority = SessionAuthority()
         helper_client = _helper_client(
@@ -2532,9 +2556,9 @@ sys.exit({HELPER_FAILURE_RC})
         class LocalCommand(_BlockedSshCommand):
             process: Any = None
 
-            def popen(inner, host, remote_command, *, local_forward=None):  # pylint: disable=no-self-argument
+            def popen(inner, host, remote_command, *, local_forward=None, on_acquired=None):  # pylint: disable=no-self-argument
                 process = local_transport(
-                    [sys.executable, "-c", helper_code],
+                    [sys.executable, "-c", helper_code], on_acquired=on_acquired
                 )
                 inner.process = process
                 return process
@@ -2584,10 +2608,11 @@ sys.exit({HELPER_FAILURE_RC})
                 argv_prefix = ("local_test",)
                 process: Any = None
 
-                def popen(inner, host, remote_command, *, local_forward=None):  # pylint: disable=no-self-argument
+                def popen(inner, host, remote_command, *, local_forward=None, on_acquired=None):  # pylint: disable=no-self-argument
                     process = local_transport(
                         [sys.executable, str(helper), "control"],
                         environment=environment,
+                        on_acquired=on_acquired,
                     )
                     inner.process = process
                     return process
@@ -2640,10 +2665,11 @@ sys.exit({HELPER_FAILURE_RC})
             environment["XDG_RUNTIME_DIR"] = directory
 
             class LocalCommand(_BlockedSshCommand):
-                def popen(inner, host, remote_command, *, local_forward=None):  # pylint: disable=no-self-argument
+                def popen(inner, host, remote_command, *, local_forward=None, on_acquired=None):  # pylint: disable=no-self-argument
                     return local_transport(
                         [sys.executable, str(helper), "control"],
                         environment=environment,
+                        on_acquired=on_acquired,
                     )
 
                 def run_stream(inner, host, remote_command, stream, timeout=60):  # pylint: disable=no-self-argument

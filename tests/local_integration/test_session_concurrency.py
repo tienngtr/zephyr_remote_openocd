@@ -40,9 +40,16 @@ def test_interruption_after_session_acquisition_cleans_helper_and_child(tmp_path
     class Command(SshCommand):
         @override
         def popen(
-            self, host: str, remote_command: str, *, local_forward: SshForwardSpec | None = None
+            self,
+            host: str,
+            remote_command: str,
+            *,
+            local_forward: SshForwardSpec | None = None,
+            on_acquired=None,
         ) -> ManagedSshProcess:
-            process = super().popen(host, remote_command, local_forward=local_forward)
+            process = super().popen(
+                host, remote_command, local_forward=local_forward, on_acquired=on_acquired
+            )
             transports.append(process)
             return process
 

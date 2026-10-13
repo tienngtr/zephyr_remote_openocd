@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Physical ownership at the raw Popen return boundary."""
+"""Physical process ownership across native creation and project handoffs."""
 
 from __future__ import annotations
 
@@ -10,15 +10,98 @@ import signal
 import subprocess
 import sys
 import threading
+from pathlib import Path
 from types import FrameType
-from typing import cast
+from typing import BinaryIO, cast
 
 import pytest
-from zephyr_remote_openocd.controller.ssh import SshCommand
+from zephyr_remote_openocd.controller.authority import SessionAuthority
+from zephyr_remote_openocd.controller.deployment import DeploymentResult
+from zephyr_remote_openocd.controller.forwarding import ForwardManager
+from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
+from zephyr_remote_openocd.controller.helper_connection import HelperConnection
+from zephyr_remote_openocd.controller.ssh import SshCommand, _stop_process
 
 from tests.process_support import read_line
 
 pytestmark = pytest.mark.local
+
+
+@pytest.mark.parametrize("caller", ("helper", "forwarding"))
+@pytest.mark.parametrize("failure_type", (MemoryError, SystemExit))
+def test_transport_return_failure_cleans_callers_registered_process(
+    tmp_path, monkeypatch, caller, failure_type
+):
+    launcher = tmp_path / "configured-ssh"
+    launcher.write_text(
+        f"#!{sys.executable}\n"
+        "import os, shlex, sys\n"
+        "remote = shlex.split(sys.argv[-1])\n"
+        "os.execv(sys.executable, [sys.executable, *remote[1:]])\n"
+    )
+    launcher.chmod(0o755)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    command = SshCommand((str(launcher),))
+    helper_path = (
+        Path(__file__).resolve().parents[2] / "python/zephyr_remote_openocd/helper/__main__.py"
+    )
+    authority = SessionAuthority()
+    helper = HelperConnection(
+        command,
+        "unused-host",
+        DeploymentResult(str(helper_path), "digest", False),
+        authority=authority,
+    )
+    forwards = ForwardManager(command, "unused-host")
+    failure = failure_type("transport caller handoff failed")
+    processes = []
+    pipes: list[BinaryIO | None] = []
+    managed = []
+    previous_trace = sys.gettrace()
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+
+    def interrupt_at_return(frame, event, arg):
+        if event == "return" and frame.f_code is subprocess.Popen.__init__.__code__:
+            process = frame.f_locals["self"]
+            processes.append(process)
+            pipes.extend((process.stdin, process.stdout, process.stderr))
+        if event == "return" and frame.f_code is SshCommand.popen.__code__:
+            managed.append(arg)
+            raise failure
+        return interrupt_at_return
+
+    try:
+        sys.settrace(interrupt_at_return)
+        try:
+            with pytest.raises(failure_type) as raised:
+                if caller == "helper":
+                    try:
+                        helper.acquire()
+                    finally:
+                        helper.close()
+                else:
+                    forwards.start((ForwardSpec("gdb", 32961, 3333),), "127.64.0.1")
+        finally:
+            sys.settrace(previous_trace)
+
+        assert raised.value is failure
+        assert len(processes) == 1 and len(managed) == 1
+        assert processes[0].returncode is not None
+        with pytest.raises(ChildProcessError):
+            os.waitpid(processes[0].pid, os.WNOHANG)
+        assert all(stream is not None and stream.closed for stream in pipes)
+        assert signal.pthread_sigmask(signal.SIG_BLOCK, set()) == previous_mask
+        assert not forwards.has_forwards
+        if caller == "helper":
+            assert authority.snapshot().failure is failure
+            root = tmp_path / "zephyr_remote_openocd-sessions-v1"
+            assert not root.exists() or not tuple(root.iterdir())
+    finally:
+        sys.settrace(previous_trace)
+        helper.close()
+        forwards.close()
+        for transport in managed:
+            _stop_process(transport)
 
 
 @pytest.mark.usefixtures("defer_cyclic_gc")

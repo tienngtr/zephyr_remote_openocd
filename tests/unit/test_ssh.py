@@ -507,10 +507,18 @@ class _ForwardCommand(_PopenOnlySshCommand):
 
     @override
     def popen(
-        self, host: str, remote_command: str, *, local_forward: SshForwardSpec | None = None
+        self,
+        host: str,
+        remote_command: str,
+        *,
+        local_forward: SshForwardSpec | None = None,
+        on_acquired=None,
     ) -> Any:
         self.calls.append((host, remote_command, local_forward))
-        return next(self.processes)
+        acquired_process = next(self.processes)
+        if on_acquired is not None:
+            on_acquired(acquired_process)
+        return acquired_process
 
 
 @pytest.mark.timeout(10)

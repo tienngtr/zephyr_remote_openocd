@@ -166,10 +166,18 @@ def _open_helper_client(
     class Command(_PopenOnlySshCommand):
         @override
         def popen(
-            self, host: str, remote_command: str, *, local_forward: SshForwardSpec | None = None
+            self,
+            host: str,
+            remote_command: str,
+            *,
+            local_forward: SshForwardSpec | None = None,
+            on_acquired=None,
         ) -> Any:
             del host, remote_command, local_forward
-            return process
+            acquired_process = process
+            if on_acquired is not None:
+                on_acquired(acquired_process)
+            return acquired_process
 
     client = HelperConnection(
         Command(),
@@ -1093,9 +1101,17 @@ def test_helper_startup_timeout_does_not_block_on_partial_output(monkeypatch):
     class Command(_PopenOnlySshCommand):
         @override
         def popen(
-            self, host: str, remote_command: str, *, local_forward: SshForwardSpec | None = None
+            self,
+            host: str,
+            remote_command: str,
+            *,
+            local_forward: SshForwardSpec | None = None,
+            on_acquired=None,
         ) -> Any:
-            return process
+            acquired_process = process
+            if on_acquired is not None:
+                on_acquired(acquired_process)
+            return acquired_process
 
     class Clock:
         now = 0.0
@@ -1224,9 +1240,17 @@ def test_helper_client_output_delivery_does_not_retain_event_history():
 
         @override
         def popen(
-            self, host: str, remote_command: str, *, local_forward: SshForwardSpec | None = None
+            self,
+            host: str,
+            remote_command: str,
+            *,
+            local_forward: SshForwardSpec | None = None,
+            on_acquired=None,
         ) -> Any:
-            return self.process
+            acquired_process = self.process
+            if on_acquired is not None:
+                on_acquired(acquired_process)
+            return acquired_process
 
     handled = []
     command = Command()

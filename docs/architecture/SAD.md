@@ -1015,13 +1015,14 @@ until a stranded pending batch has been cleaned. Close covers committed and
 pending ownership, attempting a transport once if an interrupted commit has
 temporarily recorded it in both sets.
 
-Forward startup blocks SIGINT only while registering each returned transport in
-the pending rollback set and while committing both the process and service
-lists. Commitment relinquishes pending rollback ownership before restoring the
-caller's previous signal mask. At every point where SIGINT can be delivered,
-each acquired forwarding process belongs to either the startup rollback set or
-the manager's committed ownership set. Readiness waits retain the caller's
-previous mask, so startup remains interruptible.
+Forward startup supplies its pending-set registration callback to the existing
+`SshCommand.popen()` acquisition method. The transport invokes that callback
+inside its rollback guard before returning, so a `BaseException` at the method's
+return cannot strand a transport before caller assignment. SIGINT masking
+retains the child's inherited mask and protects commitment of the process and
+service lists; it is not the proof of transport adoption. Commitment relinquishes
+pending rollback ownership before restoring the caller's previous signal mask.
+Readiness waits retain the caller's previous mask, so startup remains interruptible.
 
 Failed startup defers SIGINT through the complete pending rollback batch,
 including the intervals between process cleanup attempts. It then restores the
@@ -1464,6 +1465,17 @@ A pending interruption during signal-mask restoration cannot replace an
 already established acquisition failure; it is retained as secondary detail
 before rollback.
 
+The existing `popen()` method accepts a caller ownership-registration callback.
+The helper registers the transport on its already-owned client; forwarding
+registers it in the manager's existing pending rollback set. Registration runs
+inside transport rollback before returning, and failures during registration
+still dispose the same managed transport. The return value observes an already
+registered resource rather than transferring its sole cleanup reference. This
+closes project-controlled caller handoffs for any `BaseException` without
+another acquisition API or lifecycle authority. Direct low-level callers that
+use the return value must provide registration when that handoff requires
+continuous cleanup ownership.
+
 The inherited mask is a launch-time mitigation, not unconditional SIGINT
 isolation. Terminal SIGINT intended for GDB leaves a transport unaffected
 while its client retains SIGINT blocking. The executed client or wrapper can
@@ -1532,7 +1544,9 @@ caller adopts it. The helper client and
 forward manager own their respective resources and cleanup sequences beneath
 this boundary. The session stores a resource-free `HelperConnection` before calling
 its instance `acquire()`. The client briefly blocks SIGINT while launching and
-adopting the control transport, then restores the caller's mask before awaiting
+adopting the control transport. Its registration callback stores that transport
+on the client before `SshCommand.popen()` returns; this ownership does not rely
+on masking alone. The client restores the caller's mask before awaiting
 `SESSION_CREATED`. Thus pending launch interruption is delivered with transport
 ownership established, and helper startup remains interruptible. Protocol-reader
 startup likewise blocks SIGINT until the started thread is registered with the
@@ -2541,6 +2555,9 @@ ownership handoff. The resource must remain reachable by some cleanup owner at
 both points. A factory's guarded return is insufficient: interruption can occur
 after the callee gives up control and before caller adoption. Keep acquisition
 on an already-owned coordinator rather than returning a newly live resource.
+Local SSH transport callers supply the existing `SshCommand.popen()`
+`on_acquired` callback to register caller ownership inside transport rollback
+before returning; caller assignment is not its sole cleanup reference.
 
 #### Add an asynchronous observation
 

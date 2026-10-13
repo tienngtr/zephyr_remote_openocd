@@ -49,7 +49,12 @@ class DeploymentReply(SshCommand):
 
     @override
     def popen(
-        self, host: str, remote_command: str, *, local_forward: SshForwardSpec | None = None
+        self,
+        host: str,
+        remote_command: str,
+        *,
+        local_forward: SshForwardSpec | None = None,
+        on_acquired=None,
     ) -> Any:
         raise AssertionError("popen() is not expected in this test")
 

@@ -167,8 +167,8 @@ class ForwardManager:
                         local_forward=SshForwardSpec(
                             forward.local_port, remote_address, forward.remote_port
                         ),
+                        on_acquired=pending_processes.append,
                     )
-                    pending_processes.append(process)
                 finally:
                     signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
                 connected = self._await_ready(

@@ -109,8 +109,11 @@ def test_control_progresses_when_configured_ssh_stderr_exceeds_pipe_capacity(tmp
         remote_command: str,
         *,
         local_forward: SshForwardSpec | None = None,
+        on_acquired=None,
     ) -> ManagedSshProcess:
-        transport = popen(command, host, remote_command, local_forward=local_forward)
+        transport = popen(
+            command, host, remote_command, local_forward=local_forward, on_acquired=on_acquired
+        )
         transports.append(transport)
         return transport
 

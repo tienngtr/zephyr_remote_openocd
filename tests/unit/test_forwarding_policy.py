@@ -60,11 +60,14 @@ def test_close_preserves_recorded_session_failure_over_forward_cleanup(
             ),
         )
         os.close(write_fd)
-        monkeypatch.setattr(
-            ControlledSshCommand,
-            "popen",
-            lambda *_args, **_kwargs: cast(ManagedSshProcess, process),
-        )
+
+        def acquire_transport(*_args, on_acquired=None, **_kwargs):
+            acquired = cast(ManagedSshProcess, process)
+            if on_acquired is not None:
+                on_acquired(acquired)
+            return acquired
+
+        monkeypatch.setattr(ControlledSshCommand, "popen", acquire_transport)
         session._helper_connection = helper
         helper.acquire()
         assert session.poll_operation() is None

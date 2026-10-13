@@ -204,15 +204,15 @@ class HelperConnection:
     def _acquire(self) -> None:
         command = f"python3 {shlex.quote(self._deployment.path)} control"
         # Mask only launch and adoption, not authentication/session readiness.
-        # SshCommand.popen() preserves this mask until the returned transport
-        # has been stored on the already-owned helper client.
+        # Transport registration runs inside popen's rollback guard before
+        # returning, independently of Python-level interruption after return.
         self._order = EventOrder()
         previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
         try:
-            self._process = self._ssh_command.popen(self._host, command)
+            self._ssh_command.popen(self._host, command, on_acquired=self._adopt_control)
         finally:
             signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
-        if self._process.stdout is None:
+        if self._process_or_error().stdout is None:
             raise SessionError("helper stdout was not captured")
         created = self._read_event(time.monotonic() + HELPER_START_TIMEOUT)
         if created["type"] == "SESSION_ENDED":
@@ -220,6 +220,9 @@ class HelperConnection:
             error = self._authority.publish_failure()
             raise error or SessionError("helper ended before session creation")
         self._allocation = SessionAllocation(created["session_id"], created["remote_workspace"])
+
+    def _adopt_control(self, process: ManagedSshProcess) -> None:
+        self._process = process
 
     def _read_event(self, deadline: float | None = None) -> dict:
         helper = self._process_or_error()

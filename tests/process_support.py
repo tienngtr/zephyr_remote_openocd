@@ -27,6 +27,7 @@ def local_transport(
     *,
     environment: Mapping[str, str] | None = None,
     pass_fds: tuple[int, ...] = (),
+    on_acquired: Callable[[ManagedSshProcess], None] | None = None,
 ) -> ManagedSshProcess:
     """Exercise SSH acquisition with a local command at the Popen boundary."""
     initialize = subprocess.Popen.__init__
@@ -37,7 +38,7 @@ def local_transport(
         initialize(process, args[:-2], env=environment, pass_fds=pass_fds, **kwargs)
 
     with patch.object(subprocess.Popen, "__init__", launch):
-        return SshCommand(tuple(argv)).popen("local-test", "unused")
+        return SshCommand(tuple(argv)).popen("local-test", "unused", on_acquired=on_acquired)
 
 
 class ProcessOutputMonitor:

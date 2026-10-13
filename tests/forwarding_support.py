@@ -141,7 +141,12 @@ class ControlledSshCommand(SshCommand):
 
     @override
     def popen(
-        self, host: str, remote_command: str, *, local_forward: SshForwardSpec | None = None
+        self,
+        host: str,
+        remote_command: str,
+        *,
+        local_forward: SshForwardSpec | None = None,
+        on_acquired=None,
     ) -> ManagedSshProcess:
         del host, remote_command
         assert local_forward is not None
@@ -149,7 +154,10 @@ class ControlledSshCommand(SshCommand):
         process = self.processes[local_forward.local_port]
         if process.creation_error is not None:
             raise process.creation_error
-        return process.managed
+        acquired_process = process.managed
+        if on_acquired is not None:
+            on_acquired(acquired_process)
+        return acquired_process
 
     @override
     def run_stream(

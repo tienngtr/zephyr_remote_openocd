@@ -8,7 +8,7 @@ import signal
 import subprocess
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from types import FrameType
@@ -439,9 +439,14 @@ class SshCommand:
         )
 
     def popen(
-        self, host: str, remote_command: str, *, local_forward: SshForwardSpec | None = None
+        self,
+        host: str,
+        remote_command: str,
+        *,
+        local_forward: SshForwardSpec | None = None,
+        on_acquired: Callable[[ManagedSshProcess], None] | None = None,
     ) -> ManagedSshProcess:
-        """Start a long-lived SSH operation, retaining explicit lifecycle control."""
+        """Start SSH and register caller ownership inside rollback before returning."""
         # OpenSSH uses the first value of these options. Runner-owned forwarding
         # requirements must precede fixed user arguments and SSH configuration.
         forward_args = local_forward.argv() if local_forward is not None else ()
@@ -471,6 +476,8 @@ class SshCommand:
                     _add_failure_note(
                         acquisition_failure, "SSH signal-mask restoration also failed", error
                     )
+            if on_acquired is not None:
+                on_acquired(managed_process)
             return managed_process
         except BaseException as error:
             # Unmasking can deliver a pending Ctrl-C after acquisition. The
