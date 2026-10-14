@@ -7,7 +7,6 @@ from __future__ import annotations
 import os
 import secrets
 import shlex
-import signal
 import socket
 import subprocess
 import time
@@ -160,8 +159,9 @@ class ForwardManager:
         except DuplicateEndpointError as error:
             raise SessionError(f"{error.subject} must remain unique") from error
 
-        # Manager ownership survives an interruption before rollback can enter
-        # its protected scope. Pending transports are not published as forwards.
+        # Manager ownership precedes acquisition, so a failure before rollback
+        # completes leaves every transport reachable by close(). Pending
+        # transports are not published as forwards.
         pending_processes = self._pending_processes
         advisories = [message for forward in forward_specs if (message := self._preflight(forward))]
         active_forward = None
@@ -169,19 +169,15 @@ class ForwardManager:
             for forward in forward_specs:
                 active_forward = forward
                 sentinel = "ZRO_FORWARD_" + secrets.token_hex(16)
-                # Adopt the returned transport before delivering pending SIGINT.
-                previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
-                try:
-                    process = self._ssh_command.popen(
-                        self._host,
-                        self._ready_command(sentinel),
-                        local_forward=SshForwardSpec(
-                            forward.local_port, remote_address, forward.remote_port
-                        ),
-                        on_acquired=pending_processes.append,
-                    )
-                finally:
-                    signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+                # Registration in the pending set runs inside popen's rollback guard.
+                process = self._ssh_command.popen(
+                    self._host,
+                    self._ready_command(sentinel),
+                    local_forward=SshForwardSpec(
+                        forward.local_port, remote_address, forward.remote_port
+                    ),
+                    on_acquired=pending_processes.append,
+                )
                 connected = self._await_ready(
                     process, sentinel, time.monotonic() + FORWARD_START_TIMEOUT
                 )
@@ -203,48 +199,25 @@ class ForwardManager:
                     suffix = f": {detail}" if detail else ""
                     readiness_error.args = (readiness_error.args[0] + suffix,)
                     raise readiness_error
-            committed_processes = [*self._processes, *pending_processes]
-            committed_forwards = [*self._forwards, *forward_specs]
-            previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
-            try:
-                self._processes = committed_processes
-                self._forwards = committed_forwards
-                # Committed ownership replaces rollback ownership before unmasking.
-                pending_processes.clear()
-            finally:
-                signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+            # Committed ownership is established before rollback ownership is
+            # released; close() tolerates a transport briefly held by both.
+            self._processes = [*self._processes, *pending_processes]
+            self._forwards = [*self._forwards, *forward_specs]
+            pending_processes.clear()
         except BaseException as error:
-            # Defer SIGINT through the batch. If entry is interrupted, close()
-            # can still reach every transport in the manager-owned pending set.
-            previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
             cleanup_errors = (
                 list(error.cleanup_errors) if isinstance(error, SshProcessStartError) else []
             )
-            try:
-                while pending_processes:
-                    process = pending_processes[0]
-                    try:
-                        _stop_process(process)
-                    except BaseException as cleanup_error:
-                        cleanup_errors.append(cleanup_error)
-                        _add_failure_note(
-                            error,
-                            "forward startup cleanup also failed",
-                            cleanup_error,
-                        )
-                    # Retire ownership only after the cleanup attempt and its
-                    # diagnostics have completed, including a failed attempt.
-                    pending_processes.pop(0)
-            finally:
+            while pending_processes:
+                process = pending_processes[0]
                 try:
-                    signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+                    _stop_process(process)
                 except BaseException as cleanup_error:
                     cleanup_errors.append(cleanup_error)
-                    _add_failure_note(
-                        error,
-                        "forward startup cleanup also failed",
-                        cleanup_error,
-                    )
+                    _add_failure_note(error, "forward startup cleanup also failed", cleanup_error)
+                # Retire ownership only after the cleanup attempt and its
+                # diagnostics have completed, including a failed attempt.
+                pending_processes.pop(0)
             if active_forward is not None and isinstance(
                 error, (SessionError, OSError, subprocess.SubprocessError, SshProcessStartError)
             ):

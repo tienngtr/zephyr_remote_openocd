@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import logging
 import shlex
-import signal
 import subprocess
 import time
 from collections.abc import Callable, Iterable
@@ -425,23 +424,16 @@ class SessionController:
     def close(self) -> None:
         if self.closed:
             return
-        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
-        try:
-            self._authority.cancel()
-            # Sample before disposal erases already-exited SSH processes.
-            if self._helper_connection is not None:
-                self._observe_health()
-            for cleanup in (self._forwards.close, self._close_connection, self._notifier.close):
-                try:
-                    cleanup()
-                except BaseException as error:
-                    self._authority.record_failure("SESSION_CLEANUP_FAILURE", error)
-            self.closed = True
-        finally:
+        self._authority.cancel()
+        # Sample before disposal erases already-exited SSH processes.
+        if self._helper_connection is not None:
+            self._observe_health()
+        for cleanup in (self._forwards.close, self._close_connection, self._notifier.close):
             try:
-                signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+                cleanup()
             except BaseException as error:
-                self._authority.record_failure("LOCAL_CANCELLATION", error)
+                self._authority.record_failure("SESSION_CLEANUP_FAILURE", error)
+        self.closed = True
         failure = self._authority.take_unreported_failure()
         if failure is not None:
             raise failure

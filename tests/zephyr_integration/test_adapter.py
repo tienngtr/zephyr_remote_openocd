@@ -1380,6 +1380,8 @@ def forbid_external_io(monkeypatch):
         (SshCommand, "run"),
         (SshCommand, "popen"),
         (SshCommand, "run_stream"),
+        # Recording needs no native Ctrl-C capture for a live operation.
+        (signal, "set_wakeup_fd"),
     ):
         guard = Mock(side_effect=AssertionError(f"recording attempted external I/O: {name}"))
         monkeypatch.setattr(owner, name, guard)
@@ -1663,6 +1665,78 @@ def test_active_operation_interrupt_closes_session_and_forwards(
         process = harness.ssh.process(forward)
         assert process.returncode is not None
         assert process.managed.stdin.closed
+
+
+def test_ctrl_c_during_live_preparation_projects_keyboard_interrupt(runner_api, monkeypatch):
+    from zephyr_remote_openocd.controller.waiting import wait_for
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
+    previous = signal.getsignal(signal.SIGINT)
+    execute = Mock(side_effect=AssertionError("no session after cancelled preparation"))
+
+    def prepare(*_args):
+        # Ctrl-C during finite remote preparation latches, then the next wait
+        # dispatches it before any session work begins.
+        signal.raise_signal(signal.SIGINT)
+        wait_for()
+        pytest.fail("cancellation was not dispatched")
+
+    monkeypatch.setattr(runner_module, "_build_operation", prepare)
+    monkeypatch.setattr(runner_module, "_execute_operation", execute)
+    runner = Mock()
+    with pytest.raises(KeyboardInterrupt) as raised:
+        runner_module._run_live_operation(runner, "debug", Mock())
+    assert raised.value.__cause__ is None
+    execute.assert_not_called()
+    assert signal.getsignal(signal.SIGINT) is previous
+
+
+def _debugserver_operation(runner_api, monkeypatch, tmp_path, harness):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
+    runner, request, plan = _forwarding_operation(
+        runner_api, monkeypatch, tmp_path, "debugserver", harness
+    )
+    monkeypatch.setattr(runner_module, "_build_operation", lambda *_args: (None, request, plan))
+    return runner_module, runner
+
+
+def test_session_failure_before_ctrl_c_stays_primary(runner_api, monkeypatch, tmp_path):
+    harness = ForwardingHarness(monkeypatch)
+    runner_module, runner = _debugserver_operation(runner_api, monkeypatch, tmp_path, harness)
+
+    def fail_then_interrupt():
+        # The helper reader records a failure, then Ctrl-C arrives before the
+        # coordinator's next observation.
+        harness.helper.authority.record_terminal(
+            terminal_snapshot(Trigger.HELPER_FAILURE, code="EARLIER_HELPER_FAILURE")
+        )
+        signal.raise_signal(signal.SIGINT)
+
+    harness.helper.on_wait = fail_then_interrupt
+    with pytest.raises(SessionError) as raised:
+        runner_module._run_live_operation(runner, "debugserver", None)
+    assert "EARLIER_HELPER_FAILURE" in str(raised.value)
+    assert any("Ctrl-C" in note for note in raised.value.__notes__)
+    assert harness.helper.close_calls == 1
+
+
+def test_ctrl_c_before_cleanup_failure_projects_interrupt_with_diagnostics(
+    runner_api, monkeypatch, tmp_path, caplog
+):
+    harness = ForwardingHarness(monkeypatch)
+    runner_module, runner = _debugserver_operation(runner_api, monkeypatch, tmp_path, harness)
+    harness.helper.on_wait = lambda: signal.raise_signal(signal.SIGINT)
+    harness.ssh.process(GDB).cleanup_error = OSError("gdb forward cleanup failed")
+    with (
+        caplog.at_level(logging.INFO, logger=runner.logger.name),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        runner_module._run_live_operation(runner, "debugserver", None)
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("gdb forward cleanup failed" in message for message in messages)
+    assert all(process.returncode is not None for process in harness.ssh.processes.values())
+    assert harness.helper.close_calls == 1
 
 
 @pytest.mark.parametrize(

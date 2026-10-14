@@ -17,6 +17,7 @@ from runners.core import FileType  # pylint: disable=no-name-in-module
 from runners.openocd import OpenOcdBinaryRunner  # pylint: disable=no-name-in-module
 
 from zephyr_remote_openocd.config import ConfigError, load_config, resolve_remote
+from zephyr_remote_openocd.controller.cancellation import OperationCancelled, operation_scope
 from zephyr_remote_openocd.controller.forwarding import ForwardAdvisory
 from zephyr_remote_openocd.controller.paths import PathPlanner, PathPlanningError
 from zephyr_remote_openocd.controller.plan import SessionPlan
@@ -107,16 +108,37 @@ class RemoteOpenOcdBinaryRunner(OpenOcdBinaryRunner):
         if recording:
             _record_runner(self, command, selected)
             return
-        try:
-            selected, request, plan = _build_operation(self, command, selected)
-        except (
-            ConfigError,
-            FlashPlanError,
-            DebugPlanError,
-            PathPlanningError,
-        ) as error:
-            raise RuntimeError(str(error)) from error
-        _execute_operation(self, command, request, plan)
+        _run_live_operation(self, command, selected)
+
+
+def _run_live_operation(runner, command, selected):
+    """Own runner Ctrl-C for live preparation and the session, then project it."""
+    try:
+        with operation_scope():
+            try:
+                selected, request, plan = _build_operation(runner, command, selected)
+            except (
+                ConfigError,
+                FlashPlanError,
+                DebugPlanError,
+                PathPlanningError,
+            ) as error:
+                raise RuntimeError(str(error)) from error
+            _execute_operation(runner, command, request, plan)
+    except OperationCancelled as cancelled:
+        # Capture is restored and settlement attempted; cancellation is primary.
+        raise _interrupted(runner, cancelled) from None
+
+
+def _interrupted(runner, cancelled):
+    """Project primary cancellation to stock KeyboardInterrupt behavior.
+
+    West reports KeyboardInterrupt only through its exit status, so retained
+    secondary diagnostics, such as cleanup failures, are logged first.
+    """
+    for note in getattr(cancelled, "__notes__", ()):
+        runner.logger.error("%s", note)
+    return KeyboardInterrupt()
 
 
 def _select_remote(runner, recording):

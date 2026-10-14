@@ -147,61 +147,6 @@ def test_long_lived_launch_restores_calling_thread_signal_mask(
         executor.submit(launch).result(timeout=30)
 
 
-@pytest.mark.usefixtures("defer_cyclic_gc")
-@pytest.mark.parametrize("interrupt_boundary", ["spawn", "unmasked"])
-def test_sigint_during_launch_reaps_acquired_transport(monkeypatch, interrupt_boundary):
-    initialize = subprocess.Popen.__init__
-    pthread_sigmask = signal.pthread_sigmask
-    previous_trace = sys.gettrace()
-    acquired = []
-    unmasked = False
-
-    def launch(process, *args, **kwargs):
-        initialize(process, *args, **kwargs)
-        acquired.append(process)
-        if interrupt_boundary == "spawn":
-            signal.raise_signal(signal.SIGINT)
-
-    def restore_mask(how, mask):
-        nonlocal unmasked
-        previous = pthread_sigmask(how, mask)
-        if how == signal.SIG_SETMASK:
-            unmasked = True
-        return previous
-
-    def interrupt_after_unmask(frame, event, arg):
-        nonlocal unmasked
-        # Deliver at the first caller instruction after restoration returns,
-        # rather than from inside pthread_sigmask's protected call.
-        if event == "line" and frame.f_code is SshCommand.popen.__code__ and unmasked:
-            unmasked = False
-            signal.raise_signal(signal.SIGINT)
-        return interrupt_after_unmask
-
-    monkeypatch.setattr(subprocess.Popen, "__init__", launch)
-    if interrupt_boundary == "unmasked":
-        monkeypatch.setattr(signal, "pthread_sigmask", restore_mask)
-        sys.settrace(interrupt_after_unmask)
-    try:
-        with pytest.raises(KeyboardInterrupt):
-            SshCommand((sys.executable, "-c", "import sys; sys.stdin.read()")).popen(
-                "host", "serve"
-            )
-        assert acquired[0].poll() is not None
-        assert acquired[0].stdin is not None and acquired[0].stdout is not None
-        assert acquired[0].stdin.closed
-        assert acquired[0].stdout.closed
-    finally:
-        sys.settrace(previous_trace)
-        for process in acquired:
-            if process.poll() is None:
-                process.kill()
-            process.wait(timeout=30)
-            for stream in (process.stdin, process.stdout, process.stderr):
-                if stream is not None:
-                    stream.close()
-
-
 @pytest.fixture
 def acquired_transports() -> Iterator[list[subprocess.Popen[bytes]]]:
     """Capture real subprocess acquisition and provide assertion-failure cleanup."""
@@ -258,30 +203,34 @@ def test_stderr_owner_construction_failure_disposes_raw_transport(
     _assert_transport_disposed(acquired_transports)
 
 
-@pytest.mark.usefixtures("defer_cyclic_gc")
-def test_failed_stderr_construction_retains_primary_when_unmasking_delivers_sigint(
+def test_failed_stderr_construction_retains_primary_when_mask_restoration_fails(
     monkeypatch, acquired_transports
 ):
     failure = MemoryError("stderr owner construction failed")
+    restoration_failure = OSError("launch signal-mask restoration failed")
+    pthread_sigmask = signal.pthread_sigmask
 
     def fail_constructor(*_args, **_kwargs):
-        signal.raise_signal(signal.SIGINT)
         raise failure
 
+    def fail_restoration(how, mask):
+        previous = pthread_sigmask(how, mask)
+        if how == signal.SIG_SETMASK:
+            raise restoration_failure
+        return previous
+
     monkeypatch.setattr(ssh_module.threading, "Thread", fail_constructor)
-    original_mask = signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGINT})
     expected_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
-    try:
-        with pytest.raises(MemoryError) as raised:
-            SshCommand((sys.executable, "-c", "import sys; sys.stdin.buffer.read()")).popen(
-                "host", "serve"
-            )
-        assert raised.value is failure and raised.value.__notes__
-        assert signal.SIGINT not in signal.sigpending()
-        assert signal.pthread_sigmask(signal.SIG_BLOCK, set()) == expected_mask
-        _assert_transport_disposed(acquired_transports)
-    finally:
-        signal.pthread_sigmask(signal.SIG_SETMASK, original_mask)
+    monkeypatch.setattr(signal, "pthread_sigmask", fail_restoration)
+    with pytest.raises(MemoryError) as raised:
+        SshCommand((sys.executable, "-c", "import sys; sys.stdin.buffer.read()")).popen(
+            "host", "serve"
+        )
+    monkeypatch.undo()
+    assert raised.value is failure
+    assert any(str(restoration_failure) in note for note in raised.value.__notes__)
+    assert signal.pthread_sigmask(signal.SIG_BLOCK, set()) == expected_mask
+    _assert_transport_disposed(acquired_transports)
 
 
 def test_run_stream_passes_file_as_stdin_and_captures_output(tmp_path):

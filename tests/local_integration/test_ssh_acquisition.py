@@ -15,11 +15,13 @@ from types import FrameType
 from typing import BinaryIO, cast
 
 import pytest
+from zephyr_remote_openocd.controller.cancellation import OperationCancelled, operation_scope
 from zephyr_remote_openocd.controller.deployment import DeploymentResult
 from zephyr_remote_openocd.controller.forwarding import ForwardManager
 from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
 from zephyr_remote_openocd.controller.helper_connection import HelperConnection
 from zephyr_remote_openocd.controller.ssh import SshCommand, _stop_process
+from zephyr_remote_openocd.controller.waiting import wait_for
 
 from tests.process_support import read_line
 
@@ -104,10 +106,9 @@ def test_transport_return_failure_cleans_callers_registered_process(
             _stop_process(transport)
 
 
-@pytest.mark.usefixtures("defer_cyclic_gc")
 @pytest.mark.parametrize("search_path", (False, True), ids=("absolute", "search-path"))
-@pytest.mark.parametrize("setup_failure", (False, True), ids=("interrupt", "primary-error"))
-def test_sigint_before_internal_pid_publication_reaps_transport(
+@pytest.mark.parametrize("setup_failure", (False, True), ids=("latched", "primary-error"))
+def test_native_sigint_before_pid_publication_is_latched_without_breaking_ownership(
     tmp_path, monkeypatch, search_path, setup_failure
 ):
     processes: list[subprocess.Popen[bytes]] = []
@@ -118,10 +119,7 @@ def test_sigint_before_internal_pid_publication_reaps_transport(
     previous_trace = sys.gettrace()
     caller_frame = sys._getframe()
     previous_opcodes = caller_frame.f_trace_opcodes
-    previous_handler = signal.getsignal(signal.SIGINT)
-    previous_mask = signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGINT})
     failure = MemoryError("constructor return failed")
-    handler_pids = []
     pid_stores = {
         method.__code__: {
             instruction.offset
@@ -135,11 +133,9 @@ def test_sigint_before_internal_pid_publication_reaps_transport(
     }
     assert all(pid_stores.values()), "runtime PID publication boundary was not found"
 
-    def handle_interrupt(signum, frame):
-        handler_pids.append(processes[0].pid)
-        signal.default_int_handler(signum, frame)
-
     def send_interrupt():
+        # This thread predates launch and has SIGINT unblocked, so native
+        # delivery is not deferred by the launch thread's inherited mask.
         if requested.wait(30) and not stopping.is_set():
             os.kill(os.getpid(), signal.SIGINT)
         delivered.set()
@@ -152,9 +148,7 @@ def test_sigint_before_internal_pid_publication_reaps_transport(
                 process = frame.f_locals["self"]
                 processes.append(process)
                 assert process.pid is None
-                assert signal.SIGINT in signal.pthread_sigmask(signal.SIG_BLOCK, set())
-                # The real child acknowledges execution independently of stdin
-                # and remains alive even when constructor cleanup closes pipes.
+                # The real child acknowledges execution independently of stdin.
                 child_pid = int(read_line(process.stdout).strip())
                 requested.set()
                 assert delivered.wait(30), "native signal was not sent"
@@ -177,38 +171,44 @@ def test_sigint_before_internal_pid_publication_reaps_transport(
     command = SshCommand(
         (executable, "-c", "import os, signal; print(os.getpid(), flush=True); signal.pause()")
     )
-    signal.signal(signal.SIGINT, handle_interrupt)
     sender = threading.Thread(target=send_interrupt)
     sender.start()
+    managed = None
     try:
-        # Python 3.12 enables opcode events only if a frame requests them before
-        # settrace; restore the caller's setting along with its trace function.
-        caller_frame.f_trace_opcodes = True
-        sys.settrace(interrupt_at_publication)
-        try:
-            with pytest.raises((MemoryError, KeyboardInterrupt)) as raised:
-                command.popen("unused-host", "unused-command")
-        finally:
-            sys.settrace(previous_trace)
-            caller_frame.f_trace_opcodes = previous_opcodes
+        with pytest.raises((OperationCancelled, MemoryError)) as raised, operation_scope() as scope:
+            # Python 3.12 enables opcode events only if a frame requests them
+            # before settrace; restore the caller's setting with its trace.
+            caller_frame.f_trace_opcodes = True
+            sys.settrace(interrupt_at_publication)
+            try:
+                managed = command.popen("unused-host", "unused-command")
+            finally:
+                sys.settrace(previous_trace)
+                caller_frame.f_trace_opcodes = previous_opcodes
+            # The handler only latched: acquisition completed into its owner,
+            # and the cancellation is dispatched at the next wait boundary.
+            assert scope.requested
+            wait_for()
 
         assert len(processes) == 1 and child_pid is not None
         process = processes[0]
-        assert process.pid == child_pid and process.returncode is not None
-        with pytest.raises(ChildProcessError):
-            os.waitpid(child_pid, os.WNOHANG)
-        assert all(
-            stream is not None and stream.closed
-            for stream in (process.stdin, process.stdout, process.stderr)
-        )
-        assert handler_pids == [child_pid]
-        assert signal.getsignal(signal.SIGINT) is handle_interrupt
-        assert signal.pthread_sigmask(signal.SIG_BLOCK, set()) == previous_mask - {signal.SIGINT}
+        assert process.pid == child_pid
         if setup_failure:
             assert raised.value is failure
-            assert any("SIGINT" in note for note in failure.__notes__)
+            assert not any("SIGINT" in note for note in failure.__notes__)
+            # Rollback disposed of the transport before the error propagated.
+            assert process.returncode is not None
+            with pytest.raises(ChildProcessError):
+                os.waitpid(child_pid, os.WNOHANG)
+            assert all(
+                stream is not None and stream.closed
+                for stream in (process.stdin, process.stdout, process.stderr)
+            )
         else:
-            assert isinstance(raised.value, KeyboardInterrupt)
+            assert isinstance(raised.value, OperationCancelled)
+            assert managed is not None and managed.pid == child_pid
+            _stop_process(managed)
+            assert managed.returncode is not None
     finally:
         sys.settrace(previous_trace)
         caller_frame.f_trace_opcodes = previous_opcodes
@@ -216,8 +216,6 @@ def test_sigint_before_internal_pid_publication_reaps_transport(
         requested.set()
         sender.join(30)
         assert not sender.is_alive()
-        signal.signal(signal.SIGINT, previous_handler)
-        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
         if child_pid is not None:
             try:
                 waited_pid, _status = os.waitpid(child_pid, os.WNOHANG)
@@ -233,60 +231,31 @@ def test_sigint_before_internal_pid_publication_reaps_transport(
                     stream.close()
 
 
-@pytest.mark.usefixtures("defer_cyclic_gc")
-@pytest.mark.parametrize(
-    "failure_type",
-    (None, MemoryError, SystemExit),
-    ids=("native-sigint", "memory-error", "system-exit"),
-)
+@pytest.mark.parametrize("failure_type", (MemoryError, SystemExit))
 def test_popen_return_interruption_reaps_transport(failure_type):
     processes: list[subprocess.Popen[bytes]] = []
-    requested = threading.Event()
-    delivered = threading.Event()
-    stopping = threading.Event()
     previous_trace = sys.gettrace()
-    previous_handler = signal.getsignal(signal.SIGINT)
-    previous_mask = signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGINT})
-    failure = None if failure_type is None else failure_type("Popen return interrupted")
-
-    def send_interrupt() -> None:
-        if requested.wait(30) and not stopping.is_set():
-            # This thread predates launch and has SIGINT unblocked. Native
-            # masking on the launch thread cannot prevent Python dispatch.
-            os.kill(os.getpid(), signal.SIGINT)
-        delivered.set()
-
-    sender = threading.Thread(target=send_interrupt)
+    failure = failure_type("Popen return interrupted")
 
     def interrupt_at_return(frame: FrameType, event: str, _arg: object):
         if event == "return" and frame.f_code is subprocess.Popen.__init__.__code__:
             process = cast(subprocess.Popen[bytes], frame.f_locals["self"])
             processes.append(process)
             assert process.pid is not None
-            assert signal.SIGINT in signal.pthread_sigmask(signal.SIG_BLOCK, set())
-            if failure is not None:
-                raise failure
-            requested.set()
-            assert delivered.wait(30), "native signal was not sent"
+            raise failure
         return interrupt_at_return
 
-    signal.signal(signal.SIGINT, signal.default_int_handler)
-    if failure is None:
-        sender.start()
     try:
         sys.settrace(interrupt_at_return)
         try:
-            with pytest.raises(
-                KeyboardInterrupt if failure_type is None else failure_type
-            ) as raised:
+            with pytest.raises(failure_type) as raised:
                 SshCommand((sys.executable, "-c", "import sys; sys.stdin.buffer.read()")).popen(
                     "unused-host", "unused-command"
                 )
         finally:
             sys.settrace(previous_trace)
 
-        if failure is not None:
-            assert raised.value is failure
+        assert raised.value is failure
         assert len(processes) == 1
         process = processes[0]
         # Inspect before test-owned fallback cleanup: production must have
@@ -298,16 +267,8 @@ def test_popen_return_interruption_reaps_transport(failure_type):
             stream is not None and stream.closed
             for stream in (process.stdin, process.stdout, process.stderr)
         )
-        assert signal.pthread_sigmask(signal.SIG_BLOCK, set()) == previous_mask - {signal.SIGINT}
     finally:
         sys.settrace(previous_trace)
-        stopping.set()
-        requested.set()
-        if failure is None:
-            sender.join(30)
-            assert not sender.is_alive()
-        signal.signal(signal.SIGINT, previous_handler)
-        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
         for process in processes:
             if process.poll() is None:
                 process.kill()

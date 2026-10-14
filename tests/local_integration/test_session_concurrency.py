@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import os
 import select
-import signal
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -29,7 +28,6 @@ from tests.support import ROOT
 pytestmark = pytest.mark.local
 
 
-@pytest.mark.usefixtures("defer_cyclic_gc")
 @pytest.mark.parametrize("phase", ("acquire-return", "caller-resumption"))
 def test_interruption_after_session_acquisition_cleans_helper_and_child(tmp_path: Path, phase: str):
     (tmp_path / "home").mkdir()
@@ -72,14 +70,10 @@ def test_interruption_after_session_acquisition_cleans_helper_and_child(tmp_path
         )
     )
     interruption = KeyboardInterrupt("session acquisition interrupted")
-    previous_handler = signal.getsignal(signal.SIGINT)
     previous_trace = sys.gettrace()
     child_pidfd: int | None = None
     workspace: Path | None = None
     interrupted = False
-
-    def handle_interrupt(_signum, _frame):
-        raise interruption
 
     def acquire_owned_session():
         with cleanup_on_exit(session.close):
@@ -102,10 +96,10 @@ def test_interruption_after_session_acquisition_cleans_helper_and_child(tmp_path
             workspace = Path(session.descriptor.remote_workspace)
             child_pidfd = os.pidfd_open(int(child_pid_path.read_text()))
             interrupted = True
-            signal.raise_signal(signal.SIGINT)
+            # Arbitrary BaseException at the caller's ownership handoff.
+            raise interruption
         return interrupt_at_boundary
 
-    signal.signal(signal.SIGINT, handle_interrupt)
     try:
         with pytest.raises(KeyboardInterrupt) as raised:
             sys.settrace(interrupt_at_boundary)
@@ -132,7 +126,6 @@ def test_interruption_after_session_acquisition_cleans_helper_and_child(tmp_path
             assert process.stdout is not None and process.stdout.closed
     finally:
         sys.settrace(previous_trace)
-        signal.signal(signal.SIGINT, previous_handler)
         session.close()
         if child_pidfd is not None:
             os.close(child_pidfd)

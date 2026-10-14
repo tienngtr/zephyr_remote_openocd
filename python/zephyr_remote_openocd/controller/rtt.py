@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import errno
 import os
-import signal
 import socket
 import sys
 import termios
@@ -66,13 +65,8 @@ class _RttConnection:
         raise RttClientError(f"cannot connect to local RTT port 127.0.0.1:{port}") from last_error
 
     def _attempt(self, port: int, deadline: float) -> None:
-        # Keep acquisition and registration together before a pending SIGINT
-        # can escape. Connection setup then remains interruptible.
-        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
-        try:
-            self.socket = socket.socket()
-        finally:
-            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+        # Register the socket on this already-owned connection as it is created.
+        self.socket = socket.socket()
         connection = self.socket
         connection.setblocking(False)
         status = connection.connect_ex(("127.0.0.1", port))

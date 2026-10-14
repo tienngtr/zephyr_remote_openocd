@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import os
 import shlex
-import signal
 import subprocess
 import threading
 import time
@@ -253,15 +252,9 @@ class HelperConnection:
 
     def _acquire(self) -> None:
         command = f"python3 {shlex.quote(self._deployment.path)} control"
-        # Mask only launch and adoption, not authentication/session readiness.
-        # Transport registration runs inside popen's rollback guard before
-        # returning, independently of Python-level interruption after return.
         self._order = EventOrder()
-        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
-        try:
-            self._ssh_command.popen(self._host, command, on_acquired=self._adopt_control)
-        finally:
-            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+        # Transport registration runs inside popen's rollback guard.
+        self._ssh_command.popen(self._host, command, on_acquired=self._adopt_control)
         if self._process_or_error().stdout is None:
             raise SessionError("helper stdout was not captured")
         self._start_event_drain()

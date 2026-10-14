@@ -45,9 +45,10 @@ class RttServer:
     def join(self) -> None:
         if not self._accepted.is_set():
             # The client may never have connected; complete a pending accept.
-            # Refusal means the server already accepted and closed its listener.
+            # Refusal or reset means the server already accepted the client
+            # and closed its listener.
             with (
-                suppress(ConnectionRefusedError),
+                suppress(ConnectionRefusedError, ConnectionResetError),
                 socket.create_connection(("127.0.0.1", self.port)),
             ):
                 pass
@@ -58,9 +59,10 @@ class RttServer:
 
 
 def idle(connection: socket.socket) -> None:
-    """Keep the forwarded channel open until the client closes it."""
-    while connection.recv(4096):
-        pass
+    """Keep the forwarded channel open until the client closes or resets it."""
+    with suppress(ConnectionResetError):
+        while connection.recv(4096):
+            pass
 
 
 class TrackedChannel(socket.socket):

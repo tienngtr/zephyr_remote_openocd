@@ -17,6 +17,7 @@ from typing import IO, Any, cast, override
 import pytest
 from zephyr_remote_openocd.controller import forwarding as forwarding_module
 from zephyr_remote_openocd.controller.authority import SessionError
+from zephyr_remote_openocd.controller.cancellation import operation_scope
 from zephyr_remote_openocd.controller.deployment import DeploymentResult
 from zephyr_remote_openocd.controller.forwarding import ForwardFailure, ForwardManager
 from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
@@ -337,24 +338,13 @@ def test_failed_later_forward_batch_preserves_committed_processes(monkeypatch):
     assert [process.close_stderr_calls for process in failed_processes] == [1, 1]
 
 
-@pytest.mark.usefixtures("defer_cyclic_gc")
-@pytest.mark.parametrize("phase", ("launch-handoff", "commit-handoff", "readiness"))
-def test_sigint_during_forward_start_preserves_cleanup_ownership(monkeypatch, phase):
+@pytest.mark.parametrize("phase", ("launch-handoff", "readiness"))
+def test_interruption_during_forward_start_preserves_cleanup_ownership(monkeypatch, phase):
     forward = ForwardSpec("gdb", 32265, 3333)
     initialize = subprocess.Popen.__init__
     read = os.read
-    sigmask = signal.pthread_sigmask
     managed_processes: list[ManagedSshProcess] = []
-    previous_handler = signal.getsignal(signal.SIGINT)
-    previous_mask = sigmask(signal.SIG_BLOCK, {signal.SIGUSR1})
-    expected_mask = sigmask(signal.SIG_BLOCK, set())
-    requested = False
-    forwards_at_delivery: tuple[ForwardSpec, ...] = ()
-
-    def request_interrupt():
-        nonlocal requested
-        requested = True
-        signal.raise_signal(signal.SIGINT)
+    interruption = KeyboardInterrupt("forward startup interrupted")
 
     class InterruptingCommand(SshCommand):
         @override
@@ -371,7 +361,7 @@ def test_sigint_during_forward_start_preserves_cleanup_ownership(monkeypatch, ph
             )
             managed_processes.append(process)
             if phase == "launch-handoff":
-                request_interrupt()
+                raise interruption
             return process
 
     manager = ForwardManager(InterruptingCommand(), "host")
@@ -387,67 +377,38 @@ def test_sigint_during_forward_start_preserves_cleanup_ownership(monkeypatch, ph
             process.stdout is not None and descriptor == process.stdout.fileno()
             for process in managed_processes
         ):
-            request_interrupt()
+            raise interruption
         return read(descriptor, size)
-
-    def restore_signal_mask(how, mask):
-        # Interrupt at the effectful boundary that exposes committed ownership.
-        if phase == "commit-handoff" and how == signal.SIG_SETMASK and manager.has_forwards:
-            request_interrupt()
-        return sigmask(how, mask)
-
-    def handle_interrupt(_signum, _frame):
-        nonlocal forwards_at_delivery
-        forwards_at_delivery = manager.forwards
-        raise KeyboardInterrupt
 
     monkeypatch.setattr(subprocess.Popen, "__init__", launch)
     monkeypatch.setattr(os, "read", read_readiness)
-    monkeypatch.setattr(signal, "pthread_sigmask", restore_signal_mask)
     monkeypatch.setattr(ForwardManager, "_preflight", staticmethod(lambda _service: None))
-    signal.signal(signal.SIGINT, handle_interrupt)
     try:
-        with pytest.raises(KeyboardInterrupt):
+        with pytest.raises(KeyboardInterrupt) as raised:
             manager.start((forward,), "127.64.0.1")
-        assert requested
-        assert sigmask(signal.SIG_BLOCK, set()) == expected_mask
-        if phase == "commit-handoff":
-            assert forwards_at_delivery == (forward,)
-            repeated: list[ForwardFailure] = []
-            manager.check_health(repeated.append)
-            assert not repeated
-        else:
-            assert forwards_at_delivery == ()
-        manager.close()
+        assert raised.value is interruption
+        assert manager.forwards == ()
+        # Rollback ran inside start(); every acquired transport is settled.
         assert managed_processes
         for process in managed_processes:
             assert process.poll() is not None
             assert process.stdin is not None and process.stdin.closed
             assert process.stdout is not None and process.stdout.closed
     finally:
-        signal.signal(signal.SIGINT, previous_handler)
-        sigmask(signal.SIG_SETMASK, previous_mask)
         manager.close()
         for process in managed_processes:
             _stop_process(process)
 
 
-@pytest.mark.usefixtures("defer_cyclic_gc")
 @pytest.mark.parametrize("cleanup_fails", (False, True))
-def test_sigint_between_pending_forward_rollbacks_reaps_and_closes_both(monkeypatch, cleanup_fails):
+def test_ctrl_c_between_pending_forward_rollbacks_skips_no_cleanup(monkeypatch, cleanup_fails):
     initialize = subprocess.Popen.__init__
-    sigmask = signal.pthread_sigmask
-    previous_handler = signal.getsignal(signal.SIGINT)
-    previous_mask = sigmask(signal.SIG_BLOCK, {signal.SIGUSR1})
-    expected_mask = sigmask(signal.SIG_BLOCK, set())
     previous_trace = sys.gettrace()
     processes: list[ManagedSshProcess] = []
     stderr_streams: list[IO[bytes]] = []
     startup_error = SessionError("required forward readiness failed")
     cleanup_error = OSError("first forward stream cleanup failed")
-    interruption = KeyboardInterrupt("pending forward rollback interrupted")
     requested = False
-    closed_at_delivery = False
 
     class Command(SshCommand):
         @override
@@ -511,61 +472,55 @@ def test_sigint_between_pending_forward_rollbacks_reaps_and_closes_both(monkeypa
                 and second.returncode is None
             ):
                 requested = True
+                # Repeated runner Ctrl-C during rollback only latches.
+                signal.raise_signal(signal.SIGINT)
                 signal.raise_signal(signal.SIGINT)
         return interrupt_between_rollbacks
-
-    def handle_interrupt(_signum, _frame):
-        nonlocal closed_at_delivery
-        closed_at_delivery = all_closed()
-        raise interruption
 
     monkeypatch.setattr(subprocess.Popen, "__init__", launch)
     monkeypatch.setattr(ForwardManager, "_preflight", staticmethod(lambda _service: None))
     monkeypatch.setattr(ForwardManager, "_await_ready", staticmethod(observe_readiness))
-    signal.signal(signal.SIGINT, handle_interrupt)
     failure = None
     try:
-        sys.settrace(interrupt_between_rollbacks)
-        try:
-            manager.start(
-                (ForwardSpec("gdb", 32266, 3333), ForwardSpec("rtt", 32267, 5555)), "127.64.0.1"
-            )
-        except BaseException as error:
-            failure = error
-        finally:
-            sys.settrace(previous_trace)
+        with (
+            pytest.raises(forwarding_module.ForwardStartError) as raised,
+            operation_scope() as scope,
+        ):
+            sys.settrace(interrupt_between_rollbacks)
+            try:
+                manager.start(
+                    (ForwardSpec("gdb", 32266, 3333), ForwardSpec("rtt", 32267, 5555)),
+                    "127.64.0.1",
+                )
+            finally:
+                sys.settrace(previous_trace)
+        failure = raised.value
 
         assert requested and len(processes) == 2
         # Check actual reaping and every pipe before any test fallback cleanup.
         assert all_closed()
-        assert closed_at_delivery
-        assert isinstance(failure, forwarding_module.ForwardStartError)
+        assert scope.requested
+        # The established startup failure stays primary; cancellation is noted.
         assert failure.cause is startup_error
-        assert any(str(interruption) in note for note in failure.__notes__)
+        assert any("cancellation" in note for note in failure.__notes__)
         if cleanup_fails:
             assert cleanup_error in failure.cleanup_errors
             assert any(str(cleanup_error) in note for note in failure.__notes__)
-        assert sigmask(signal.SIG_BLOCK, set()) == expected_mask
         assert not manager.has_forwards
     finally:
         sys.settrace(previous_trace)
-        signal.signal(signal.SIGINT, previous_handler)
-        sigmask(signal.SIG_SETMASK, previous_mask)
         manager.close()
         for process in processes:
             with suppress(OSError):
                 _stop_process(process)
 
 
-@pytest.mark.usefixtures("defer_cyclic_gc")
 @pytest.mark.parametrize("cleanup_fails", (False, True))
-def test_sigint_at_forward_rollback_entry_keeps_both_transports_owned(monkeypatch, cleanup_fails):
+def test_interruption_at_forward_rollback_entry_keeps_both_transports_owned(
+    monkeypatch, cleanup_fails
+):
     initialize = subprocess.Popen.__init__
     await_ready = ForwardManager._await_ready
-    sigmask = signal.pthread_sigmask
-    previous_mask = sigmask(signal.SIG_BLOCK, {signal.SIGUSR1})
-    expected_mask = sigmask(signal.SIG_BLOCK, set())
-    previous_handler = signal.getsignal(signal.SIGINT)
     previous_trace = sys.gettrace()
     processes: list[ManagedSshProcess] = []
     stderr_streams: list[IO[bytes]] = []
@@ -611,7 +566,7 @@ def test_sigint_at_forward_rollback_entry_keeps_both_transports_owned(monkeypatc
         return True
 
     def interrupt_at_rollback_entry(frame: FrameType, event: str, _arg: object):
-        nonlocal requested
+        nonlocal requested, both_live_at_delivery
         # The exception is bound, but the handler's first instruction has not
         # run. No line number or scheduler timing selects this entry boundary.
         if (
@@ -621,20 +576,15 @@ def test_sigint_at_forward_rollback_entry_keeps_both_transports_owned(monkeypatc
             and not requested
         ):
             requested = True
-            signal.raise_signal(signal.SIGINT)
+            both_live_at_delivery = len(processes) == 2 and all(
+                process.poll() is None for process in processes
+            )
+            raise interruption
         return interrupt_at_rollback_entry
-
-    def handle_interrupt(_signum, _frame):
-        nonlocal both_live_at_delivery
-        both_live_at_delivery = len(processes) == 2 and all(
-            process.poll() is None for process in processes
-        )
-        raise interruption
 
     monkeypatch.setattr(subprocess.Popen, "__init__", launch)
     monkeypatch.setattr(ForwardManager, "_preflight", staticmethod(lambda _service: None))
     monkeypatch.setattr(ForwardManager, "_await_ready", staticmethod(observe_readiness))
-    signal.signal(signal.SIGINT, handle_interrupt)
     try:
         sys.settrace(interrupt_at_rollback_entry)
         try:
@@ -667,14 +617,11 @@ def test_sigint_at_forward_rollback_entry_keeps_both_transports_owned(monkeypatc
         assert all(stream.closed for stream in stderr_streams)
         assert restart_failure is not None
         assert close_failure is (cleanup_error if cleanup_fails else None)
-        assert sigmask(signal.SIG_BLOCK, set()) == expected_mask
         assert session.closed
         assert not manager.forwards
         session.close()
     finally:
         sys.settrace(previous_trace)
-        signal.signal(signal.SIGINT, previous_handler)
-        sigmask(signal.SIG_SETMASK, previous_mask)
         with suppress(BaseException):
             session.close()
         for process in processes:

@@ -33,6 +33,7 @@ from zephyr_remote_openocd.controller import helper_connection as connection_mod
 from zephyr_remote_openocd.controller import rtt as rtt_module
 from zephyr_remote_openocd.controller import session as session_module
 from zephyr_remote_openocd.controller.authority import SessionError
+from zephyr_remote_openocd.controller.cancellation import OperationCancelled, operation_scope
 from zephyr_remote_openocd.controller.deployment import DeploymentResult
 from zephyr_remote_openocd.controller.forwarding import ForwardManager
 from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
@@ -103,7 +104,6 @@ class _BlockedSshCommand(SshCommand):
         raise AssertionError("run_stream() is not expected in this test")
 
 
-@pytest.mark.usefixtures("defer_cyclic_gc")
 @pytest.mark.parametrize("phase", ("before-control", "control-launch", "allocation", "ready"))
 def test_interrupted_helper_acquisition_cleans_owned_control_process(tmp_path, monkeypatch, phase):
     helper_path = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
@@ -126,7 +126,7 @@ def test_interrupted_helper_acquisition_cleans_owned_control_process(tmp_path, m
             )
             managed_processes.append(managed)
             if phase == "control-launch":
-                signal.raise_signal(signal.SIGINT)
+                raise interruption
             return managed
 
     def observe_and_interrupt(snapshot):
@@ -157,8 +157,7 @@ def test_interrupted_helper_acquisition_cleans_owned_control_process(tmp_path, m
             finally:
                 session.close()
 
-        if phase != "control-launch":
-            assert raised.value is interruption
+        assert raised.value is interruption
         assert session.closed
         assert all(process.poll() is not None for process in managed_processes)
         assert all(not workspace.exists() for workspace in workspaces)
@@ -663,39 +662,21 @@ class TestForwardingLifecycle:
                         stream.close()
 
 
-@pytest.mark.usefixtures("defer_cyclic_gc")
 @pytest.mark.parametrize(
-    ("phase", "cleanup_fails", "sigint_blocked"),
-    (
-        ("forward-entry", False, False),
-        ("forward-entry", True, False),
-        ("helper-entry", False, False),
-        ("helper-entry", True, False),
-        ("ownership-release", False, False),
-        ("between-forwards", False, False),
-        ("ownership-release", True, False),
-        ("between-forwards", True, False),
-        ("ownership-release", False, True),
-    ),
+    "phase", ("forward-entry", "helper-entry", "ownership-release", "between-forwards")
 )
-def test_sigint_during_session_close_cleans_owned_transports(
-    tmp_path, monkeypatch, phase, cleanup_fails, sigint_blocked
+@pytest.mark.parametrize("cleanup_fails", (False, True))
+def test_repeated_ctrl_c_during_session_close_skips_no_cleanup(
+    tmp_path, monkeypatch, phase, cleanup_fails
 ):
     processes: list[ManagedSshProcess] = []
     control_processes: list[ManagedSshProcess] = []
     helper_path = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
     environment = {**os.environ, "XDG_RUNTIME_DIR": str(tmp_path)}
     initialize = subprocess.Popen.__init__
-    sigmask = signal.pthread_sigmask
-    previous_handler = signal.getsignal(signal.SIGINT)
-    caller_mask = {signal.SIGUSR1, signal.SIGINT} if sigint_blocked else {signal.SIGUSR1}
-    previous_mask = sigmask(signal.SIG_BLOCK, caller_mask)
-    expected_mask = sigmask(signal.SIG_BLOCK, set())
     previous_trace = sys.gettrace()
-    interruption = KeyboardInterrupt("session cleanup interrupted")
     cleanup_error = RuntimeError("transport stream cleanup failed")
     requested = False
-    closed_at_delivery = False
 
     class LocalCommand(_BlockedSshCommand):
         @override
@@ -738,7 +719,7 @@ def test_sigint_during_session_close_cleans_owned_transports(
 
     def interrupt_at_cleanup_boundary(frame: FrameType, event: str, _arg: object):
         nonlocal requested
-        # Schedule a real SIGINT at an ownership boundary without replacing
+        # Deliver real SIGINT at an ownership boundary without replacing
         # lifecycle collaborators or depending on thread scheduling/line numbers.
         cleanup = HelperConnection.close if phase == "helper-entry" else ForwardManager.close
         if event == "line" and frame.f_code is cleanup.__code__ and not requested:
@@ -758,47 +739,45 @@ def test_sigint_during_session_close_cleans_owned_transports(
                 )
             if at_boundary:
                 requested = True
+                # Repeated Ctrl-C during settlement does not escalate.
+                signal.raise_signal(signal.SIGINT)
                 signal.raise_signal(signal.SIGINT)
         return interrupt_at_cleanup_boundary
 
-    def handle_interrupt(_signum, _frame):
-        nonlocal closed_at_delivery
-        closed_at_delivery = session.closed
-        raise interruption
-
     monkeypatch.setattr(subprocess.Popen, "__init__", launch)
     monkeypatch.setattr(ForwardManager, "_preflight", staticmethod(lambda _service: None))
-    signal.signal(signal.SIGINT, handle_interrupt)
+    close_failure: BaseException | None = None
+    scope_outcome: BaseException | None = None
     try:
-        session.acquire()
-        assert session.descriptor is not None
-        workspace = Path(session.descriptor.allocation.remote_workspace)
-        if cleanup_fails:
-            failing_process = control_processes[0] if phase == "helper-entry" else processes[0]
-            close_stderr = failing_process.close_stderr
+        with pytest.raises(OperationCancelled) as cancelled, operation_scope() as operation:
+            session.acquire()
+            assert session.descriptor is not None
+            workspace = Path(session.descriptor.allocation.remote_workspace)
+            if cleanup_fails:
+                failing_process = control_processes[0] if phase == "helper-entry" else processes[0]
+                close_stderr = failing_process.close_stderr
 
-            def fail_close_stderr():
-                close_stderr()
-                raise cleanup_error
+                def fail_close_stderr():
+                    close_stderr()
+                    raise cleanup_error
 
-            monkeypatch.setattr(failing_process, "close_stderr", fail_close_stderr)
+                monkeypatch.setattr(failing_process, "close_stderr", fail_close_stderr)
 
-        sys.settrace(interrupt_at_cleanup_boundary)
-        try:
-            if sigint_blocked:
+            sys.settrace(interrupt_at_cleanup_boundary)
+            try:
                 session.close()
-            else:
-                with pytest.raises((RuntimeError, KeyboardInterrupt)) as raised:
-                    session.close()
-        finally:
-            sys.settrace(previous_trace)
+            except RuntimeError as error:
+                close_failure = error
+            finally:
+                sys.settrace(previous_trace)
+            assert operation.requested
+        scope_outcome = cancelled.value
 
         assert requested
-        if not sigint_blocked:
-            assert raised.value is (cleanup_error if cleanup_fails else interruption)
-        if cleanup_fails:
-            assert any(str(interruption) in note for note in raised.value.__notes__)
-        assert sigmask(signal.SIG_BLOCK, set()) == expected_mask
+        # Settlement was not interrupted: only real cleanup failures surface,
+        # and the latched cancellation reaches the outer operation boundary.
+        assert close_failure is (cleanup_error if cleanup_fails else None)
+        assert isinstance(scope_outcome, OperationCancelled)
         for process in (*processes, *control_processes):
             assert process.poll() is not None
             assert process.stdin is not None and process.stdin.closed
@@ -807,14 +786,9 @@ def test_sigint_during_session_close_cleans_owned_transports(
         assert not workspace.exists()
         assert not manager.forwards
         assert manager.forwards == ()
-        assert closed_at_delivery == (not sigint_blocked)
         session.close()
     finally:
         sys.settrace(previous_trace)
-        with suppress(KeyboardInterrupt):
-            sigmask(signal.SIG_SETMASK, expected_mask - {signal.SIGINT})
-        signal.signal(signal.SIGINT, previous_handler)
-        sigmask(signal.SIG_SETMASK, previous_mask)
         if not session.closed:
             with suppress(RuntimeError):
                 session.close()
