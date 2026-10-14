@@ -271,3 +271,19 @@ class SessionAuthority:
             if self._terminal is not None or self._control_ended:
                 raise SessionError("helper session ended before START")
             final_admission()
+
+    def admit_start_write(self) -> bool:
+        """Admit further START bytes, or defer to pending final observation.
+
+        Established failures remain immediately publishable. Otherwise final
+        protocol accounting precedes any generic session-ended START failure.
+        """
+        with self._changed:
+            error = self.publish_failure()
+            if error is not None:
+                raise error
+            if self._control_observation_pending:
+                return False
+            if self._terminal is not None or self._control_ended:
+                raise SessionError("helper session ended during START")
+            return True

@@ -127,10 +127,14 @@ class HelperConnection:
         view = memoryview(data)
         offset = 0
         while offset < len(view):
+            self.observe_status()
+            if not self._authority.admit_start_write():
+                wait_for(sources=WaitSources(notifiers=(self._notifier,)))
+                continue
             try:
                 offset += os.write(descriptor, view[offset:])
             except BlockingIOError:
-                wait_for(writable=(descriptor,))
+                wait_for(writable=(descriptor,), sources=WaitSources(notifiers=(self._notifier,)))
 
     @staticmethod
     def _created(snapshot: SessionSnapshot) -> SessionAllocation | None:

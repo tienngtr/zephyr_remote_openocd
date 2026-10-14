@@ -1646,6 +1646,17 @@ pipe writes, pidfd readiness, or scheduling.
 
 START is accounted against facts the reader already recorded, admitted as a new
 effect, and written to the control pipe without blocking on its backpressure.
+When the pipe would block, the common operation wait observes both writability
+and authority notifications, with its existing cancellation dispatch. Before
+each partial-write attempt, the coordinator observes settled control status and
+asks the session authority to admit further START bytes. An established failure
+is published immediately. Otherwise pending control final observation pauses
+delivery on authority notification and cancellation alone, without watching
+stdin writability. After final accounting, a terminal or control-end fact stops
+START with a session-ended error even when the remote outcome was successful.
+This preserves detailed final-failure precedence and prevents session end from
+leaving START blocked on unread stdin. Failure composition and cleanup retain
+their existing authority and owners.
 If acquisition
 ends before the allocation is accepted, client cleanup terminates and reaps the
 owned control process while closing its input lease and reading any available
