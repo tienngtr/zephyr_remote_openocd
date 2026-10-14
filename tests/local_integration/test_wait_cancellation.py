@@ -8,6 +8,7 @@ import io
 import os
 import signal
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -16,11 +17,15 @@ from contextlib import contextmanager, suppress
 from pathlib import Path
 
 import pytest
+from zephyr_remote_openocd.controller.authority import SessionAuthority
 from zephyr_remote_openocd.controller.cancellation import OperationCancelled, operation_scope
 from zephyr_remote_openocd.controller.forwarding import ForwardManager
 from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
 from zephyr_remote_openocd.controller.rtt import run_rtt_client
 from zephyr_remote_openocd.controller.ssh import SshCommand
+
+from tests.forwarding_support import GDB, ControlledSshCommand, ForwardingHarness
+from tests.process_support import cleanup_on_exit
 
 pytestmark = [pytest.mark.local, pytest.mark.skipif(os.name != "posix", reason="POSIX signals")]
 
@@ -140,3 +145,66 @@ def test_ctrl_c_during_rtt_relay_closes_the_channel(observed_session) -> None:
         server.join(GUARD)
     # The client released its forwarded channel during cancellation.
     assert closed.is_set()
+
+
+@pytest.mark.parametrize("work", ("forward", "local-client"))
+def test_ctrl_c_latched_during_session_admission_prevents_the_launch(monkeypatch, work) -> None:
+    harness = ForwardingHarness(monkeypatch)
+    launched: list[str] = []
+    admit_work = SessionAuthority.admit_work
+    popen = ControlledSshCommand.popen
+
+    def record_popen(self, host, remote_command, **kwargs):
+        launched.append("forward")
+        return popen(self, host, remote_command, **kwargs)
+
+    def admit_after_ctrl_c(self, *args, **kwargs):
+        # Ctrl-C latches after any earlier cancellation observation, while the
+        # session's own admission conditions are being evaluated.
+        signal.raise_signal(signal.SIGINT)
+        return admit_work(self, *args, **kwargs)
+
+    monkeypatch.setattr(ControlledSshCommand, "popen", record_popen)
+    harness.ssh.process(GDB)
+    with pytest.raises(OperationCancelled), operation_scope():
+        session = harness.prepare((GDB,), ()) if work == "local-client" else harness.prepare((), ())
+        with cleanup_on_exit(session.close):
+            session.acquire()
+            monkeypatch.setattr(SessionAuthority, "admit_work", admit_after_ctrl_c)
+            if work == "forward":
+                session.forward((GDB,))
+            else:
+                session.run_local_client(lambda: launched.append("client"))
+    # The latched cancellation preceded final admission: nothing new started.
+    assert launched == ([] if work == "forward" else ["forward"])
+    assert harness.helper.close_calls == 1
+
+
+@pytest.mark.timeout(GUARD)
+def test_ctrl_c_after_launch_admission_leaves_the_transport_owned(tmp_path, monkeypatch) -> None:
+    launcher = tmp_path / "configured-ssh"
+    launcher.write_text(f"#!{sys.executable}\nimport sys\nsys.stdin.buffer.read()\n")
+    launcher.chmod(0o755)
+    initialize = subprocess.Popen.__init__
+    pids: list[int] = []
+
+    def launch_after_admission(process, *args, **kwargs):
+        # Ctrl-C latches after the launch was admitted, during acquisition.
+        signal.raise_signal(signal.SIGINT)
+        initialize(process, *args, **kwargs)
+        pids.append(process.pid)
+
+    manager = ForwardManager(SshCommand((str(launcher),)), "host")
+    monkeypatch.setattr(subprocess.Popen, "__init__", launch_after_admission)
+    with socket.socket() as reserved:
+        reserved.bind(("127.0.0.1", 0))
+        port = reserved.getsockname()[1]
+    with pytest.raises(OperationCancelled), operation_scope():
+        manager.start((ForwardSpec("gdb", port, 3333),), "127.64.0.1")
+    monkeypatch.undo()
+    # The admitted acquisition completed into rollback ownership and was settled.
+    assert len(pids) == 1
+    pid = pids[0]
+    with pytest.raises(ChildProcessError):
+        os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG)
+    assert not manager.has_forwards

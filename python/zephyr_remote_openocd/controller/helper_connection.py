@@ -101,14 +101,9 @@ class HelperConnection:
         if helper.stdin is None:
             raise SessionError("helper stdin was not captured")
         frame = encode_start(process_spec, listener_specs, preferred_address=preferred_address)
-        # START authorizes remote child creation: account for facts the reader
-        # already recorded and for cancellation before admitting the effect.
-        snapshot = self._authority.snapshot()
-        if snapshot.failure is not None or snapshot.terminal is not None:
-            raise self._authority.publish_failure() or SessionError(
-                "helper session ended before START"
-            )
-        admit_effect()
+        # START authorizes remote child creation; recorded helper facts and the
+        # operation's cancellation are accounted at one admission point.
+        self._authority.admit_process_start(admit_effect)
         self._write_control(helper.stdin.fileno(), frame)
         if process_spec.completion_policy != CompletionPolicy.LIVE_SERVER:
             return None

@@ -353,9 +353,10 @@ class SessionController:
         return self._authority.operation_status()
 
     def _admit_dependent_work(self) -> None:
-        """Final admission: compose operation cancellation with session entry."""
-        admit_effect()
-        self._authority.admit_work(self._required_forwards, self._forwards.forwards)
+        """Commit entry; the operation's cancellation read is its final condition."""
+        self._authority.admit_work(
+            self._required_forwards, self._forwards.forwards, final_admission=admit_effect
+        )
 
     def run_local_client[ResultT](self, launch: Callable[[], ResultT]) -> ResultT:
         """Commit actual execution entry after accounting recorded fatal facts."""

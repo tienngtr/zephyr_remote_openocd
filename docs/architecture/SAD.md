@@ -2073,8 +2073,8 @@ exceptions and asks the session to finalize; it does not reconstruct precedence
 from copied child status or choose between operation and cleanup exceptions.
 
 GDB/RTT entry checks helper and forwarding health, then admits the effect: the
-operation's cancellation admission is composed with that shared authority's
-entry immediately before the synchronous launch callback. Interactive GDB runs
+operation's cancellation read is the final condition evaluated inside that
+shared authority's entry, immediately before the synchronous launch callback. Interactive GDB runs
 through Zephyr's `run_client` inside the interactive ownership scope of
 [§39.1](#391-operation-cancellation-and-waits); RTT batch GDB setup and the RTT
 client are ordinary cancellable work. Cleanup ownership protects interruption
@@ -2236,15 +2236,25 @@ nothing of signals. Pre-session failures propagate through normal operation
 control flow. The single helper reader and every other session producer record
 facts into the authority; the coordinator re-reads it after each wake.
 
-**Effect-admission boundary.** Before starting new dependent work, the
-operation's cancellation admission is checked: before launching a finite or
-long-lived SSH process, before START, and composed with
-`SessionAuthority.admit_work()` for forwarding and local clients. An effect
-admitted before a later Ctrl-C completes into its established owner;
-cancellation prevents the dependent work that would follow. There is no
-general checkpoint API, and local CPU or filesystem work such as staging-archive
-generation is not interrupted: a cancellation recorded during it is retained
-and acted upon at the next admission or wait.
+**Effect-admission boundary.** Each new effect has one final admission point:
+the read of the operation's cancellation fact by `admit_effect()`, evaluated as
+the effect's last refusal condition. Process launches (`SshCommand.popen()` and
+finite commands) perform it immediately before creating their resource-free
+owner. Session-dependent work (forwarding transactions and local clients) and
+START pass `admit_effect` to `SessionAuthority.admit_work()` or
+`admit_process_start()`, which call it while holding the authority lock, after
+the recorded-failure, closure, terminal, readiness, and forwarding conditions,
+and immediately before the admission gate commits entry. Session facts are
+recorded only under that lock, so they cannot change between those checks and
+the read; the read is therefore the single linearization point for both kinds
+of fact. A Ctrl-C latched before it refuses the effect. One latched after it
+lets the admitted effect complete into its established owner, and the next
+wait or admission dispatches it; a session fact recorded after it likewise
+does not revoke the admitted transaction. Each transport launched by an
+admitted forwarding transaction still passes its own launch admission. There
+is no general checkpoint API, and local CPU or filesystem work such as
+staging-archive generation is not interrupted: a cancellation recorded during
+it is retained and acted upon at the next admission or wait.
 
 **Cancellation boundaries and precedence.** Cancellation becomes control flow
 only in the main-thread wait dispatcher, at final effect admission, at the

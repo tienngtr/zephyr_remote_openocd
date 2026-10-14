@@ -52,6 +52,10 @@ def _no_notification() -> None:
     pass
 
 
+def _admit_unconditionally() -> None:
+    pass
+
+
 class SessionAuthority:
     """One authority for failure recording, publication, and dependent entry.
 
@@ -204,7 +208,21 @@ class SessionAuthority:
         with self._changed:
             return None if self._error_reported else self.publish_failure()
 
-    def admit_work(self, required: Iterable[ForwardSpec], forwarded: Iterable[ForwardSpec]) -> None:
+    def admit_work(
+        self,
+        required: Iterable[ForwardSpec],
+        forwarded: Iterable[ForwardSpec],
+        *,
+        final_admission: Callable[[], None] = _admit_unconditionally,
+    ) -> None:
+        """Commit dependent-work entry at one linearization point.
+
+        Session facts are recorded only under this lock, so they cannot change
+        while it is held. ``final_admission`` is the caller's last refusal
+        condition; it runs after every session condition and immediately before
+        the gate commits entry. A condition it reads after it returns does not
+        revoke this admission.
+        """
         with self._changed:
             error = self.publish_failure()
             if error is not None:
@@ -213,5 +231,16 @@ class SessionAuthority:
                 raise SessionClosedError("operation no longer permits dependent launch")
             ticket = self._gate.prepare(required)
             self._gate.observe_forwarded(forwarded)
+            final_admission()
             if not self._gate.enter(ticket):
                 raise SessionError("dependent launch requires READY and required forwarding")
+
+    def admit_process_start(self, final_admission: Callable[[], None]) -> None:
+        """Commit START after accounting facts the helper reader already recorded."""
+        with self._changed:
+            error = self.publish_failure()
+            if error is not None:
+                raise error
+            if self._terminal is not None:
+                raise SessionError("helper session ended before START")
+            final_admission()
