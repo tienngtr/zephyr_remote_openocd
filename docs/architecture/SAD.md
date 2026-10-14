@@ -1446,7 +1446,10 @@ acquisition path, not a separate acquisition API or lifecycle authority.
 
 Acquisition then records the stderr drain before starting its thread. Before a
 drain exists, rollback closes the raw stderr pipe directly; after drain adoption,
-only the drain closes that pipe. Constructor and thread-start failures use the
+only the drain closes that pipe. The drain decides whether its reader may hold
+the stream from the thread's own started state, not from a flag set after
+`Thread.start()` returns, so a failure at that return still gets bounded reader
+settlement instead of a buffered close that the reader's read could block. Constructor and thread-start failures use the
 same bounded process termination and independent stream cleanup as other
 acquisition failures. They require no replacement wrapper or drain. The
 resource-free wrapper has one acquisition path, populated by transport launch.

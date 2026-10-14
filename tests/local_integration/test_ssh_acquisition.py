@@ -276,3 +276,59 @@ def test_popen_return_interruption_reaps_transport(failure_type):
             for stream in (process.stdin, process.stdout, process.stderr):
                 if stream is not None:
                     stream.close()
+
+
+@pytest.mark.timeout(120)
+def test_stderr_reader_start_return_failure_keeps_bounded_drain_shutdown(tmp_path) -> None:
+    descendant_ready = tmp_path / "descendant-ready"
+    os.mkfifo(descendant_ready)
+    # A descendant inherits stderr, so the drain cannot reach EOF on its own.
+    descendant = (
+        "import os, signal, sys\n"
+        f"with open({str(descendant_ready)!r}, 'w') as ready:\n"
+        "    ready.write(str(os.getpid()))\n"
+        "signal.pause()\n"
+    )
+    code = (
+        f"import subprocess, sys\nsubprocess.Popen([sys.executable, '-c', {descendant!r}])\n"
+        "sys.stdin.buffer.read()\n"
+    )
+    failure = MemoryError("stderr reader start return failed")
+    drains = []
+    descendants: list[int] = []
+    previous_trace = sys.gettrace()
+
+    def fail_after_start(frame: FrameType, event: str, _arg: object):
+        thread = frame.f_locals.get("self")
+        if (
+            event == "return"
+            and frame.f_code is threading.Thread.start.__code__
+            and isinstance(thread, threading.Thread)
+            and thread.name == "zro-ssh-stderr"
+        ):
+            drains.append(thread._target.__self__)  # type: ignore[attr-defined]
+            with descendant_ready.open() as ready:
+                descendants.append(int(ready.read()))
+            # The reader is running and stderr has a live inherited writer; the
+            # start call is interrupted as it returns.
+            raise failure
+        return fail_after_start
+
+    try:
+        sys.settrace(fail_after_start)
+        try:
+            with pytest.raises(MemoryError) as raised:
+                SshCommand((sys.executable, "-c", code)).popen("host", "serve")
+        finally:
+            sys.settrace(previous_trace)
+        assert raised.value is failure
+        # Rollback reported the unstoppable reader instead of closing a buffered
+        # stream that the reader may hold.
+        notes = getattr(failure, "__notes__", ())
+        assert any("stderr reader did not stop" in note for note in notes)
+    finally:
+        sys.settrace(previous_trace)
+        for pid in descendants:
+            os.kill(pid, signal.SIGKILL)
+        for drain in drains:
+            drain.close()

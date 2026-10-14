@@ -50,13 +50,11 @@ class _StderrDrain:
             daemon=True,
         )
         self._close_lock = threading.Lock()
-        self._started = False
         self._stream_closed = False
 
     def start(self) -> None:
         """Start consuming the owned stderr stream."""
         self._thread.start()
-        self._started = True
 
     def _run(self) -> None:
         try:
@@ -102,7 +100,9 @@ class _StderrDrain:
         with self._close_lock:
             if self._stream_closed:
                 return
-            if self._started:
+            # A started thread has an identity before start() returns, so a
+            # failure at that return still leaves the reader's shutdown bounded.
+            if self._thread.ident is not None:
                 deadline = time.monotonic() + _SSH_STDERR_JOIN_TIMEOUT
                 if not self._finished.wait(max(0.0, deadline - time.monotonic())):
                     raise TimeoutError("SSH stderr reader did not stop; stream retained")
