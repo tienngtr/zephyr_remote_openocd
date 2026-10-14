@@ -1374,6 +1374,8 @@ def test_attach_rtt_server_forwards_without_loading(runner_api, tmp_path, monkey
 def forbid_external_io(monkeypatch):
     guards = []
     for owner, name in (
+        # Owned launch subclasses bind the class itself, not the module name.
+        (subprocess.Popen, "__init__"),
         (subprocess, "Popen"),
         (os, "system"),
         (socket, "socket"),
