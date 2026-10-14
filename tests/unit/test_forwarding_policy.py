@@ -6,6 +6,7 @@ import io
 import math
 import os
 import subprocess
+from contextlib import suppress
 from typing import cast
 from unittest.mock import create_autospec
 
@@ -42,13 +43,23 @@ def test_close_preserves_recorded_session_failure_over_forward_cleanup(
             session.plan.host,
             session.deployment,
             authority=session._authority,
+            notifier=session._notifier,
         )
         process = create_autospec(ManagedSshProcess, instance=True, spec_set=True)
         read_fd, write_fd = os.pipe()
         process.stdout = os.fdopen(read_fd, "rb", buffering=0)
         process.stdin = io.BytesIO()
+        process.returncode = None
         process.poll.return_value = 0
-        process.wait.return_value = 0
+
+        def exit_helper(timeout: float | None = None) -> int:
+            # Helper exit ends the event stream that the reader owns.
+            del timeout
+            with suppress(OSError):
+                os.close(write_fd)
+            return 0
+
+        process.wait.side_effect = exit_helper
         process.stderr_tail.return_value = b""
         os.write(
             write_fd,
@@ -59,7 +70,6 @@ def test_close_preserves_recorded_session_failure_over_forward_cleanup(
                 helper="fake",
             ),
         )
-        os.close(write_fd)
 
         def acquire_transport(*_args, on_acquired=None, **_kwargs):
             acquired = cast(ManagedSshProcess, process)

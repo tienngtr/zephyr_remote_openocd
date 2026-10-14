@@ -19,7 +19,6 @@ from zephyr_remote_openocd.controller.authority import (
 )
 from zephyr_remote_openocd.controller.deployment import DeploymentResult, deploy_helper
 from zephyr_remote_openocd.controller.forwarding import (
-    FORWARD_HEALTH_INTERVAL,
     ForwardAdvisory,
     ForwardFailure,
     ForwardManager,
@@ -35,6 +34,12 @@ from zephyr_remote_openocd.controller.preferred_address_cache import (
 from zephyr_remote_openocd.controller.ssh import SshCommand
 from zephyr_remote_openocd.controller.staging import build_archive
 from zephyr_remote_openocd.controller.staging_spec import StagedEntry
+from zephyr_remote_openocd.controller.waiting import (
+    Notifier,
+    ProcessHandle,
+    WaitSources,
+    wait_for,
+)
 from zephyr_remote_openocd.protocol.listeners import ListenerSpec
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.protocol.responses import (
@@ -109,7 +114,7 @@ class SessionConnection(Protocol):
 
     def observe_status(self) -> None: ...
 
-    def wait_for_change(self, timeout: float | None) -> None: ...
+    def live_processes(self) -> tuple[ProcessHandle, ...]: ...
 
     def timeout_expired(self, timeout: float) -> subprocess.TimeoutExpired: ...
 
@@ -120,10 +125,9 @@ class SessionForwards(Protocol):
     """Forwarding operations owned by ``SessionController``."""
 
     @property
-    def has_forwards(self) -> bool: ...
-
-    @property
     def forwards(self) -> tuple[ForwardSpec, ...]: ...
+
+    def live_processes(self) -> tuple[ProcessHandle, ...]: ...
 
     def start(self, forwards: Iterable[ForwardSpec], remote_address: str) -> None: ...
 
@@ -146,7 +150,9 @@ class SessionController:
         self.deployment = deployment
         self._forwards: SessionForwards = ForwardManager(plan.ssh_command, plan.host)
         self._helper_connection: SessionConnection | None = None
-        self._authority = SessionAuthority()
+        # Resource-free until acquisition opens it inside the caller's cleanup scope.
+        self._notifier = Notifier()
+        self._authority = SessionAuthority(notify=self._notifier.notify)
         self.closed = False
         self.descriptor: SessionDescriptor | None = None
         self._advisory_handler = advisory_handler or _log_forward_advisory
@@ -183,6 +189,7 @@ class SessionController:
         """Acquire resources on an owned coordinator; the caller must close it."""
         if self.closed or self._helper_connection is not None:
             raise SessionError("remote session has already been acquired or closed")
+        self._notifier.open()
         self._helper_connection = HelperConnection(
             self.plan.ssh_command,
             self.plan.host,
@@ -190,6 +197,7 @@ class SessionController:
             output_handler=output_handler,
             process_start_handler=process_start_handler,
             authority=self._authority,
+            notifier=self._notifier,
         )
         try:
             self._helper_connection.acquire()
@@ -358,6 +366,13 @@ class SessionController:
         if failure is not None:
             raise failure
 
+    def observation_sources(self) -> WaitSources:
+        """Wake sources for authority facts and owned transport exits."""
+        processes = self._forwards.live_processes()
+        if self._helper_connection is not None:
+            processes = (*processes, *self._helper_connection.live_processes())
+        return WaitSources(notifiers=(self._notifier,), processes=processes)
+
     def wait_for_openocd_exit(self, timeout: float | None = None) -> int:
         if self.closed:
             result = self.poll_operation()
@@ -370,17 +385,12 @@ class SessionController:
             result = self.poll_operation()
             if result is not None:
                 return result
-            remaining = None if deadline is None else deadline - time.monotonic()
-            if remaining is not None and remaining <= 0:
+            if deadline is not None and time.monotonic() >= deadline:
                 raise self._authority.resolve_effect_failure(
                     connection.timeout_expired(timeout or 0.0)
                 )
-            health_wait = FORWARD_HEALTH_INTERVAL if self._forwards.has_forwards else remaining
-            wait_timeout = (
-                health_wait if remaining is None else min(remaining, health_wait or remaining)
-            )
             try:
-                connection.wait_for_change(wait_timeout)
+                wait_for(sources=self.observation_sources(), deadline=deadline)
             except BaseException as error:
                 primary = self._authority.resolve_effect_failure(error)
                 raise primary from primary.__cause__
@@ -394,7 +404,7 @@ class SessionController:
             # Sample before disposal erases already-exited SSH processes.
             if self._helper_connection is not None:
                 self._observe_health()
-            for cleanup in (self._forwards.close, self._close_connection):
+            for cleanup in (self._forwards.close, self._close_connection, self._notifier.close):
                 try:
                     cleanup()
                 except BaseException as error:

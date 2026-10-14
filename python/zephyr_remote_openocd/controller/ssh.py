@@ -165,6 +165,10 @@ class ManagedSshProcess:
         return self._process_or_error().args
 
     @property
+    def pid(self) -> int:
+        return self._process_or_error().pid
+
+    @property
     def stdin(self):
         return None if self._process is None else self._process.stdin
 

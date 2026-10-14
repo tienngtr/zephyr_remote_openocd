@@ -5,12 +5,13 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 from zephyr_remote_openocd.controller.admission import AdmissionGate
 from zephyr_remote_openocd.controller.cleanup import _add_failure_note
 from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
+from zephyr_remote_openocd.controller.plan import SessionAllocation
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy, Diagnostic, TerminalSnapshot
 
 
@@ -43,6 +44,12 @@ class SessionSnapshot:
     closing: bool
     failure: BaseException | None
     diagnostics: tuple[Diagnostic, ...]
+    allocation: SessionAllocation | None = None
+    ready_address: str | None = None
+
+
+def _no_notification() -> None:
+    pass
 
 
 class SessionAuthority:
@@ -51,16 +58,21 @@ class SessionAuthority:
     Physical owners report facts under this lock. The first fatal observation
     remains primary across status checks, shutdown, and finalization. Delivery
     acknowledgement never removes a recorded failure or its diagnostics.
+    Each state change is published before ``notify`` wakes the coordinator,
+    which re-reads this authority rather than interpreting the wakeup.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, notify: Callable[[], None] = _no_notification) -> None:
         self._terminal: TerminalSnapshot | None = None
         self._failures: dict[object, _FailureRecord] = {}
         self._closing = False
         self._error_reported = False
         self._policy = CompletionPolicy.LIVE_SERVER
         self._gate = AdmissionGate()
-        self._changed = threading.Condition(threading.RLock())
+        self._allocation: SessionAllocation | None = None
+        self._ready_address: str | None = None
+        self._changed = threading.RLock()
+        self._notify = notify
 
     def _failure(self) -> BaseException | None:
         return next((record.error for record in self._failures.values()), None)
@@ -72,16 +84,25 @@ class SessionAuthority:
                 self._closing,
                 self._failure(),
                 tuple(record.diagnostic for record in self._failures.values()),
+                self._allocation,
+                self._ready_address,
             )
 
     def set_policy(self, policy: CompletionPolicy) -> None:
         with self._changed:
             self._policy = policy
 
-    def record_ready(self) -> None:
+    def record_created(self, allocation: SessionAllocation) -> None:
         with self._changed:
+            self._allocation = allocation
+            self._notify()
+
+    def record_ready(self, address: str | None = None) -> None:
+        with self._changed:
+            if address is not None:
+                self._ready_address = address
             self._gate.observe_remote_ready()
-            self._changed.notify_all()
+            self._notify()
 
     def record_failure(self, code: str, error: BaseException, *, key: object | None = None) -> None:
         """Record a fatal fact once, retaining the original exception and detail."""
@@ -98,7 +119,7 @@ class SessionAuthority:
                 _add_failure_note(primary, "later session failure", error)
             self._error_reported = False
             self._gate.fail(diagnostic)
-            self._changed.notify_all()
+            self._notify()
 
     def record_terminal(self, snapshot: TerminalSnapshot) -> None:
         with self._changed:
@@ -127,13 +148,13 @@ class SessionAuthority:
                     error.add_note(f"remote OpenOCD also exited with status {result.returncode}")
                 self.record_failure("TERMINAL_FAILURE", error, key="terminal")
             self._gate.end()
-            self._changed.notify_all()
+            self._notify()
 
     def cancel(self) -> None:
         with self._changed:
             self._closing = True
             self._gate.cancel()
-            self._changed.notify_all()
+            self._notify()
 
     def record_reader_failure(self, error: BaseException) -> None:
         reader = SessionError(
@@ -194,8 +215,3 @@ class SessionAuthority:
             self._gate.observe_forwarded(forwarded)
             if not self._gate.enter(ticket):
                 raise SessionError("dependent launch requires READY and required forwarding")
-
-    def wait_for_change(self, timeout: float | None) -> None:
-        with self._changed:
-            if self._terminal is None and not self._failures and not self._closing:
-                self._changed.wait(timeout)

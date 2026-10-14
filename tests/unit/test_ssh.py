@@ -36,6 +36,7 @@ from zephyr_remote_openocd.protocol.outcome import Trigger
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.protocol.wire import encode_frame
 
+from tests.control_support import HelperPeerProcess
 from tests.process_support import cleanup_on_exit
 from tests.protocol_support import terminal_message
 
@@ -468,34 +469,6 @@ def test_process_cleanup_retains_graceful_timeout_after_kill_failure():
     assert any(str(timeout_error) in note for note in getattr(raised.value, "__notes__", ()))
 
 
-class _HelperProcess:
-    def __init__(self, output):
-        self.stdin = io.BytesIO()
-        self.stdout = _pipe_stream(output)
-        self.stderr = None
-        self.returncode = None
-        self.args = ("fake-helper",)
-
-    def poll(self):
-        return self.returncode
-
-    def wait(self, timeout=None):
-        self.returncode = 0
-        return self.returncode
-
-    def terminate(self):
-        self.returncode = 0
-
-    def kill(self):
-        self.returncode = -signal.SIGKILL
-
-    def close_stderr(self):
-        pass
-
-    def stderr_tail(self):
-        return b""
-
-
 class _ForwardCommand(_PopenOnlySshCommand):
     processes: Iterator[Any]
     calls: list[tuple[str, str, SshForwardSpec | None]]
@@ -525,18 +498,13 @@ class _ForwardCommand(_PopenOnlySshCommand):
 def test_initial_forward_failure_consumes_session_close_event(monkeypatch):
     close_seen = threading.Event()
     forward_error = SessionError("initial forwarding failed")
-    helper = _HelperProcess(
-        encode_frame(
-            "SESSION_CREATED",
-            helper="fake",
-            session_id="session",
-            remote_workspace="/workspace",
-        )
-        + encode_frame("ATTEMPT", argv=["test-process"])
-        + encode_frame("READY", remote_address="127.64.0.1", child_pid=1)
-        + terminal_message(Trigger.CHILD_EXIT, returncode=SAMPLE_OPENOCD_EXIT_CODE)
+    helper = HelperPeerProcess(
+        (
+            encode_frame("ATTEMPT", argv=["test-process"]),
+            encode_frame("READY", remote_address="127.64.0.1", child_pid=1),
+        ),
+        later=(terminal_message(Trigger.CHILD_EXIT, returncode=SAMPLE_OPENOCD_EXIT_CODE),),
     )
-    helper.returncode = 0
     command = _ForwardCommand(helper)
     request = SessionPlan(
         "host",
@@ -559,6 +527,8 @@ def test_initial_forward_failure_consumes_session_close_event(monkeypatch):
             close_seen.set()
 
     def fail_forwards(_manager, _forwards, _address):
+        # The helper reports child exit while required forwarding is starting.
+        helper.release_later()
         assert close_seen.wait(5)
         raise forward_error
 

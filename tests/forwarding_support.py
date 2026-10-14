@@ -6,10 +6,11 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 import subprocess
 from collections.abc import Callable, Iterable
 from typing import BinaryIO, cast, override
-from unittest.mock import Mock, create_autospec
+from unittest.mock import Mock, PropertyMock, create_autospec
 
 import pytest
 from zephyr_remote_openocd.controller import session as session_module
@@ -43,6 +44,10 @@ class ControlledForward:
         self.cleanup_error: BaseException | None = None
         self.diagnostic = b"forward diagnostic"
         self.mock: Mock = create_autospec(ManagedSshProcess, instance=True, spec_set=True)
+        # Completion sources read live state; a never-exiting pid stands in
+        # for a running transport, and returncode reports its observed exit.
+        type(self.mock).returncode = PropertyMock(side_effect=lambda: self.returncode)
+        type(self.mock).pid = PropertyMock(return_value=os.getpid())
         self.mock.stdin = io.BytesIO()
         self.mock.stdout = None
         self.mock.args = ("configured-ssh",)
@@ -115,10 +120,12 @@ class ControlledHelper:
     def observe_status(self) -> None:
         pass
 
-    def wait_for_change(self, timeout: float | None) -> None:
-        del timeout
+    def live_processes(self) -> tuple[ManagedSshProcess, ...]:
+        # The session collects wait sources after its last state snapshot and
+        # immediately before sleeping; the transition happens in that window.
         assert self.on_wait is not None, "helper wait must have an explicit state transition"
         self.on_wait()
+        return ()
 
     def timeout_expired(self, timeout: float) -> subprocess.TimeoutExpired:
         return subprocess.TimeoutExpired(("helper",), timeout)

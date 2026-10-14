@@ -15,7 +15,6 @@ from types import FrameType
 from typing import BinaryIO, cast
 
 import pytest
-from zephyr_remote_openocd.controller.authority import SessionAuthority
 from zephyr_remote_openocd.controller.deployment import DeploymentResult
 from zephyr_remote_openocd.controller.forwarding import ForwardManager
 from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
@@ -30,7 +29,7 @@ pytestmark = pytest.mark.local
 @pytest.mark.parametrize("caller", ("helper", "forwarding"))
 @pytest.mark.parametrize("failure_type", (MemoryError, SystemExit))
 def test_transport_return_failure_cleans_callers_registered_process(
-    tmp_path, monkeypatch, caller, failure_type
+    tmp_path, monkeypatch, notified_authority, caller, failure_type
 ):
     launcher = tmp_path / "configured-ssh"
     launcher.write_text(
@@ -45,12 +44,13 @@ def test_transport_return_failure_cleans_callers_registered_process(
     helper_path = (
         Path(__file__).resolve().parents[2] / "python/zephyr_remote_openocd/helper/__main__.py"
     )
-    authority = SessionAuthority()
+    authority = notified_authority.authority
     helper = HelperConnection(
         command,
         "unused-host",
         DeploymentResult(str(helper_path), "digest", False),
         authority=authority,
+        notifier=notified_authority.notifier,
     )
     forwards = ForwardManager(command, "unused-host")
     failure = failure_type("transport caller handoff failed")

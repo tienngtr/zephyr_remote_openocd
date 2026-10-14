@@ -29,7 +29,6 @@ from zephyr_remote_openocd.controller.ssh import (
 from zephyr_remote_openocd.protocol.listeners import DuplicateEndpointError
 
 FORWARD_START_TIMEOUT = 10.0
-FORWARD_HEALTH_INTERVAL = 0.25
 
 
 class ForwardStartError(SessionError):
@@ -88,6 +87,10 @@ class ForwardManager:
     @property
     def has_forwards(self) -> bool:
         return bool(self._processes)
+
+    def live_processes(self) -> tuple[ManagedSshProcess, ...]:
+        """Committed transports whose exit has not yet been observed."""
+        return tuple(process for process in self._processes if process.returncode is None)
 
     @staticmethod
     def _preflight(forward: ForwardSpec) -> str | None:

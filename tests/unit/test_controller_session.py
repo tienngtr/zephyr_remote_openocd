@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import subprocess
+import sys
 from collections.abc import Callable, Iterable
 from dataclasses import replace
 from typing import override
@@ -17,6 +18,7 @@ from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
 from zephyr_remote_openocd.controller.plan import SessionAllocation, SessionPlan
 from zephyr_remote_openocd.controller.session import SessionController, query_remote_openocd_version
 from zephyr_remote_openocd.controller.ssh import SshCommand
+from zephyr_remote_openocd.controller.waiting import ProcessHandle
 from zephyr_remote_openocd.protocol.listeners import ListenerSpec
 from zephyr_remote_openocd.protocol.outcome import Trigger
 from zephyr_remote_openocd.protocol.process import ProcessSpec
@@ -52,9 +54,8 @@ class _BlockedHelper:
     def observe_status(self) -> None:
         pass
 
-    def wait_for_change(self, timeout: float | None) -> None:
-        del timeout
-        raise AssertionError("wait_for_change() is not expected")
+    def live_processes(self) -> tuple[ProcessHandle, ...]:
+        raise AssertionError("live_processes() is not expected")
 
     def timeout_expired(self, timeout: float) -> subprocess.TimeoutExpired:
         del timeout
@@ -75,9 +76,8 @@ class _BlockedForwards:
     def forwards(self) -> tuple[ForwardSpec, ...]:
         raise AssertionError("services is not expected")
 
-    @property
-    def has_forwards(self) -> bool:
-        raise AssertionError("has_forwards is not expected")
+    def live_processes(self) -> tuple[ProcessHandle, ...]:
+        raise AssertionError("live_processes() is not expected")
 
     def start(self, forwards: Iterable[ForwardSpec], remote_address: str) -> None:
         del forwards, remote_address
@@ -203,6 +203,7 @@ def test_staging_rejects_response_without_lf(monkeypatch):
         output_handler=None,
         process_start_handler=None,
         authority=None,
+        notifier=None,
     ):
         del output_handler
         return Helper()
@@ -360,57 +361,50 @@ def test_close_raises_helper_cleanup_only_error_after_closing_session():
     assert session.closed
 
 
-@pytest.mark.timeout(10)
-def test_wait_for_openocd_exit_observes_forward_failure():
-    class Helper(_BlockedHelper):
-        def __init__(self, forwards: Forwards) -> None:
-            self.forwards = forwards
-            self.wait_timeouts: list[float] = []
+@pytest.mark.timeout(60)
+def test_wait_for_openocd_exit_wakes_on_forward_exit():
+    forward_process = subprocess.Popen(
+        (sys.executable, "-c", "import sys; sys.stdin.read()"), stdin=subprocess.PIPE
+    )
 
+    class Helper(_BlockedHelper):
         @override
         def observe_status(self) -> None:
-            pass
+            # The forward exits only after the first health observation, so the
+            # wait can end only through its process-completion source.
+            assert forward_process.stdin is not None
+            forward_process.stdin.close()
 
         @override
-        def wait_for_change(self, timeout: float | None) -> None:
-            assert timeout is not None
-            self.wait_timeouts.append(timeout)
-            self.forwards.failed = True
+        def live_processes(self) -> tuple[ProcessHandle, ...]:
+            return ()
 
     class Forwards(_BlockedForwards):
-        def __init__(self) -> None:
-            self.failed = False
-
-        @property
         @override
-        def has_forwards(self) -> bool:
-            return True
+        def live_processes(self) -> tuple[ProcessHandle, ...]:
+            return () if forward_process.returncode is not None else (forward_process,)
 
         @override
         def check_health(self, report: Callable[[ForwardFailure], None]) -> None:
-            if self.failed:
+            if forward_process.poll() is not None:
                 raise SessionError(f"SSH forwarding exited with status {FORWARD_FAILURE_RC}")
 
     session = _make_session()
-    forwards = Forwards()
-    helper = Helper(forwards)
-    session._helper_connection = helper
-    session._forwards = forwards
-
-    with pytest.raises(SessionError):
-        session.wait_for_openocd_exit()
-    assert len(helper.wait_timeouts) == 1
-    assert 0 < helper.wait_timeouts[0] <= session_module.FORWARD_HEALTH_INTERVAL
-    assert not session.closed
+    session._helper_connection = Helper()
+    session._forwards = Forwards()
+    try:
+        with pytest.raises(SessionError, match=f"status {FORWARD_FAILURE_RC}"):
+            session.wait_for_openocd_exit()
+        assert not session.closed
+    finally:
+        forward_process.wait(30)
 
 
-def test_wait_for_openocd_exit_raises_helper_timeout_at_deadline(monkeypatch):
-    requested_timeout = 2.5
-    clock = [0.0]
+def test_wait_for_openocd_exit_raises_helper_timeout_at_deadline():
+    requested_timeout = 0.05
 
     class Helper(_BlockedHelper):
         def __init__(self) -> None:
-            self.wait_timeouts: list[float] = []
             self.expired_timeout: float | None = None
             self.timeout_error = subprocess.TimeoutExpired(("python3", "helper"), requested_timeout)
 
@@ -419,10 +413,8 @@ def test_wait_for_openocd_exit_raises_helper_timeout_at_deadline(monkeypatch):
             pass
 
         @override
-        def wait_for_change(self, timeout: float | None) -> None:
-            assert timeout is not None and timeout > 0
-            self.wait_timeouts.append(timeout)
-            clock[0] += timeout
+        def live_processes(self) -> tuple[ProcessHandle, ...]:
+            return ()
 
         @override
         def timeout_expired(self, timeout: float) -> subprocess.TimeoutExpired:
@@ -430,10 +422,9 @@ def test_wait_for_openocd_exit_raises_helper_timeout_at_deadline(monkeypatch):
             return self.timeout_error
 
     class Forwards(_BlockedForwards):
-        @property
         @override
-        def has_forwards(self) -> bool:
-            return False
+        def live_processes(self) -> tuple[ProcessHandle, ...]:
+            return ()
 
         @override
         def check_health(self, report: Callable[[ForwardFailure], None]) -> None:
@@ -443,15 +434,12 @@ def test_wait_for_openocd_exit_raises_helper_timeout_at_deadline(monkeypatch):
     session = _make_session()
     session._helper_connection = helper
     session._forwards = Forwards()
-    monkeypatch.setattr(session_module.time, "monotonic", lambda: clock[0])
 
     with pytest.raises(subprocess.TimeoutExpired) as raised:
         session.wait_for_openocd_exit(requested_timeout)
 
     assert raised.value is helper.timeout_error
     assert helper.expired_timeout == requested_timeout
-    assert clock[0] == requested_timeout
-    assert all(0 < wait <= requested_timeout for wait in helper.wait_timeouts)
 
 
 def test_forward_uses_allocated_remote_address_and_requested_services(monkeypatch):

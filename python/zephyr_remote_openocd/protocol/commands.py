@@ -254,18 +254,16 @@ def decode_command(message):
     raise ValueError("only START is valid on controller input")
 
 
-def write_start(
-    stream: BinaryIO,
+def encode_start(
     process: ProcessSpec,
     listeners: Iterable[ListenerSpec],
     *,
     preferred_address: str | None = None,
-) -> None:
-    """Serialize a validated process and listener model as the START command."""
+) -> bytes:
+    """Serialize a validated process and listener model as one START frame."""
 
     validate_preferred_address(preferred_address)
-    _write_start_frame(
-        stream,
+    return encode_frame(
         "START",
         completion_policy=process.completion_policy.value,
         preferred_address=preferred_address,
@@ -293,6 +291,14 @@ def write_start(
     )
 
 
-def _write_start_frame(stream: BinaryIO, message_type: str, **fields) -> None:
-    stream.write(encode_frame(message_type, **fields))
+def write_start(
+    stream: BinaryIO,
+    process: ProcessSpec,
+    listeners: Iterable[ListenerSpec],
+    *,
+    preferred_address: str | None = None,
+) -> None:
+    """Write the START frame for a validated process and listener model."""
+
+    stream.write(encode_start(process, listeners, preferred_address=preferred_address))
     stream.flush()

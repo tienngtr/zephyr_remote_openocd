@@ -693,7 +693,7 @@ def test_sigint_at_forward_rollback_entry_keeps_both_transports_owned(monkeypatc
         assert close_failure is (cleanup_error if cleanup_fails else None)
         assert sigmask(signal.SIG_BLOCK, set()) == expected_mask
         assert session.closed
-        assert not manager.has_forwards
+        assert not manager.forwards
         session.close()
     finally:
         sys.settrace(previous_trace)

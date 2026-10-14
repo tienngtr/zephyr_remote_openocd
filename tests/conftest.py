@@ -20,6 +20,7 @@ from tests.hardware_support import (
     hardware_shared_cache_root,
 )
 from tests.inventory import Inventory, InventoryError, load_inventory
+from tests.session_support import NotifiedAuthority
 
 _HARDWARE_BUILD_TIMINGS = pytest.StashKey[list[BuildTiming]]()
 _HARDWARE_TEST_TIMINGS = pytest.StashKey[list[tuple[str, str, float]]]()
@@ -43,6 +44,16 @@ def defer_cyclic_gc() -> Iterator[None]:
             gc.enable()
         else:
             gc.disable()
+
+
+@pytest.fixture
+def notified_authority() -> Iterator[NotifiedAuthority]:
+    """A session authority wired to an open coordinator notifier."""
+    wiring = NotifiedAuthority()
+    try:
+        yield wiring
+    finally:
+        wiring.close()
 
 
 @pytest.fixture(autouse=True)

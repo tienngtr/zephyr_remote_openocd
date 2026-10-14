@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import os
-import selectors
 import shlex
 import signal
 import subprocess
@@ -14,22 +13,21 @@ import time
 from collections.abc import Callable, Iterable
 from typing import BinaryIO, cast
 
-from zephyr_remote_openocd.controller.authority import SessionAuthority, SessionError
+from zephyr_remote_openocd.controller.authority import (
+    SessionAuthority,
+    SessionError,
+    SessionSnapshot,
+)
+from zephyr_remote_openocd.controller.cancellation import admit_effect
 from zephyr_remote_openocd.controller.deployment import DeploymentResult
 from zephyr_remote_openocd.controller.plan import SessionAllocation
 from zephyr_remote_openocd.controller.ssh import ManagedSshProcess, SshCommand, _stop_process
-from zephyr_remote_openocd.protocol.commands import write_start
+from zephyr_remote_openocd.controller.waiting import Notifier, WaitSources, wait_for
+from zephyr_remote_openocd.protocol.commands import encode_start
 from zephyr_remote_openocd.protocol.listeners import ListenerSpec
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
 from zephyr_remote_openocd.protocol.process import ProcessSpec
-from zephyr_remote_openocd.protocol.wire import (
-    MAX_FRAME_SIZE,
-    EventOrder,
-    ProtocolError,
-    decode_frame,
-    decode_terminal,
-    read_message,
-)
+from zephyr_remote_openocd.protocol.wire import EventOrder, decode_terminal, read_message
 
 # The helper gives a supervised child five seconds to exit after SIGTERM,
 # followed by up to four seconds joining its relay threads and workspace
@@ -40,7 +38,12 @@ HELPER_START_TIMEOUT = 10.0
 
 
 class HelperConnection:
-    """Own one helper control connection and its controller-lifetime lease."""
+    """Own one helper control connection and its controller-lifetime lease.
+
+    One reader thread owns the helper's event stream from control acquisition
+    until shutdown and reports every event to the shared authority. The
+    coordinator never reads that stream; it waits on authority notifications.
+    """
 
     def __init__(
         self,
@@ -51,6 +54,7 @@ class HelperConnection:
         *,
         process_start_handler: Callable[[tuple[str, ...]], None] | None = None,
         authority: SessionAuthority,
+        notifier: Notifier,
     ) -> None:
         self._ssh_command = ssh_command
         self._host = host
@@ -58,6 +62,7 @@ class HelperConnection:
         self._output_handler = output_handler
         self._process_start_handler = process_start_handler
         self._authority = authority
+        self._notifier = notifier
         self._reader_thread: threading.Thread | None = None
         self._process: ManagedSshProcess | None = None
         self._allocation: SessionAllocation | None = None
@@ -96,19 +101,62 @@ class HelperConnection:
         helper = self._process_or_error()
         if helper.stdin is None:
             raise SessionError("helper stdin was not captured")
-        write_start(
-            cast(BinaryIO, helper.stdin),
-            process_spec,
-            listener_specs,
-            preferred_address=preferred_address,
-        )
-        address = (
-            self._await_process_ready()
-            if process_spec.completion_policy == CompletionPolicy.LIVE_SERVER
-            else None
-        )
-        self._start_event_drain()
-        return address
+        frame = encode_start(process_spec, listener_specs, preferred_address=preferred_address)
+        # START authorizes remote child creation: account for facts the reader
+        # already recorded and for cancellation before admitting the effect.
+        snapshot = self._authority.snapshot()
+        if snapshot.failure is not None or snapshot.terminal is not None:
+            raise self._authority.publish_failure() or SessionError(
+                "helper session ended before START"
+            )
+        admit_effect()
+        self._write_control(helper.stdin.fileno(), frame)
+        if process_spec.completion_policy != CompletionPolicy.LIVE_SERVER:
+            return None
+        return self._await(self._ready_address, "remote process ended before READY")
+
+    def _write_control(self, descriptor: int, data: bytes) -> None:
+        """Write without blocking the coordinator on helper-pipe backpressure."""
+        os.set_blocking(descriptor, False)
+        view = memoryview(data)
+        offset = 0
+        while offset < len(view):
+            try:
+                offset += os.write(descriptor, view[offset:])
+            except BlockingIOError:
+                wait_for(writable=(descriptor,))
+
+    @staticmethod
+    def _created(snapshot: SessionSnapshot) -> SessionAllocation | None:
+        return snapshot.allocation
+
+    @staticmethod
+    def _ready_address(snapshot: SessionSnapshot) -> str | None:
+        return snapshot.ready_address
+
+    def _await[T](
+        self,
+        observe: Callable[[SessionSnapshot], T | None],
+        ended: str,
+        deadline: float | None = None,
+    ) -> T:
+        """Wait for a reader-reported fact; recorded failures take precedence."""
+        while True:
+            snapshot = self._authority.snapshot()
+            if snapshot.failure is not None:
+                raise self._authority.publish_failure() or snapshot.failure
+            observed = observe(snapshot)
+            if observed is not None:
+                return observed
+            if snapshot.terminal is not None:
+                raise self._authority.publish_failure() or SessionError(ended)
+            if deadline is not None and time.monotonic() >= deadline:
+                diagnostic = self._process_or_error().stderr_tail()
+                suffix = ": " + diagnostic.decode("utf-8", "replace").strip() if diagnostic else ""
+                raise SessionError("remote helper startup timed out" + suffix) from TimeoutError(
+                    "remote helper startup deadline expired"
+                )
+            wait_for(sources=WaitSources(notifiers=(self._notifier,)), deadline=deadline)
 
     def observe_status(self) -> None:
         """Record transport status without selecting or publishing a result."""
@@ -118,8 +166,10 @@ class HelperConnection:
             except BaseException as error:
                 self._authority.record_failure("CONTROL_OBSERVATION_FAILURE", error)
 
-    def wait_for_change(self, timeout: float | None) -> None:
-        self._authority.wait_for_change(timeout)
+    def live_processes(self) -> tuple[ManagedSshProcess, ...]:
+        """Owned control transport whose exit has not yet been observed."""
+        process = self._process
+        return () if process is None or process.returncode is not None else (process,)
 
     def timeout_expired(self, timeout: float) -> subprocess.TimeoutExpired:
         """Build the public wait timeout using this control process's command."""
@@ -214,93 +264,50 @@ class HelperConnection:
             signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
         if self._process_or_error().stdout is None:
             raise SessionError("helper stdout was not captured")
-        created = self._read_event(time.monotonic() + HELPER_START_TIMEOUT)
-        if created["type"] == "SESSION_ENDED":
-            self._dispatch(created)
-            error = self._authority.publish_failure()
-            raise error or SessionError("helper ended before session creation")
-        self._allocation = SessionAllocation(created["session_id"], created["remote_workspace"])
+        self._start_event_drain()
+        self._allocation = self._await(
+            self._created,
+            "helper ended before session creation",
+            time.monotonic() + HELPER_START_TIMEOUT,
+        )
 
     def _adopt_control(self, process: ManagedSshProcess) -> None:
         self._process = process
 
-    def _read_event(self, deadline: float | None = None) -> dict:
+    def _read_event(self) -> dict:
         helper = self._process_or_error()
-        stream = cast(BinaryIO, helper.stdout)
         try:
-            message = (
-                read_message(stream)
-                if deadline is None
-                else self._read_initial_message(stream, deadline)
-            )
+            message = read_message(cast(BinaryIO, helper.stdout))
         except EOFError as error:
             diagnostic = helper.stderr_tail()
             raise SessionError(
                 "remote helper terminated: " + diagnostic.decode("utf-8", "replace")
             ) from error
-        except TimeoutError as error:
-            diagnostic = helper.stderr_tail()
-            suffix = ": " + diagnostic.decode("utf-8", "replace").strip() if diagnostic else ""
-            raise SessionError("remote helper startup timed out" + suffix) from error
         assert self._order is not None
         self._order.accept(message)
         return message
 
-    @staticmethod
-    def _read_initial_message(stream: BinaryIO, deadline: float) -> dict:
-        descriptor = stream.fileno()
-        pending = bytearray()
-        selector = selectors.DefaultSelector()
-        try:
-            selector.register(stream, selectors.EVENT_READ)
-            while True:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise TimeoutError("remote helper startup timed out")
-                if not selector.select(remaining):
-                    continue
-                chunk = os.read(descriptor, 1)
-                if not chunk:
-                    if pending:
-                        raise ProtocolError("protocol frame is missing its LF delimiter")
-                    raise EOFError("helper control channel closed")
-                pending.extend(chunk)
-                if len(pending) > MAX_FRAME_SIZE:
-                    raise ProtocolError("protocol frame exceeds the size limit")
-                if chunk == b"\n":
-                    return decode_frame(bytes(pending))
-        finally:
-            selector.close()
-
-    def _await_process_ready(self) -> str:
-        while True:
-            event = self._read_event()
-            self._dispatch(event)
-            if event["type"] == "READY":
-                return event["remote_address"]
-            if event["type"] == "SESSION_ENDED":
-                error = self._authority.publish_failure()
-                raise error or SessionError("remote process ended before READY")
-
     def _start_event_drain(self) -> None:
         if self._reader_thread is not None:
             return
-        reader_thread = threading.Thread(target=self._drain_events, daemon=True)
-        # Adopt the started reader before pending SIGINT can escape to cleanup.
-        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
-        try:
-            reader_thread.start()
-            self._reader_thread = reader_thread
-        finally:
-            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+        reader_thread = threading.Thread(
+            target=self._drain_events, name="zro-helper-events", daemon=True
+        )
+        # Registration precedes start, so no started reader is ever unowned.
+        self._reader_thread = reader_thread
+        reader_thread.start()
 
     def _dispatch(self, event: dict) -> None:
-        if event["type"] == "ATTEMPT" and self._process_start_handler is not None:
+        if event["type"] == "SESSION_CREATED":
+            self._authority.record_created(
+                SessionAllocation(event["session_id"], event["remote_workspace"])
+            )
+        elif event["type"] == "ATTEMPT" and self._process_start_handler is not None:
             self._process_start_handler(tuple(event["argv"]))
         elif event["type"] == "CHILD_OUTPUT" and self._output_handler is not None:
             self._output_handler(event["stream"], event["payload"], event["line_end"])
         elif event["type"] == "READY":
-            self._authority.record_ready()
+            self._authority.record_ready(event["remote_address"])
         elif event["type"] == "SESSION_ENDED":
             self._authority.record_terminal(decode_terminal(event))
 
@@ -315,7 +322,8 @@ class HelperConnection:
             self._authority.record_reader_failure(error)
 
     def _join_reader(self, timeout: float = 2.0) -> bool:
-        if self._reader_thread is None:
+        # A registered reader whose start failed never ran and holds nothing.
+        if self._reader_thread is None or not self._reader_thread.is_alive():
             return True
         self._reader_thread.join(timeout=timeout)
         return not self._reader_thread.is_alive()
