@@ -455,3 +455,30 @@ def test_interruption_during_capture_installation_leaves_no_stale_owner(
         install_signal(signal.SIGINT, previous_handler)
         os.close(prior_read)
         os.close(prior_write)
+
+
+def test_notifier_close_retires_both_descriptors_after_a_close_failure(monkeypatch) -> None:
+    notifier = Notifier()
+    notifier.open()
+    read_fd = notifier.fileno()
+    assert read_fd is not None
+    failure = OSError("notifier read end retirement failed")
+    close = os.close
+    closed: list[int] = []
+
+    def fail_after_closing_read_end(descriptor: int) -> None:
+        close(descriptor)
+        closed.append(descriptor)
+        if descriptor == read_fd:
+            raise failure
+
+    monkeypatch.setattr(os, "close", fail_after_closing_read_end)
+    with pytest.raises(OSError) as raised:
+        notifier.close()
+    monkeypatch.undo()
+    assert raised.value is failure
+    # The independent write end was still retired.
+    assert len(closed) == 2
+    for descriptor in closed:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)

@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from zephyr_remote_openocd.controller.cancellation import current_operation
+from zephyr_remote_openocd.controller.cleanup import _raise_cleanup_errors
 
 # Process completion uses pidfds. Without kernel pidfd support, a non-reaping
 # waitid() re-check bounds how late an exit can be observed; cancellation and
@@ -95,8 +96,13 @@ class Notifier:
             self._closed = True
             fds, self._fds = self._fds, None
         if fds is not None:
+            errors: list[BaseException] = []
             for descriptor in fds:
-                os.close(descriptor)
+                try:
+                    os.close(descriptor)
+                except BaseException as error:
+                    errors.append(error)
+            _raise_cleanup_errors(errors)
 
 
 @dataclass(frozen=True, slots=True)
