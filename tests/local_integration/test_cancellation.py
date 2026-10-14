@@ -17,7 +17,6 @@ from contextlib import contextmanager
 
 import pytest
 from zephyr_remote_openocd.controller.cancellation import (
-    OperationCancellation,
     OperationCancelled,
     current_operation,
     operation_scope,
@@ -400,9 +399,16 @@ def test_client_launch_failure_restores_runner_capture() -> None:
 
 
 def test_operation_cancellation_has_one_identity() -> None:
-    operation = OperationCancellation()
-    assert operation.cancellation is operation.cancellation
-    assert not isinstance(operation.cancellation, Exception)
+    with pytest.raises(OperationCancelled) as raised, operation_scope() as operation:
+        signal.raise_signal(signal.SIGINT)
+        with pytest.raises(OperationCancelled) as earlier:
+            wait_for()
+        wait_for()
+    # Every boundary raises the operation's one cancellation, so the scope
+    # recognizes it as the outcome rather than as a concurrent failure.
+    assert earlier.value is raised.value is operation.cancellation
+    assert not getattr(raised.value, "__notes__", ())
+    assert not isinstance(raised.value, Exception)
     assert current_operation() is None
 
 
