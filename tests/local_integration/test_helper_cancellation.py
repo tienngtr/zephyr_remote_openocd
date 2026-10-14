@@ -9,8 +9,10 @@ import signal
 import sys
 import threading
 from pathlib import Path, PurePosixPath
+from typing import override
 
 import pytest
+from zephyr_remote_openocd.controller import helper_connection as connection_module
 from zephyr_remote_openocd.controller import session as session_module
 from zephyr_remote_openocd.controller.cancellation import OperationCancelled, operation_scope
 from zephyr_remote_openocd.controller.deployment import DeploymentResult
@@ -23,6 +25,7 @@ from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.protocol.wire import encode_frame
 
+from tests.control_support import ControlProcess
 from tests.process_support import cleanup_on_exit
 from tests.session_support import NotifiedAuthority
 from tests.support import ROOT
@@ -168,3 +171,37 @@ def test_ctrl_c_during_local_archive_work_is_acted_on_at_the_next_boundary(
     sessions = tmp_path / "runtime" / "zephyr_remote_openocd-sessions-v1"
     # The allocated remote workspace and its metadata were cleaned up.
     assert sessions.is_dir() and not tuple(sessions.iterdir())
+
+
+def test_latched_cancellation_wins_over_an_expired_helper_startup(monkeypatch) -> None:
+    process = ControlProcess(b'{"version":1,"type":"SESSION_CREATED"')
+
+    class Command(SshCommand):
+        @override
+        def popen(self, host, remote_command, *, local_forward=None, on_acquired=None):
+            del host, remote_command, local_forward
+            if on_acquired is not None:
+                on_acquired(process)
+            return process
+
+    wiring = NotifiedAuthority()
+    helper = HelperConnection(
+        Command(("unused-ssh",)),
+        "host",
+        DeploymentResult("/helper.py", "digest", False),
+        authority=wiring.authority,
+        notifier=wiring.notifier,
+    )
+    # The startup deadline has already expired when the coordinator first waits.
+    monkeypatch.setattr(connection_module, "HELPER_START_TIMEOUT", 0.0)
+    try:
+        with pytest.raises(OperationCancelled), operation_scope():
+            signal.raise_signal(signal.SIGINT)
+            try:
+                helper.acquire()
+            finally:
+                helper.close()
+    finally:
+        process.end_events()
+        wiring.close()
+    assert process.returncode is not None

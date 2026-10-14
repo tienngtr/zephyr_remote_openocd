@@ -134,7 +134,13 @@ class HelperConnection:
         ended: str,
         deadline: float | None = None,
     ) -> T:
-        """Wait for a reader-reported fact; recorded failures take precedence."""
+        """Wait for a reader-reported fact; recorded failures take precedence.
+
+        The common wait arbitrates the deadline: it dispatches a latched
+        cancellation before reporting expiry, and facts recorded before that
+        wait returned are re-read before expiry is reported as a timeout.
+        """
+        expired = False
         while True:
             snapshot = self._authority.snapshot()
             if snapshot.failure is not None:
@@ -144,13 +150,15 @@ class HelperConnection:
                 return observed
             if snapshot.terminal is not None:
                 raise self._authority.publish_failure() or SessionError(ended)
-            if deadline is not None and time.monotonic() >= deadline:
+            if expired:
                 diagnostic = self._process_or_error().stderr_tail()
                 suffix = ": " + diagnostic.decode("utf-8", "replace").strip() if diagnostic else ""
                 raise SessionError("remote helper startup timed out" + suffix) from TimeoutError(
                     "remote helper startup deadline expired"
                 )
-            wait_for(sources=WaitSources(notifiers=(self._notifier,)), deadline=deadline)
+            expired = wait_for(
+                sources=WaitSources(notifiers=(self._notifier,)), deadline=deadline
+            ).expired
 
     def observe_status(self) -> None:
         """Record transport status without selecting or publishing a result."""

@@ -208,3 +208,15 @@ def test_ctrl_c_after_launch_admission_leaves_the_transport_owned(tmp_path, monk
     with pytest.raises(ChildProcessError):
         os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG)
     assert not manager.has_forwards
+
+
+def test_latched_cancellation_wins_over_an_expired_session_wait(monkeypatch) -> None:
+    harness = ForwardingHarness(monkeypatch)
+    harness.helper.on_wait = lambda: None
+    with pytest.raises(OperationCancelled), operation_scope():
+        session = harness.prepare((GDB,), ())
+        with cleanup_on_exit(session.close):
+            session.acquire()
+            signal.raise_signal(signal.SIGINT)
+            # The deadline has already expired when the wait arbitrates.
+            session.wait_for_openocd_exit(0)

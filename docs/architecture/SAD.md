@@ -2219,6 +2219,12 @@ only after waking and then re-read durable state, so a notification issued
 after a consumer's snapshot remains pending for its next wait. Real deadlines
 remain where they are semantic: helper startup, command timeouts, forwarding
 readiness, RTT connection retry and initial-output grace, and cleanup budgets.
+Callers never decide expiry ahead of the wait: helper startup, the foreground
+session wait, and the RTT retry pass even an already expired deadline to
+`wait_for()` and act on its `expired` result afterwards. A cancellation latched
+by then is dispatched before any timeout, and session facts recorded before
+that wait returned are re-read before expiry is reported. A cancellation
+latched after the expiring wait returned is retained behind the timeout.
 
 **Process completion and reaping.** A wait opens a pidfd for each owned child
 that its owner has not yet reaped and closes it before returning. Reaping

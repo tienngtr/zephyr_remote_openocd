@@ -420,16 +420,19 @@ class SessionController:
             return result
         connection = self._connection_or_error()
         deadline = None if timeout is None else time.monotonic() + timeout
+        expired = False
         while True:
             result = self.poll_operation()
             if result is not None:
                 return result
-            if deadline is not None and time.monotonic() >= deadline:
+            # Expiry is reported only after the common wait has dispatched any
+            # latched cancellation and the session has been observed again.
+            if expired:
                 raise self._authority.resolve_effect_failure(
                     connection.timeout_expired(timeout or 0.0)
                 )
             try:
-                wait_for(sources=self.observation_sources(), deadline=deadline)
+                expired = wait_for(sources=self.observation_sources(), deadline=deadline).expired
             except BaseException as error:
                 primary = self._authority.resolve_effect_failure(error)
                 raise primary from primary.__cause__
