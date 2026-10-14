@@ -2208,9 +2208,13 @@ restored afterwards but receives no wakeups meanwhile.
 
 **Durable fact versus notification hints.** Wakeup bytes are hints only. Their
 values are never decoded and a full or coalesced pipe cannot lose the fact,
-which is read only from the latch. CPython sets the tripped flag before writing
-the wakeup byte and runs the pending Python handler at the next main-thread
-bytecode check, which precedes the wait's re-read of the latch.
+which is read only from the latch. Draining a hint is safe because of one
+CPython implementation property rather than a documented language guarantee:
+its C-level handler records the pending signal before writing the wakeup byte,
+so when a wait wakes on that byte the Python-level handler is already pending
+and runs at the main thread's next signal check, before the wait re-reads the
+latch. The worker-thread delivery test qualifies this on every supported
+CPython version.
 
 **Wait dispatcher and notifier ordering.** `wait_for()` is the single wait for
 active operation work on the operation's thread. It composes the native
@@ -2235,8 +2239,12 @@ that its owner has not yet reaped and closes it before returning. Reaping
 happens only through the owner's `Popen` on the coordinating thread, so no
 competing reaper exists and the pid cannot be reused between the check and
 `pidfd_open`. A child that exited before registration is reported immediately.
-Without kernel pidfd support, a non-reaping `waitid(WNOWAIT)` re-check bounds
-exit observation; cancellation and descriptor readiness stay event-driven.
+Without pidfd support (kernels before Linux 5.3, or a sandbox that denies
+`pidfd_open`), a non-reaping `waitid(WNOWAIT)` re-check every 50 ms bounds exit
+observation. That interval is a process-completion fallback, not cancellation
+polling: cancellation, notifications, and descriptor readiness keep their own
+wake sources. It deliberately replaces a sole-reaper observer thread, which
+would add a thread to own without changing the single-reaper property.
 Process exit and pipe EOF are observed independently; neither is inferred from
 the other.
 
@@ -2288,19 +2296,22 @@ are recorded without replacing an earlier primary failure. Cleanup waits are
 bounded blocking waits that are not interruptible by the captured signal.
 
 **Interactive ownership scope.** Debug and attach launch the configured client
-inside `interactive_client()`. Entry switches SIGINT to `SIG_IGN` first, then
-re-evaluates the cancellation fact and session admission and refuses launch if
-either prohibits it; CPython runs an already tripped handler before changing
-the disposition. Signals after the transition belong to the client interval,
-which spans the whole configured invocation, including wrappers before the
-real GDB, because no generic readiness point exists for arbitrary wrappers.
-Wrappers and GDB inherit the ignored disposition until they install their own
-handling, as under stock Zephyr. Exit restores the non-raising capture before
-any further runner work and re-evaluates cancellation; delayed wakeup bytes are
-never decoded into retrospective cancellation. A signal delivered inside
-CPython's own handler change is reported by CPython as ignored and is
-attributed to the client interval. RTT batch GDB setup is not an interactive
-interval.
+inside `interactive_client()`. SIGINT ownership transfers to the client at one
+instruction: the scope marks the client as owner, after which the runner
+handler no longer latches, however late the runtime dispatches a delivery to
+it. The scope then switches SIGINT to `SIG_IGN`, re-reads the cancellation
+fact, and session admission is revalidated before launch. A Ctrl-C the runner
+latched before the transfer refuses the launch; any later delivery belongs to
+the client. This rule does not depend on how CPython orders pending handlers
+around a disposition change. The client interval spans the whole configured
+invocation, including wrappers before the real GDB, because no generic
+readiness point exists for arbitrary wrappers. Wrappers and GDB inherit the
+ignored disposition until they install their own handling, as under stock
+Zephyr, and while it is ignored the kernel discards SIGINT for the runner. Exit
+restores the non-raising handler, then returns ownership to the runner and
+re-reads cancellation before any further runner work; delayed wakeup bytes are
+never decoded into retrospective cancellation. RTT batch GDB setup is not an
+interactive interval.
 
 **Retained SSH mask.** The only remaining SIGINT mask is the long-lived SSH
 launch mask of [§38.1](#381-local-ssh-subprocess-ownership): child signal

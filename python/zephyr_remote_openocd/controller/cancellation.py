@@ -43,6 +43,7 @@ class OperationCancellation:
     def __init__(self) -> None:
         self._requested = False
         self._closing = False
+        self._client_owns_sigint = False
         self.cancellation = OperationCancelled("operation cancelled by Ctrl-C")
         self._wakeup_fds: tuple[int, int] | None = None
         self._previous_handler: _SignalHandler = None
@@ -51,9 +52,14 @@ class OperationCancellation:
         self._wakeup_installed = False
 
     def _latch(self, signum: int, frame: FrameType | None) -> None:
-        """Python SIGINT handler: record the fact only; never raise or allocate."""
+        """Python SIGINT handler: record the fact only; never raise or allocate.
+
+        Delivery while an interactive client owns SIGINT is not runner
+        cancellation, however late the runtime dispatches it.
+        """
         del signum, frame
-        self._requested = True
+        if not self._client_owns_sigint:
+            self._requested = True
 
     @property
     def requested(self) -> bool:
@@ -100,20 +106,21 @@ class OperationCancellation:
     def interactive_client(self) -> Generator[None, None, None]:
         """Transfer terminal Ctrl-C ownership to an interactive client interval.
 
-        Entry ignores SIGINT before the caller revalidates admission and starts
-        the client, so the client and wrappers inherit stock Zephyr's ignored
-        disposition. Signals after that transition belong to the client. Exit
-        restores non-raising runner capture before any further runner work.
+        Ownership transfers when ``_client_owns_sigint`` is set: a Ctrl-C the
+        runner latched before then refuses the launch at the following re-read;
+        any later delivery belongs to the client. SIGINT is then ignored so the
+        client and wrappers inherit stock Zephyr's disposition. Exit restores
+        non-raising capture and returns ownership before further runner work.
         """
         if not self._handler_installed:
             self.dispatch()
             yield
             self.dispatch()
             return
-        # CPython runs already-tripped handlers before changing the disposition.
-        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        self._client_owns_sigint = True
         primary: BaseException | None = None
         try:
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
             self.dispatch()
             yield
         except BaseException as error:
@@ -126,6 +133,8 @@ class OperationCancellation:
                 if primary is None:
                     raise
                 _add_failure_note(primary, "runner Ctrl-C capture restoration also failed", error)
+            finally:
+                self._client_owns_sigint = False
         self.dispatch()
 
     def _install(self) -> None:

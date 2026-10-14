@@ -364,6 +364,17 @@ def test_interactive_interval_owns_sigint_and_restores_capture() -> None:
         assert operation.requested
 
 
+def test_runner_handler_dispatched_inside_the_client_interval_does_not_cancel() -> None:
+    with operation_scope() as operation:
+        runner_handler = signal.getsignal(signal.SIGINT)
+        assert callable(runner_handler)
+        with operation.interactive_client():
+            # A runtime may still dispatch a delivery to the previously
+            # installed runner handler after ownership transferred.
+            runner_handler(signal.SIGINT, None)
+        assert not operation.requested
+
+
 def test_interactive_entry_refuses_a_cancellation_latched_before_transition() -> None:
     entered = False
     with pytest.raises(OperationCancelled), operation_scope() as operation:
