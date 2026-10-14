@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import os
 import signal
-import subprocess
 import sys
 import threading
 from pathlib import Path, PurePosixPath
@@ -129,22 +128,26 @@ def test_ctrl_c_during_local_archive_work_is_acted_on_at_the_next_boundary(
         (tmp_path / directory).mkdir()
     image = tmp_path / "firmware.hex"
     image.write_text(":00000001FF\n", encoding="utf-8")
+    # The configured SSH command records every remote command it executes.
+    executed = tmp_path / "executed"
+    recording_ssh = tmp_path / "recording-ssh"
+    recording_ssh.write_text(
+        f"#!{sys.executable}\n"
+        "import os, sys\n"
+        f"open({str(executed)!r}, 'a').write(sys.argv[-1] + '\\n')\n"
+        f"os.execv(sys.executable, [sys.executable, {str(ROOT / 'tests/fixtures/local_ssh.py')!r},"
+        f" {str(tmp_path)!r}, *sys.argv[1:]])\n"
+    )
+    recording_ssh.chmod(0o755)
     plan = SessionPlan(
         "test-host",
-        SshCommand((sys.executable, str(ROOT / "tests/fixtures/local_ssh.py"), str(tmp_path))),
+        SshCommand((str(recording_ssh),)),
         ProcessSpec(
             (sys.executable, "-c", "pass"), completion_policy=CompletionPolicy.PROCESS_EXIT
         ),
         staged_files=(StagedFile(image, PurePosixPath("staged/firmware.hex")),),
     )
-    launched: list[list[str]] = []
-    real_popen = subprocess.Popen
     real_build = session_module.build_archive
-
-    class RecordingPopen(real_popen):  # type: ignore[misc, valid-type]
-        def __init__(self, args, *rest, **kwargs) -> None:
-            launched.append(list(args))
-            super().__init__(args, *rest, **kwargs)
 
     def build_during_ctrl_c(files):
         # Local CPU/filesystem work is not interrupted; the fact is retained.
@@ -153,14 +156,14 @@ def test_ctrl_c_during_local_archive_work_is_acted_on_at_the_next_boundary(
         return archive
 
     monkeypatch.setattr(session_module, "build_archive", build_during_ctrl_c)
-    monkeypatch.setattr(subprocess, "Popen", RecordingPopen)
     with pytest.raises(OperationCancelled), operation_scope():
         session = SessionController.prepare(plan)
         with cleanup_on_exit(session.close):
             session.acquire()
-    # Deployment ran as a finite command; staging was refused at admission.
-    assert any("python3 -c" in argv[-1] for argv in launched)
-    assert not any(" stage " in argv[-1] for argv in launched)
+    # Deployment and control ran; staging was refused at its admission.
+    commands = executed.read_text().splitlines()
+    assert any(command.endswith(" control") for command in commands)
+    assert not any(" stage " in command for command in commands)
     assert session.closed and session.descriptor is None
     sessions = tmp_path / "runtime" / "zephyr_remote_openocd-sessions-v1"
     # The allocated remote workspace and its metadata were cleaned up.

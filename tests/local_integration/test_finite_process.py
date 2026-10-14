@@ -11,6 +11,7 @@ import sys
 import tempfile
 import threading
 from pathlib import Path
+from types import FrameType
 from typing import Any
 
 import pytest
@@ -218,3 +219,44 @@ def test_interrupted_wait_settles_the_command(monkeypatch, tmp_path: Path) -> No
     (pid,) = child_pids(marker)
     assert_reaped(pid)
     assert sorted(Path("/proc/self/fd").iterdir()) == sorted(opened)
+
+
+@pytest.mark.parametrize("failure_type", (MemoryError, SystemExit))
+def test_failure_at_popen_return_reaps_the_finite_command(failure_type) -> None:
+    processes: list[subprocess.Popen[bytes]] = []
+    failure = failure_type("finite command constructor return failed")
+    previous_trace = sys.gettrace()
+
+    def fail_at_return(frame: FrameType, event: str, _arg: object) -> Any:
+        # Arbitrary BaseException after CPython published the child, before the
+        # caller's assignment from the constructor could adopt it.
+        if event == "return" and frame.f_code is subprocess.Popen.__init__.__code__:
+            process = frame.f_locals["self"]
+            assert process.pid is not None
+            processes.append(process)
+            raise failure
+        return fail_at_return
+
+    code = "import sys; sys.stdin.buffer.read()"
+    try:
+        sys.settrace(fail_at_return)
+        try:
+            with pytest.raises(failure_type) as raised:
+                local_ssh(code).run("host", "command", input_data=PAYLOAD, timeout=GUARD)
+        finally:
+            sys.settrace(previous_trace)
+        assert raised.value is failure
+        assert len(processes) == 1
+        process = processes[0]
+        # Production cleanup terminated, reaped, and closed every pipe.
+        assert_reaped(process.pid)
+        assert all(
+            stream is None or stream.closed
+            for stream in (process.stdin, process.stdout, process.stderr)
+        )
+    finally:
+        sys.settrace(previous_trace)
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+                process.wait(GUARD)

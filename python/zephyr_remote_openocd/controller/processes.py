@@ -9,7 +9,7 @@ import subprocess
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import IO, BinaryIO, Protocol
+from typing import IO, Any, BinaryIO, Protocol
 
 from zephyr_remote_openocd.controller.cancellation import admit_effect
 from zephyr_remote_openocd.controller.cleanup import _add_failure_note
@@ -106,13 +106,39 @@ def _terminate_process(process: _Terminable) -> _TerminationResult:
     return _TerminationResult(primary_error, tuple(secondary_errors))
 
 
-class _FiniteProcess:
-    """Drive one owned child's pipes and completion until both are settled."""
+class _OwnedPopen(subprocess.Popen[bytes]):
+    """Register the raw child on its finite owner before construction runs."""
 
-    def __init__(self, process: subprocess.Popen[bytes], input_data: bytes | None) -> None:
-        self.process = process
+    def __init__(self, owner: _FiniteProcess, argv: list[str], **kwargs: Any) -> None:
+        # Registration precedes the effect, so a BaseException at the base
+        # constructor's return cannot leave a published child unowned.
+        owner.process = self
+        super().__init__(argv, **kwargs)
+
+
+class _FiniteProcess:
+    """Own one finite child from construction until its pipes and exit settle."""
+
+    def __init__(self, input_data: bytes | None) -> None:
+        self.process: subprocess.Popen[bytes] | None = None
+        self.piped_input = input_data is not None
         self.input = memoryview(input_data or b"")
         self.offset = 0
+        self.output: dict[int, bytearray] = {}
+        self.open_reads: set[int] = set()
+        self.exited = False
+
+    def launch(self, argv: list[str], stdin: BinaryIO | None, capture_output: bool) -> None:
+        """Populate this already-owned driver with the child and its pipes."""
+        pipe = subprocess.PIPE if capture_output else None
+        _OwnedPopen(
+            self,
+            argv,
+            stdin=subprocess.PIPE if self.piped_input else stdin,
+            stdout=pipe,
+            stderr=pipe,
+        )
+        process = self._child()
         self.output = {
             stream.fileno(): bytearray()
             for stream in (process.stdout, process.stderr)
@@ -125,44 +151,62 @@ class _FiniteProcess:
             os.set_blocking(process.stdin.fileno(), False)
             if not self.input:
                 process.stdin.close()
-        self.exited = False
+
+    def _child(self) -> subprocess.Popen[bytes]:
+        assert self.process is not None
+        return self.process
 
     @property
     def stdin_open(self) -> bool:
-        return self.process.stdin is not None and not self.process.stdin.closed
+        stdin = self._child().stdin
+        return stdin is not None and not stdin.closed
 
     def captured(self, stream: IO[bytes] | None) -> bytes | None:
         return None if stream is None else bytes(self.output[stream.fileno()])
 
-    def run(self, deadline: float | None, timeout: float | None) -> int:
-        """Return the reaped status after EOF on every capture and observed exit."""
+    def run(
+        self, deadline: float | None, timeout: float | None
+    ) -> subprocess.CompletedProcess[bytes]:
+        """Return the result after EOF on every capture and observed, reaped exit."""
+        process = self._child()
         while self.open_reads or self.stdin_open or not self.exited:
             ready = wait_for(
                 readable=self.open_reads,
                 writable=(self._stdin_fd(),) if self.stdin_open else (),
-                sources=WaitSources(processes=() if self.exited else (self.process,)),
+                sources=WaitSources(processes=() if self.exited else (process,)),
                 deadline=deadline,
             )
             for descriptor in ready.readable:
                 self._read(descriptor)
             if self.stdin_open and self._stdin_fd() in ready.writable:
                 self._write()
-            if self.process.pid in ready.exited:
-                self.exited = self.process.poll() is not None
+            if process.pid in ready.exited:
+                self.exited = process.poll() is not None
             if ready.expired and (self.open_reads or self.stdin_open or not self.exited):
                 assert timeout is not None
-                stdout = self.captured(self.process.stdout)
-                stderr = self.captured(self.process.stderr)
                 raise subprocess.TimeoutExpired(
-                    self.process.args, timeout, output=stdout, stderr=stderr
+                    process.args,
+                    timeout,
+                    output=self.captured(process.stdout),
+                    stderr=self.captured(process.stderr),
                 )
-        returncode = self.process.returncode
+        returncode = process.returncode
         assert returncode is not None
-        return returncode
+        result = subprocess.CompletedProcess(
+            process.args,
+            returncode,
+            self.captured(process.stdout),
+            self.captured(process.stderr),
+        )
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
+        return result
 
     def _stdin_fd(self) -> int:
-        assert self.process.stdin is not None
-        return self.process.stdin.fileno()
+        stdin = self._child().stdin
+        assert stdin is not None
+        return stdin.fileno()
 
     def _read(self, descriptor: int) -> None:
         try:
@@ -175,7 +219,6 @@ class _FiniteProcess:
             self.open_reads.discard(descriptor)
 
     def _write(self) -> None:
-        assert self.process.stdin is not None
         try:
             self.offset += os.write(
                 self._stdin_fd(), self.input[self.offset : self.offset + _WRITE_SIZE]
@@ -186,24 +229,35 @@ class _FiniteProcess:
             # Like communicate(), a reader that exits early ends input delivery.
             self.offset = len(self.input)
         if self.offset >= len(self.input):
-            self.process.stdin.close()
+            stdin = self._child().stdin
+            assert stdin is not None
+            stdin.close()
 
-
-def _settle_finite(process: subprocess.Popen[bytes], primary: BaseException) -> None:
-    """Stop and reap an abandoned command, retaining cleanup failures on the primary."""
-    termination = _terminate_process(process)
-    failures = [
-        *((termination.primary_error,) if termination.primary_error is not None else ()),
-        *termination.secondary_errors,
-    ]
-    for stream in (process.stdin, process.stdout, process.stderr):
-        if stream is not None and not stream.closed:
-            try:
-                stream.close()
-            except BaseException as error:
-                failures.append(error)
-    for failure in failures:
-        _add_failure_note(primary, "command cleanup also failed", failure)
+    def settle(self, primary: BaseException) -> None:
+        """Stop and reap an abandoned child, retaining cleanup failures on the primary."""
+        process = self.process
+        if process is None or getattr(process, "pid", None) is None:
+            # Construction failed before a child existed; Popen released its pipes.
+            return
+        streams = (process.stdin, process.stdout, process.stderr)
+        if process.returncode is not None and all(
+            stream is None or stream.closed for stream in streams
+        ):
+            # Failed exec already reaped the child and closed every pipe.
+            return
+        termination = _terminate_process(process)
+        failures = [
+            *((termination.primary_error,) if termination.primary_error is not None else ()),
+            *termination.secondary_errors,
+        ]
+        for stream in streams:
+            if stream is not None and not stream.closed:
+                try:
+                    stream.close()
+                except BaseException as error:
+                    failures.append(error)
+        for failure in failures:
+            _add_failure_note(primary, "command cleanup also failed", failure)
 
 
 def run_finite(
@@ -224,22 +278,11 @@ def run_finite(
     """
     admit_effect()
     deadline = None if timeout is None else time.monotonic() + timeout
-    pipe = subprocess.PIPE if capture_output else None
-    process = subprocess.Popen(
-        list(argv),
-        stdin=subprocess.PIPE if input_data is not None else stdin,
-        stdout=pipe,
-        stderr=pipe,
-    )
+    # The resource-free driver owns the child from inside its construction.
+    driver = _FiniteProcess(input_data)
     try:
-        driver = _FiniteProcess(process, input_data)
-        returncode = driver.run(deadline, timeout)
-        stdout = driver.captured(process.stdout)
-        stderr = driver.captured(process.stderr)
+        driver.launch(list(argv), stdin, capture_output)
+        return driver.run(deadline, timeout)
     except BaseException as error:
-        _settle_finite(process, error)
+        driver.settle(error)
         raise
-    for stream in (process.stdout, process.stderr):
-        if stream is not None:
-            stream.close()
-    return subprocess.CompletedProcess(process.args, returncode, stdout, stderr)
