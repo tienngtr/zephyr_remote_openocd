@@ -4,26 +4,39 @@
 
 from __future__ import annotations
 
+import errno
 import os
-import select
 import signal
 import socket
 import sys
 import termios
 import time
-from collections.abc import Callable, Generator
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import BinaryIO
+from typing import BinaryIO, Protocol
 
 from zephyr_remote_openocd.controller.cleanup import _add_failure_note
+from zephyr_remote_openocd.controller.waiting import WaitSources, wait_for
 
 
 class RttClientError(RuntimeError):
     pass
 
 
+class ObservedSession(Protocol):
+    """Session status and wake sources an RTT client observes while relaying."""
+
+    def poll_operation(self) -> int | None: ...
+
+    def observation_sources(self) -> WaitSources: ...
+
+
 _INPUT_CHUNK_SIZE = 4096
 _MAX_PENDING_INPUT = 64 * 1024
+# Real connection semantics: delay between refused attempts on the local
+# forward, and how long an opened channel may take to report remote refusal.
+_CONNECT_RETRY_DELAY = 0.05
+_INITIAL_OUTPUT_GRACE = 0.25
 
 
 class _RttConnection:
@@ -36,35 +49,45 @@ class _RttConnection:
     def acquire(self, port: int, timeout: float) -> None:
         deadline = time.monotonic() + timeout
         last_error: OSError | None = None
-        while time.monotonic() < deadline:
+        while True:
             try:
-                # Keep acquisition and registration together before a pending
-                # SIGINT can escape. Connection setup then remains interruptible.
-                previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
-                try:
-                    self.socket = socket.socket()
-                finally:
-                    signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
-                self.socket.settimeout(0.5)
-                self.socket.connect(("127.0.0.1", port))
-                self.socket.setblocking(False)
-                readable, _, _ = select.select((self.socket,), (), (), 0.25)
-                if readable:
-                    self.initial = self.socket.recv(4096)
-                    if not self.initial:
-                        raise RttClientError("RTT forward could not open the remote channel")
+                self._attempt(port, deadline)
                 return
             except OSError as error:
                 try:
                     self.close()
                 except BaseException as cleanup_error:
                     _add_failure_note(error, "RTT socket cleanup failed", cleanup_error)
-                else:
-                    last_error = error
-                    time.sleep(0.05)
-                    continue
-                raise
+                    raise
+                last_error = error
+            if time.monotonic() >= deadline:
+                break
+            wait_for(deadline=min(deadline, time.monotonic() + _CONNECT_RETRY_DELAY))
         raise RttClientError(f"cannot connect to local RTT port 127.0.0.1:{port}") from last_error
+
+    def _attempt(self, port: int, deadline: float) -> None:
+        # Keep acquisition and registration together before a pending SIGINT
+        # can escape. Connection setup then remains interruptible.
+        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
+        try:
+            self.socket = socket.socket()
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+        connection = self.socket
+        connection.setblocking(False)
+        status = connection.connect_ex(("127.0.0.1", port))
+        if status in (errno.EINPROGRESS, errno.EAGAIN):
+            ready = wait_for(writable=(connection,), deadline=deadline)
+            if connection.fileno() not in ready.writable:
+                raise TimeoutError(errno.ETIMEDOUT, "RTT forward connection timed out")
+            status = connection.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+        if status:
+            raise OSError(status, os.strerror(status))
+        ready = wait_for(readable=(connection,), deadline=time.monotonic() + _INITIAL_OUTPUT_GRACE)
+        if connection.fileno() in ready.readable:
+            self.initial = connection.recv(4096)
+            if not self.initial:
+                raise RttClientError("RTT forward could not open the remote channel")
 
     def close(self) -> None:
         if self.socket is not None:
@@ -105,32 +128,33 @@ class _RttRelay:
         connection: socket.socket,
         input_fd: int,
         output_stream: BinaryIO,
-        poll_session: Callable[[], int | None],
+        session: ObservedSession,
     ) -> None:
         self.connection = connection
         self.input_fd = input_fd
         self.output_stream = output_stream
-        self.poll_session = poll_session
+        self.session = session
         self.input_open = True
         self.pending_input = bytearray()
 
     def run(self) -> int:
-        """Poll session liveness while relaying only ready, nonblocking I/O."""
+        """Relay ready, nonblocking I/O until the session reports a result."""
+        channel = self.connection.fileno()
         while True:
-            returncode = self.poll_session()
+            returncode = self.session.poll_operation()
             if returncode is not None:
                 return returncode
             input_readable = self.input_open and len(self.pending_input) < _MAX_PENDING_INPUT
-            inputs: tuple[int | socket.socket, ...] = (
-                (self.input_fd, self.connection) if input_readable else (self.connection,)
+            ready = wait_for(
+                readable=(self.input_fd, channel) if input_readable else (channel,),
+                writable=(channel,) if self.pending_input else (),
+                sources=self.session.observation_sources(),
             )
-            writable_inputs = (self.connection,) if self.pending_input else ()
-            readable, writable, _ = select.select(inputs, writable_inputs, (), 0.1)
-            if input_readable and self.input_fd in readable:
+            if input_readable and self.input_fd in ready.readable:
                 self._read_input()
-            if self.connection in writable and self.pending_input:
+            if channel in ready.writable and self.pending_input:
                 self._send_pending_input()
-            if self.connection in readable:
+            if channel in ready.readable:
                 returncode = self._receive_output()
                 if returncode is not None:
                     return returncode
@@ -163,7 +187,7 @@ class _RttRelay:
         except BlockingIOError:
             return None
         if not payload:
-            returncode = self.poll_session()
+            returncode = self.session.poll_operation()
             if returncode is not None:
                 return returncode
             raise RttClientError("RTT channel closed while remote session is still running")
@@ -174,7 +198,7 @@ class _RttRelay:
 
 def run_rtt_client(
     port: int,
-    poll_session: Callable[[], int | None],
+    session: ObservedSession,
     *,
     stdin: BinaryIO | None = None,
     stdout: BinaryIO | None = None,
@@ -193,7 +217,7 @@ def run_rtt_client(
             output_stream.write(connection.initial)
             output_stream.flush()
         with _terminal_mode(input_fd):
-            return _RttRelay(connection.socket, input_fd, output_stream, poll_session).run()
+            return _RttRelay(connection.socket, input_fd, output_stream, session).run()
     except BaseException as error:
         primary_failure = error
         raise

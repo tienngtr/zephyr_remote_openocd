@@ -216,9 +216,7 @@ def _execute_rtt(runner, plan, session):
     returncode = session.poll_operation()
     if returncode is not None:
         raise RuntimeError(f"remote OpenOCD exited before RTT startup with status {returncode}")
-    return session.run_local_client(
-        lambda: run_rtt_client(plan.rtt_forward.local_port, session.poll_operation)
-    )
+    return session.run_local_client(lambda: run_rtt_client(plan.rtt_forward.local_port, session))
 
 
 def _execute_server(runner, command, plan, session):

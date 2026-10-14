@@ -8,6 +8,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import time
 from collections.abc import Iterator
 from contextlib import suppress
 from types import FrameType, SimpleNamespace
@@ -138,50 +139,25 @@ def test_process_creation_failure_has_service_identity_without_ownership(monkeyp
     assert not manager.has_forwards
 
 
-@pytest.mark.timeout(5)
-def test_forward_readiness_timeout_does_not_block_on_partial_output(monkeypatch):
+@pytest.mark.timeout(60)
+def test_forward_readiness_timeout_does_not_block_on_partial_output():
     read_fd, write_fd = os.pipe()
 
     class Process:
+        # A transport that has not exited: its pidfd never becomes readable.
+        pid = os.getpid()
+        returncode = None
+
         def __init__(self):
             self.stdout = os.fdopen(read_fd, "rb", buffering=0)
-
-        @staticmethod
-        def poll():
-            return None
 
     process = Process()
     try:
         os.write(write_fd, b"ZRO_FORWARD_")
-
-        class Clock:
-            now = 0.0
-
-            def monotonic(self):
-                return self.now
-
-        class Selector:
-            def __init__(self):
-                self.delivered = False
-
-            def register(self, _stream, _events):
-                pass
-
-            def select(self, _timeout):
-                if not self.delivered:
-                    self.delivered = True
-                    clock.now = 1.0
-                    return [(None, None)]
-                return []
-
-            def close(self):
-                pass
-
-        clock = Clock()
-        monkeypatch.setattr(forwarding_module.time, "monotonic", clock.monotonic)
-        monkeypatch.setattr(forwarding_module.selectors, "DefaultSelector", Selector)
-        deadline = 0.5
-        assert not ForwardManager._await_ready(cast(Any, process), "ZRO_FORWARD_ready", deadline)
+        # The readiness deadline has already passed when the marker is partial.
+        assert not ForwardManager._await_ready(
+            cast(Any, process), "ZRO_FORWARD_ready", time.monotonic()
+        )
     finally:
         process.stdout.close()
         os.close(write_fd)

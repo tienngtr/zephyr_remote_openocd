@@ -939,9 +939,9 @@ def test_rtt_execution_defers_forward_until_after_gdb(runner_api, monkeypatch):
 
         runner.run_client.side_effect = batch_gdb
 
-        def run_rtt(_port, poll):
+        def run_rtt(_port, observed):
             assert RTT in session.forwarded_specs
-            assert poll() is None
+            assert observed.poll_operation() is None
             return 0
 
         client = Mock(side_effect=run_rtt)
@@ -1085,12 +1085,12 @@ def test_rtt_cleanup_failure_does_not_replace_observed_openocd_failure(runner_ap
     plan = _debug_plan(gdb_argv=("gdb", "--batch"), forwards=(GDB,), rtt_forward=rtt_forward)
     rtt_cleanup_error = RuntimeError("RTT connection cleanup failed")
 
-    def run_rtt(_port, poll):
+    def run_rtt(_port, observed):
         harness.helper.authority.record_terminal(
             terminal_snapshot(Trigger.CHILD_EXIT, returncode=OPENOCD_FAILURE_RC)
         )
         try:
-            return poll()
+            return observed.poll_operation()
         finally:
             raise rtt_cleanup_error
 

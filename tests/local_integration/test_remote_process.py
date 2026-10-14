@@ -25,7 +25,7 @@ from contextlib import ExitStack, suppress
 from pathlib import Path, PurePosixPath
 from types import FrameType
 from typing import Any, BinaryIO, override
-from unittest.mock import create_autospec, patch
+from unittest.mock import patch
 
 import pytest
 from zephyr_remote_openocd.controller import forwarding as forwarding_module
@@ -49,6 +49,7 @@ from zephyr_remote_openocd.controller.ssh import (
 )
 from zephyr_remote_openocd.controller.staging import build_archive
 from zephyr_remote_openocd.controller.staging_spec import StagedDirectory, StagedFile
+from zephyr_remote_openocd.controller.waiting import WaitSources
 from zephyr_remote_openocd.helper import workspace as workspace_module
 from zephyr_remote_openocd.protocol.listeners import ListenerSpec
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy, Trigger
@@ -57,7 +58,7 @@ from zephyr_remote_openocd.protocol.wire import decode_terminal, encode_frame
 
 from tests.process_support import cleanup_on_exit, local_transport, read_line, read_lines
 from tests.protocol_support import terminal_message
-from tests.session_support import NotifiedAuthority
+from tests.session_support import NotifiedAuthority, ObservedStatus
 from tests.support import ROOT
 
 TEST_PROCESS = ProcessSpec(("test-process",))
@@ -421,6 +422,8 @@ def archive_bytes(members):
 
 class TestForwardingLifecycle:
     class Process:
+        pid = os.getpid()
+
         def __init__(self, returncode=None):
             self.returncode = returncode
             self.terminate_calls = 0
@@ -561,29 +564,14 @@ class TestForwardingLifecycle:
         assert any("process cleanup failed" in note for note in raised.value.__notes__)
 
     def test_stale_gdb_forward_cannot_mask_current_forward_failure(self, monkeypatch):
-        class Clock:
-            now = 0.0
-
-            def monotonic(self):
-                return self.now
-
-        class Selector:
-            @staticmethod
-            def register(_stream, _events):
-                pass
+        class ElapsedClock:
+            """Forward startup observes a time whose readiness deadline has passed."""
 
             @staticmethod
-            def select(_timeout):
-                clock.now = forwarding_module.FORWARD_START_TIMEOUT + 1
-                return []
+            def monotonic() -> float:
+                return time.monotonic() - forwarding_module.FORWARD_START_TIMEOUT - 1
 
-            @staticmethod
-            def close():
-                pass
-
-        clock = Clock()
-        monkeypatch.setattr(forwarding_module.time, "monotonic", clock.monotonic)
-        monkeypatch.setattr(forwarding_module.selectors, "DefaultSelector", Selector)
+        monkeypatch.setattr(forwarding_module, "time", ElapsedClock)
         stale = self.Process()
         read_fd, write_fd = os.pipe()
         stale.stdout = os.fdopen(read_fd, "rb")
@@ -845,7 +833,7 @@ class TestRttClient:
         thread.start()
         return listener.getsockname()[1], thread
 
-    def test_bidirectional_non_tty_channel(self, requires_loopback_listener):
+    def test_bidirectional_non_tty_channel(self, requires_loopback_listener, observed_session):
         expected_input = b"local_input"
         expected_output = b"remote_output"
         input_received = threading.Event()
@@ -881,6 +869,8 @@ class TestRttClient:
                         input_received.set()
                 except BaseException as error:
                     server_errors.append(error)
+                finally:
+                    session.changed()
 
             thread = threading.Thread(target=server)
 
@@ -901,133 +891,96 @@ class TestRttClient:
                     0 if input_received.is_set() and stdout.getvalue() == expected_output else None
                 )
 
+            session = observed_session(poll_session)
             with cleanup_on_exit(stop_server):
                 thread.start()
                 assert (
-                    run_rtt_client(
-                        listener.getsockname()[1], poll_session, stdin=stdin, stdout=stdout
-                    )
+                    run_rtt_client(listener.getsockname()[1], session, stdin=stdin, stdout=stdout)
                     == 0
                 )
                 assert input_received.is_set()
                 assert stdout.getvalue() == expected_output
 
-    def test_non_consuming_channel_does_not_block_session_poll(self):
-        connection = create_autospec(socket.socket, instance=True, spec_set=True)
-        connection.sendall.side_effect = AssertionError("blocking sendall must not be used")
-        connection.send.side_effect = AssertionError("socket was not writable")
+    def test_non_consuming_channel_does_not_block_session_poll(self, observed_session):
+        local, peer = socket.socketpair()
+        local.setblocking(False)
+        # The peer never consumes input, so the channel stays unwritable.
+        with suppress(BlockingIOError):
+            while True:
+                local.send(b"x" * 65536)
         input_read, input_write = os.pipe()
         os.write(input_write, b"pending input")
         os.close(input_write)
-        input_became_readable = False
-        observed_after_input = False
+        finished = threading.Event()
 
-        def poll_session():
-            nonlocal observed_after_input
-            if input_became_readable:
-                observed_after_input = True
-                return 0
-            return None
+        class Session(ObservedStatus):
+            sleeps = 0
 
-        def select_input(_readable, _writable, _exceptional, _timeout):
-            nonlocal input_became_readable
-            input_became_readable = True
-            return [stdin.fileno()], [], []
+            @override
+            def observation_sources(self) -> WaitSources:
+                self.sleeps += 1
+                if self.sleeps == 2:
+                    # Input is pending for an unwritable channel; the session
+                    # result must still end the relay.
+                    finished.set()
+                    self.changed()
+                return super().observation_sources()
 
-        with (
-            os.fdopen(input_read, "rb", buffering=0) as stdin,
-            tempfile.TemporaryFile("w+b") as stdout,
-            patch.object(
-                rtt_module.select,
-                "select",
-                side_effect=select_input,
-            ),
-        ):
-            input_fd = stdin.fileno()
-            assert rtt_module._RttRelay(connection, input_fd, stdout, poll_session).run() == 0
+        session = Session(lambda: 0 if finished.is_set() else None)
+        try:
+            with (
+                local,
+                peer,
+                os.fdopen(input_read, "rb", buffering=0) as stdin,
+                tempfile.TemporaryFile("w+b") as stdout,
+            ):
+                relay = rtt_module._RttRelay(local, stdin.fileno(), stdout, session)
+                assert relay.run() == 0
+                assert relay.pending_input == b"pending input"
+        finally:
+            session.close()
 
-        assert observed_after_input
-        connection.send.assert_not_called()
-        connection.sendall.assert_not_called()
+    def test_full_input_queue_pauses_and_resumes_stdin_after_partial_send(
+        self, monkeypatch, observed_session
+    ):
+        sent: list[bytes] = []
+        received = bytearray()
 
-    def test_full_input_queue_pauses_and_resumes_stdin_after_partial_send(self, monkeypatch):
-        input_resumed = False
-        input_forwarded_after_resume = False
-        select_requests = []
-        input_was_paused = False
+        class PartialChannel(socket.socket):
+            @override
+            def send(self, data, flags=0):
+                sent.append(bytes(data))
+                return super().send(bytes(data[:2]), flags)
 
-        connection = create_autospec(socket.socket, instance=True, spec_set=True)
-        sent = []
-
-        def send(payload):
-            nonlocal input_forwarded_after_resume
-            sent.append(bytes(payload))
-            if input_resumed:
-                input_forwarded_after_resume = True
-            return 2
-
-        connection.send.side_effect = send
         monkeypatch.setattr(rtt_module, "_INPUT_CHUNK_SIZE", 4)
         monkeypatch.setattr(rtt_module, "_MAX_PENDING_INPUT", 4)
+        local, peer = socket.socketpair()
+        channel = PartialChannel(fileno=local.detach())
+        channel.setblocking(False)
         input_read, input_write = os.pipe()
         os.write(input_write, b"abcdefgh")
         os.close(input_write)
+        session = observed_session(lambda: 0 if received == b"abcdefgh" else None)
 
-        def poll_session():
-            return 0 if input_forwarded_after_resume else None
+        def receive():
+            while len(received) < 8:
+                received.extend(peer.recv(64))
+            session.changed()
 
-        def select_io(_readable, _writable, _exceptional, _timeout):
-            nonlocal input_resumed, input_was_paused
-            select_requests.append((_readable, _writable))
-            if input_fd not in _readable and connection in _writable:
-                input_was_paused = True
-            if input_was_paused and input_fd in _readable:
-                input_resumed = True
-            if not sent:
-                if _writable:
-                    return [], [connection], []
-                return [input_fd], [], []
-            return [input_fd], [connection], []
+        receiver = threading.Thread(target=receive)
+        with channel, peer, os.fdopen(input_read, "rb", buffering=0) as stdin:
+            receiver.start()
+            try:
+                with tempfile.TemporaryFile("w+b") as stdout:
+                    assert rtt_module._RttRelay(channel, stdin.fileno(), stdout, session).run() == 0
+            finally:
+                receiver.join(30)
 
-        with (
-            os.fdopen(input_read, "rb", buffering=0) as stdin,
-            tempfile.TemporaryFile("w+b") as stdout,
-        ):
-            input_fd = stdin.fileno()
-            with (
-                patch.object(
-                    rtt_module.select,
-                    "select",
-                    side_effect=select_io,
-                ),
-            ):
-                assert rtt_module._RttRelay(connection, input_fd, stdout, poll_session).run() == 0
-
-        assert input_forwarded_after_resume
-        assert any(input_fd in readable for readable, _ in select_requests)
-        pause_index = next(
-            index
-            for index, (readable, writable) in enumerate(select_requests)
-            if input_fd not in readable and connection in writable
-        )
-        assert any(input_fd in readable for readable, _ in select_requests[pause_index + 1 :])
-        assert sent == [b"abcd", b"cdef"]
-
-    def test_established_channel_closure_fails_while_session_is_running(self):
-        connection = create_autospec(socket.socket, instance=True, spec_set=True)
-        connection.recv.return_value = b""
-        with (
-            tempfile.TemporaryFile("w+b") as stream,
-            patch.object(rtt_module.select, "select", return_value=([connection], [], [])),
-            pytest.raises(RttClientError),
-        ):
-            rtt_module._RttRelay(connection, stream.fileno(), stream, lambda: None).run()
+        # The full queue paused stdin; a partial send resumed it before more input.
+        assert sent[:2] == [b"abcd", b"cdef"]
+        assert received == b"abcdefgh"
 
     def test_rtt_eof_accounts_recorded_terminal_status(self, notified_authority):
-        def recv(_size):
-            helper_client._dispatch(json.loads(terminal_message(Trigger.CHILD_EXIT, returncode=0)))
-            return b""
-
         authority = notified_authority.authority
         helper_client = HelperConnection(
             SshCommand(),
@@ -1036,33 +989,44 @@ class TestRttClient:
             authority=authority,
             notifier=notified_authority.notifier,
         )
-        connection = create_autospec(socket.socket, instance=True, spec_set=True)
-        connection.recv.side_effect = recv
-        with (
-            tempfile.TemporaryFile("w+b") as stream,
-            patch.object(rtt_module.select, "select", return_value=([connection], [], [])),
-        ):
-            assert (
-                rtt_module._RttRelay(
-                    connection,
-                    stream.fileno(),
-                    stream,
-                    authority.operation_status,
-                ).run()
-                == 0
-            )
 
-    def test_immediate_forwarded_channel_failure_is_authoritative(self, requires_loopback_listener):
+        class TerminalBeforeEof(socket.socket):
+            @override
+            def recv(self, bufsize, flags=0):
+                helper_client._dispatch(
+                    json.loads(terminal_message(Trigger.CHILD_EXIT, returncode=0))
+                )
+                return super().recv(bufsize, flags)
+
+        class Session:
+            poll_operation = authority.operation_status
+
+            @staticmethod
+            def observation_sources() -> WaitSources:
+                return WaitSources(notifiers=(notified_authority.notifier,))
+
+        local, peer = socket.socketpair()
+        connection = TerminalBeforeEof(fileno=local.detach())
+        connection.setblocking(False)
+        peer.close()
+        with connection, tempfile.TemporaryFile("w+b") as stream:
+            assert rtt_module._RttRelay(connection, stream.fileno(), stream, Session()).run() == 0
+
+    def test_immediate_forwarded_channel_failure_is_authoritative(
+        self, requires_loopback_listener, observed_session
+    ):
         def server(listener):
             with listener, listener.accept()[0]:
                 pass
 
         port, thread = self._listener(server)
         with pytest.raises(RttClientError):
-            run_rtt_client(port, lambda: None, startup_timeout=1)
+            run_rtt_client(port, observed_session(lambda: None), startup_timeout=1)
         thread.join(2)
 
-    def test_tty_preserves_signals_and_restores_complete_state(self, requires_loopback_listener):
+    def test_tty_preserves_signals_and_restores_complete_state(
+        self, requires_loopback_listener, observed_session
+    ):
         request = b"tty input"
         received = bytearray()
         input_received = threading.Event()
@@ -1077,6 +1041,7 @@ class TestRttClient:
                         return
                     received.extend(payload)
                 input_received.set()
+                session.changed()
 
         master_fd, slave_fd = os.openpty()
         try:
@@ -1099,8 +1064,9 @@ class TestRttClient:
                         input_sent = True
                     return 0 if input_received.is_set() else None
 
+                session = observed_session(poll_session)
                 try:
-                    assert run_rtt_client(port, poll_session, stdin=stdin, stdout=stdout) == 0
+                    assert run_rtt_client(port, session, stdin=stdin, stdout=stdout) == 0
                     assert termios.tcgetattr(stdin.fileno()) == original
                 finally:
                     thread.join(5)

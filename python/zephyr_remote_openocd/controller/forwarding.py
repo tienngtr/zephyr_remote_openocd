@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import os
 import secrets
-import selectors
 import shlex
 import signal
 import socket
@@ -26,6 +25,7 @@ from zephyr_remote_openocd.controller.ssh import (
     SshProcessStartError,
     _stop_process,
 )
+from zephyr_remote_openocd.controller.waiting import WaitSources, wait_for
 from zephyr_remote_openocd.protocol.listeners import DuplicateEndpointError
 
 FORWARD_START_TIMEOUT = 10.0
@@ -111,29 +111,37 @@ class ForwardManager:
 
     @staticmethod
     def _await_ready(process: ManagedSshProcess, sentinel: str, deadline: float) -> bool:
-        """Wait for the startup output marker from this exact SSH process."""
+        """Wait for the startup output marker from this exact SSH process.
+
+        Output, transport exit, the readiness deadline, and cancellation each
+        end the wait; transport exit is reported by the caller's status check.
+        """
         if process.stdout is None:
             return False
+        descriptor = process.stdout.fileno()
+        os.set_blocking(descriptor, False)
         sentinel_bytes = sentinel.encode()
         pending = b""
-        selector = selectors.DefaultSelector()
-        try:
-            selector.register(process.stdout, selectors.EVENT_READ)
-            while process.poll() is None and time.monotonic() < deadline:
-                remaining = max(0.0, deadline - time.monotonic())
-                if not selector.select(min(0.05, remaining)):
-                    continue
-                chunk = os.read(process.stdout.fileno(), 4096)
-                if not chunk:
+        while True:
+            ready = wait_for(
+                readable=(descriptor,),
+                sources=WaitSources(processes=(process,)),
+                deadline=deadline,
+            )
+            if descriptor in ready.readable:
+                try:
+                    chunk = os.read(descriptor, 4096)
+                except BlockingIOError:
+                    chunk = None
+                if chunk == b"":
                     return False
-                pending += chunk
+                pending += chunk or b""
                 while b"\n" in pending:
                     line, pending = pending.split(b"\n", 1)
                     if line.rstrip(b"\r") == sentinel_bytes:
                         return True
-            return False
-        finally:
-            selector.close()
+            if process.pid in ready.exited or ready.expired:
+                return False
 
     @staticmethod
     def _diagnostic(process: ManagedSshProcess) -> str:

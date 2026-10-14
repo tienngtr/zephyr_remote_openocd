@@ -7,7 +7,7 @@ from __future__ import annotations
 import errno
 import gc
 import socket
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -20,7 +20,7 @@ from tests.hardware_support import (
     hardware_shared_cache_root,
 )
 from tests.inventory import Inventory, InventoryError, load_inventory
-from tests.session_support import NotifiedAuthority
+from tests.session_support import NotifiedAuthority, ObservedStatus
 
 _HARDWARE_BUILD_TIMINGS = pytest.StashKey[list[BuildTiming]]()
 _HARDWARE_TEST_TIMINGS = pytest.StashKey[list[tuple[str, str, float]]]()
@@ -54,6 +54,21 @@ def notified_authority() -> Iterator[NotifiedAuthority]:
         yield wiring
     finally:
         wiring.close()
+
+
+@pytest.fixture
+def observed_session() -> Iterator[Callable[[Callable[[], int | None]], ObservedStatus]]:
+    """Create observed sessions whose notifiers are released after the test."""
+    statuses: list[ObservedStatus] = []
+
+    def create(result: Callable[[], int | None]) -> ObservedStatus:
+        status = ObservedStatus(result)
+        statuses.append(status)
+        return status
+
+    yield create
+    for status in statuses:
+        status.close()
 
 
 @pytest.fixture(autouse=True)
