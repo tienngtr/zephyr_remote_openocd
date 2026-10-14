@@ -17,6 +17,7 @@ from zephyr_remote_openocd.controller.authority import (
     SessionClosedError,
     SessionError,
 )
+from zephyr_remote_openocd.controller.cancellation import admit_effect, current_operation
 from zephyr_remote_openocd.controller.deployment import DeploymentResult, deploy_helper
 from zephyr_remote_openocd.controller.forwarding import (
     ForwardAdvisory,
@@ -277,7 +278,7 @@ class SessionController:
             raise SessionError("remote session is not ready for additional forwarding")
         forward_specs = tuple(forwards)
         if required:
-            self._authority.admit_work(self._required_forwards, self._forwards.forwards)
+            self._admit_dependent_work()
             if not forward_specs:
                 return
             self._start_forward(forward_specs, self.descriptor.remote_address, required=True)
@@ -287,7 +288,7 @@ class SessionController:
             )
         elif not required:
             for forward in forward_specs:
-                self._authority.admit_work(self._required_forwards, self._forwards.forwards)
+                self._admit_dependent_work()
                 self._start_forward((forward,), self.descriptor.remote_address, required=False)
 
     def _start_forward(
@@ -340,17 +341,43 @@ class SessionController:
             self._observe_health()
         return self._authority.operation_status()
 
+    def _admit_dependent_work(self) -> None:
+        """Final admission: compose operation cancellation with session entry."""
+        admit_effect()
+        self._authority.admit_work(self._required_forwards, self._forwards.forwards)
+
     def run_local_client[ResultT](self, launch: Callable[[], ResultT]) -> ResultT:
         """Commit actual execution entry after accounting recorded fatal facts."""
         try:
-            returncode = self.poll_operation()
-            if returncode is not None:
-                raise SessionError(f"remote OpenOCD exited before dependent launch ({returncode})")
-            self._authority.admit_work(self._required_forwards, self._forwards.forwards)
-            return launch()
+            return self._enter_local_client(launch)
         except BaseException as error:
             primary = self._authority.resolve_effect_failure(error)
             raise primary from primary.__cause__
+
+    def run_interactive_client[ResultT](self, launch: Callable[[], ResultT]) -> ResultT:
+        """Launch a client that owns terminal Ctrl-C for its whole invocation.
+
+        Ownership transfers before entry is revalidated, so a cancellation
+        latched before the transfer still refuses the launch, and Ctrl-C after
+        it belongs to the client and its wrappers. Runner capture is restored
+        before the caller can admit further work.
+        """
+        operation = current_operation()
+        try:
+            if operation is None:
+                return self._enter_local_client(launch)
+            with operation.interactive_client():
+                return self._enter_local_client(launch)
+        except BaseException as error:
+            primary = self._authority.resolve_effect_failure(error)
+            raise primary from primary.__cause__
+
+    def _enter_local_client[ResultT](self, launch: Callable[[], ResultT]) -> ResultT:
+        returncode = self.poll_operation()
+        if returncode is not None:
+            raise SessionError(f"remote OpenOCD exited before dependent launch ({returncode})")
+        self._admit_dependent_work()
+        return launch()
 
     def record_operation_failure(self, error: BaseException) -> None:
         """Report a local operation/cancellation fact to the session authority."""

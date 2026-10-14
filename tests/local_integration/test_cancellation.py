@@ -377,6 +377,17 @@ def test_interactive_entry_refuses_a_cancellation_latched_before_transition() ->
     assert not entered
 
 
+def test_client_launch_failure_restores_runner_capture() -> None:
+    failure = FileNotFoundError("configured GDB wrapper not found")
+    with pytest.raises(OperationCancelled), operation_scope() as operation:
+        with pytest.raises(FileNotFoundError) as raised, operation.interactive_client():
+            raise failure
+        assert raised.value is failure
+        assert not operation.requested
+        signal.raise_signal(signal.SIGINT)
+        assert operation.requested
+
+
 def test_operation_cancellation_has_one_identity() -> None:
     operation = OperationCancellation()
     assert operation.cancellation is operation.cancellation

@@ -8,6 +8,7 @@ import json
 import os
 import secrets
 import shlex
+import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
@@ -19,6 +20,7 @@ from zephyr_remote_openocd.config import ConfigError, load_config, resolve_remot
 from zephyr_remote_openocd.controller.forwarding import ForwardAdvisory
 from zephyr_remote_openocd.controller.paths import PathPlanner, PathPlanningError
 from zephyr_remote_openocd.controller.plan import SessionPlan
+from zephyr_remote_openocd.controller.processes import run_finite
 from zephyr_remote_openocd.controller.rtt import run_rtt_client
 from zephyr_remote_openocd.controller.session import SessionController, query_remote_openocd_version
 from zephyr_remote_openocd.controller.ssh import SshCommand
@@ -195,7 +197,8 @@ def _execute_gdb_client(runner, plan, session):
     returncode = session.poll_operation()
     if returncode is not None:
         raise RuntimeError(f"remote OpenOCD exited before GDB startup with status {returncode}")
-    session.run_local_client(lambda: runner.run_client(list(plan.gdb_argv)))
+    # The configured client, including any wrapper, owns terminal Ctrl-C.
+    session.run_interactive_client(lambda: runner.run_client(list(plan.gdb_argv)))
     return session.poll_operation()
 
 
@@ -206,7 +209,7 @@ def _execute_rtt(runner, plan, session):
     returncode = session.poll_operation()
     if returncode is not None:
         raise RuntimeError(f"remote OpenOCD exited before GDB startup with status {returncode}")
-    session.run_local_client(lambda: runner.run_client(list(plan.gdb_argv)))
+    session.run_local_client(lambda: _run_batch_client(runner, list(plan.gdb_argv)))
     session.make_forwards_optional(
         tuple(forward for forward in plan.forwards if forward.name == "gdb")
     )
@@ -217,6 +220,14 @@ def _execute_rtt(runner, plan, session):
     if returncode is not None:
         raise RuntimeError(f"remote OpenOCD exited before RTT startup with status {returncode}")
     return session.run_local_client(lambda: run_rtt_client(plan.rtt_forward.local_port, session))
+
+
+def _run_batch_client(runner, argv):
+    """Run batch GDB setup as cancellable work with check_call() result semantics."""
+    runner.logger.debug(shlex.join(argv))
+    result = run_finite(argv, capture_output=False)
+    if result.returncode:
+        raise subprocess.CalledProcessError(result.returncode, argv)
 
 
 def _execute_server(runner, command, plan, session):

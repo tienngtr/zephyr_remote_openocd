@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import shlex
+import signal
 import socket
 import subprocess
 import sys
@@ -23,6 +24,7 @@ import yaml
 from zephyr_remote_openocd.config import ConfigError, PathMapping, ResolvedRemote
 from zephyr_remote_openocd.controller import session as session_module
 from zephyr_remote_openocd.controller.authority import SessionError
+from zephyr_remote_openocd.controller.cancellation import OperationCancelled, operation_scope
 from zephyr_remote_openocd.controller.deployment import DeploymentResult
 from zephyr_remote_openocd.controller.forwarding import ForwardStartError
 from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
@@ -70,6 +72,20 @@ def _debug_plan(
         None,
         rtt_forward is not None,
     )
+
+
+def _batch_gdb(monkeypatch, runner_module, effect=None) -> Mock:
+    """Replace only RTT setup's batch GDB process execution, its effect boundary."""
+
+    def run(argv, *, capture_output=True, **_kwargs):
+        # Batch setup output stays on the user's terminal, as with check_call().
+        assert not capture_output
+        returncode = effect(argv) if effect is not None else None
+        return subprocess.CompletedProcess(argv, returncode or 0)
+
+    batch = Mock(side_effect=run)
+    monkeypatch.setattr(runner_module, "run_finite", batch)
+    return batch
 
 
 @pytest.fixture
@@ -373,6 +389,84 @@ def test_gdb_execution_reports_session_status(runner_api, monkeypatch):
         session.close()
 
 
+@pytest.mark.parametrize("command", ("debug", "attach"))
+def test_interactive_gdb_owns_ctrl_c_until_runner_capture_is_restored(
+    runner_api, monkeypatch, command
+):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
+    harness = ForwardingHarness(monkeypatch)
+    harness.helper.on_wait = lambda: None
+    runner = Mock()
+    plan = _debug_plan(gdb_argv=("gdb", "zephyr.elf"), forwards=(GDB,))
+    dispositions = []
+
+    def interactive_gdb(_argv):
+        dispositions.append(signal.getsignal(signal.SIGINT))
+        # Terminal Ctrl-C during the client belongs to GDB, not the runner.
+        signal.raise_signal(signal.SIGINT)
+
+    runner.run_client.side_effect = interactive_gdb
+    with pytest.raises(OperationCancelled), operation_scope() as operation:
+        session = harness.prepare((GDB,), ())
+        with cleanup_on_exit(session.close):
+            session.acquire()
+            assert runner_module._execute_started_operation(runner, command, plan, session) is None
+            assert not operation.requested
+            # Runner capture is restored before any further runner work.
+            signal.raise_signal(signal.SIGINT)
+            assert operation.requested
+    assert dispositions == [signal.SIG_IGN]
+
+
+def test_cancellation_latched_before_gdb_entry_refuses_launch(runner_api, monkeypatch):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
+    harness = ForwardingHarness(monkeypatch)
+    runner = Mock()
+    plan = _debug_plan(gdb_argv=("gdb", "zephyr.elf"), forwards=(GDB,))
+    with pytest.raises(OperationCancelled) as raised, operation_scope() as operation:
+        session = harness.prepare((GDB,), ())
+        with cleanup_on_exit(session.close):
+            session.acquire()
+            signal.raise_signal(signal.SIGINT)
+            runner_module._execute_gdb_client(runner, plan, session)
+    runner.run_client.assert_not_called()
+    assert raised.value is operation.cancellation
+    assert session._authority.snapshot().failure is operation.cancellation
+
+
+def test_rtt_batch_gdb_is_cancellable_runner_work(runner_api, monkeypatch):
+    from zephyr_remote_openocd.zephyr44 import runner as runner_module
+
+    harness = ForwardingHarness(monkeypatch)
+    runner = Mock()
+    plan = _debug_plan(gdb_argv=("gdb", "--batch"), forwards=(GDB,), rtt_forward=RTT)
+    dispositions = []
+
+    def batch_gdb(_argv):
+        dispositions.append(signal.getsignal(signal.SIGINT))
+        # Ctrl-C during setup requests runner cancellation.
+        signal.raise_signal(signal.SIGINT)
+
+    batch = _batch_gdb(monkeypatch, runner_module, batch_gdb)
+    client = Mock(side_effect=AssertionError("RTT client cannot start after cancellation"))
+    monkeypatch.setattr(runner_module, "run_rtt_client", client)
+    with pytest.raises(OperationCancelled), operation_scope() as operation:
+        session = harness.prepare((GDB,), ())
+        with cleanup_on_exit(session.close):
+            session.acquire()
+            harness.ssh.process(RTT)
+            runner_module._execute_rtt(runner, plan, session)
+    batch.assert_called_once()
+    # The setup interval never became an interactive client interval.
+    assert dispositions and dispositions[0] not in (signal.SIG_IGN, signal.SIG_DFL)
+    assert operation.requested
+    # Cancellation is admitted before the RTT forward and client effects.
+    assert RTT not in session.forwarded_specs
+    client.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "command, terminal",
     (
@@ -407,9 +501,11 @@ def test_recorded_termination_before_gdb_dispatch_prevents_client_launch(
         runner.require.side_effect = terminate_before_dispatch
         rtt_client = Mock()
         monkeypatch.setattr(runner_module, "run_rtt_client", rtt_client)
+        batch = _batch_gdb(monkeypatch, runner_module)
         with pytest.raises((RuntimeError, SessionError)):
             runner_module._execute_started_operation(runner, command, plan, session)
         runner.run_client.assert_not_called()
+        batch.assert_not_called()
         rtt_client.assert_not_called()
     finally:
         session.close()
@@ -445,6 +541,7 @@ def test_recorded_termination_during_rtt_forward_prevents_rtt_client_launch(
     )
     client = Mock()
     monkeypatch.setattr(runner_module, "run_rtt_client", client)
+    batch = _batch_gdb(monkeypatch, runner_module)
     with pytest.raises(RuntimeError) as raised:
         runner_module._execute_operation(runner, "rtt", request, plan)
     if terminal == "error":
@@ -452,7 +549,7 @@ def test_recorded_termination_during_rtt_forward_prevents_rtt_client_launch(
     elif terminal == OPENOCD_FAILURE_RC:
         assert str(OPENOCD_FAILURE_RC) in str(raised.value)
         # Child failure is published directly; RTT startup never becomes eligible.
-    runner.run_client.assert_called_once()
+    batch.assert_called_once()
     client.assert_not_called()
     assert harness.helper.close_calls == 1
     assert all(process.returncode is not None for process in harness.ssh.processes.values())
@@ -471,6 +568,7 @@ def test_terminal_during_batch_gdb_prevents_rtt_forward_and_preserves_failure(
         rtt_forward = harness.ssh.process(RTT)
         rtt_forward.creation_error = OSError("later RTT forward failure")
         runner = create_autospec(runner_api[1], instance=True)
+        runner.logger = logging.getLogger("test.remote_openocd.rtt")
         plan = _debug_plan(gdb_argv=("gdb", "--batch"), forwards=(GDB,), rtt_forward=RTT)
 
         def finish_gdb(_argv):
@@ -480,7 +578,7 @@ def test_terminal_during_batch_gdb_prevents_rtt_forward_and_preserves_failure(
                 else terminal_snapshot(Trigger.CHILD_EXIT, returncode=terminal)
             )
 
-        runner.run_client.side_effect = finish_gdb
+        _batch_gdb(monkeypatch, runner_module, finish_gdb)
         client = Mock(side_effect=AssertionError("RTT client cannot enter an ended session"))
         monkeypatch.setattr(runner_module, "run_rtt_client", client)
         with pytest.raises(SessionError) as raised:
@@ -517,7 +615,9 @@ def test_session_failure_during_failed_rtt_forward_stays_primary_on_finalization
         rollback_error.add_note("nested rollback diagnostic")
         rtt_forward.cleanup_error = rollback_error
         runner = create_autospec(runner_api[1], instance=True)
+        runner.logger = logging.getLogger("test.remote_openocd.rtt")
         plan = _debug_plan(gdb_argv=("gdb", "--batch"), forwards=(GDB,), rtt_forward=RTT)
+        _batch_gdb(monkeypatch, runner_module)
 
         def fail_forward(_process, _sentinel, _deadline):
             if terminal == "terminal":
@@ -937,7 +1037,7 @@ def test_rtt_execution_defers_forward_until_after_gdb(runner_api, monkeypatch):
             assert RTT not in session.forwarded_specs
             harness.ssh.process(GDB).returncode = 13
 
-        runner.run_client.side_effect = batch_gdb
+        _batch_gdb(monkeypatch, runner_module, batch_gdb)
 
         def run_rtt(_port, observed):
             assert RTT in session.forwarded_specs
@@ -1063,9 +1163,8 @@ def test_standalone_rtt_setup_failure_never_launches_client(
 
     harness = ForwardingHarness(monkeypatch)
     runner, request, plan = _forwarding_operation(runner_api, monkeypatch, tmp_path, "rtt", harness)
-    if failure == "batch-gdb":
-        runner.run_client.side_effect = subprocess.CalledProcessError(9, ("gdb",))
-    else:
+    _batch_gdb(monkeypatch, runner_module, (lambda _argv: 9) if failure == "batch-gdb" else None)
+    if failure == "rtt-forward":
         harness.ssh.process(RTT).ready = False
     client = Mock(side_effect=AssertionError("RTT client cannot start after setup failure"))
     monkeypatch.setattr(runner_module, "run_rtt_client", client)
@@ -1095,6 +1194,7 @@ def test_rtt_cleanup_failure_does_not_replace_observed_openocd_failure(runner_ap
             raise rtt_cleanup_error
 
     monkeypatch.setattr(runner_module, "run_rtt_client", run_rtt)
+    _batch_gdb(monkeypatch, runner_module)
     request = harness.request(forwards=(GDB,), auxiliary=())
 
     with pytest.raises(RuntimeError, match=str(OPENOCD_FAILURE_RC)) as raised:
@@ -1546,11 +1646,14 @@ def test_active_operation_interrupt_closes_session_and_forwards(
     def interrupt(*_args):
         raise interruption
 
-    if phase == "gdb":
+    if command == "rtt":
+        # Standalone RTT setup runs batch GDB as ordinary process work.
+        _batch_gdb(monkeypatch, runner_module, interrupt if phase == "gdb" else None)
+    if phase == "gdb" and command != "rtt":
         runner.run_client.side_effect = interrupt
     elif phase == "rtt":
         monkeypatch.setattr(runner_module, "run_rtt_client", interrupt)
-    else:
+    elif phase == "wait":
         harness.helper.on_wait = interrupt
     with pytest.raises(KeyboardInterrupt) as raised:
         runner_module._execute_operation(runner, command, request, plan)

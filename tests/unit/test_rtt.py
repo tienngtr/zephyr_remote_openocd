@@ -8,6 +8,7 @@ import sys
 import tempfile
 import threading
 from collections.abc import Callable, Iterator
+from contextlib import suppress
 from types import FrameType, SimpleNamespace
 from typing import Any, override
 
@@ -43,8 +44,12 @@ class RttServer:
 
     def join(self) -> None:
         if not self._accepted.is_set():
-            # The client never connected; complete the pending accept once.
-            with socket.create_connection(("127.0.0.1", self.port)):
+            # The client may never have connected; complete a pending accept.
+            # Refusal means the server already accepted and closed its listener.
+            with (
+                suppress(ConnectionRefusedError),
+                socket.create_connection(("127.0.0.1", self.port)),
+            ):
                 pass
         self._thread.join(GUARD)
         assert not self._thread.is_alive(), "RTT test server did not stop"
