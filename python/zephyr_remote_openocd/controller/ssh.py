@@ -14,7 +14,9 @@ from dataclasses import dataclass
 from types import FrameType
 from typing import BinaryIO, Protocol, cast
 
+from zephyr_remote_openocd.controller.cancellation import admit_effect
 from zephyr_remote_openocd.controller.cleanup import _add_failure_note, _raise_cleanup_errors
+from zephyr_remote_openocd.controller.processes import _terminate_process, run_finite
 
 # SSH diagnostics must never be allowed to fill the OS pipe, but retaining a
 # small tail keeps connection and forwarding failures actionable.  This limit
@@ -23,8 +25,6 @@ from zephyr_remote_openocd.controller.cleanup import _add_failure_note, _raise_c
 SSH_STDERR_TAIL_BYTES = 64 * 1024
 _SSH_STDERR_READ_BYTES = 8192
 _SSH_STDERR_JOIN_TIMEOUT = 1.0
-_PROCESS_TERM_TIMEOUT = 5.0
-_PROCESS_KILL_TIMEOUT = 1.0
 
 
 class SshProcessStartError(RuntimeError):
@@ -274,81 +274,6 @@ class _ProcessControl(Protocol):
     def close_stderr(self) -> None: ...
 
 
-@dataclass(frozen=True)
-class _TerminationResult:
-    """Failures observed while attempting to stop a process."""
-
-    primary_error: BaseException | None
-    secondary_errors: tuple[BaseException, ...]
-
-
-def _terminate_process(process: _ProcessControl) -> _TerminationResult:
-    """Stop one process, escalating from graceful termination to a kill."""
-    primary_error: BaseException | None = None
-    secondary_errors: list[BaseException] = []
-    graceful_timeout: BaseException | None = None
-    process_dead = False
-
-    def record_process_error(error: BaseException) -> None:
-        nonlocal primary_error
-        if primary_error is None:
-            primary_error = error
-        else:
-            secondary_errors.append(error)
-
-    try:
-        process_dead = process.poll() is not None
-    except BaseException as error:
-        record_process_error(error)
-
-    if not process_dead:
-        termination_failed = False
-        try:
-            process.terminate()
-        except BaseException as error:
-            termination_failed = True
-            record_process_error(error)
-        if termination_failed:
-            try:
-                process_dead = process.poll() is not None
-            except BaseException as error:
-                record_process_error(error)
-        else:
-            try:
-                process.wait(timeout=_PROCESS_TERM_TIMEOUT)
-                process_dead = True
-            except subprocess.TimeoutExpired as error:
-                graceful_timeout = error
-            except BaseException as error:
-                record_process_error(error)
-
-        if not process_dead:
-            kill_failed = False
-            try:
-                process.kill()
-            except BaseException as error:
-                kill_failed = True
-                record_process_error(error)
-            if not kill_failed:
-                try:
-                    process.wait(timeout=_PROCESS_KILL_TIMEOUT)
-                    process_dead = True
-                except BaseException as error:
-                    record_process_error(error)
-            if not process_dead:
-                try:
-                    process_dead = process.poll() is not None
-                except BaseException as error:
-                    record_process_error(error)
-
-    if not process_dead and primary_error is None:
-        record_process_error(RuntimeError("process did not exit during cleanup"))
-    if graceful_timeout is not None and primary_error is not None:
-        secondary_errors.append(graceful_timeout)
-
-    return _TerminationResult(primary_error, tuple(secondary_errors))
-
-
 def _close_process_streams(
     process: _ProcessControl, *, close_streams: bool
 ) -> tuple[BaseException, ...]:
@@ -430,13 +355,8 @@ class SshCommand:
         input_data: bytes | None = None,
         timeout: float = 15,
     ) -> subprocess.CompletedProcess[bytes]:
-        return subprocess.run(
-            self.argv(host, remote_command),
-            input=input_data,
-            capture_output=True,
-            check=False,
-            timeout=timeout,
-        )
+        """Run a finite SSH command; without input, the child inherits stdin."""
+        return run_finite(self.argv(host, remote_command), input_data=input_data, timeout=timeout)
 
     def popen(
         self,
@@ -455,6 +375,7 @@ class SshCommand:
         # The child inherits this thread's blocked SIGINT across exec. A narrow
         # Python-handler scope also protects native spawn/PID publication;
         # masking this thread alone cannot prevent dispatch via another thread.
+        admit_effect()
         managed_process = ManagedSshProcess()
         previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
         acquisition_failure: BaseException | None = None
@@ -489,10 +410,4 @@ class SshCommand:
         self, host: str, remote_command: str, stream: BinaryIO, *, timeout: float = 60
     ) -> subprocess.CompletedProcess[bytes]:
         """Run a finite SSH command with a file-backed payload as stdin."""
-        return subprocess.run(
-            self.argv(host, remote_command),
-            stdin=stream,
-            capture_output=True,
-            check=False,
-            timeout=timeout,
-        )
+        return run_finite(self.argv(host, remote_command), stdin=stream, timeout=timeout)
