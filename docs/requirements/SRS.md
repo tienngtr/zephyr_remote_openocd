@@ -1483,11 +1483,13 @@ cleanup owner, including partial construction and interruption immediately
 before or after ownership transfer. Child leader exit SHALL NOT by itself
 establish settlement of descendants, descriptors, or acquisition producers.
 
-During session-owned process creation in standard-library/native code,
-runner-owned asynchronous interruption SHALL be deferred until the runtime
-publishes a usable process cleanup handle. This includes local SIGINT/`KeyboardInterrupt` and the remote
-helper's supported handled signals. At project-controlled ownership handoffs
-and setup after `Popen` returns, rollback SHALL cover any `BaseException`.
+Runner-owned local Ctrl-C SHALL NOT raise into session-owned process creation,
+ownership handoffs, or cleanup; it is recorded and acted upon only as defined by
+REQ-FUNC-HELP-013. During remote session-owned process creation in
+standard-library/native code, the remote helper's supported handled signals
+SHALL be deferred until the runtime publishes a usable process cleanup handle.
+At project-controlled ownership handoffs and setup after `Popen` returns,
+rollback SHALL cover any `BaseException`.
 This contract does not require recovery from arbitrary exceptions synthetically
 injected inside CPython before it publishes the process cleanup handle.
 
@@ -1499,25 +1501,48 @@ adoption.
 
 ### REQ-FUNC-HELP-013
 
-Local `flash`, `rtt`, and `debugserver` operations SHALL use the supported
-host Python runtime's ordinary interruption semantics. When a user interruption,
-including Ctrl-C, is delivered to runner application control flow, it SHALL
-terminate that operation and initiate bounded session closure under
-REQ-FUNC-HELP-010. The cleanup attempt SHALL cover session resources already
-acquired, including when interruption occurs during startup. Cleanup failures
-SHALL remain visible under REQ-FUNC-HELP-011.
+During a live `flash`, `debug`, `attach`, `debugserver`, or `rtt` operation,
+Ctrl-C owned by the runner SHALL be recorded as a durable cancellation request
+for that operation. Recording SHALL NOT itself raise into, interrupt, or abandon
+an in-progress resource acquisition, ownership handoff, or cleanup step.
+Repeated Ctrl-C SHALL leave the request recorded and SHALL NOT change cleanup
+policy, shorten cleanup deadlines, or skip independent cleanup actions.
 
-The runner is not required to detect or replay an asynchronous interruption
-that the host Python runtime consumes before delivering it to runner application
-control flow. This delivery boundary SHALL NOT weaken ownership or cleanup
-requirements once the interruption is observed.
+A recorded request SHALL take effect promptly while the runner waits on remote,
+network, or local-process activity, including finite SSH commands, helper
+startup and readiness, START delivery, forwarding readiness and status checks,
+the foreground server or one-shot result wait, RTT connection and relay, and
+batch GDB setup. Once recognized, it SHALL prevent new dependent work, such as
+another remote command, forwarding, the remote process, or a local client, from
+starting. The runner is not required to interrupt synchronous local CPU or
+filesystem work, such as staging-archive generation; a request received during
+such work SHALL be retained and acted upon at the next wait or work-admission
+point. This requirement does not impose a wall-clock latency on individual
+operating-system, filesystem, or terminal operations.
 
-During `debug` or `attach`, Ctrl-C handled by interactive GDB SHALL retain the
-normal GDB interaction semantics of the built-in `openocd` runner from the
-particular supported Zephyr 4.4.x environment in use. Such an interruption
-SHALL NOT by itself cause the runner to cancel the operation or close the remote
-session. Independently observed session or transport failures SHALL still be
-handled under REQ-FUNC-HELP-011.
+When cancellation takes effect after session resources are acquired, the runner
+SHALL report once that remote cleanup is in progress and SHALL initiate bounded
+session closure under REQ-FUNC-HELP-010, covering resources acquired so far,
+including during startup. Cleanup failures SHALL remain visible under
+REQ-FUNC-HELP-011. When cancellation is the operation's primary outcome, the
+runner SHALL finish with the host Python runtime's normal interrupted-command
+behavior (`KeyboardInterrupt`) after cleanup. An earlier established primary
+failure SHALL remain primary, with the cancellation retained as diagnostic
+information.
+
+During `debug` or `attach`, the configured GDB client invocation, including any
+configured wrapper, SHALL own terminal Ctrl-C with the normal GDB interaction
+semantics of the built-in `openocd` runner from the particular supported Zephyr
+4.4.x environment in use. Such an interruption SHALL NOT by itself cause the
+runner to cancel the operation or close the remote session. A cancellation
+recorded before the client is launched SHALL prevent its launch. Independently
+observed session or transport failures SHALL still be handled under
+REQ-FUNC-HELP-011.
+
+Runner-owned Ctrl-C applies when the runner executes on the main thread of the
+host Python process with SIGINT dispatched to a Python-level handler. A process
+started with SIGINT ignored or at its native default disposition retains that
+disposition.
 
 ### REQ-FUNC-HELP-014
 

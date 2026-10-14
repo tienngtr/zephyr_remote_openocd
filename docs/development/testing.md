@@ -21,7 +21,9 @@ Hardware and SSH tests can change external state; keep destructive profiles
 serial and inspect cleanup output before reusing a target.
 
 The maintained suite uses pytest. The ordinary `.venv/bin/python -m pytest`
-command runs only hardware-free unit and local-process tests. Generated firmware
+command runs only hardware-free unit and local-process tests. The local
+interactive Ctrl-C ownership tests drive a host `gdb` on a pseudo-terminal and
+are skipped when no `gdb` executable is on `PATH`. Generated firmware
 Tcl regressions assert the exact escaping syntax through planning, client
 serialization, and explicit helper template materialization; no Tcl interpreter
 is required.

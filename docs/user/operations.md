@@ -183,6 +183,18 @@ GDB define that behavior. Other semihosting operations handled directly by
 OpenOCD execute on the remote host according to OpenOCD behavior and are outside
 the runner's compatibility guarantees.
 
+### Interrupting an operation
+
+Ctrl-C cancels a runner operation while it prepares the remote session, waits
+for OpenOCD, forwards services, flashes, serves `debugserver`, or relays RTT.
+Once a remote session exists, the runner prints
+`Interrupted; cleaning up the remote OpenOCD session` and stops OpenOCD and its
+SSH transports before exiting as an interrupted command. Pressing Ctrl-C again
+does not skip or shorten that bounded cleanup, which keeps the probe from being
+left in use. A Ctrl-C pressed during local work, such as packaging build files
+for staging, takes effect when that work finishes. Inside interactive GDB for
+`debug` or `attach`, Ctrl-C belongs to GDB; exit GDB to end the operation.
+
 ## Stop and uninstall
 
 Remote sessions relay OpenOCD output locally. If the local SSH client detects

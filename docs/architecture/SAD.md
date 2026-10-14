@@ -99,9 +99,13 @@ platform is also Linux with Python 3.12 or newer. The generic local Python
 implementation uses one Linux architecture and does not select platform
 backends. Linux-specific remote process supervision and filesystem mechanisms,
 including process groups, signals, pidfds, `/proc`, and `fcntl` locking, belong
-to the helper and supervision layer. Setup and generic runner code avoid adding
-further Linux-specific assumptions, so future native Windows work can remain
-localized; native Windows execution is outside the current scope.
+to the helper and supervision layer. On the local side, the operation wait
+([§39.1](#391-operation-cancellation-and-waits)) is the one POSIX/Linux-specific
+mechanism: it composes descriptors with `select.poll`, observes local child exit
+through pidfds (with a non-reaping `waitid` fallback), and owns the Python
+signal wakeup descriptor. Setup and generic runner code avoid adding further
+Linux-specific assumptions, so future native Windows work can remain localized;
+native Windows execution is outside the current scope.
 
 ---
 
@@ -811,7 +815,7 @@ start remote OpenOCD
        |
 establish required GDB; independently attempt best-effort Tcl/telnet
        |
-run local batch GDB for west rtt
+run local batch GDB for west rtt (cancellable setup work)
        |
        +-- RTT setup
        +-- RTT start
@@ -829,16 +833,26 @@ bidirectional channel-0 bytes, uses noncanonical/no-echo TTY input without
 disabling normal signal handling, and restores the complete terminal state on
 every exit path. Non-TTY input is supported without terminal operations.
 
-Connection setup owns each acquired socket through its initial readiness check
-and closes it on failure or interruption. The client's cleanup scope is active
-before adopting the connected socket, accessing stdin, or delivering initial
-output. A terminal-mode scope restores prior attributes before the socket is
-closed. The relay owns the bounded pending-input queue and interprets readiness,
-retaining unsent bytes across partial writes and transient backpressure. It polls
-session state before each readiness wait and again at receive-side channel EOF,
-so a recorded session exit takes precedence over that channel closure. Terminal
-and socket cleanup are attempted independently; an existing failure remains
-primary, with secondary cleanup failures attached as notes.
+Connection setup registers each socket on its already-owned connection as it is
+created and closes it on failure or interruption. It connects without blocking,
+completes the connection through writability and `SO_ERROR`, retries refused
+attempts after a short delay until the startup deadline, and allows a brief
+grace period for the forward to report remote-channel refusal. Those are real
+connection timers, not cancellation polling. The client's cleanup scope is
+active before adopting the connected socket, accessing stdin, or delivering
+initial output. A terminal-mode scope restores prior attributes before the
+socket is closed. The relay owns the bounded pending-input queue and interprets
+readiness, retaining unsent bytes across partial writes and transient
+backpressure. It reads session status before each wait and again at
+receive-side channel EOF, so a recorded session exit takes precedence over that
+channel closure. Each wait composes stdin, the channel, the session's state
+notifier, and owned SSH transport exits ([§39.1](#391-operation-cancellation-and-waits)).
+Terminal and socket cleanup are attempted independently; an existing failure
+remains primary, with secondary cleanup failures attached as notes.
+
+The `rtt` command's batch GDB setup is not an interactive client interval. It
+runs as a finite local process with inherited terminal I/O and `check_call()`
+result semantics, so runner Ctrl-C cancels it like other setup work.
 
 For `debug --rtt-server`, `attach --rtt-server`, and `debugserver --rtt-server`,
 RTT setup is included in OpenOCD's startup command sequence before its
@@ -1009,25 +1023,23 @@ rolled back successfully. Failed rollback remains fatal; pending processes
 receive one bounded cleanup attempt and need not be adopted for a retry.
 The manager owns the pending batch from transport registration through commit
 or completion of each rollback attempt. Pending transports remain reachable by
-`close()` if startup escapes before rollback's SIGINT mask is established.
-They are not published as owned forwards, and another startup cannot begin
-until a stranded pending batch has been cleaned. Close covers committed and
-pending ownership, attempting a transport once if an interrupted commit has
-temporarily recorded it in both sets.
+`close()` if startup escapes before or during rollback. They are not published
+as owned forwards, and another startup cannot begin until a stranded pending
+batch has been cleaned. Close covers committed and pending ownership,
+attempting a transport once if commit has temporarily recorded it in both sets.
 
 Forward startup supplies its pending-set registration callback to the existing
 `SshCommand.popen()` acquisition method. The transport invokes that callback
 inside its rollback guard before returning, so a `BaseException` at the method's
-return cannot strand a transport before caller assignment. SIGINT masking
-retains the child's inherited mask and protects commitment of the process and
-service lists; it is not the proof of transport adoption. Commitment relinquishes
-pending rollback ownership before restoring the caller's previous signal mask.
-Readiness waits retain the caller's previous mask, so startup remains interruptible.
+return cannot strand a transport before caller assignment. Commitment records
+committed ownership before releasing pending rollback ownership. Readiness
+waits on the transport's output, its process completion, the readiness
+deadline, and operation cancellation through the common operation wait.
 
-Failed startup defers SIGINT through the complete pending rollback batch,
-including the intervals between process cleanup attempts. It then restores the
-caller's exact prior mask. A pending interruption is retained behind the startup
-failure only after all pending transports have received their cleanup attempt.
+Runner Ctrl-C never raises into startup rollback: a cancellation recorded while
+rollback runs is retained and every pending transport receives its cleanup
+attempt. A startup failure remains primary, with later cancellation retained as
+diagnostic information.
 
 The manager reports newly observed exits with service identity and transport
 diagnostics. The session retains those facts, classifies them as required or
@@ -1385,31 +1397,14 @@ being attempted. Each owner cleans up the resources it acquired; no owner
 transfers an active resource to another owner merely because cleanup encountered
 an error.
 
-`SessionController.close()` blocks SIGINT before entering forwarding or helper
-cleanup and keeps it blocked through every applicable bounded cleanup attempt
-and marking the session closed. It then restores the caller's exact previous
-signal mask. Subsystem entry and the transitions between cleanup owners are
-protected along with each owner's cleanup sequence.
-Any interruption delivered by mask restoration is reported after these
-attempts; an earlier cleanup failure remains primary and retains the
-interruption as a diagnostic.
+Session closure does not depend on signal masking. Runner Ctrl-C is captured
+without raising ([§39.1](#391-operation-cancellation-and-waits)), so it cannot
+interrupt subsystem entry, the transitions between cleanup owners, or an
+owner's cleanup sequence. Closure enters settlement first: a cancellation
+recorded during cleanup is retained but never dispatched, and every applicable
+bounded cleanup attempt runs. Arbitrary `BaseException` from a cleanup step is
+recorded and does not prevent the next independent owner's attempt.
 
-Local controller interruption handling relies on the supported host Python
-runtime to deliver Ctrl-C into application control flow. The SIGINT masks and
-narrow subprocess-launch handler scope protect ownership transitions; they are
-not a replacement signal-dispatch subsystem. Once an interruption reaches controller
-code, the ownership and bounded-cleanup rules in this section apply regardless
-of where it was delivered.
-
-CPython can, in a narrow runtime interleaving, dispatch a pending SIGINT while
-cyclic GC is invoking a weakref callback and report the resulting
-`KeyboardInterrupt` as unraisable instead of propagating it to the surrounding
-operation. The controller does not disable cyclic GC, maintain a second durable
-cancellation latch, poll otherwise blocking I/O solely to replay such a signal,
-or otherwise promise stronger host-runtime SIGINT delivery. Zephyr's built-in
-`openocd` runner likewise relies on ordinary Python/subprocess interruption
-semantics for non-interactive commands. If the host runtime consumes one
-interrupt, a later Ctrl-C remains subject to the normal runtime behavior.
 Interactive GDB retains the separate signal semantics described by
 REQ-FUNC-HELP-013.
 
@@ -1423,28 +1418,18 @@ establishes managed ownership and starts the stderr drain before restoring its
 exact previous mask. The drain inherits blocked SIGINT and stops through pipe EOF
 and explicit cleanup. Existing threads' masks remain unchanged. Keeping the
 transports in the foreground group preserves terminal authentication without
-introducing background-group SIGTTIN reads.
-
-The launch thread's mask does not prevent Python-level SIGINT dispatch caused
-by another unmasked thread. While the real `Popen` initializer runs on the main
-thread, a transient non-raising SIGINT handler therefore records delivery
-instead of invoking the caller's Python handler. The scope covers native child
-creation through CPython's PID publication. On exit, it restores and invokes
-the prior handler for an observed signal inside the existing acquisition
-rollback guard. Ignored or native-default SIGINT dispositions remain unchanged;
-worker-thread launches do not change handlers because Python dispatches signal
-handlers on the main thread. The scope ends before stderr-drain setup and does
-not extend into interactive GDB, introduce a durable cancellation latch, or
-create another lifecycle authority. A prior acquisition failure remains primary
-if restored-handler delivery also raises; that interruption becomes secondary
-diagnostic detail.
+introducing background-group SIGTTIN reads. This mask is child signal topology:
+it is the one retained SIGINT mask, and it does not protect the parent. Runner
+Ctrl-C delivered during launch only latches the operation's cancellation fact
+([§39.1](#391-operation-cancellation-and-waits)); the launch first passes the
+operation's effect-admission check and then completes into its owner.
 
 The transport wrapper is resource-free and owned before `Popen` begins.
 Its private `Popen` subtype registers the resource-free raw instance with that
 wrapper before invoking the standard-library initializer. This reference alone
-is not a usable process cleanup handle until CPython publishes the PID; the
-handler scope protects that internal interval against runner-owned asynchronous
-interruption. Once the initializer returns, the wrapper reaches the subprocess
+is not a usable process cleanup handle until CPython publishes the PID; because
+runner Ctrl-C is captured without raising, no runner-owned asynchronous
+interruption occurs in that internal interval. Once the initializer returns, the wrapper reaches the subprocess
 and pipes even if any `BaseException` interrupts the return, normal managed-owner
 assignment, or subsequent setup. The contract does not claim recovery from an
 arbitrary exception synthetically injected inside CPython before PID publication.
@@ -1461,9 +1446,9 @@ only the drain closes that pipe. Constructor and thread-start failures use the
 same bounded process termination and independent stream cleanup as other
 acquisition failures. They require no replacement wrapper or drain. The
 resource-free wrapper has one acquisition path, populated by transport launch.
-A pending interruption during signal-mask restoration cannot replace an
-already established acquisition failure; it is retained as secondary detail
-before rollback.
+A failure while restoring the launch thread's mask cannot replace an already
+established acquisition failure; it is retained as secondary detail before
+rollback.
 
 The existing `popen()` method accepts a caller ownership-registration callback.
 The helper registers the transport on its already-owned client; forwarding
@@ -1491,10 +1476,9 @@ loss follows the existing session-failure and bounded-cleanup rules. Loss of a
 best-effort forward follows the existing warning policy. The runner does not
 transparently reconstruct an interrupted debugging session.
 Explicit lifecycle cleanup still terminates and reaps each owned SSH process
-directly. If restoring the launch thread's mask delivers a pending interruption,
-the transport boundary rolls back the managed process before propagating it. The
-ownership transition and return remain inside the rollback guard, including the
-interval after mask restoration.
+directly. Any `BaseException` after mask restoration, including from caller
+registration, rolls back the managed process before propagating; the ownership
+transition and return remain inside the rollback guard.
 
 `ManagedSshProcess` remains a narrow ownership wrapper rather than a session
 abstraction. It delegates process status and termination to the underlying
@@ -1543,15 +1527,19 @@ guard cannot cover interruption after returning a live object but before the
 caller adopts it. The helper client and
 forward manager own their respective resources and cleanup sequences beneath
 this boundary. The session stores a resource-free `HelperConnection` before calling
-its instance `acquire()`. The client briefly blocks SIGINT while launching and
-adopting the control transport. Its registration callback stores that transport
-on the client before `SshCommand.popen()` returns; this ownership does not rely
-on masking alone. The client restores the caller's mask before awaiting
-`SESSION_CREATED`. Thus pending launch interruption is delivered with transport
-ownership established, and helper startup remains interruptible. Protocol-reader
-startup likewise blocks SIGINT until the started thread is registered with the
-client, then restores the caller's previous mask. Pending interruption therefore
-leaves that reader owned for shutdown instead of permitting a second reader.
+its instance `acquire()`. The client's registration callback stores the control
+transport on the client before `SshCommand.popen()` returns. The client then
+registers and starts one protocol reader thread that owns the helper's event
+stream until shutdown; registration precedes start, so a `BaseException` after
+start leaves that reader owned for shutdown and no second reader can begin. The
+reader reports `SESSION_CREATED`, `READY`, and every later event to the shared
+session authority. The coordinator never reads the stream: it waits for the
+allocation (with the startup deadline) and later for READY on authority state
+notifications through the operation wait. This single continuous reader
+replaced a startup handoff between a coordinator-side raw reader and a later
+buffered reader thread, removing frame-boundary constraints between the two.
+START is accounted against facts the reader already recorded, admitted as a new
+effect, and written to the control pipe without blocking on its backpressure.
 If acquisition
 ends before the allocation is accepted, client cleanup terminates and reaps the
 owned control process while closing its input lease and reading any available
@@ -1734,7 +1722,9 @@ not by cancelling its awaiter.
 | Observer tasks and protocol writer | Task-creation/setup scope | Register with session/attempt owner before publication; setup failure joins/cancels under bounded policy and retains unresolved obligations. |
 | Staging shared lease | Standalone staging scope | Held through validation, extraction, and success reporting; always released on failure/process exit, with no transfer to the controller. |
 | Forwarding transport | Forward manager's pending-resource owner | Keep rollback ownership through validation/adoption; independent failed forwards cannot orphan an acquired process or roll back another active forward. |
-| RTT socket and terminal mode | Caller-owned resource-free connection scope and terminal scope | Raw socket creation and registration briefly block SIGINT; connect and initial observation populate the already-owned scope without returning a live socket. Terminal restoration and socket closure are independently attempted on failure/interruption. |
+| RTT socket and terminal mode | Caller-owned resource-free connection scope and terminal scope | Each socket is registered on the already-owned connection as it is created; connect and initial observation populate that scope without returning a live socket. Terminal restoration and socket closure are independently attempted on failure/interruption. |
+| Local finite command (`SshCommand.run`/`run_stream`, batch GDB) | Finite-process driver scope | Admitted before launch; the driver drains pipes and observes exit, and every failure or cancellation stops and reaps the child and closes its pipes before propagating. An interrupted command is never replayed. |
+| Helper protocol reader thread | `HelperConnection`, registered before start | Shutdown joins it within the bounded budget before closing the stream it reads; a reader that never started holds nothing. |
 
 A `SupervisedProcess` owns the configured OpenOCD process-group resources and
 per-stream decoding state, which only the coordinator consumes. Process
@@ -2082,11 +2072,13 @@ regardless of earlier delivery. The Zephyr adapter records local operation
 exceptions and asks the session to finalize; it does not reconstruct precedence
 from copied child status or choose between operation and cleanup exceptions.
 
-GDB/RTT entry checks helper and forwarding health, then commits eligibility under
-that shared authority before its immediate synchronous launch callback. It uses
-Zephyr's `run_client`, including native interactive SIGINT handling. Cleanup
-ownership and the SIGINT-masked cleanup scope protect interruption rollback.
-Controller input EOF ends the remote lease.
+GDB/RTT entry checks helper and forwarding health, then admits the effect: the
+operation's cancellation admission is composed with that shared authority's
+entry immediately before the synchronous launch callback. Interactive GDB runs
+through Zephyr's `run_client` inside the interactive ownership scope of
+[§39.1](#391-operation-cancellation-and-waits); RTT batch GDB setup and the RTT
+client are ordinary cancellable work. Cleanup ownership protects interruption
+rollback. Controller input EOF ends the remote lease.
 
 New forwarding work uses the same synchronized authority entry as GDB/RTT.
 Immediately before starting a required forwarding batch or each best-effort
@@ -2173,6 +2165,126 @@ The established active-operation failure remains primary, with later shutdown
 and child-result diagnostics retained. During an interactive local client,
 fatal session facts are recorded and acted upon at the next defined status check
 after that client returns; asynchronous interruption of GDB is not required.
+
+### 39.1 Operation cancellation and waits
+
+[`controller/cancellation.py`](../../python/zephyr_remote_openocd/controller/cancellation.py)
+and [`controller/waiting.py`](../../python/zephyr_remote_openocd/controller/waiting.py)
+make runner Ctrl-C an event the operation dispatches at explicit boundaries,
+rather than an asynchronous `KeyboardInterrupt` that may arrive at any
+instruction of resource-management code.
+
+**Operation cancellation owner.** `operation_scope()` creates one
+`OperationCancellation` for a live runner operation. The Zephyr adapter enters
+it around remote preparation (remote-home resolution, OpenOCD version query,
+helper deployment) and the session; recording mode never creates it. Nested
+users borrow the active owner of their thread; they never install another
+capture. The owner holds one monotonic fact, `not requested -> requested`,
+which never resets during the operation, and one stable internal
+`OperationCancelled` identity. `OperationCancelled` derives from
+`BaseException` so ordinary exception handling cannot absorb it.
+
+**Native capture and wakeup-fd ownership.** On the main thread, and only when
+SIGINT currently dispatches to a Python-level handler, the owner installs a
+non-raising handler and `signal.set_wakeup_fd()` on a dedicated nonblocking pipe.
+An ignored or native-default disposition is preserved without capture, and a
+worker-thread operation has no runner-owned Ctrl-C. The handler only sets the
+fact: it cleans up nothing, takes no application lock, calls no authority or
+user callback, logs nothing, and allocates nothing of note. Native delivery to
+any thread writes a byte to the wakeup pipe before the Python handler runs on
+the main thread, so a main-thread wait wakes even while that handler is
+pending. Installation and restoration are ownership transitions: restoration
+first returns the process-wide wakeup slot to its previous value, then the
+previous handler, and closes the pipe only after CPython no longer references
+it; a failed slot restoration retains the descriptor. The supported west
+invocation owns the process-wide wakeup slot for the live operation.
+Transparent composition with an unrelated wakeup-fd owner, such as an
+embedding event loop, is not supported; a previously installed descriptor is
+restored afterwards but receives no wakeups meanwhile.
+
+**Durable fact versus notification hints.** Wakeup bytes are hints only. Their
+values are never decoded and a full or coalesced pipe cannot lose the fact,
+which is read only from the latch. CPython sets the tripped flag before writing
+the wakeup byte and runs the pending Python handler at the next main-thread
+bytecode check, which precedes the wait's re-read of the latch.
+
+**Wait dispatcher and notifier ordering.** `wait_for()` is the single wait for
+active operation work on the operation's thread. It composes the native
+wakeup, coalescing `Notifier` hints, readable and writable descriptors
+(reported separately), pidfd process completion, and an absolute deadline. It
+dispatches a requested cancellation before blocking and again after consuming
+wakeup hints, so cancellation takes precedence over coincident readiness.
+Producers publish durable state first and then notify; consumers drain hints
+only after waking and then re-read durable state, so a notification issued
+after a consumer's snapshot remains pending for its next wait. Real deadlines
+remain where they are semantic: helper startup, command timeouts, forwarding
+readiness, RTT connection retry and initial-output grace, and cleanup budgets.
+
+**Process completion and reaping.** A wait opens a pidfd for each owned child
+that its owner has not yet reaped and closes it before returning. Reaping
+happens only through the owner's `Popen` on the coordinating thread, so no
+competing reaper exists and the pid cannot be reused between the check and
+`pidfd_open`. A child that exited before registration is reported immediately.
+Without kernel pidfd support, a non-reaping `waitid(WNOWAIT)` re-check bounds
+exit observation; cancellation and descriptor readiness stay event-driven.
+Process exit and pipe EOF are observed independently; neither is inferred from
+the other.
+
+**Session authority separation.** `SessionAuthority` stays session-scoped. It
+publishes each state change through an injected notifier callback and knows
+nothing of signals. Pre-session failures propagate through normal operation
+control flow. The single helper reader and every other session producer record
+facts into the authority; the coordinator re-reads it after each wake.
+
+**Effect-admission boundary.** Before starting new dependent work, the
+operation's cancellation admission is checked: before launching a finite or
+long-lived SSH process, before START, and composed with
+`SessionAuthority.admit_work()` for forwarding and local clients. An effect
+admitted before a later Ctrl-C completes into its established owner;
+cancellation prevents the dependent work that would follow. There is no
+general checkpoint API, and local CPU or filesystem work such as staging-archive
+generation is not interrupted: a cancellation recorded during it is retained
+and acted upon at the next admission or wait.
+
+**Cancellation boundaries and precedence.** Cancellation becomes control flow
+only in the main-thread wait dispatcher, at final effect admission, at the
+transition into session closure, and at the outer operation boundary. Its
+recognition point is that dispatch or admission. Recognized cancellation is
+recorded in the session authority like any other local operation fact, so a
+session failure recorded earlier remains primary and keeps cancellation as a
+diagnostic, while a later failure becomes a diagnostic of the cancellation.
+At the outer boundary, after settlement and capture restoration, a primary
+cancellation is projected to `KeyboardInterrupt`; because west reports
+`KeyboardInterrupt` only through its exit status, retained diagnostics are
+logged first. A non-cancellation primary failure propagates with a note that
+cancellation was also requested.
+
+**Settlement mode.** Session closure enters settlement once. If cancellation
+initiated closure, the session records it and reports one status line that
+remote cleanup is in progress. Native capture stays active and repeated Ctrl-C
+stays recorded, but no wait or admission dispatches it again; every applicable
+independent cleanup runs with its existing finite budget, and cleanup failures
+are recorded without replacing an earlier primary failure. Cleanup waits are
+bounded blocking waits that are not interruptible by the captured signal.
+
+**Interactive ownership scope.** Debug and attach launch the configured client
+inside `interactive_client()`. Entry switches SIGINT to `SIG_IGN` first, then
+re-evaluates the cancellation fact and session admission and refuses launch if
+either prohibits it; CPython runs an already tripped handler before changing
+the disposition. Signals after the transition belong to the client interval,
+which spans the whole configured invocation, including wrappers before the
+real GDB, because no generic readiness point exists for arbitrary wrappers.
+Wrappers and GDB inherit the ignored disposition until they install their own
+handling, as under stock Zephyr. Exit restores the non-raising capture before
+any further runner work and re-evaluates cancellation; delayed wakeup bytes are
+never decoded into retrospective cancellation. A signal delivered inside
+CPython's own handler change is reported by CPython as ignored and is
+attributed to the client interval. RTT batch GDB setup is not an interactive
+interval.
+
+**Retained SSH mask.** The only remaining SIGINT mask is the long-lived SSH
+launch mask of [§38.1](#381-local-ssh-subprocess-ownership): child signal
+topology that keeps transports alive across terminal Ctrl-C intended for GDB.
 
 ---
 
@@ -2439,6 +2551,8 @@ The package boundaries express execution location and logical ownership:
   `HelperConnection`, and `ForwardManager`; its synchronized `SessionAuthority`
   selects failures and admits dependent work. SSH transports, local RTT sockets,
   local archives, and the preferred-address cache remain controller resources.
+  The operation cancellation owner and its wait engine own runner Ctrl-C
+  capture and every active local wait ([§39.1](#391-operation-cancellation-and-waits)).
 - `helper` runs on the remote host. `HelperSession` coordinates physical facts
   through its pure `LifecycleAuthority`. Workspace leases, address leases,
   `SupervisedProcess` acquisition and disposal, descriptor modes, output relays,
@@ -2484,6 +2598,10 @@ shall preserve these invariants:
 - Each lifecycle has one transition authority. Observers, signal handlers, reader
   tasks, and physical adapters report facts; they do not independently choose
   semantic lifecycle transitions.
+- The local SIGINT handler only latches the operation's cancellation fact.
+  Cancellation becomes control flow only at the wait dispatcher, effect
+  admission, closure, and the outer operation boundary; ownership handoffs and
+  cleanup are never interrupted by it, and no mask substitutes for ownership.
 - Every acquired resource has a cleanup owner continuously from successful
   acquisition through confirmed disposal or explicit residual responsibility.
   Acquisition success, ownership adoption, publication, cancellation, and
@@ -2587,6 +2705,23 @@ check relevant physical health
 Authorization separated from actual execution by scheduling, blocking, or
 another asynchronous boundary must be revalidated at execution entry.
 
+#### Add a blocking wait
+
+Active local work that waits on remote, network, or process activity uses the
+common operation wait:
+
+```text
+snapshot durable state
+    -> act on it, or wait_for(descriptors, notifiers, processes, deadline)
+    -> wakeup: hints consumed, cancellation dispatched first
+    -> re-snapshot durable state
+```
+
+Do not slice a wait with short timeouts to look for cancellation, and do not
+add cancellation checks to business code. Keep real semantic deadlines. A
+producer on another thread publishes durable state and then notifies.
+Cleanup waits stay finite and are not dispatch points.
+
 #### Add a failure source
 
 Feed the failure into the existing composition path:
@@ -2677,7 +2812,10 @@ Selected architecture:
 - local launch gate, revalidated at actual execution entry;
 - structured outcome and one immutable terminal snapshot;
 - finite child-stream final observation at readiness determination;
-- bounded local forwarding-process health polling;
+- event-driven local waits: descriptor readiness, state notifications, and
+  pidfd process completion instead of health polling;
+- operation-owned, non-raising runner Ctrl-C capture dispatched only at defined
+  boundaries, with interactive GDB owning Ctrl-C for its whole invocation;
 - no persistent cross-session firmware or configuration cache;
 - local and remote cleanup are bounded after their respective loss
   observations; detection timing and the interval between observations are

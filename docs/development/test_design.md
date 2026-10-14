@@ -105,6 +105,11 @@ cyclic GC and restores its prior state so an unrelated GC weakref callback
 cannot swallow the expected interrupt as an unraisable exception. Keep the real
 signal, ownership, cleanup, mask, and failure-precedence assertions. Tests that
 inject a Python exception or use non-raising signal observers do not need it.
+Runner cancellation tests deliver real SIGINT under the operation's non-raising
+capture and synchronize through pipes, FIFOs, PTYs, or a hook immediately
+before the wait sleeps; they need no GC deferral. A test proving that a wait is
+woken by native delivery blocks SIGINT on the waiting thread, so only the
+wakeup descriptor can end the wait.
 
 * Keep each test focused on one contractual behavior. Setup may involve several
 real production objects, but assertions should have a clear behavioral purpose
