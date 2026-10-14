@@ -74,7 +74,7 @@ if descendant == 0:
 
 @pytest.mark.parametrize("cleanup_fails", (False, True))
 def test_spawn_child_rolls_back_process_when_ownership_wrapper_fails(monkeypatch, cleanup_fails):
-    original_popen = subprocess.Popen
+    initialize = subprocess.Popen.__init__
     processes = []
     process_pidfds = []
     failure = RuntimeError("injected child ownership failure")
@@ -89,8 +89,8 @@ def test_spawn_child_rolls_back_process_when_ownership_wrapper_fails(monkeypatch
 
         monkeypatch.setattr(stream, "close", close_then_fail)
 
-    def capture_popen(*args, **kwargs):
-        process = original_popen(*args, **kwargs)
+    def capture_popen(process, *args, **kwargs):
+        initialize(process, *args, **kwargs)
         processes.append(process)
         process_pidfds.append(os.pidfd_open(process.pid))
         if cleanup_fails:
@@ -98,12 +98,11 @@ def test_spawn_child_rolls_back_process_when_ownership_wrapper_fails(monkeypatch
                 (process.stdout, process.stderr), cleanup_errors, strict=True
             ):
                 fail_close(stream, cleanup_error)
-        return process
 
     def fail_child_ownership(*_args, **_kwargs):
         raise failure
 
-    monkeypatch.setattr(subprocess, "Popen", capture_popen)
+    monkeypatch.setattr(subprocess.Popen, "__init__", capture_popen)
     monkeypatch.setattr(helper_process, 'SupervisedProcess', fail_child_ownership)
     try:
         with pytest.raises(RuntimeError) as raised:
@@ -134,16 +133,15 @@ def test_spawn_child_rolls_back_process_when_ownership_wrapper_fails(monkeypatch
 
 @pytest.mark.timeout(10)
 def test_spawn_rollback_preserves_exited_leader_identity_until_group_signal(monkeypatch):
-    popen = subprocess.Popen
+    initialize = subprocess.Popen.__init__
     killpg = os.killpg
     failure = RuntimeError("supervisor construction failed after child exit")
     owner = helper_process._ChildAcquisition()
     signalled = []
 
-    def exited_process(*args, **kwargs):
-        process = popen(*args, **kwargs)
+    def exited_process(process, *args, **kwargs):
+        initialize(process, *args, **kwargs)
         os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOWAIT)
-        return process
 
     def fail_construction(*_args, **_kwargs):
         raise failure
@@ -157,7 +155,7 @@ def test_spawn_rollback_preserves_exited_leader_identity_until_group_signal(monk
             signalled.append(pid)
         killpg(pid, signum)
 
-    monkeypatch.setattr(subprocess, "Popen", exited_process)
+    monkeypatch.setattr(subprocess.Popen, "__init__", exited_process)
     monkeypatch.setattr(helper_process, 'SupervisedProcess', fail_construction)
     monkeypatch.setattr(os, "killpg", signal_owned_group)
     with pytest.raises(RuntimeError) as raised:

@@ -11,7 +11,7 @@ import signal
 import subprocess
 import sys
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import suppress
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, NamedTuple, Protocol
@@ -79,6 +79,29 @@ class _ChildAcquisition:
         self.producer_quiescent = False
         self.rollback_confirmed = False
         self.termination_requested = False
+
+
+class _OwnedChildPopen(subprocess.Popen[bytes]):
+    """Register the raw child before initialization can publish its PID."""
+
+    def __init__(
+        self,
+        owner: _ChildAcquisition,
+        argv: Sequence[str],
+        *,
+        cwd: Path | None,
+        environment: Mapping[str, str] | None,
+    ) -> None:
+        owner.process = self
+        super().__init__(
+            argv,
+            cwd=cwd,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
 
 
 class _ChildSettlement(NamedTuple):
@@ -331,18 +354,20 @@ def _spawn_child(
 ) -> SupervisedProcess:
     owner = ownership if ownership is not None else _ChildAcquisition()
     try:
-        owner.process = subprocess.Popen(
+        _OwnedChildPopen(
+            owner,
             argv,
             cwd=cwd,
-            env=environment,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
+            environment=environment,
         )
+        assert owner.process is not None
         owner.child = SupervisedProcess(owner.process, required_output_sentinels)
         return owner.child
     except BaseException as error:
+        if owner.process is not None and getattr(owner.process, "pid", None) is None:
+            # Pre-publication initialization failures retain Popen's cleanup;
+            # the preregistered instance is not a usable child handle yet.
+            owner.process = None
         if owner.process is not None:
             try:
                 _rollback_spawned_process(owner.process, owner)

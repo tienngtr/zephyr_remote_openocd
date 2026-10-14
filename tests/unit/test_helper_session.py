@@ -8,11 +8,12 @@ import io
 import json
 import os
 import signal
+import subprocess
 import sys
 from collections.abc import Buffer, Callable
 from pathlib import Path
 from types import FrameType, SimpleNamespace
-from typing import IO
+from typing import IO, cast
 from unittest.mock import create_autospec
 
 import pytest
@@ -299,6 +300,54 @@ def test_signal_capture_and_spawn_handoff_keep_cleanup_reachable(
     assert "READY" not in [kind for kind, _ in events]
     assert not session.work.exists() and session.workspace_lock.closed
     monkeypatch.setattr(helper_process, 'SupervisedProcess', supervisor)
+
+
+@pytest.mark.parametrize("failure_type", (MemoryError, SystemExit))
+def test_raw_child_return_failure_keeps_disposal_owned(coordinated_helper, failure_type):
+    session, writer, events, _children = coordinated_helper
+    processes: list[subprocess.Popen[bytes]] = []
+    failure = failure_type("raw child registration interrupted")
+    previous_trace = sys.gettrace()
+
+    def fail_at_return(frame: FrameType, event: str, _arg: object):
+        if event == "return" and frame.f_code is subprocess.Popen.__init__.__code__:
+            child = cast(subprocess.Popen[bytes], frame.f_locals["self"])
+            assert child.pid is not None
+            processes.append(child)
+            raise failure
+        return fail_at_return
+
+    write_start(writer, ProcessSpec((sys.executable, "-c", "import signal; signal.pause()")), ())
+    try:
+        sys.settrace(fail_at_return)
+        try:
+            _run_terminated(session, fails=True)
+        finally:
+            sys.settrace(previous_trace)
+
+        assert len(processes) == 1
+        child = processes[0]
+        # Inspect before fallback cleanup: session rollback must settle the raw
+        # process even when normal constructor-return adoption did not occur.
+        assert child.returncode is not None
+        with pytest.raises(ChildProcessError):
+            os.waitpid(child.pid, os.WNOHANG)
+        assert child.stdout is not None and child.stdout.closed
+        assert child.stderr is not None and child.stderr.closed
+        snapshot = _terminal_event(events)
+        assert snapshot.outcome.primary_failure is not None
+        assert snapshot.cleanup.child_disposal == "confirmed"
+        assert snapshot.cleanup.confirmed
+        assert not session.work.exists() and session.workspace_lock.closed
+    finally:
+        sys.settrace(previous_trace)
+        for child in processes:
+            if child.poll() is None:
+                os.killpg(child.pid, signal.SIGKILL)
+            child.wait(timeout=5)
+            for stream in (child.stdout, child.stderr):
+                if stream is not None:
+                    stream.close()
 
 
 @pytest.mark.parametrize(
