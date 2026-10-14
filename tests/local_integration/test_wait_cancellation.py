@@ -15,8 +15,11 @@ import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from pathlib import Path
+from types import SimpleNamespace
+from typing import override
 
 import pytest
+from zephyr_remote_openocd.controller import rtt as rtt_module
 from zephyr_remote_openocd.controller.authority import SessionAuthority
 from zephyr_remote_openocd.controller.cancellation import OperationCancelled, operation_scope
 from zephyr_remote_openocd.controller.forwarding import ForwardManager
@@ -220,3 +223,31 @@ def test_latched_cancellation_wins_over_an_expired_session_wait(monkeypatch) -> 
             signal.raise_signal(signal.SIGINT)
             # The deadline has already expired when the wait arbitrates.
             session.wait_for_openocd_exit(0)
+
+
+def test_cancellation_during_failed_rtt_attempt_wins_over_expired_startup(
+    observed_session,
+) -> None:
+    class ClosingChannel(socket.socket):
+        @override
+        def close(self) -> None:
+            # Ctrl-C latches while the refused attempt's socket is released.
+            signal.raise_signal(signal.SIGINT)
+            super().close()
+
+    with socket.socket() as reserved:
+        reserved.bind(("127.0.0.1", 0))
+        port = reserved.getsockname()[1]
+    client_socket = SimpleNamespace(**vars(socket))
+    client_socket.socket = ClosingChannel
+    with (
+        pytest.MonkeyPatch.context() as patch,
+        tempfile.TemporaryFile("w+b") as stdin,
+        io.BytesIO() as stdout,
+        pytest.raises(OperationCancelled),
+        operation_scope(),
+    ):
+        patch.setattr(rtt_module, "socket", client_socket)
+        run_rtt_client(
+            port, observed_session(lambda: None), stdin=stdin, stdout=stdout, startup_timeout=0
+        )

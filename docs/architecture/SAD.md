@@ -838,7 +838,11 @@ created and closes it on failure or interruption. It connects without blocking,
 completes the connection through writability and `SO_ERROR`, retries refused
 attempts after a short delay until the startup deadline, and allows a brief
 grace period for the forward to report remote-channel refusal. Those are real
-connection timers, not cancellation polling. The client's cleanup scope is
+connection timers, not cancellation polling. A failed attempt is retryable only
+once its socket is released. If releasing it fails, the attempt failure becomes
+the operation's established failure, carrying the cleanup failure as diagnostic
+detail as forwarding startup failures carry their rollback failures, and no
+further attempt is made. The client's cleanup scope is
 active before adopting the connected socket, accessing stdin, or delivering
 initial output. A terminal-mode scope restores prior attributes before the
 socket is closed. The relay owns the bounded pending-input queue and interprets

@@ -437,3 +437,30 @@ def test_cleanup_failure_is_reported_after_session_exit(
 
     assert raised.value is failure
     server.join()
+
+
+def test_failed_attempt_cleanup_is_fatal_with_the_attempt_failure_primary(
+    channels, observed_session
+) -> None:
+    cleanup_error = OSError("RTT attempt socket cleanup failed")
+
+    class Channel(TrackedChannel):
+        @override
+        def close(self) -> None:
+            super().close()
+            raise cleanup_error
+
+    channel_type = channels(Channel)
+    with socket.socket() as reserved:
+        reserved.bind(("127.0.0.1", 0))
+        port = reserved.getsockname()[1]
+    with (
+        io.BytesIO() as stdin,
+        io.BytesIO() as stdout,
+        pytest.raises(ConnectionRefusedError) as raised,
+    ):
+        rtt_module.run_rtt_client(port, observed_session(lambda: None), stdin=stdin, stdout=stdout)
+    # An unreleased attempt cannot be retried: the refusal is the established
+    # failure and its socket-cleanup failure stays attached as diagnostic.
+    assert len(channel_type.created) == 1
+    assert any(str(cleanup_error) in note for note in raised.value.__notes__)

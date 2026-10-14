@@ -53,15 +53,20 @@ class _RttConnection:
                 self._attempt(port, deadline)
                 return
             except OSError as error:
+                # A failed attempt is retryable only once its socket is released.
+                # Otherwise the attempt failure, carrying the cleanup failure,
+                # is the operation's fatal outcome, as with forwarding rollback.
                 try:
                     self.close()
                 except BaseException as cleanup_error:
                     _add_failure_note(error, "RTT socket cleanup failed", cleanup_error)
-                    raise
+                    raise error from None
                 last_error = error
+            # The retry delay passes through the common wait even when the
+            # startup deadline has expired, so a latched cancellation wins.
+            wait_for(deadline=min(deadline, time.monotonic() + _CONNECT_RETRY_DELAY))
             if time.monotonic() >= deadline:
                 break
-            wait_for(deadline=min(deadline, time.monotonic() + _CONNECT_RETRY_DELAY))
         raise RttClientError(f"cannot connect to local RTT port 127.0.0.1:{port}") from last_error
 
     def _attempt(self, port: int, deadline: float) -> None:
