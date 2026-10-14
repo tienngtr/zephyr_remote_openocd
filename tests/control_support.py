@@ -32,6 +32,9 @@ class ControlProcess:
     """
 
     args = ("fake-helper",)
+    # Pipe-only doubles have no kernel child. Their waits omit this completion
+    # source; the live parent identity keeps descriptor acquisition harmless.
+    pid = os.getpid()
 
     def __init__(self, initial: bytes = CREATED) -> None:
         self.stdin: BinaryIO = io.BytesIO()

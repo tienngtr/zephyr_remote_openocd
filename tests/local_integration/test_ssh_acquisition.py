@@ -58,6 +58,7 @@ def test_transport_return_failure_cleans_callers_registered_process(
     failure = failure_type("transport caller handoff failed")
     processes = []
     pipes: list[BinaryIO | None] = []
+    completion_descriptors: list[int] = []
     managed = []
     previous_trace = sys.gettrace()
     previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
@@ -69,6 +70,8 @@ def test_transport_return_failure_cleans_callers_registered_process(
             pipes.extend((process.stdin, process.stdout, process.stderr))
         if event == "return" and frame.f_code is SshCommand.popen.__code__:
             managed.append(arg)
+            if caller == "helper" and helper._completion.descriptor is not None:
+                completion_descriptors.append(helper._completion.descriptor)
             raise failure
         return interrupt_at_return
 
@@ -92,6 +95,9 @@ def test_transport_return_failure_cleans_callers_registered_process(
         with pytest.raises(ChildProcessError):
             os.waitpid(processes[0].pid, os.WNOHANG)
         assert all(stream is not None and stream.closed for stream in pipes)
+        for descriptor in completion_descriptors:
+            with pytest.raises(OSError):
+                os.fstat(descriptor)
         assert signal.pthread_sigmask(signal.SIG_BLOCK, set()) == previous_mask
         assert not forwards.has_forwards
         if caller == "helper":

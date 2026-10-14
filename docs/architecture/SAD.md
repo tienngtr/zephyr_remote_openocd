@@ -1626,9 +1626,11 @@ failure can be selected. Nonzero status remains independent secondary evidence
 after a reader-start failure. Only the existing coordinating process owner calls
 `poll()`/`wait()`; the reader never reaps. During existing bounded shutdown, the
 owner may settle the process before the reader finishes, but defers recording
-its status until reader settlement. Reader registration, bounded joining, and
-stream closure retain the existing cleanup owners; no additional long-lived
-OS resource is acquired. Each common wait owns and closes its transient pidfds.
+its status until reader settlement. Reader registration, bounded joining, stream
+closure, and the stable completion descriptor retain the existing client cleanup
+owner. The client acquires that descriptor during transport registration before
+launching the reader. Reader waits borrow it; cleanup releases it only after
+reader settlement. Other common waits own and close their transient pidfds.
 
 SESSION_CREATED and READY remain valid protocol evidence at the final boundary,
 but the durable transport-end fact prevents their use for acquisition, START,
@@ -1842,6 +1844,7 @@ not by cancelling its awaiter.
 | RTT socket and terminal mode | Caller-owned resource-free connection scope and terminal scope | Each socket is registered on the already-owned connection as it is created; connect and initial observation populate that scope without returning a live socket. Terminal restoration and socket closure are independently attempted on failure/interruption. |
 | Local finite command (`SshCommand.run`/`run_stream`, batch GDB) | Resource-free finite-process driver, created before launch | Admitted before launch; a private `Popen` subtype registers the raw child on the driver before the standard-library initializer runs, so any `BaseException` after the child is published, including at the constructor's return, stops and reaps it and closes its pipes. Failed exec that already reaped the child keeps its original error. An interrupted command is never replayed. |
 | Helper protocol reader thread | `HelperConnection`, registered before start | Shutdown joins it within the bounded budget before closing the stream it reads; a reader that never started holds nothing. |
+| Control completion pidfd | Resource-free `ProcessCompletion` already owned by `HelperConnection` | Acquire during transport registration before reader launch or coordinator reaping. Waits borrow the stable descriptor; cleanup closes it independently after reader settlement, retaining it if the reader remains live. |
 
 A `SupervisedProcess` owns the configured OpenOCD process-group resources and
 per-stream decoding state, which only the coordinator consumes. Process
@@ -2353,14 +2356,22 @@ by then is dispatched before any timeout, and session facts recorded before
 that wait returned are re-read before expiry is reported. A cancellation
 latched after the expiring wait returned is retained behind the timeout.
 
-**Process completion and reaping.** A wait opens a pidfd for each owned child
-that its owner has not yet reaped and closes it before returning. Reaping
-happens only through the owner's `Popen` on the coordinating thread, so no
-competing reaper exists and the pid cannot be reused between the check and
-`pidfd_open`. A child that exited before registration is reported immediately.
+**Process completion and reaping.** Reaping happens only through the owner's
+`Popen` on the coordinating thread. For finite commands and forwarding waits on
+that same thread, the wait opens transient pidfds and closes them before
+returning; no concurrent reaper can release their numeric identity at registration.
+The separate helper reader instead borrows a stable pidfd from a resource-free
+`ProcessCompletion` already held by `HelperConnection`. Transport registration
+populates that owner before reader launch and before coordinator reaping, so
+shutdown may reap without redirecting the reader to a reused PID. Cleanup closes
+the descriptor only after reader settlement and independently of transport
+cleanup failures; an unsettled reader retains its owned completion descriptor.
+A child that exited before registration is reported immediately.
 Without pidfd support (kernels before Linux 5.3, or a sandbox that denies
 `pidfd_open`), a non-reaping `waitid(WNOWAIT)` re-check every 50 ms bounds exit
-observation. That interval is a process-completion fallback, not cancellation
+observation. The fallback also re-reads the original process handle's durable
+returncode, including when the coordinator has already reaped. That interval
+is a process-completion fallback, not cancellation
 polling: cancellation, notifications, and descriptor readiness keep their own
 wake sources. It deliberately replaces a sole-reaper observer thread, which
 would add a thread to own without changing the single-reaper property.

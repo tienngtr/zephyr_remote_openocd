@@ -4,13 +4,15 @@
 
 from __future__ import annotations
 
+import inspect
 import os
 import signal
+import subprocess
 import sys
 import threading
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
-from typing import BinaryIO, override
+from typing import BinaryIO, cast, override
 
 import pytest
 from zephyr_remote_openocd.controller import helper_connection as connection_module
@@ -524,3 +526,92 @@ def test_foreground_wait_uses_reader_notification_when_ordinary_output_blocks(
     assert not observer.is_alive()
     assert not thread_errors
     assert peer.transport is not None and peer.transport.returncode == 0
+
+
+@pytest.mark.parametrize("pidfd_available", (True, False), ids=("pidfd", "waitid-fallback"))
+def test_control_exit_survives_reaping_during_wait_registration(
+    peer: ExitPeer, monkeypatch, pidfd_available
+):
+    snapshot_taken = threading.Event()
+    reaped = threading.Event()
+    terminal = terminal_message(Trigger.CONTROLLER_EOF, child_acquired=False)
+    session = peer.create(CREATED + terminal)
+    returncode = cast(property, inspect.getattr_static(ManagedSshProcess, "returncode")).fget
+    assert returncode is not None
+    open_pidfd = os.pidfd_open
+    waitid = os.waitid
+    completion_descriptors: list[int] = []
+
+    def snapshot_returncode(process):
+        status = returncode(process)
+        if (
+            process is peer.transport
+            and threading.current_thread() is not threading.main_thread()
+            and not snapshot_taken.is_set()
+        ):
+            assert status is None
+            snapshot_taken.set()
+            assert reaped.wait(30), "coordinator did not reap the control process"
+        return status
+
+    with subprocess.Popen(
+        (sys.executable, "-c", "import sys; sys.stdin.read()"), stdin=subprocess.PIPE
+    ) as replacement:
+
+        def reused_pidfd(pid, flags=0):
+            if not pidfd_available:
+                raise OSError("pidfd unavailable")
+            if peer.transport is not None and pid == peer.transport.pid and reaped.is_set():
+                # Model kernel PID reuse with a real, still-live replacement.
+                # The owner reaps after the reader's status snapshot and before
+                # completion registration; inherited stdout remains open.
+                return open_pidfd(replacement.pid, flags)
+            descriptor = open_pidfd(pid, flags)
+            completion_descriptors.append(descriptor)
+            return descriptor
+
+        def reused_waitid(idtype, pid, options):
+            if peer.transport is not None and pid == peer.transport.pid and reaped.is_set():
+                return waitid(idtype, replacement.pid, options)
+            return waitid(idtype, pid, options)
+
+        def observe_wait(
+            *, readable=(), writable=(), sources=_NO_WAIT_SOURCES, deadline=None
+        ) -> WaitResult:
+            if not sources.processes and not reaped.is_set():
+                assert snapshot_taken.wait(30), "reader did not snapshot control status"
+                assert peer.transport is not None
+                assert peer.transport.wait(timeout=30) == 0
+                reaped.set()
+            result = wait_for(
+                readable=readable, writable=writable, sources=sources, deadline=deadline
+            )
+            if sources.processes and reaped.is_set():
+                assert result.exited, "completion registration lost the reaped control process"
+                for descriptor in completion_descriptors:
+                    os.fstat(descriptor)  # The wait borrows rather than closes this resource.
+            return result
+
+        monkeypatch.setattr(ManagedSshProcess, "returncode", property(snapshot_returncode))
+        monkeypatch.setattr(os, "pidfd_open", reused_pidfd)
+        monkeypatch.setattr(os, "waitid", reused_waitid)
+        monkeypatch.setattr(connection_module, "wait_for", observe_wait)
+        try:
+            with pytest.raises(SessionError):
+                session.acquire()
+            snapshot = session._authority.snapshot()
+            assert snapshot_taken.is_set() and reaped.is_set()
+            assert snapshot.control_ended and not snapshot.control_observation_pending
+            assert snapshot.terminal is not None
+            assert not any(detail.code == "READER_FAILURE" for detail in snapshot.diagnostics)
+            assert not peer.forward_entries
+            assert replacement.poll() is None
+        finally:
+            reaped.set()
+            assert replacement.stdin is not None
+            replacement.stdin.close()
+            replacement.wait(timeout=30)
+            peer.settle()
+        for descriptor in completion_descriptors:
+            with pytest.raises(OSError):
+                os.fstat(descriptor)

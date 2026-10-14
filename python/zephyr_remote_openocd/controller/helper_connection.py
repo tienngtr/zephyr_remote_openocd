@@ -20,7 +20,12 @@ from zephyr_remote_openocd.controller.cancellation import admit_effect
 from zephyr_remote_openocd.controller.deployment import DeploymentResult
 from zephyr_remote_openocd.controller.plan import SessionAllocation
 from zephyr_remote_openocd.controller.ssh import ManagedSshProcess, SshCommand, _stop_process
-from zephyr_remote_openocd.controller.waiting import Notifier, WaitSources, wait_for
+from zephyr_remote_openocd.controller.waiting import (
+    Notifier,
+    ProcessCompletion,
+    WaitSources,
+    wait_for,
+)
 from zephyr_remote_openocd.protocol.commands import encode_start
 from zephyr_remote_openocd.protocol.listeners import ListenerSpec
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
@@ -76,6 +81,7 @@ class HelperConnection:
         self._reader_thread: threading.Thread | None = None
         self._reader_finished = threading.Event()
         self._process: ManagedSshProcess | None = None
+        self._completion = ProcessCompletion()
         self._allocation: SessionAllocation | None = None
         self._order: EventOrder | None = None
         self._closed = False
@@ -255,6 +261,11 @@ class HelperConnection:
             if not reader_stopped:
                 reader_error = SessionError("helper event reader did not stop")
                 self._authority.record_failure("HELPER_CLEANUP_FAILURE", reader_error)
+        if reader_stopped:
+            try:
+                self._completion.close()
+            except BaseException as error:
+                self._authority.record_failure("HELPER_CLEANUP_FAILURE", error)
 
     def _resolve_shutdown_result(self) -> None:
         """Record missing terminal information independently of transport status."""
@@ -290,6 +301,9 @@ class HelperConnection:
 
     def _adopt_control(self, process: ManagedSshProcess) -> None:
         self._process = process
+        # Retain physical identity before reader launch and before this owner
+        # can reap. Registration still runs inside transport rollback.
+        self._completion.acquire(process)
 
     def _start_event_drain(self) -> None:
         if self._reader_thread is not None:
@@ -360,7 +374,9 @@ class HelperConnection:
         os.set_blocking(descriptor, False)
         frames = ControlFrameBuffer()
         while True:
-            result = wait_for(readable=(descriptor,), sources=WaitSources(processes=(helper,)))
+            result = wait_for(
+                readable=(descriptor,), sources=WaitSources(processes=(self._completion,))
+            )
             # Completion revokes admission before final frames are accounted.
             # Output/logging callbacks retain their ordinary reader ownership;
             # they never run under the lifecycle authority's lock.

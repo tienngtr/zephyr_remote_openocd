@@ -41,13 +41,52 @@ type Descriptor = int | HasFileno
 
 
 class ProcessHandle(Protocol):
-    """A child whose owner alone reaps it on the waiting thread."""
+    """A child whose owner alone reaps it.
+
+    Bare handles are observed on the reaper's thread. A separate reader uses
+    an already-owned ``ProcessCompletion`` to retain physical exit identity.
+    """
 
     @property
     def pid(self) -> int: ...
 
     @property
     def returncode(self) -> int | None: ...
+
+
+class ProcessCompletion:
+    """Own a stable completion descriptor before a concurrent reaper can run.
+
+    Acquisition populates this resource-free owner before the reader starts.
+    Waits borrow its descriptor; its coordinator closes it only after joining
+    the reader. If pidfds are unavailable, waits use bounded non-reaping
+    observation and the original handle's durable returncode.
+    """
+
+    def __init__(self) -> None:
+        self.process: ProcessHandle | None = None
+        self.descriptor: int | None = None
+
+    def acquire(self, process: ProcessHandle) -> None:
+        self.process = process
+        # Keep the bounded waitid fallback on older kernels and sandboxes.
+        with suppress(OSError):
+            self.descriptor = os.pidfd_open(process.pid)
+
+    @property
+    def pid(self) -> int:
+        assert self.process is not None
+        return self.process.pid
+
+    @property
+    def returncode(self) -> int | None:
+        assert self.process is not None
+        return self.process.returncode
+
+    def close(self) -> None:
+        if self.descriptor is not None:
+            os.close(self.descriptor)
+            self.descriptor = None
 
 
 class Notifier:
@@ -183,20 +222,31 @@ def wait_for(
     }
     native_fd = None if operation is None else operation.native_wakeup_fd
     exited: set[int] = set()
-    fallback: list[int] = []
+    fallback: list[ProcessHandle] = []
     pidfds: dict[int, int] = {}
+    owned_pidfds: list[int] = []
     try:
         for process in sources.processes:
             if process.returncode is not None:
                 exited.add(process.pid)
                 continue
+            if isinstance(process, ProcessCompletion):
+                if process.descriptor is not None:
+                    pidfds[process.descriptor] = process.pid
+                elif _exited_unreaped(process.pid):
+                    exited.add(process.pid)
+                else:
+                    fallback.append(process)
+                continue
             try:
-                pidfds[os.pidfd_open(process.pid)] = process.pid
+                descriptor = os.pidfd_open(process.pid)
+                owned_pidfds.append(descriptor)
+                pidfds[descriptor] = process.pid
             except OSError:
                 if _exited_unreaped(process.pid):
                     exited.add(process.pid)
                 else:
-                    fallback.append(process.pid)
+                    fallback.append(process)
         poller = select.poll()
         for descriptor in (*notifier_fds, *pidfds, *(() if native_fd is None else (native_fd,))):
             masks[descriptor] = masks.get(descriptor, 0) | select.POLLIN
@@ -221,9 +271,13 @@ def wait_for(
                 notified = True
             if descriptor == native_fd:
                 native_woken = True
-        exited.update(pid for pid in fallback if _exited_unreaped(pid))
+        exited.update(
+            process.pid
+            for process in fallback
+            if process.returncode is not None or _exited_unreaped(process.pid)
+        )
     finally:
-        for pidfd in pidfds:
+        for pidfd in owned_pidfds:
             os.close(pidfd)
     if operation is not None:
         if native_woken:

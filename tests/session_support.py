@@ -9,7 +9,13 @@ from collections.abc import Callable, Iterable
 import pytest
 from zephyr_remote_openocd.controller import helper_connection as connection_module
 from zephyr_remote_openocd.controller.authority import SessionAuthority
-from zephyr_remote_openocd.controller.waiting import Descriptor, Notifier, WaitResult, WaitSources
+from zephyr_remote_openocd.controller.waiting import (
+    Descriptor,
+    Notifier,
+    ProcessCompletion,
+    WaitResult,
+    WaitSources,
+)
 
 from tests.control_support import ControlProcess
 
@@ -37,7 +43,13 @@ def pipe_control_wait(monkeypatch: pytest.MonkeyPatch) -> None:
             writable=writable,
             sources=WaitSources(
                 notifiers=sources.notifiers,
-                processes=tuple(p for p in sources.processes if not isinstance(p, ControlProcess)),
+                processes=tuple(
+                    p
+                    for p in sources.processes
+                    if not isinstance(
+                        p.process if isinstance(p, ProcessCompletion) else p, ControlProcess
+                    )
+                ),
             ),
             deadline=deadline,
         )
