@@ -404,3 +404,54 @@ def test_operation_cancellation_has_one_identity() -> None:
     assert operation.cancellation is operation.cancellation
     assert not isinstance(operation.cancellation, Exception)
     assert current_operation() is None
+
+
+@pytest.mark.parametrize("boundary", ("handler", "wakeup"))
+def test_interruption_during_capture_installation_leaves_no_stale_owner(
+    monkeypatch, boundary
+) -> None:
+    prior_read, prior_write = os.pipe2(os.O_NONBLOCK)
+    previous_handler = signal.getsignal(signal.SIGINT)
+    interruption = KeyboardInterrupt("capture installation interrupted")
+    install_signal = signal.signal
+    install_wakeup = signal.set_wakeup_fd
+
+    def interrupt_after_handler(signum, handler):
+        # The disposition changed; Python is interrupted before continuing.
+        previous = install_signal(signum, handler)
+        if handler not in (previous_handler, signal.SIG_IGN, signal.SIG_DFL):
+            raise interruption
+        return previous
+
+    def interrupt_after_wakeup(descriptor, **kwargs):
+        # The slot changed and its previous value is lost to the interruption.
+        previous = install_wakeup(descriptor, **kwargs)
+        if descriptor not in (-1, prior_write):
+            raise interruption
+        return previous
+
+    install_wakeup(prior_write, warn_on_full_buffer=False)
+    try:
+        if boundary == "handler":
+            monkeypatch.setattr(signal, "signal", interrupt_after_handler)
+        else:
+            monkeypatch.setattr(signal, "set_wakeup_fd", interrupt_after_wakeup)
+        with pytest.raises(KeyboardInterrupt) as raised, operation_scope():
+            pytest.fail("capture installation was not interrupted")
+        monkeypatch.undo()
+        assert raised.value is interruption
+        assert signal.getsignal(signal.SIGINT) is previous_handler
+        installed = installed_wakeup_fd()
+        if boundary == "handler":
+            # The slot was never taken, so the prior owner keeps it.
+            assert installed == prior_write
+        else:
+            # The lost prior value cannot be reinstated; the closed capture
+            # descriptor is never left installed.
+            assert installed == -1
+    finally:
+        monkeypatch.undo()
+        install_wakeup(-1)
+        install_signal(signal.SIGINT, previous_handler)
+        os.close(prior_read)
+        os.close(prior_write)

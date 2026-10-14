@@ -2197,10 +2197,16 @@ fact: it cleans up nothing, takes no application lock, calls no authority or
 user callback, logs nothing, and allocates nothing of note. Native delivery to
 any thread writes a byte to the wakeup pipe before the Python handler runs on
 the main thread, so a main-thread wait wakes even while that handler is
-pending. Installation and restoration are ownership transitions: restoration
-first returns the process-wide wakeup slot to its previous value, then the
-previous handler, and closes the pipe only after CPython no longer references
-it; a failed slot restoration retains the descriptor. The supported west
+pending. Installation and restoration are ownership transitions. Installation
+records restoration responsibility before each native mutation and installs
+the non-raising handler before the wakeup slot, so Ctrl-C delivered to the
+previous handler cannot interrupt the later steps. Restoration inspects the
+process-wide wakeup slot rather than trusting a flag: it returns the slot to its
+previous value only while the operation's descriptor holds it, then restores
+the previous handler, and closes the pipe only after the slot no longer refers
+to it; a failed slot restoration retains the descriptor. If an interruption
+lost the previous slot value during installation, the slot is left empty
+rather than referring to a closed descriptor. The supported west
 invocation owns the process-wide wakeup slot for the live operation.
 Transparent composition with an unrelated wakeup-fd owner, such as an
 embedding event loop, is not supported; a previously installed descriptor is

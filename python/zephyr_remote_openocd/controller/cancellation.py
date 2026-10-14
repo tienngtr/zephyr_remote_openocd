@@ -138,26 +138,42 @@ class OperationCancellation:
         self.dispatch()
 
     def _install(self) -> None:
-        """Install native capture as an ownership transition on the main thread."""
+        """Install native capture as an ownership transition on the main thread.
+
+        Restoration responsibility is recorded before each native mutation.
+        The non-raising handler is installed first, so a Ctrl-C delivered to
+        the previous handler cannot interrupt the remaining steps.
+        """
         if threading.current_thread() is not threading.main_thread():
             return
-        if not callable(signal.getsignal(signal.SIGINT)):
+        previous_handler = signal.getsignal(signal.SIGINT)
+        if not callable(previous_handler):
             return
+        self._previous_handler = previous_handler
+        self._handler_installed = True
+        signal.signal(signal.SIGINT, self._latch)
         self._wakeup_fds = os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)
         self._previous_wakeup_fd = signal.set_wakeup_fd(
             self._wakeup_fds[1], warn_on_full_buffer=False
         )
         self._wakeup_installed = True
-        self._previous_handler = signal.signal(signal.SIGINT, self._latch)
-        self._handler_installed = True
 
     def _restore(self) -> None:
-        """Restore prior capture, then release descriptors CPython no longer uses."""
+        """Restore prior capture, then release descriptors CPython no longer uses.
+
+        The wakeup slot is inspected rather than trusted to a flag: the prior
+        value is restored only if this operation's descriptor holds the slot,
+        and the descriptor is closed only after the slot no longer refers to it.
+        """
         errors: list[BaseException] = []
-        if self._wakeup_installed:
+        fds = self._wakeup_fds
+        self._wakeup_installed = False
+        slot_released = fds is None
+        if fds is not None:
             try:
-                signal.set_wakeup_fd(self._previous_wakeup_fd)
-                self._wakeup_installed = False
+                current = signal.set_wakeup_fd(-1)
+                signal.set_wakeup_fd(self._previous_wakeup_fd if current == fds[1] else current)
+                slot_released = True
             except BaseException as error:
                 errors.append(error)
         if self._handler_installed:
@@ -166,8 +182,8 @@ class OperationCancellation:
                 self._handler_installed = False
             except BaseException as error:
                 errors.append(error)
-        if self._wakeup_fds is not None and not self._wakeup_installed:
-            for descriptor in self._wakeup_fds:
+        if fds is not None and slot_released:
+            for descriptor in fds:
                 try:
                     os.close(descriptor)
                 except BaseException as error:
