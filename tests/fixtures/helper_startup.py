@@ -18,6 +18,12 @@ from zephyr_remote_openocd.helper import control as helper_control
 from zephyr_remote_openocd.helper import workspace as workspace_module
 
 
+def report(record: dict[str, object]) -> None:
+    # The parent can signal as soon as it reads the checkpoint. A handler's
+    # acknowledgement must not reenter a still-locked buffered stderr writer.
+    os.write(2, json.dumps(record).encode() + b"\n")
+
+
 def main() -> None:
     boundary, action, gate = sys.argv[1:]
     original_new = workspace_module.new_workspace
@@ -36,7 +42,7 @@ def main() -> None:
             return
         paused = True
         assert acquired
-        print(json.dumps({"workspace": str(acquired[0][1])}), file=sys.stderr, flush=True)
+        report({"workspace": str(acquired[0][1])})
         if action == "exception":
             raise RuntimeError("coordinator setup failed")
         os.read(int(gate), 1)
@@ -63,7 +69,7 @@ def main() -> None:
 
             def observed(number, frame):
                 handler(number, frame)
-                print(json.dumps({"signal": number}), file=sys.stderr, flush=True)
+                report({"signal": number})
 
             return original_signal(signum, observed)
         return original_signal(signum, handler)
@@ -80,24 +86,20 @@ def main() -> None:
         except BaseException as error:
             status = 1
             failure = error.__cause__ or error
-            print(json.dumps({"failure": type(failure).__name__}), file=sys.stderr, flush=True)
+            report({"failure": type(failure).__name__})
         finally:
             assert acquired
             _session_id, workspace, lock = acquired[0]
-            print(
-                json.dumps(
-                    {
-                        "workspace_remaining": workspace.exists(),
-                        "lease_remaining": workspace_module._lease_path(workspace).exists(),
-                        "lock_closed": lock.closed,
-                        "handlers_restored": all(
-                            signal.getsignal(signum) == handler
-                            for signum, handler in previous_handlers.items()
-                        ),
-                    }
-                ),
-                file=sys.stderr,
-                flush=True,
+            report(
+                {
+                    "workspace_remaining": workspace.exists(),
+                    "lease_remaining": workspace_module._lease_path(workspace).exists(),
+                    "lock_closed": lock.closed,
+                    "handlers_restored": all(
+                        signal.getsignal(signum) == handler
+                        for signum, handler in previous_handlers.items()
+                    ),
+                }
             )
     raise SystemExit(status)
 

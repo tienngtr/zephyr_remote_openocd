@@ -25,7 +25,13 @@ from zephyr_remote_openocd.controller.helper_connection import HelperConnection
 from zephyr_remote_openocd.controller.plan import SessionPlan
 from zephyr_remote_openocd.controller.session import SessionController
 from zephyr_remote_openocd.controller.ssh import ManagedSshProcess, SshCommand, SshForwardSpec
-from zephyr_remote_openocd.controller.waiting import Descriptor, WaitResult, WaitSources, wait_for
+from zephyr_remote_openocd.controller.waiting import (
+    Descriptor,
+    ProcessCompletion,
+    WaitResult,
+    WaitSources,
+    wait_for,
+)
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy, Trigger
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.protocol.wire import MAX_FRAME_SIZE, encode_frame
@@ -566,9 +572,7 @@ def test_control_exit_survives_reaping_during_wait_registration(
                 # The owner reaps after the reader's status snapshot and before
                 # completion registration; inherited stdout remains open.
                 return open_pidfd(replacement.pid, flags)
-            descriptor = open_pidfd(pid, flags)
-            completion_descriptors.append(descriptor)
-            return descriptor
+            return open_pidfd(pid, flags)
 
         def reused_waitid(idtype, pid, options):
             if peer.transport is not None and pid == peer.transport.pid and reaped.is_set():
@@ -578,6 +582,15 @@ def test_control_exit_survives_reaping_during_wait_registration(
         def observe_wait(
             *, readable=(), writable=(), sources=_NO_WAIT_SOURCES, deadline=None
         ) -> WaitResult:
+            # Track only the project's owned completion descriptor, not the
+            # temporary pidfds that subprocess.wait() also opens on Python 3.15+.
+            for process in sources.processes:
+                if (
+                    isinstance(process, ProcessCompletion)
+                    and process.descriptor is not None
+                    and process.descriptor not in completion_descriptors
+                ):
+                    completion_descriptors.append(process.descriptor)
             if not sources.processes and not reaped.is_set():
                 assert snapshot_taken.wait(30), "reader did not snapshot control status"
                 assert peer.transport is not None
@@ -602,6 +615,7 @@ def test_control_exit_survives_reaping_during_wait_registration(
             snapshot = session._authority.snapshot()
             assert snapshot_taken.is_set() and reaped.is_set()
             assert snapshot.control_ended and not snapshot.control_observation_pending
+            assert bool(completion_descriptors) is pidfd_available
             assert snapshot.terminal is not None
             assert not any(detail.code == "READER_FAILURE" for detail in snapshot.diagnostics)
             assert not peer.forward_entries
