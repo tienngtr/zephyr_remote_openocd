@@ -1247,6 +1247,18 @@ Local SSH-loss detection latency SHALL be delegated to the configured SSH
 client and the local operating system. This requirement does not impose an
 end-to-end bound from the underlying connection loss to local detection.
 
+Completion of the owned local control process SHALL be observed independently
+of helper stdout EOF. After observing that completion, the client SHALL give
+already-local protocol data a finite nonblocking observation opportunity and
+account valid complete frames before selecting a generic transport-end failure.
+It SHALL NOT wait for future bytes or EOF. SESSION_CREATED or READY accounted
+at that boundary SHALL NOT authorize acquisition or new dependent work on the
+ended transport. Without a valid terminal outcome, even zero control status
+SHALL be infrastructure failure; nonzero control status SHALL remain independent
+failure evidence after a valid terminal outcome. An already-established failure
+retains precedence under REQ-FUNC-HELP-011. This boundary defines local
+observation, not a total physical ordering of exit and byte arrival.
+
 ### REQ-FUNC-SSH-011
 
 The runner SHALL NOT attempt transparent reconstruction of an interrupted debugging session after SSH loss.

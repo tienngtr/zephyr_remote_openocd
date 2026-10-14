@@ -10,7 +10,6 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable, Iterable
-from typing import BinaryIO, cast
 
 from zephyr_remote_openocd.controller.authority import (
     SessionAuthority,
@@ -26,7 +25,13 @@ from zephyr_remote_openocd.protocol.commands import encode_start
 from zephyr_remote_openocd.protocol.listeners import ListenerSpec
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
 from zephyr_remote_openocd.protocol.process import ProcessSpec
-from zephyr_remote_openocd.protocol.wire import EventOrder, decode_terminal, read_message
+from zephyr_remote_openocd.protocol.wire import (
+    MAX_FRAME_SIZE,
+    ControlFrameBuffer,
+    EventOrder,
+    decode_frame,
+    decode_terminal,
+)
 
 # The helper gives a supervised child five seconds to exit after SIGTERM,
 # followed by up to four seconds joining its relay threads and workspace
@@ -34,6 +39,12 @@ from zephyr_remote_openocd.protocol.wire import EventOrder, decode_terminal, rea
 # process scheduling/transport overhead.
 HELPER_STOP_TIMEOUT = 15.0
 HELPER_START_TIMEOUT = 10.0
+
+# Match the remote reader's finite checkpoint: one maximum wire frame of new
+# bytes, in addition to any prefix retained by the incremental framer. The
+# allowance is never replenished by a descendant that keeps writing.
+_FINAL_OBSERVATION_BYTES = MAX_FRAME_SIZE
+_READ_CHUNK_SIZE = 64 * 1024
 
 
 class HelperConnection:
@@ -63,6 +74,7 @@ class HelperConnection:
         self._authority = authority
         self._notifier = notifier
         self._reader_thread: threading.Thread | None = None
+        self._reader_finished = threading.Event()
         self._process: ManagedSshProcess | None = None
         self._allocation: SessionAllocation | None = None
         self._order: EventOrder | None = None
@@ -142,14 +154,18 @@ class HelperConnection:
         """
         expired = False
         while True:
+            self.observe_status()
             snapshot = self._authority.snapshot()
             if snapshot.failure is not None:
                 raise self._authority.publish_failure() or snapshot.failure
-            observed = observe(snapshot)
-            if observed is not None:
-                return observed
-            if snapshot.terminal is not None:
-                raise self._authority.publish_failure() or SessionError(ended)
+            if not snapshot.control_observation_pending:
+                if snapshot.control_ended:
+                    raise SessionError(ended + ": control transport ended")
+                observed = observe(snapshot)
+                if observed is not None:
+                    return observed
+                if snapshot.terminal is not None:
+                    raise self._authority.publish_failure() or SessionError(ended)
             if expired:
                 diagnostic = self._process_or_error().stderr_tail()
                 suffix = ": " + diagnostic.decode("utf-8", "replace").strip() if diagnostic else ""
@@ -162,16 +178,14 @@ class HelperConnection:
 
     def observe_status(self) -> None:
         """Record transport status without selecting or publishing a result."""
-        if self._process is not None:
+        # No reader opportunity remains before the coordinating owner may select
+        # a control-status failure (including when reader start failed). The reader
+        # never calls poll()/wait() and therefore never becomes a second reaper.
+        if self._process is not None and self._reader_finished.is_set():
             try:
                 self._authority.record_control_status(self._process.poll())
             except BaseException as error:
                 self._authority.record_failure("CONTROL_OBSERVATION_FAILURE", error)
-
-    def live_processes(self) -> tuple[ManagedSshProcess, ...]:
-        """Owned control transport whose exit has not yet been observed."""
-        process = self._process
-        return () if process is None or process.returncode is not None else (process,)
 
     def timeout_expired(self, timeout: float) -> subprocess.TimeoutExpired:
         """Build the public wait timeout using this control process's command."""
@@ -203,7 +217,10 @@ class HelperConnection:
             self._authority.record_failure("CONTROL_CLOSE_FAILURE", error)
         self.observe_status()
         try:
-            self._authority.record_control_status(helper.wait(timeout=HELPER_STOP_TIMEOUT))
+            # This existing coordinating owner settles the child. Status is
+            # accounted below, after reader settlement, so buffered terminal
+            # detail cannot lose precedence to the transport notification.
+            helper.wait(timeout=HELPER_STOP_TIMEOUT)
         except BaseException as error:
             self._authority.record_failure("HELPER_WAIT_FAILURE", error)
 
@@ -270,19 +287,6 @@ class HelperConnection:
     def _adopt_control(self, process: ManagedSshProcess) -> None:
         self._process = process
 
-    def _read_event(self) -> dict:
-        helper = self._process_or_error()
-        try:
-            message = read_message(cast(BinaryIO, helper.stdout))
-        except EOFError as error:
-            diagnostic = helper.stderr_tail()
-            raise SessionError(
-                "remote helper terminated: " + diagnostic.decode("utf-8", "replace")
-            ) from error
-        assert self._order is not None
-        self._order.accept(message)
-        return message
-
     def _start_event_drain(self) -> None:
         if self._reader_thread is not None:
             return
@@ -291,7 +295,16 @@ class HelperConnection:
         )
         # Registration precedes start, so no started reader is ever unowned.
         self._reader_thread = reader_thread
-        reader_thread.start()
+        try:
+            reader_thread.start()
+        except BaseException:
+            # A reader that never ran has no remaining opportunity to publish
+            # protocol facts. A start failure after actual launch still leaves
+            # completion to the owned reader's finally block.
+            if reader_thread.ident is None:
+                self._reader_finished.set()
+                self._notifier.notify()
+            raise
 
     def _dispatch(self, event: dict) -> None:
         if event["type"] == "SESSION_CREATED":
@@ -307,15 +320,78 @@ class HelperConnection:
         elif event["type"] == "SESSION_ENDED":
             self._authority.record_terminal(decode_terminal(event))
 
+    def _dispatch_frames(self, frames: ControlFrameBuffer, chunk: bytes) -> None:
+        frames.feed(chunk)
+        while (frame := frames.pop_frame()) is not None:
+            event = decode_frame(frame)
+            assert self._order is not None
+            self._order.accept(event)
+            self._dispatch(event)
+
+    def _final_observation(self, descriptor: int, frames: ControlFrameBuffer) -> None:
+        remaining = _FINAL_OBSERVATION_BYTES
+        while remaining:
+            try:
+                chunk = os.read(descriptor, min(_READ_CHUNK_SIZE, remaining))
+            except BlockingIOError:
+                # No future input is awaited; a trailing prefix is incomplete
+                # at this observation boundary, even without physical EOF.
+                frames.finish()
+                return
+            if not chunk:
+                frames.finish()
+                return
+            remaining -= len(chunk)
+            self._dispatch_frames(frames, chunk)
+        # Exhaustion is uncertainty, not EOF or proof of a malformed prefix.
+        # Complete frames within the allowance have already been accounted.
+        raise SessionError("helper final protocol observation exhausted its byte budget")
+
+    def _read_events(self) -> None:
+        helper = self._process_or_error()
+        assert helper.stdout is not None
+        descriptor = helper.stdout.fileno()
+        # This stream has never been read through its Python buffer. Raw reads
+        # are the sole reading mechanism throughout reader ownership.
+        os.set_blocking(descriptor, False)
+        frames = ControlFrameBuffer()
+        while True:
+            result = wait_for(readable=(descriptor,), sources=WaitSources(processes=(helper,)))
+            # Completion revokes admission before final frames are accounted.
+            # Output/logging callbacks retain their ordinary reader ownership;
+            # they never run under the lifecycle authority's lock.
+            if result.exited:
+                self._authority.begin_control_exit()
+                try:
+                    self._final_observation(descriptor, frames)
+                except BaseException as error:
+                    self._authority.record_reader_failure(error)
+                finally:
+                    self._authority.finish_control_exit()
+                return
+            if descriptor in result.readable:
+                try:
+                    chunk = os.read(descriptor, _READ_CHUNK_SIZE)
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    frames.finish()
+                    if self._authority.snapshot().terminal is None:
+                        diagnostic = helper.stderr_tail().decode("utf-8", "replace")
+                        raise SessionError(
+                            "remote helper terminated: " + diagnostic
+                        ) from EOFError()
+                    return
+                self._dispatch_frames(frames, chunk)
+
     def _drain_events(self) -> None:
         try:
-            while True:
-                self._dispatch(self._read_event())
+            self._read_events()
         except BaseException as error:
-            snapshot = self._authority.snapshot()
-            if isinstance(error.__cause__, EOFError) and snapshot.terminal is not None:
-                return
             self._authority.record_reader_failure(error)
+        finally:
+            self._reader_finished.set()
+            self._notifier.notify()
 
     def _join_reader(self, timeout: float = 2.0) -> bool:
         # A registered reader whose start failed never ran and holds nothing.

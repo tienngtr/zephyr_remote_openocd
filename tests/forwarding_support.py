@@ -21,6 +21,7 @@ from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
 from zephyr_remote_openocd.controller.plan import SessionAllocation, SessionPlan
 from zephyr_remote_openocd.controller.session import SessionController
 from zephyr_remote_openocd.controller.ssh import ManagedSshProcess, SshCommand, SshForwardSpec
+from zephyr_remote_openocd.controller.waiting import WaitResult, WaitSources, wait_for
 from zephyr_remote_openocd.protocol.arguments import materialize_argv
 from zephyr_remote_openocd.protocol.commands import decode_command, write_start
 from zephyr_remote_openocd.protocol.listeners import ListenerSpec
@@ -120,13 +121,6 @@ class ControlledHelper:
     def observe_status(self) -> None:
         pass
 
-    def live_processes(self) -> tuple[ManagedSshProcess, ...]:
-        # The session collects wait sources after its last state snapshot and
-        # immediately before sleeping; the transition happens in that window.
-        assert self.on_wait is not None, "helper wait must have an explicit state transition"
-        self.on_wait()
-        return ()
-
     def timeout_expired(self, timeout: float) -> subprocess.TimeoutExpired:
         return subprocess.TimeoutExpired(("helper",), timeout)
 
@@ -201,8 +195,16 @@ class ForwardingHarness:
         deployment = DeploymentResult("/helper.py", "digest", False)
         monkeypatch.setattr(session_module, "deploy_helper", lambda *_args: deployment)
         monkeypatch.setattr(session_module, "HelperConnection", self.make_helper)
+        monkeypatch.setattr(session_module, "wait_for", self.wait)
         monkeypatch.setattr(ForwardManager, "_await_ready", staticmethod(self.await_ready))
         monkeypatch.setattr(ForwardManager, "_preflight", staticmethod(lambda _service: None))
+
+    def wait(self, *, sources: WaitSources, deadline: float | None = None) -> WaitResult:
+        # Publish controlled reader facts at the actual foreground wait boundary;
+        # collecting process sources must not perform helper lifecycle work.
+        assert self.helper.on_wait is not None, "helper wait needs an explicit state transition"
+        self.helper.on_wait()
+        return wait_for(sources=sources, deadline=deadline)
 
     def make_helper(
         self, *_args, authority: SessionAuthority, process_start_handler=None, **_kwargs

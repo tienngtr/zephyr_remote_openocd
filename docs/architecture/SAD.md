@@ -1560,9 +1560,90 @@ start leaves that reader owned for shutdown and no second reader can begin. The
 reader reports `SESSION_CREATED`, `READY`, and every later event to the shared
 session authority. The coordinator never reads the stream: it waits for the
 allocation (with the startup deadline) and later for READY on authority state
-notifications through the operation wait. This single continuous reader
-replaced a startup handoff between a coordinator-side raw reader and a later
-buffered reader thread, removing frame-boundary constraints between the two.
+notifications through the operation wait.
+
+The local reader exclusively uses nonblocking `os.read()` from the beginning
+of ownership; it never reads through `Popen.stdout`'s Python buffer. It feeds
+`ControlFrameBuffer`, then applies the canonical decoder and `EventOrder` before
+dispatching each complete frame. Each ordinary wait observes both stdout
+readability and the owned control process through `wait_for()`'s non-reaping
+completion source. One raw read of at most 64 KiB returns to that common wait;
+continuous stdout cannot prevent observation of process completion. EOF and
+process completion are independent facts. EOF without terminal information
+remains reader failure.
+
+When the wait reports control completion (including coincident readability),
+the reader calls `SessionAuthority.begin_control_exit()`. Under its existing
+lock the authority records transport end and a pending final observation, then
+notifies and releases the lock. START and dependent admission are immediately
+revoked. Acquisition/readiness waits cannot consume SESSION_CREATED or READY
+while the observation is pending; absent an established failure, they continue
+through the ordinary notifier wait. Foreground/session waits observe the helper
+only through reader/authority notifications; control-process completion belongs
+to the reader's wait sources, while forwarding processes retain coordinator exit
+wakeups. This also applies before the reader recognizes control exit: if ordinary
+output backpressure stalls that reader, the coordinator waits for notification
+rather than repeatedly waking on the same unreaped control process. Callback
+release resumes observation, and native cancellation still wakes the coordinator.
+Existing cancellation dispatch and semantic startup deadlines still apply.
+Successful terminal-result projection also waits for final accounting, while
+established failures remain publishable immediately.
+
+The same sole reader performs the finite nonblocking final scan outside the
+authority lock. Each valid frame uses the ordinary ordered recording/dispatch
+paths. Output and ATTEMPT callbacks may perform external I/O, but never hold the
+lifecycle authority lock: their backpressure can stall the reader without
+preventing cancellation/failure recording or settlement entry. No callback has
+an end-to-end wall-clock guarantee. A scan failure is recorded through the normal
+reader-failure path; a `finally` calls `finish_control_exit()` to publish scan
+completion. Under the authority lock, finish records a generic control-end
+failure only if no valid terminal was obtained, clears the pending observation,
+and notifies. Earlier failures, including cancellation committed during a
+blocked callback, retain precedence over later terminal or transport detail.
+This two-phase physical observation uses the existing lifecycle authority and
+does not wait for another observer's acknowledgement.
+
+The final scan has a non-replenishing allowance of `MAX_FRAME_SIZE` (one MiB)
+of new raw bytes, in reads of at most 64 KiB. This reuses the remote readiness
+checkpoint's semantic observation bound (§38.4): it can complete any one legal
+maximum-sized frame, including a prefix retained from ordinary reading, without
+promising to drain an arbitrary backlog. Previously retained bytes precede new
+bytes and are not charged again. Every complete valid frame within the cut is
+accounted. Would-block and actual EOF both finish the scan immediately: an empty
+framer is complete, and a remaining prefix is a framing failure. Budget
+exhaustion ends the scan with infrastructure uncertainty, even at a frame
+boundary; it does not assert EOF or falsely label a cut prefix as malformed.
+Oversize, malformed, and illegal-order frames use the ordinary reader-failure
+path. Frames after the first invalid frame are not accepted.
+
+After final accounting, the reader publishes physical reader completion and
+notifies the coordinator. A registered reader whose `start()` failed before it
+ran likewise publishes that it has no remaining opportunity to report protocol
+facts; a start failure after actual launch leaves publication to the reader's
+normal `finally`. Runtime `observe_status()` defers `Popen.poll()` until no reader
+opportunity remains, so final terminal detail is accounted before a control-status
+failure can be selected. Nonzero status remains independent secondary evidence
+after a reader-start failure. Only the existing coordinating process owner calls
+`poll()`/`wait()`; the reader never reaps. During existing bounded shutdown, the
+owner may settle the process before the reader finishes, but defers recording
+its status until reader settlement. Reader registration, bounded joining, and
+stream closure retain the existing cleanup owners; no additional long-lived
+OS resource is acquired. Each common wait owns and closes its transient pidfds.
+
+SESSION_CREATED and READY remain valid protocol evidence at the final boundary,
+but the durable transport-end fact prevents their use for acquisition, START,
+or dependent admission. Even zero control status without a valid terminal is
+infrastructure failure. A valid terminal keeps its remote outcome and genuine
+child result; a nonzero control status remains independent failure evidence.
+An already-established operation failure remains primary. Otherwise a detailed
+terminal failure encountered in the finite scan precedes generic transport-end
+or control-status evidence; malformed trailing data and later transport failures
+remain secondary. A terminal beyond the finite cut is not promised recovery.
+These rules require no grace timer, future bytes, or pipe EOF. The cut may
+include arrivals during the scan and exclude bytes beyond the allowance; it
+makes no claim about physical ordering of remote exit, local process exit,
+pipe writes, pidfd readiness, or scheduling.
+
 START is accounted against facts the reader already recorded, admitted as a new
 effect, and written to the control pipe without blocking on its backpressure.
 If acquisition

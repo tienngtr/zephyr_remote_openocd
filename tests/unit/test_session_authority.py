@@ -7,7 +7,7 @@ import threading
 import pytest
 from zephyr_remote_openocd.controller.authority import SessionAuthority, SessionError
 from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
-from zephyr_remote_openocd.protocol.outcome import Trigger
+from zephyr_remote_openocd.protocol.outcome import CompletionPolicy, Trigger
 
 from tests.protocol_support import terminal_snapshot
 
@@ -193,3 +193,16 @@ def test_first_failure_stays_primary_across_publication(first, second):
         authority.operation_status()
     assert repeated.value is initial.value
     assert tuple(repeated.value.__notes__) == notes
+
+
+def test_control_observation_defers_successful_result_until_final_accounting():
+    authority = SessionAuthority()
+    authority.set_policy(CompletionPolicy.PROCESS_EXIT)
+    authority.begin_control_exit()
+    authority.record_terminal(terminal_snapshot(Trigger.CHILD_EXIT, returncode=0))
+
+    assert authority.operation_status() is None
+
+    authority.finish_control_exit()
+
+    assert authority.operation_status() == 0

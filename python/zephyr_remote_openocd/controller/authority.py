@@ -46,6 +46,8 @@ class SessionSnapshot:
     diagnostics: tuple[Diagnostic, ...]
     allocation: SessionAllocation | None = None
     ready_address: str | None = None
+    control_ended: bool = False
+    control_observation_pending: bool = False
 
 
 def _no_notification() -> None:
@@ -75,6 +77,8 @@ class SessionAuthority:
         self._gate = AdmissionGate()
         self._allocation: SessionAllocation | None = None
         self._ready_address: str | None = None
+        self._control_ended = False
+        self._control_observation_pending = False
         self._changed = threading.RLock()
         self._notify = notify
 
@@ -90,6 +94,8 @@ class SessionAuthority:
                 tuple(record.diagnostic for record in self._failures.values()),
                 self._allocation,
                 self._ready_address,
+                self._control_ended,
+                self._control_observation_pending,
             )
 
     def set_policy(self, policy: CompletionPolicy) -> None:
@@ -168,6 +174,25 @@ class SessionAuthority:
         reader.__cause__ = error
         self.record_failure("READER_FAILURE", reader, key="reader")
 
+    def begin_control_exit(self) -> None:
+        """Revoke admission before the reader accounts final protocol bytes."""
+        with self._changed:
+            self._control_ended = True
+            self._control_observation_pending = True
+            self._notify()
+
+    def finish_control_exit(self) -> None:
+        """Publish final accounting without holding the lock across physical I/O."""
+        with self._changed:
+            if self._terminal is None:
+                self.record_failure(
+                    "CONTROL_ENDED",
+                    SessionError("remote helper control transport ended without SESSION_ENDED"),
+                    key="control_ended",
+                )
+            self._control_observation_pending = False
+            self._notify()
+
     def record_control_status(self, status: int | None) -> None:
         if status not in (None, 0):
             self.record_failure(
@@ -190,6 +215,8 @@ class SessionAuthority:
             error = self.publish_failure()
             if error is not None:
                 raise error
+            if self._control_observation_pending:
+                return None
             result = None if self._terminal is None else self._terminal.outcome.child_result
             return None if result is None else result.returncode
 
@@ -227,7 +254,7 @@ class SessionAuthority:
             error = self.publish_failure()
             if error is not None:
                 raise error
-            if self._closing or self._terminal is not None:
+            if self._closing or self._terminal is not None or self._control_ended:
                 raise SessionClosedError("operation no longer permits dependent launch")
             ticket = self._gate.prepare(required)
             self._gate.observe_forwarded(forwarded)
@@ -241,6 +268,6 @@ class SessionAuthority:
             error = self.publish_failure()
             if error is not None:
                 raise error
-            if self._terminal is not None:
+            if self._terminal is not None or self._control_ended:
                 raise SessionError("helper session ended before START")
             final_admission()

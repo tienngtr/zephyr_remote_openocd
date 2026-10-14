@@ -118,8 +118,6 @@ class SessionConnection(Protocol):
 
     def observe_status(self) -> None: ...
 
-    def live_processes(self) -> tuple[ProcessHandle, ...]: ...
-
     def timeout_expired(self, timeout: float) -> subprocess.TimeoutExpired: ...
 
     def close(self) -> None: ...
@@ -406,11 +404,8 @@ class SessionController:
             raise failure
 
     def observation_sources(self) -> WaitSources:
-        """Wake sources for authority facts and owned transport exits."""
-        processes = self._forwards.live_processes()
-        if self._helper_connection is not None:
-            processes = (*processes, *self._helper_connection.live_processes())
-        return WaitSources(notifiers=(self._notifier,), processes=processes)
+        """Helper facts arrive through its reader; forwards retain exit wakeups."""
+        return WaitSources(notifiers=(self._notifier,), processes=self._forwards.live_processes())
 
     def wait_for_openocd_exit(self, timeout: float | None = None) -> int:
         if self.closed:

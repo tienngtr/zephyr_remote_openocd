@@ -55,8 +55,9 @@ from zephyr_remote_openocd.helper import workspace as workspace_module
 from zephyr_remote_openocd.protocol.listeners import ListenerSpec
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy, Trigger
 from zephyr_remote_openocd.protocol.process import ProcessSpec
-from zephyr_remote_openocd.protocol.wire import decode_terminal, encode_frame
+from zephyr_remote_openocd.protocol.wire import ProtocolError, decode_terminal, encode_frame
 
+from tests.control_support import ControlProcess
 from tests.process_support import cleanup_on_exit, local_transport, read_line, read_lines
 from tests.protocol_support import terminal_message
 from tests.session_support import NotifiedAuthority, ObservedStatus
@@ -502,33 +503,17 @@ class TestForwardingLifecycle:
         assert process.terminate_calls == 1
 
     def test_helper_control_connection_injects_no_optional_ssh_arguments(self, notified_authority):
-        process = self.Process()
-        process.stdout = io.BytesIO()
+        process = ControlProcess()
         command = self.Command(process)
-        acquired = threading.Event()
-
-        def events():
-            yield {
-                "type": "SESSION_CREATED",
-                "helper": "zephyr_remote_openocd",
-                "session_id": "session",
-                "remote_workspace": "/workspace",
-            }
-            # The event stream ends only after the coordinator has acquired.
-            assert acquired.wait(30)
-            raise SessionError("helper event stream ended")
-
         helper = _helper_client(
             SessionPlan("target", command, TEST_PROCESS),
             DeploymentResult("/helper.py", "digest", False),
             wiring=notified_authority,
         )
-        with patch.object(HelperConnection, "_read_event", side_effect=events()):
-            try:
-                helper.acquire()
-            finally:
-                acquired.set()
-                helper.close()
+        try:
+            helper.acquire()
+        finally:
+            helper.close()
 
         assert len(command.calls) == 1
         host, _remote_command, local_forward = command.calls[0]
@@ -536,10 +521,8 @@ class TestForwardingLifecycle:
         assert local_forward is None
 
     def test_helper_startup_error_survives_process_cleanup_failure(self):
-        process = self.Process()
-        process.stdout = io.BytesIO()
+        process = ControlProcess(b"invalid helper frame\n")
         command = self.Command(process)
-        startup_error = SessionError("invalid helper response")
 
         with (
             patch.object(
@@ -547,7 +530,6 @@ class TestForwardingLifecycle:
                 "deploy_helper",
                 return_value=DeploymentResult("/helper.py", "digest", False),
             ),
-            patch.object(HelperConnection, "_read_event", side_effect=startup_error),
             patch.object(
                 connection_module,
                 "_stop_process",
@@ -559,7 +541,7 @@ class TestForwardingLifecycle:
             with cleanup_on_exit(session.close):
                 session.acquire()
 
-        assert raised.value.__cause__ is startup_error
+        assert isinstance(raised.value.__cause__, ProtocolError)
         assert any("process cleanup failed" in note for note in raised.value.__notes__)
 
     def test_stale_gdb_forward_cannot_mask_current_forward_failure(self, monkeypatch):

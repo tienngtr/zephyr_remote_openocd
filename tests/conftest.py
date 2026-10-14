@@ -20,7 +20,9 @@ from tests.hardware_support import (
     hardware_shared_cache_root,
 )
 from tests.inventory import Inventory, InventoryError, load_inventory
-from tests.session_support import NotifiedAuthority, ObservedStatus
+from tests.session_support import NotifiedAuthority, ObservedStatus, pipe_control_wait
+
+__all__ = ["pipe_control_wait"]
 
 _HARDWARE_BUILD_TIMINGS = pytest.StashKey[list[BuildTiming]]()
 _HARDWARE_TEST_TIMINGS = pytest.StashKey[list[tuple[str, str, float]]]()

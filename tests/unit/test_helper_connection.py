@@ -330,7 +330,7 @@ def test_open_rejects_initial_frame_without_lf(notified_authority):
 
     with pytest.raises(SessionError) as raised:
         _open_helper_client(process, notified_authority)
-    assert isinstance(raised.value.__cause__, ProtocolError)
+    assert isinstance(raised.value.__cause__, ValueError)
 
 
 @pytest.mark.parametrize("policy", tuple(CompletionPolicy))
@@ -828,7 +828,10 @@ def test_close_preserves_cleanup_error_when_final_status_observation_fails(
     assert any(str(status_error) in note for note in cleanup_error.__notes__)
 
 
-def test_failed_reader_start_rolls_back_control_acquisition(monkeypatch, notified_authority):
+@pytest.mark.parametrize("control_status", (0, 23))
+def test_failed_reader_start_rolls_back_control_acquisition(
+    monkeypatch, notified_authority, control_status
+):
     authority = notified_authority.authority
     reader_start_error = RuntimeError("helper reader did not start")
 
@@ -836,6 +839,7 @@ def test_failed_reader_start_rolls_back_control_acquisition(monkeypatch, notifie
         raise reader_start_error
 
     process = ControlProcess()
+    process.returncode = control_status
     monkeypatch.setattr(threading.Thread, "start", fail_start)
 
     with pytest.raises(RuntimeError) as raised:
@@ -843,7 +847,11 @@ def test_failed_reader_start_rolls_back_control_acquisition(monkeypatch, notifie
 
     assert raised.value is reader_start_error
     assert authority.snapshot().failure is reader_start_error
-    assert process.returncode is not None
+    assert process.returncode == control_status
+    assert any(
+        diagnostic.code == "CONTROL_PROCESS_FAILURE"
+        for diagnostic in authority.snapshot().diagnostics
+    ) == bool(control_status)
     assert process.stdin.closed
     assert process.stdout.closed
     assert process.stderr.closed
@@ -1077,7 +1085,9 @@ def test_child_and_control_status_use_one_persistent_arbitration_path(
     if child_first:
         helper_client._dispatch(decode_frame(terminal_message(Trigger.CHILD_EXIT, returncode=7)))
     process.returncode = 1
-    helper_client.observe_status()
+    # Exercise failure composition independently of physical reader settlement;
+    # real transport observation now accounts final protocol bytes first.
+    authority.record_control_status(process.returncode)
     with pytest.raises(SessionError) as initial:
         authority.operation_status()
     assert ("exit status 7" if child_first else "status 1") in str(initial.value)
@@ -1086,7 +1096,7 @@ def test_child_and_control_status_use_one_persistent_arbitration_path(
     assert first_gate.value is initial.value
     if not child_first:
         helper_client._dispatch(decode_frame(terminal_message(Trigger.CHILD_EXIT, returncode=7)))
-    helper_client.observe_status()
+    authority.record_control_status(process.returncode)
     with pytest.raises(SessionError) as later:
         authority.operation_status()
     assert later.value is initial.value
