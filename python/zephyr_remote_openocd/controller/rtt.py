@@ -159,6 +159,7 @@ class _RttRelay:
         while True:
             returncode = self.session.poll_operation()
             if returncode is not None:
+                self._finish_output()
                 return returncode
             input_readable = self.input_open and len(self.pending_input) < _MAX_PENDING_INPUT
             # The channel is read again only once earlier output is delivered.
@@ -230,6 +231,20 @@ class _RttRelay:
         elif payload:
             self.output_stream.write(payload)
             self.output_stream.flush()
+
+    def _finish_output(self) -> None:
+        """Give output already accepted from the channel one delivery chance.
+
+        At most one received chunk is pending. It is written if the output is
+        writable now; the session result does not wait for a consumer that
+        cannot take it, and such output is discarded like unread channel data.
+        """
+        if not self.pending_output:
+            return
+        assert self.output_fd is not None
+        ready = wait_for(writable=(self.output_fd,), deadline=time.monotonic())
+        if self.output_fd in ready.writable:
+            self._deliver_output()
 
     def _deliver_output(self) -> None:
         """Retain undelivered bytes across partial writes and transient backpressure."""

@@ -136,6 +136,58 @@ def test_relay_delivers_output_to_a_pipe_whole_and_in_order(observed_session) ->
     assert received == payload
 
 
+@pytest.mark.timeout(GUARD)
+@pytest.mark.parametrize("consumer_state", ("writable", "stalled"))
+@pytest.mark.parametrize("source", ("initial", "channel"))
+def test_session_result_gives_accepted_output_one_delivery_opportunity(
+    observed_session, source, consumer_state
+) -> None:
+    payload = b"final RTT output"
+    accepted = threading.Event()
+
+    class FinalChannel(socket.socket):
+        @override
+        def recv(self, size: int, *args: Any) -> bytes:
+            data = super().recv(size, *args)
+            # The session publishes its result right after the relay accepts
+            # the final output from the channel.
+            accepted.set()
+            return data
+
+    local, peer = socket.socketpair()
+    channel = FinalChannel(fileno=local.detach())
+    read_end, write_end = os.pipe()
+    unread = bytearray()
+    if consumer_state == "stalled":
+        # The consumer stopped reading: the pipe is full when the session ends.
+        os.set_blocking(write_end, False)
+        with suppress(BlockingIOError):
+            while True:
+                unread.extend(chunk := b"\0" * 4096)
+                os.write(write_end, chunk)
+        del unread[-4096:]
+        os.set_blocking(write_end, True)
+    with (
+        channel,
+        peer,
+        os.fdopen(read_end, "rb") as consumer,
+        tempfile.TemporaryFile("w+b") as stdin,
+    ):
+        with os.fdopen(write_end, "wb") as stdout:
+            status = observed_session(lambda: 0 if accepted.is_set() else None)
+            relay = rtt_module._RttRelay(channel, stdin.fileno(), stdout, status)
+            if source == "initial":
+                accepted.set()
+                assert relay.run(payload) == 0
+            else:
+                peer.sendall(payload)
+                assert relay.run() == 0
+        # Accepted output reaches a writable consumer before the result; the
+        # session result does not wait for a consumer that cannot take it.
+        expected = payload if consumer_state == "writable" else b""
+        assert consumer.read() == bytes(unread) + expected
+
+
 def test_session_result_published_before_sleep_ends_an_idle_relay(observed_session) -> None:
     finished = threading.Event()
 

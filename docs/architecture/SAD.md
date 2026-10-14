@@ -850,7 +850,11 @@ readiness, retaining unsent bytes across partial writes and transient
 backpressure. It likewise owns pending channel output for a descriptor-backed
 output stream: it reads the channel again only after earlier output is
 delivered, and writes at most `PIPE_BUF` bytes to the descriptor once it reports
-writable, which a writable pipe or socket accepts without blocking. The relay
+writable, which a writable pipe or socket accepts without blocking. Before
+returning a session result, it gives output already accepted from the channel,
+at most one chunk, one immediate delivery opportunity. Session completion does
+not wait for a consumer that cannot take it then; that output is discarded, like
+channel data not yet read when the session ends. The relay
 does not use the stream's buffer or its lock, because helper output delivery
 writes the same standard output from the reader thread and may itself be
 blocked there. A stalled output consumer, such as a pager that stopped reading,
