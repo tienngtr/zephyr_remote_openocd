@@ -1739,6 +1739,65 @@ def test_ctrl_c_before_cleanup_failure_projects_interrupt_with_diagnostics(
     assert harness.helper.close_calls == 1
 
 
+CLEANUP_STATUS = "Interrupted; cleaning up the remote OpenOCD session"
+
+
+def test_cleanup_status_is_reported_once_despite_repeated_ctrl_c(
+    runner_api, monkeypatch, tmp_path, caplog
+):
+    harness = ForwardingHarness(monkeypatch)
+    runner_module, runner = _debugserver_operation(runner_api, monkeypatch, tmp_path, harness)
+    harness.helper.on_wait = lambda: signal.raise_signal(signal.SIGINT)
+    for forward in (GDB, TCL):
+        # Every independent transport cleanup sees another Ctrl-C.
+        harness.ssh.process(forward).mock.close_stderr.side_effect = lambda: (
+            signal.raise_signal(signal.SIGINT)
+        )
+    with (
+        caplog.at_level(logging.INFO, logger=runner.logger.name),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        runner_module._run_live_operation(runner, "debugserver", None)
+    messages = [record.getMessage() for record in caplog.records]
+    assert messages.count(CLEANUP_STATUS) == 1
+    assert all(process.returncode is not None for process in harness.ssh.processes.values())
+    assert all(
+        process.mock.close_stderr.call_count == 1 for process in harness.ssh.processes.values()
+    )
+    assert harness.helper.close_calls == 1
+
+
+def test_ctrl_c_after_the_last_wait_is_recognized_at_closure(
+    runner_api, monkeypatch, tmp_path, caplog
+):
+    harness = ForwardingHarness(monkeypatch)
+    runner_module, runner = _debugserver_operation(runner_api, monkeypatch, tmp_path, harness)
+    exited = False
+
+    def openocd_exits() -> None:
+        nonlocal exited
+        exited = True
+        harness.helper.authority.record_terminal(
+            terminal_snapshot(Trigger.CHILD_EXIT, returncode=0)
+        )
+
+    def observe_after_exit() -> None:
+        # Ctrl-C arrives after OpenOCD's natural exit and the final wait.
+        if exited:
+            signal.raise_signal(signal.SIGINT)
+
+    harness.helper.on_wait = openocd_exits
+    monkeypatch.setattr(harness.helper, "observe_status", observe_after_exit)
+    with (
+        caplog.at_level(logging.INFO, logger=runner.logger.name),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        runner_module._run_live_operation(runner, "debugserver", None)
+    messages = [record.getMessage() for record in caplog.records]
+    assert messages.count(CLEANUP_STATUS) == 1
+    assert harness.helper.close_calls == 1
+
+
 @pytest.mark.parametrize(
     "reference, command",
     (

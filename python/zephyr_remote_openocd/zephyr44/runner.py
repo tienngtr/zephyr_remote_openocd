@@ -176,6 +176,9 @@ def _execute_operation(runner, command, request, plan):
     session = SessionController.prepare(
         request,
         advisory_handler=lambda advisory: _report_forward_advisory(runner, advisory),
+        cancellation_handler=lambda: runner.logger.info(
+            "Interrupted; cleaning up the remote OpenOCD session"
+        ),
     )
     try:
         session.acquire(

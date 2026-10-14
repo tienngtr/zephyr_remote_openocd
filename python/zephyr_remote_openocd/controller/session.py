@@ -62,6 +62,10 @@ def _log_forward_advisory(advisory: ForwardAdvisory) -> None:
     )
 
 
+def _report_cleanup_after_cancellation() -> None:
+    _LOGGER.warning("Interrupted; cleaning up the remote session")
+
+
 def _one_shot_failure_detail(stdout: bytes, stderr: bytes) -> str:
     """Decode a helper ERROR frame, falling back to transport diagnostics."""
     if stdout:
@@ -145,6 +149,7 @@ class SessionController:
         deployment: DeploymentResult,
         *,
         advisory_handler: Callable[[ForwardAdvisory], None] | None = None,
+        cancellation_handler: Callable[[], None] | None = None,
     ) -> None:
         self.plan = plan
         self.deployment = deployment
@@ -156,6 +161,7 @@ class SessionController:
         self.closed = False
         self.descriptor: SessionDescriptor | None = None
         self._advisory_handler = advisory_handler or _log_forward_advisory
+        self._cancellation_handler = cancellation_handler or _report_cleanup_after_cancellation
         self._required_forwards: set[ForwardSpec] = set()
         self._warned_forwards: set[ForwardSpec] = set()
 
@@ -175,10 +181,16 @@ class SessionController:
         plan: SessionPlan,
         *,
         advisory_handler: Callable[[ForwardAdvisory], None] | None = None,
+        cancellation_handler: Callable[[], None] | None = None,
     ) -> SessionController:
         """Create the coordinator without acquiring live session resources."""
         deployment = deploy_helper(plan.ssh_command, plan.host)
-        return cls(plan, deployment, advisory_handler=advisory_handler)
+        return cls(
+            plan,
+            deployment,
+            advisory_handler=advisory_handler,
+            cancellation_handler=cancellation_handler,
+        )
 
     def acquire(
         self,
@@ -424,6 +436,7 @@ class SessionController:
     def close(self) -> None:
         if self.closed:
             return
+        self._begin_closure()
         self._authority.cancel()
         # Sample before disposal erases already-exited SSH processes.
         if self._helper_connection is not None:
@@ -437,6 +450,21 @@ class SessionController:
         failure = self._authority.take_unreported_failure()
         if failure is not None:
             raise failure
+
+    def _begin_closure(self) -> None:
+        """Enter settlement; closure is the boundary for a still-latched Ctrl-C.
+
+        Settlement then attempts every cleanup without dispatching further
+        cancellation, so repeated Ctrl-C cannot skip or shorten it.
+        """
+        operation = current_operation()
+        if operation is None or not operation.begin_closure():
+            return
+        self._authority.record_failure("OPERATION_FAILURE", operation.cancellation)
+        try:
+            self._cancellation_handler()
+        except BaseException as error:
+            self._authority.record_failure("CLEANUP_STATUS_FAILURE", error)
 
     def _close_connection(self) -> None:
         if self._helper_connection is None:
