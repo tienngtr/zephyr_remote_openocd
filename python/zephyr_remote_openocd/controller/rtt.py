@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 import errno
+import io
 import os
+import select
 import socket
 import sys
 import termios
@@ -120,7 +122,14 @@ def _terminal_mode(input_fd: int) -> Generator[None, None, None]:
 
 
 class _RttRelay:
-    """Own pending input and interpret readiness for an already-owned socket."""
+    """Own pending input and output and interpret readiness for an owned socket.
+
+    Output for a descriptor-backed stream is written only once the descriptor
+    reports writable, at most ``PIPE_BUF`` bytes at a time, which a writable
+    pipe or socket accepts without blocking. A stalled output consumer thus
+    pushes back on the channel inside the relay's wait instead of blocking the
+    relay outside it. A terminal write may still wait briefly for the terminal.
+    """
 
     def __init__(
         self,
@@ -135,25 +144,49 @@ class _RttRelay:
         self.session = session
         self.input_open = True
         self.pending_input = bytearray()
+        self.pending_output = bytearray()
+        try:
+            self.output_fd: int | None = output_stream.fileno()
+        except io.UnsupportedOperation:
+            # An in-memory stream reports no readiness and is written directly.
+            self.output_fd = None
 
-    def run(self) -> int:
+    def run(self, initial: bytes = b"") -> int:
         """Relay ready, nonblocking I/O until the session reports a result."""
         channel = self.connection.fileno()
+        if self.output_fd is not None:
+            # Bytes the stream already buffered precede relayed output.
+            self.output_stream.flush()
+        self._queue_output(initial)
         while True:
             returncode = self.session.poll_operation()
             if returncode is not None:
                 return returncode
             input_readable = self.input_open and len(self.pending_input) < _MAX_PENDING_INPUT
+            # The channel is read again only once earlier output is delivered.
+            output_readable = not self.pending_output
             ready = wait_for(
-                readable=(self.input_fd, channel) if input_readable else (channel,),
-                writable=(channel,) if self.pending_input else (),
+                readable=(
+                    *((self.input_fd,) if input_readable else ()),
+                    *((channel,) if output_readable else ()),
+                ),
+                writable=(
+                    *((channel,) if self.pending_input else ()),
+                    *(
+                        (self.output_fd,)
+                        if self.pending_output and self.output_fd is not None
+                        else ()
+                    ),
+                ),
                 sources=self.session.observation_sources(),
             )
             if input_readable and self.input_fd in ready.readable:
                 self._read_input()
             if channel in ready.writable and self.pending_input:
                 self._send_pending_input()
-            if channel in ready.readable:
+            if self.output_fd in ready.writable and self.pending_output:
+                self._deliver_output()
+            if output_readable and channel in ready.readable:
                 returncode = self._receive_output()
                 if returncode is not None:
                     return returncode
@@ -190,9 +223,24 @@ class _RttRelay:
             if returncode is not None:
                 return returncode
             raise RttClientError("RTT channel closed while remote session is still running")
-        self.output_stream.write(payload)
-        self.output_stream.flush()
+        self._queue_output(payload)
         return None
+
+    def _queue_output(self, payload: bytes) -> None:
+        if self.output_fd is not None:
+            self.pending_output.extend(payload)
+        elif payload:
+            self.output_stream.write(payload)
+            self.output_stream.flush()
+
+    def _deliver_output(self) -> None:
+        """Retain undelivered bytes across partial writes and transient backpressure."""
+        assert self.output_fd is not None
+        try:
+            written = os.write(self.output_fd, self.pending_output[: select.PIPE_BUF])
+        except BlockingIOError:
+            return
+        del self.pending_output[:written]
 
 
 def run_rtt_client(
@@ -212,11 +260,9 @@ def run_rtt_client(
         connection.acquire(port, startup_timeout)
         assert connection.socket is not None
         input_fd = input_stream.fileno()
-        if connection.initial:
-            output_stream.write(connection.initial)
-            output_stream.flush()
+        relay = _RttRelay(connection.socket, input_fd, output_stream, session)
         with _terminal_mode(input_fd):
-            return _RttRelay(connection.socket, input_fd, output_stream, session).run()
+            return relay.run(connection.initial)
     except BaseException as error:
         primary_failure = error
         raise

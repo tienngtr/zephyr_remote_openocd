@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import os
 import socket
 import sys
 import tempfile
@@ -101,6 +102,38 @@ def test_relay_delivers_output_and_returns_the_session_result(observed_session) 
         status = observed_session(lambda: 0 if stdout.getvalue() == b"RTT output" else None)
         assert rtt_module.run_rtt_client(server.port, status, stdin=stdin, stdout=stdout) == 0
     server.join()
+
+
+def test_relay_delivers_output_to_a_pipe_whole_and_in_order(observed_session) -> None:
+    # Larger than one pipe-atomic write, so delivery spans several writes.
+    payload = bytes(range(256)) * 64
+    received = bytearray()
+
+    def serve(connection: socket.socket) -> None:
+        connection.sendall(payload)
+        idle(connection)
+
+    def consume(stream: io.BufferedReader, status: ObservedStatus) -> None:
+        while len(received) < len(payload) and (chunk := stream.read1(4096)):
+            received.extend(chunk)
+        status.changed()
+
+    server = RttServer(serve)
+    read_end, write_end = os.pipe()
+    with (
+        os.fdopen(read_end, "rb") as consumer_stream,
+        os.fdopen(write_end, "wb") as stdout,
+        tempfile.TemporaryFile("w+b") as stdin,
+    ):
+        status = observed_session(lambda: 0 if len(received) == len(payload) else None)
+        consumer = threading.Thread(target=consume, args=(consumer_stream, status))
+        consumer.start()
+        try:
+            assert rtt_module.run_rtt_client(server.port, status, stdin=stdin, stdout=stdout) == 0
+        finally:
+            consumer.join(GUARD)
+    server.join()
+    assert received == payload
 
 
 def test_session_result_published_before_sleep_ends_an_idle_relay(observed_session) -> None:

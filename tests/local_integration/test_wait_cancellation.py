@@ -4,8 +4,11 @@
 
 from __future__ import annotations
 
+import fcntl
 import io
+import mmap
 import os
+import select
 import signal
 import socket
 import subprocess
@@ -251,3 +254,68 @@ def test_cancellation_during_failed_rtt_attempt_wins_over_expired_startup(
         run_rtt_client(
             port, observed_session(lambda: None), stdin=stdin, stdout=stdout, startup_timeout=0
         )
+
+
+@pytest.mark.timeout(GUARD)
+def test_ctrl_c_while_the_rtt_output_consumer_stalls_closes_the_channel(observed_session) -> None:
+    read_end, write_end = os.pipe2(os.O_DIRECT)
+    # Packet mode gives each relayed write its own pipe buffer, so the pipe is
+    # full exactly when it stops reporting writable.
+    fcntl.fcntl(write_end, fcntl.F_SETPIPE_SZ, mmap.PAGESIZE)
+    buffers = fcntl.fcntl(write_end, fcntl.F_GETPIPE_SZ) // mmap.PAGESIZE
+    payload = b"x" * ((buffers + 2) * 4096)
+    undeliverable = threading.Event()
+    closed = threading.Event()
+
+    def consumer_writable() -> bool:
+        poller = select.poll()
+        poller.register(write_end, select.POLLOUT)
+        return bool(poller.poll(0))
+
+    class ObservedChannel(socket.socket):
+        @override
+        def recv(self, size: int, *args) -> bytes:
+            data = super().recv(size, *args)
+            if data and not consumer_writable():
+                # The client now holds output the stalled consumer cannot take.
+                undeliverable.set()
+            return data
+
+    def serve(listener: socket.socket) -> None:
+        with listener, listener.accept()[0] as connection:
+            with suppress(OSError):
+                connection.sendall(payload)
+                while connection.recv(4096):
+                    pass
+            closed.set()
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    server = threading.Thread(target=serve, args=(listener,))
+    server.start()
+    client_socket = SimpleNamespace(**vars(socket))
+    client_socket.socket = ObservedChannel
+    try:
+        with (
+            pytest.MonkeyPatch.context() as patch,
+            os.fdopen(write_end, "wb") as stdout,
+            # The consumer never reads; it goes away before the output closes.
+            os.fdopen(read_end, "rb"),
+            tempfile.TemporaryFile("w+b") as stdin,
+            interrupt_when(lambda: undeliverable.wait(GUARD)),
+            pytest.raises(OperationCancelled),
+            operation_scope(),
+        ):
+            patch.setattr(rtt_module, "socket", client_socket)
+            run_rtt_client(
+                listener.getsockname()[1],
+                observed_session(lambda: None),
+                stdin=stdin,
+                stdout=stdout,
+            )
+            pytest.fail("cancellation did not interrupt the RTT relay")
+    finally:
+        server.join(GUARD)
+    # The client released its forwarded channel during cancellation.
+    assert closed.is_set()
