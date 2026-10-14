@@ -849,13 +849,17 @@ socket is closed. The relay owns the bounded pending-input queue and interprets
 readiness, retaining unsent bytes across partial writes and transient
 backpressure. It likewise owns pending channel output for a descriptor-backed
 output stream: it reads the channel again only after earlier output is
-delivered, and writes at most `PIPE_BUF` bytes once the descriptor reports
-writable, which a writable pipe or socket accepts without blocking. A stalled
-output consumer, such as a pager that stopped reading, therefore pushes back on
-the channel inside the relay's wait, where a recorded Ctrl-C takes effect,
-instead of blocking the relay in a write that the non-raising capture would
-resume. A terminal write may still wait briefly on the terminal; an in-memory
-stream without a descriptor is written directly. It reads session status before
+delivered, and writes at most `PIPE_BUF` bytes to the descriptor once it reports
+writable, which a writable pipe or socket accepts without blocking. The relay
+does not use the stream's buffer or its lock, because helper output delivery
+writes the same standard output from the reader thread and may itself be
+blocked there. A stalled output consumer, such as a pager that stopped reading,
+therefore pushes back on the channel inside the relay's wait, where a recorded
+Ctrl-C takes effect, instead of blocking the relay in a write that the
+non-raising capture would resume. Bytes that other code left unflushed in the
+stream are not ordered before relayed output; helper output delivery flushes
+each record. A terminal write may still wait briefly on the terminal; an
+in-memory stream without a descriptor is written directly. It reads session status before
 each wait and again at
 receive-side channel EOF, so a recorded session exit takes precedence over that
 channel closure. Each wait composes stdin, the channel, the output descriptor,

@@ -124,11 +124,12 @@ def _terminal_mode(input_fd: int) -> Generator[None, None, None]:
 class _RttRelay:
     """Own pending input and output and interpret readiness for an owned socket.
 
-    Output for a descriptor-backed stream is written only once the descriptor
-    reports writable, at most ``PIPE_BUF`` bytes at a time, which a writable
-    pipe or socket accepts without blocking. A stalled output consumer thus
-    pushes back on the channel inside the relay's wait instead of blocking the
-    relay outside it. A terminal write may still wait briefly for the terminal.
+    Output for a descriptor-backed stream is written to the descriptor only
+    once it reports writable, at most ``PIPE_BUF`` bytes at a time, which a
+    writable pipe or socket accepts without blocking. The stream's buffer and
+    its lock are not used, so neither a stalled output consumer nor another
+    writer blocked on the same stream can hold the relay outside its wait. A
+    terminal write may still wait briefly for the terminal.
     """
 
     def __init__(
@@ -154,9 +155,6 @@ class _RttRelay:
     def run(self, initial: bytes = b"") -> int:
         """Relay ready, nonblocking I/O until the session reports a result."""
         channel = self.connection.fileno()
-        if self.output_fd is not None:
-            # Bytes the stream already buffered precede relayed output.
-            self.output_stream.flush()
         self._queue_output(initial)
         while True:
             returncode = self.session.poll_operation()

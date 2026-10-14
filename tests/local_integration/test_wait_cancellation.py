@@ -319,3 +319,73 @@ def test_ctrl_c_while_the_rtt_output_consumer_stalls_closes_the_channel(observed
         server.join(GUARD)
     # The client released its forwarded channel during cancellation.
     assert closed.is_set()
+
+
+@pytest.mark.timeout(GUARD)
+def test_ctrl_c_while_helper_output_holds_the_rtt_stream_closes_the_channel(
+    observed_session, tmp_path
+) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    closed = threading.Event()
+
+    class StalledOutput(io.FileIO):
+        @override
+        def write(self, data, /) -> int:
+            # Helper output delivery is blocked mid-write, holding the shared
+            # buffered stream that RTT output also uses.
+            entered.set()
+            release.wait(GUARD)
+            return super().write(data)
+
+    class CtrlCAtInputAdoption(io.FileIO):
+        @override
+        def fileno(self) -> int:
+            # Ctrl-C latches after connection setup, as the client adopts stdin.
+            signal.raise_signal(signal.SIGINT)
+            return super().fileno()
+
+    def serve(listener: socket.socket) -> None:
+        with listener, listener.accept()[0] as connection:
+            while connection.recv(4096):
+                pass
+            closed.set()
+
+    def deliver_helper_output(stream: io.BufferedWriter) -> None:
+        stream.write(b"helper output\n")
+        stream.flush()
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    server = threading.Thread(target=serve, args=(listener,))
+    server.start()
+    read_end, write_end = os.pipe()
+    try:
+        with (
+            os.fdopen(read_end, "rb") as consumer,
+            io.BufferedWriter(StalledOutput(write_end, "wb")) as stdout,
+            CtrlCAtInputAdoption(tmp_path / "stdin", "w+b") as stdin,
+        ):
+            helper_output = threading.Thread(target=deliver_helper_output, args=(stdout,))
+            helper_output.start()
+            try:
+                assert entered.wait(GUARD)
+                with pytest.raises(OperationCancelled), operation_scope():
+                    run_rtt_client(
+                        listener.getsockname()[1],
+                        observed_session(lambda: None),
+                        stdin=stdin,
+                        stdout=stdout,
+                    )
+                    pytest.fail("cancellation did not interrupt the RTT relay")
+                # The relay released its channel while helper output still held
+                # the stream.
+                assert closed.wait(GUARD)
+                assert helper_output.is_alive()
+            finally:
+                release.set()
+                helper_output.join(GUARD)
+            assert consumer.read1(4096) == b"helper output\n"
+    finally:
+        server.join(GUARD)
