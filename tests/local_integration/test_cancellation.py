@@ -209,7 +209,7 @@ def test_process_exit_before_registration_is_observed_without_reaping(
         os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOWAIT)
         if not pidfd_available:
 
-            def unavailable(_pid: int) -> int:
+            def unavailable(_pid: int, _flags: int = 0) -> int:
                 raise OSError("pidfd unavailable")
 
             monkeypatch.setattr(os, "pidfd_open", unavailable)
@@ -226,7 +226,7 @@ def test_process_exit_before_registration_is_observed_without_reaping(
 def test_process_exit_during_wait_is_observed(monkeypatch, pidfd_available) -> None:
     if not pidfd_available:
 
-        def unavailable(_pid: int) -> int:
+        def unavailable(_pid: int, _flags: int = 0) -> int:
             raise OSError("pidfd unavailable")
 
         monkeypatch.setattr(os, "pidfd_open", unavailable)

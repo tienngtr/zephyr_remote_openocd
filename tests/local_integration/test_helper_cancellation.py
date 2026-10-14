@@ -6,19 +6,27 @@ from __future__ import annotations
 
 import os
 import signal
+import subprocess
 import sys
 import threading
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
+from zephyr_remote_openocd.controller import session as session_module
 from zephyr_remote_openocd.controller.cancellation import OperationCancelled, operation_scope
 from zephyr_remote_openocd.controller.deployment import DeploymentResult
 from zephyr_remote_openocd.controller.helper_connection import HelperConnection
+from zephyr_remote_openocd.controller.plan import SessionPlan
+from zephyr_remote_openocd.controller.session import SessionController
 from zephyr_remote_openocd.controller.ssh import SshCommand
+from zephyr_remote_openocd.controller.staging_spec import StagedFile
+from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.protocol.wire import encode_frame
 
+from tests.process_support import cleanup_on_exit
 from tests.session_support import NotifiedAuthority
+from tests.support import ROOT
 
 pytestmark = [pytest.mark.local, pytest.mark.skipif(os.name != "posix", reason="POSIX signals")]
 
@@ -111,3 +119,49 @@ def test_ctrl_c_interrupts_helper_waits_and_settles_control(
     assert process is not None and process.returncode is not None
     assert process.stdin is not None and process.stdin.closed
     assert helper._join_reader(0)
+
+
+@pytest.mark.timeout(GUARD)
+def test_ctrl_c_during_local_archive_work_is_acted_on_at_the_next_boundary(
+    tmp_path, monkeypatch
+) -> None:
+    for directory in ("home", "runtime"):
+        (tmp_path / directory).mkdir()
+    image = tmp_path / "firmware.hex"
+    image.write_text(":00000001FF\n", encoding="utf-8")
+    plan = SessionPlan(
+        "test-host",
+        SshCommand((sys.executable, str(ROOT / "tests/fixtures/local_ssh.py"), str(tmp_path))),
+        ProcessSpec(
+            (sys.executable, "-c", "pass"), completion_policy=CompletionPolicy.PROCESS_EXIT
+        ),
+        staged_files=(StagedFile(image, PurePosixPath("staged/firmware.hex")),),
+    )
+    launched: list[list[str]] = []
+    real_popen = subprocess.Popen
+    real_build = session_module.build_archive
+
+    class RecordingPopen(real_popen):  # type: ignore[misc, valid-type]
+        def __init__(self, args, *rest, **kwargs) -> None:
+            launched.append(list(args))
+            super().__init__(args, *rest, **kwargs)
+
+    def build_during_ctrl_c(files):
+        # Local CPU/filesystem work is not interrupted; the fact is retained.
+        archive = real_build(files)
+        signal.raise_signal(signal.SIGINT)
+        return archive
+
+    monkeypatch.setattr(session_module, "build_archive", build_during_ctrl_c)
+    monkeypatch.setattr(subprocess, "Popen", RecordingPopen)
+    with pytest.raises(OperationCancelled), operation_scope():
+        session = SessionController.prepare(plan)
+        with cleanup_on_exit(session.close):
+            session.acquire()
+    # Deployment ran as a finite command; staging was refused at admission.
+    assert any("python3 -c" in argv[-1] for argv in launched)
+    assert not any(" stage " in argv[-1] for argv in launched)
+    assert session.closed and session.descriptor is None
+    sessions = tmp_path / "runtime" / "zephyr_remote_openocd-sessions-v1"
+    # The allocated remote workspace and its metadata were cleaned up.
+    assert sessions.is_dir() and not tuple(sessions.iterdir())
