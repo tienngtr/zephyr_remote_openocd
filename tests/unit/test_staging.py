@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path, PurePosixPath
 
 import pytest
+from zephyr_remote_openocd.controller import staging as staging_module
 from zephyr_remote_openocd.controller.staging import StagingError, build_archive
 from zephyr_remote_openocd.controller.staging_spec import StagedDirectory, StagedFile
 
@@ -54,3 +55,28 @@ class TestStaging:
     def test_build_archive_rejects_manifest_conflicts_before_reading_sources(self, entries):
         with pytest.raises(StagingError):
             build_archive(entries)
+
+
+def test_archive_build_failure_preserves_secondary_close_detail(tmp_path, monkeypatch):
+    with (
+        tempfile.SpooledTemporaryFile(max_size=1, mode="w+b") as stream,
+        monkeypatch.context() as patch,
+    ):
+        close = stream.close
+        cleanup = OSError("archive close failed")
+        cleanup.add_note("retained close diagnostic")
+
+        def fail_close():
+            close()
+            raise cleanup
+
+        patch.setattr(stream, "close", fail_close)
+        patch.setattr(staging_module.tempfile, "SpooledTemporaryFile", lambda **_kwargs: stream)
+        with pytest.raises(StagingError) as raised:
+            build_archive((StagedFile(tmp_path / "missing", PurePosixPath("firmware.bin")),))
+
+        assert isinstance(raised.value.__cause__, FileNotFoundError)
+        assert stream.closed
+        notes = getattr(raised.value, "__notes__", ())
+        assert any(str(cleanup) in note for note in notes)
+        assert any("retained close diagnostic" in note for note in notes)

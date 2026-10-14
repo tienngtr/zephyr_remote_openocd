@@ -173,6 +173,71 @@ def test_ctrl_c_during_local_archive_work_is_acted_on_at_the_next_boundary(
     assert sessions.is_dir() and not tuple(sessions.iterdir())
 
 
+@pytest.mark.parametrize("primary", ("cancellation", "command-failure", "none"))
+def test_staging_archive_close_failure_preserves_operation_outcome(tmp_path, monkeypatch, primary):
+    for directory in ("home", "runtime"):
+        (tmp_path / directory).mkdir()
+    command_failure = OSError("staging command failed")
+    cleanup = OSError("staging archive close failed")
+    cleanup.add_note("retained archive cleanup detail")
+    real_build = session_module.build_archive
+    archives = []
+
+    def build_with_close_failure(files):
+        archive = real_build(files)
+        archives.append(archive)
+        close = archive.stream.close
+
+        def fail_close():
+            close()
+            raise cleanup
+
+        monkeypatch.setattr(archive.stream, "close", fail_close)
+        return archive
+
+    class Command(SshCommand):
+        @override
+        def run_stream(self, host, remote_command, stream, *, timeout=60):
+            if primary == "cancellation":
+                signal.raise_signal(signal.SIGINT)
+            elif primary == "command-failure":
+                raise command_failure
+            return super().run_stream(host, remote_command, stream, timeout=timeout)
+
+    monkeypatch.setattr(session_module, "build_archive", build_with_close_failure)
+    plan = SessionPlan(
+        "test-host",
+        Command((sys.executable, str(ROOT / "tests/fixtures/local_ssh.py"), str(tmp_path))),
+        ProcessSpec(("unused",)),
+    )
+    with pytest.raises(BaseException) as raised, operation_scope() as operation:
+        session = SessionController.prepare(plan)
+        try:
+            session.acquire()
+        except BaseException as error:
+            session.record_operation_failure(error)
+        finally:
+            session.finish()
+
+    expected = (
+        operation.cancellation
+        if primary == "cancellation"
+        else command_failure
+        if primary == "command-failure"
+        else cleanup
+    )
+    assert raised.value is expected
+    assert session._authority.snapshot().failure is expected
+    assert session.closed and session.descriptor is None
+    assert archives and all(archive.stream.closed for archive in archives)
+    if primary != "none":
+        notes = getattr(raised.value, "__notes__", ())
+        assert any(str(cleanup) in note for note in notes)
+        assert any("retained archive cleanup detail" in note for note in notes)
+    sessions = tmp_path / "runtime" / "zephyr_remote_openocd-sessions-v1"
+    assert sessions.is_dir() and not tuple(sessions.iterdir())
+
+
 def test_latched_cancellation_wins_over_an_expired_helper_startup(monkeypatch) -> None:
     process = ControlProcess(b'{"version":1,"type":"SESSION_CREATED"')
 

@@ -17,6 +17,7 @@ from zephyr_remote_openocd.controller.authority import (
     SessionError,
 )
 from zephyr_remote_openocd.controller.cancellation import admit_effect, current_operation
+from zephyr_remote_openocd.controller.cleanup import _add_failure_note
 from zephyr_remote_openocd.controller.deployment import DeploymentResult, deploy_helper
 from zephyr_remote_openocd.controller.forwarding import (
     ForwardAdvisory,
@@ -220,6 +221,7 @@ class SessionController:
     def _stage(self, files: Iterable[StagedEntry]):
         connection = self._connection_or_error()
         archive = build_archive(files)
+        primary: BaseException | None = None
         try:
             command = (
                 f"python3 {shlex.quote(self.deployment.path)} stage "
@@ -228,8 +230,16 @@ class SessionController:
             result = self.plan.ssh_command.run_stream(
                 self.plan.host, command, archive.stream, timeout=60
             )
+        except BaseException as error:
+            primary = error
+            raise
         finally:
-            archive.stream.close()
+            try:
+                archive.stream.close()
+            except BaseException as cleanup_error:
+                if primary is None:
+                    raise
+                _add_failure_note(primary, "staging archive cleanup also failed", cleanup_error)
         if result.returncode:
             raise SessionError(
                 f"remote staging failed ({result.returncode}): "

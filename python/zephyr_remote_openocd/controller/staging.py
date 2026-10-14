@@ -11,6 +11,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import BinaryIO, cast
 
+from zephyr_remote_openocd.controller.cleanup import _add_failure_note
 from zephyr_remote_openocd.controller.staging_spec import StagedDirectory, StagedEntry, StagedFile
 
 
@@ -95,6 +96,9 @@ def build_archive(files: Iterable[StagedEntry], *, spool_limit: int = 1024 * 102
                     raise StagingError(f"cannot read staged source {source}: {error}") from error
         stream.seek(0)
         return ArchiveInfo(stream, size, digest.hexdigest(), file_names, directory_names)
-    except BaseException:
-        stream.close()
+    except BaseException as error:
+        try:
+            stream.close()
+        except BaseException as cleanup_error:
+            _add_failure_note(error, "staging archive cleanup also failed", cleanup_error)
         raise

@@ -2613,6 +2613,11 @@ Combining failures retains notes already attached to each secondary exception,
 including diagnostics from nested cleanup batches. Later cleanup composition
 preserves those details even when the secondary exception's summary was already
 attached to the primary failure.
+Local staging preserves an exception from archive construction or transfer,
+including dispatched cancellation, while closing its owned archive. A close
+failure and its existing notes are attached before the initiating exception
+reaches the session authority; a close failure without an earlier exception
+remains fatal.
 Each helper input observer scopes its descriptor mode restoration with its
 observation. A read or protocol exception stays primary when restoration also
 fails; the restoration exception and its existing notes are attached before the
