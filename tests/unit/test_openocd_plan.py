@@ -4,6 +4,7 @@
 
 import io
 import os
+from collections import Counter
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -76,14 +77,16 @@ def test_search_tree_token_text_remains_literal_through_helper_materialization(
         remote_root + "/nested/" + config_name,
     ]
     if mapped:
-        assert tuple(
-            materialize_path(check.path, workspace=workspace, address="127.64.0.1")
+        assert Counter(
+            (check.kind, materialize_path(check.path, workspace=workspace, address="127.64.0.1"))
             for check in request.required_paths
-        ) == (
-            remote_root,
-            remote_root + "/nested",
-            remote_root + "/" + config_name,
-            remote_root + "/nested/" + config_name,
+        ) == Counter(
+            [
+                ("directory", remote_root),
+                ("directory", remote_root + "/nested"),
+                ("file", remote_root + "/" + config_name),
+                ("file", remote_root + "/nested/" + config_name),
+            ]
         )
 
 
