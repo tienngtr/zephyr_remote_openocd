@@ -22,10 +22,7 @@ class PathPlanningError(RuntimeError):
 
 @dataclass(frozen=True)
 class PlannedPath:
-    local: Path
     remote: str
-    kind: str
-    mapped: bool
     template: ArgumentTemplate | None = None
 
 
@@ -78,16 +75,16 @@ class PathPlanner:
             mapping, relative = mapped
             remote = str(mapping.remote.joinpath(*relative.parts))
             self.remote_checks.append(RequiredPathSpec(remote, "directory"))
-            return PlannedPath(source, remote, "directory", True)
+            return PlannedPath(remote)
         existing = self._existing_staged(source)
         if existing:
-            return PlannedPath(source, existing[0], "directory", False, existing[1])
+            return PlannedPath(*existing)
         destination = PurePosixPath("trees", namespace)
         self._staged_roots.append((source, destination))
         self._add_directory(source, destination)
         self._walk(source, source, destination, set())
         remote, template = self._staged_path(destination)
-        return PlannedPath(source, remote, "directory", False, template)
+        return PlannedPath(remote, template)
 
     def plan_file(self, source: Path, namespace: str) -> PlannedPath:
         source = Path(source).expanduser().resolve()
@@ -98,14 +95,14 @@ class PathPlanner:
             mapping, relative = mapped
             remote = str(mapping.remote.joinpath(*relative.parts))
             self.remote_checks.append(RequiredPathSpec(remote, "file"))
-            return PlannedPath(source, remote, "file", True)
+            return PlannedPath(remote)
         existing = self._existing_staged(source)
         if existing:
-            return PlannedPath(source, existing[0], "file", False, existing[1])
+            return PlannedPath(*existing)
         destination = PurePosixPath("files", namespace + source.suffix)
         self._add_file(source, destination)
         remote, template = self._staged_path(destination)
-        return PlannedPath(source, remote, "file", False, template)
+        return PlannedPath(remote, template)
 
     def _add_entry(self, entry: StagedEntry) -> None:
         destination = entry.destination
