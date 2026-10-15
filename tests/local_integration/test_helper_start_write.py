@@ -7,8 +7,9 @@ from __future__ import annotations
 import os
 import sys
 import threading
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
+from typing import Any
 
 import pytest
 from zephyr_remote_openocd.controller import helper_connection as connection_module
@@ -27,6 +28,20 @@ from tests.session_support import NotifiedAuthority
 
 pytestmark = pytest.mark.local
 _NO_WAIT_SOURCES = WaitSources()
+
+
+class _ConnectionOs:
+    """Replace ``os.write`` only as the helper connection module sees it.
+
+    Notifier and other modules keep the real primitive, so an observer that
+    reads the session authority cannot form a test-only lock cycle with them.
+    """
+
+    def __init__(self, write: Callable[[int, bytes | memoryview], int]) -> None:
+        self.write = write
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(os, name)
 
 
 @pytest.mark.timeout(60)
@@ -109,7 +124,7 @@ def test_recorded_session_end_stops_start_without_helper_consuming_input(
         # Remove the acquisition hint so only the new failure wakes the write.
         notified_authority.notifier.drain()
         monkeypatch.setattr(connection_module, "wait_for", release_failure_on_backpressure)
-        monkeypatch.setattr(connection_module.os, "write", observe_start_write)
+        monkeypatch.setattr(connection_module, "os", _ConnectionOs(observe_start_write))
         with pytest.raises(SessionError) as raised:
             client.start_process(ProcessSpec(("child", "x" * 512 * 1024)), ())
         assert blocked
@@ -227,7 +242,7 @@ def test_start_waits_for_pending_control_final_observation(
         return result
 
     monkeypatch.setattr(connection_module, "wait_for", coordinate_final_observation)
-    monkeypatch.setattr(connection_module.os, "write", observe_start_write)
+    monkeypatch.setattr(connection_module, "os", _ConnectionOs(observe_start_write))
     try:
         client.acquire()
         process = client._process
