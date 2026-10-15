@@ -121,6 +121,14 @@ def test_decode_command_rejects_tcl_quoting_in_a_filesystem_path(start_command):
             [{"name": "gdb", "remote_port": 3333, "future": True}],
             id="unknown-service-field",
         ),
+        pytest.param("services", [{"name": "", "remote_port": 3333}], id="empty-service-name"),
+        pytest.param("services", [{"name": "gdb", "remote_port": 0}], id="zero-service-port"),
+        pytest.param(
+            "services", [{"name": "gdb", "remote_port": 65536}], id="out-of-range-service-port"
+        ),
+        pytest.param(
+            "services", [{"name": "gdb", "remote_port": True}], id="boolean-service-port"
+        ),
         pytest.param("required_output_sentinels", [" READY "], id="untrimmed-marker"),
         pytest.param("required_output_sentinels", ["READY", "READY"], id="duplicate-marker"),
         pytest.param("required_output_sentinels", ["RE\0ADY"], id="nul-in-marker"),
