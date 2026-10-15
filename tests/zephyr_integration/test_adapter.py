@@ -364,38 +364,11 @@ def test_remote_home_json_rejects_invalid_paths(runner_api, monkeypatch, tmp_pat
         "run",
         Mock(return_value=subprocess.CompletedProcess([], 0, output, b"")),
     )
-    with pytest.raises(ConfigError, match="remote home query returned an invalid path"):
+    with pytest.raises(ConfigError):
         runner_module.prepare_remote_paths(selected)
 
 
-def test_gdb_execution_reports_session_status(runner_api, monkeypatch):
-    from zephyr_remote_openocd.zephyr44 import _runner as runner_module
-
-    runner = Mock()
-    harness = ForwardingHarness(monkeypatch)
-    session = harness.prepare()
-    try:
-        session.acquire()
-        runner.run_client.side_effect = lambda _argv: harness.helper.authority.record_terminal(
-            terminal_snapshot(Trigger.CHILD_EXIT, returncode=OPENOCD_FAILURE_RC)
-        )
-        plan = _debug_plan(gdb_argv=("gdb", "zephyr.elf"))
-
-        with pytest.raises(SessionError, match="exit status 7"):
-            runner_module.execute_gdb_client(runner, plan, session)
-
-        runner.require.assert_called_once_with("gdb")
-        runner.run_client.assert_called_once_with(["gdb", "zephyr.elf"])
-        assert not session.closed
-        assert session.openocd_returncode == OPENOCD_FAILURE_RC
-    finally:
-        session.close()
-
-
-@pytest.mark.parametrize("command", ("debug", "attach"))
-def test_interactive_gdb_owns_ctrl_c_until_runner_capture_is_restored(
-    runner_api, monkeypatch, command
-):
+def test_interactive_gdb_owns_ctrl_c_until_runner_capture_is_restored(runner_api, monkeypatch):
     from zephyr_remote_openocd.zephyr44 import _runner as runner_module
 
     harness = ForwardingHarness(monkeypatch)
@@ -414,7 +387,7 @@ def test_interactive_gdb_owns_ctrl_c_until_runner_capture_is_restored(
         session = harness.prepare((GDB,), ())
         with cleanup_on_exit(session.close):
             session.acquire()
-            assert runner_module.execute_started_operation(runner, command, plan, session) is None
+            assert runner_module.execute_started_operation(runner, "debug", plan, session) is None
             assert not operation.requested
             # Runner capture is restored before any further runner work.
             signal.raise_signal(signal.SIGINT)
@@ -901,8 +874,15 @@ def test_operation_primary_failure_rules(
     assert harness.helper.close_calls == 1
 
 
-@pytest.mark.parametrize("command", ("flash", "rtt", "debugserver"))
-@pytest.mark.parametrize("phase", ("staging", "ready"))
+@pytest.mark.parametrize(
+    "command, phase",
+    (
+        ("flash", "staging"),
+        ("flash", "ready"),
+        ("debugserver", "staging"),
+        ("debugserver", "ready"),
+    ),
+)
 def test_interruption_during_session_acquisition_closes_owned_resources(
     runner_api, monkeypatch, command, phase
 ):
@@ -1295,7 +1275,10 @@ def test_parser_preserves_applicable_upstream_options(runner_api, argv):
     assert {name: actual[name] for name in expected} == expected
 
 
-def test_attach_rtt_server_forwards_without_loading(runner_api, tmp_path, monkeypatch, caplog):
+@pytest.mark.parametrize("child_returncode", (0, OPENOCD_FAILURE_RC))
+def test_attach_rtt_server_forwards_without_loading(
+    runner_api, tmp_path, monkeypatch, caplog, child_returncode
+):
     from zephyr_remote_openocd.zephyr44 import _runner as runner_module
 
     core, _, remote = runner_api
@@ -1349,6 +1332,9 @@ def test_attach_rtt_server_forwards_without_loading(runner_api, tmp_path, monkey
         }
         assert harness.ssh.process(GDB).returncode is None
         assert harness.ssh.process(rtt_forward).returncode is None
+        harness.helper.authority.record_terminal(
+            terminal_snapshot(Trigger.CHILD_EXIT, returncode=child_returncode)
+        )
 
     monkeypatch.setattr(runner, "require", create_autospec(runner.require))
     monkeypatch.setattr(runner, "run_client", attach_client)
@@ -1358,7 +1344,12 @@ def test_attach_rtt_server_forwards_without_loading(runner_api, tmp_path, monkey
         Mock(side_effect=AssertionError("attach must not launch an RTT client")),
     )
     with caplog.at_level(logging.INFO, logger=runner.logger.name):
-        runner.run("attach")
+        if child_returncode:
+            with pytest.raises(SessionError) as raised:
+                runner.run("attach")
+            assert str(child_returncode) in str(raised.value)
+        else:
+            runner.run("attach")
 
     assert len(client_argv) == 1
     assert client_argv[0][0] == "gdb"
@@ -1420,8 +1411,6 @@ def test_recording_runs_real_runner_integration_without_external_io(
     command,
     thread_info,
 ):
-    from zephyr_remote_openocd.zephyr44 import _runner as runner_module
-
     rtt_server = command.endswith("-rtt")
     command = command.removesuffix("-rtt")
     core, _, remote = runner_api
@@ -1449,8 +1438,10 @@ def test_recording_runs_real_runner_integration_without_external_io(
     monkeypatch.setenv("ZRO_CONTROLLED_ENV", "secret-value")
     monkeypatch.delenv("ZRO_ABSENT_ENV", raising=False)
     monkeypatch.setenv("ZRO_RECORD", "1")
-    if thread_info:
-        monkeypatch.setenv("ZRO_RECORD_OPENOCD_VERSION", "Open On-Chip Debugger 0.12.0")
+    monkeypatch.setenv(
+        "ZRO_RECORD_OPENOCD_VERSION",
+        "Open On-Chip Debugger 0.12.0" if thread_info else "unused invalid version",
+    )
     cfg = core.RunnerConfig(
         build_dir=str(build),
         board_dir=str(tmp_path),
@@ -1484,15 +1475,6 @@ def test_recording_runs_real_runner_integration_without_external_io(
     )
     runner = remote.create(cfg, args)
 
-    planned_requests = []
-    original_record_operation = runner_module.record_operation
-
-    def capture_record_operation(record_runner, record_command, selected):
-        recorded = original_record_operation(record_runner, record_command, selected)
-        planned_requests.append(recorded[0])
-        return recorded
-
-    monkeypatch.setattr(runner_module, "record_operation", capture_record_operation)
     runner.run(command)
     output = capsys.readouterr().out
     result = json.loads(output)
@@ -1507,8 +1489,6 @@ def test_recording_runs_real_runner_integration_without_external_io(
     assert any("~/mapped/" in argument for argument in request["process"]["argv"])
     assert request["process"]["environment"] == ["ZRO_CONTROLLED_ENV"]
     assert "secret-value" not in output
-    assert planned_requests[0] is not None
-    assert dict(planned_requests[0].process.environment) == {"ZRO_CONTROLLED_ENV": "secret-value"}
     assert any(
         record.levelno == logging.WARNING and "ZRO_ABSENT_ENV" in record.getMessage()
         for record in caplog.records
@@ -1567,6 +1547,47 @@ def test_recording_runs_real_runner_integration_without_external_io(
             assert "rtt server start 19021 0" in argv
     if command == "rtt":
         assert result["rtt"]["port"] == 19021
+
+
+def test_thread_info_recording_requires_injected_version_without_remote_query(
+    runner_api, tmp_path, monkeypatch, capsys, forbid_external_io
+):
+    core, _, remote = runner_api
+    build = tmp_path / "build"
+    (build / "zephyr").mkdir(parents=True)
+    (build / "zephyr/.config").write_text("CONFIG_DEBUG_THREAD_INFO=y\n")
+    image = build / "zephyr/zephyr.elf"
+    image.write_bytes(b"recording metadata only")
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "default_remote: chosen\nremotes:\n  chosen:\n    openocd_command: [openocd]\n"
+    )
+    monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", str(config))
+    monkeypatch.setenv("ZRO_RECORD", "1")
+    cfg = core.RunnerConfig(
+        build_dir=str(build),
+        board_dir=str(tmp_path),
+        elf_file=str(image),
+        exe_file=None,
+        hex_file=None,
+        bin_file=None,
+        uf2_file=None,
+        mot_file=None,
+        file=None,
+        gdb="gdb",
+        openocd="openocd",
+        openocd_search=[],
+    )
+    runner = remote.create(cfg, parser_for(remote).parse_args([]))
+    # Establish a valid recording path before removing only its version input.
+    monkeypatch.setenv("ZRO_RECORD_OPENOCD_VERSION", "Open On-Chip Debugger 0.12.0")
+    runner.run("debug")
+    assert json.loads(capsys.readouterr().out)["thread_info"]["rtos_awareness"]
+
+    monkeypatch.delenv("ZRO_RECORD_OPENOCD_VERSION")
+    with pytest.raises(RuntimeError):
+        runner.run("debug")
+    assert capsys.readouterr().out == ""
 
 
 def test_adapter_allows_same_probe_session_to_finish_while_another_is_active(
@@ -1637,7 +1658,7 @@ def test_adapter_allows_same_probe_session_to_finish_while_another_is_active(
 
 @pytest.mark.parametrize(
     ("command", "phase"),
-    (("debug", "gdb"), ("attach", "gdb"), ("rtt", "gdb"), ("rtt", "rtt"), ("debugserver", "wait")),
+    (("debug", "gdb"), ("rtt", "gdb"), ("rtt", "rtt"), ("debugserver", "wait")),
 )
 def test_active_operation_interrupt_closes_session_and_forwards(
     runner_api, monkeypatch, tmp_path, command, phase

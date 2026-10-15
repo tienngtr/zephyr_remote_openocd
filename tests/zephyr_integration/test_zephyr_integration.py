@@ -103,6 +103,7 @@ class TestZephyrIntegration:
             f"-DUSER_CACHE_DIR={cls.cache}",
             f"-DOPENOCD={cls.fake_openocd}",
         )
+        cls._create_recording_flash_artifact(cls.build_out_tree)
         cls._west(
             "build",
             "--cmake-only",
@@ -183,16 +184,10 @@ class TestZephyrIntegration:
             raise AssertionError(f"recording JSON absent:\n{output}")
         return json.loads(output[start:])
 
-    def test_module_discovery_and_in_tree_application_configuration(self):
-        modules = (self.build_in_tree / "zephyr_modules.txt").read_text()
-        assert str(ROOT) in modules
-
-    def test_out_of_tree_application_configuration(self):
-        modules = (self.build_out_tree / "zephyr_modules.txt").read_text()
-        assert str(ROOT) in modules
-
     def test_runner_registration_is_conditional_and_non_destructive(self):
-        enabled = self._runner_state(self.build_in_tree)["runners"]
+        state = self._runner_state(self.build_in_tree)
+        assert state["args"]["remote_openocd"] == state["args"]["openocd"]
+        enabled = state["runners"]
         disabled = self._runner_state(self.build_without_openocd)["runners"]
         assert enabled.count("remote_openocd") == 1
         assert "openocd" in enabled
@@ -207,16 +202,17 @@ class TestZephyrIntegration:
             "--no-rebuild",
         )
 
-    def test_openocd_arguments_are_mirrored_exactly(self):
-        args = self._runner_state(self.build_in_tree)["args"]
-        assert args["remote_openocd"] == args["openocd"]
-
-    @pytest.mark.parametrize("command", ("flash", "debug"))
-    def test_recording_smoke_reaches_adapter(self, command):
+    @pytest.mark.parametrize(
+        "application, command",
+        (("in-tree", "flash"), ("in-tree", "debug"), ("out-of-tree", "flash")),
+    )
+    def test_discovered_module_reaches_adapter(self, application, command):
+        build = self.build_in_tree if application == "in-tree" else self.build_out_tree
+        assert str(ROOT) in (build / "zephyr_modules.txt").read_text()
         result = self._west(
             command,
             "-d",
-            str(self.build_in_tree),
+            str(build),
             "-r",
             "remote_openocd",
             "--no-rebuild",
