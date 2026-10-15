@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import errno
 import gc
+import secrets
 import socket
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -71,6 +72,20 @@ def observed_session() -> Iterator[Callable[[Callable[[], int | None]], Observed
     yield create
     for status in statuses:
         status.close()
+
+
+@pytest.fixture
+def isolated_lease_addresses() -> tuple[str, str]:
+    """Return two adjacent remote loopback addresses chosen for this test.
+
+    Address leases are host-wide abstract sockets, so fixed addresses collide
+    when independent suite processes run concurrently.
+    """
+    # Plugin-only loads of this module may precede the product path setup.
+    from zephyr_remote_openocd.protocol.addresses import LOOPBACK_RANGE
+
+    first = LOOPBACK_RANGE.network_address + 1 + secrets.randbelow(LOOPBACK_RANGE.num_addresses - 3)
+    return str(first), str(first + 1)
 
 
 @pytest.fixture(autouse=True)

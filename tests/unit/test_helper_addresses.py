@@ -50,52 +50,61 @@ def test_address_probe_finalizer_failure_rolls_back_every_socket(monkeypatch, fa
             owned.close()
 
 
-def test_preferred_address_is_leased_before_random_allocation(monkeypatch):
+def test_preferred_address_is_leased_before_random_allocation(
+    monkeypatch, isolated_lease_addresses
+):
+    preferred, _ = isolated_lease_addresses
+
     def unexpected_random():
         raise AssertionError("a free preferred address should be reused")
 
     monkeypatch.setattr(helper_addresses, 'random_address', unexpected_random)
-    allocated = helper_addresses.allocate_listener_address((), preferred_address="127.64.0.7")
+    allocated = helper_addresses.allocate_listener_address((), preferred_address=preferred)
     try:
-        assert allocated == "127.64.0.7"
+        assert allocated == preferred
     finally:
         allocated.lease.close()
 
 
-def test_preferred_address_held_by_another_session_falls_back(monkeypatch):
-    first = helper_addresses.allocate_listener_address((), preferred_address="127.64.0.7")
-    monkeypatch.setattr(helper_addresses, 'random_address', lambda: "127.64.0.8")
+def test_preferred_address_held_by_another_session_falls_back(
+    monkeypatch, isolated_lease_addresses
+):
+    preferred, fallback = isolated_lease_addresses
+    first = helper_addresses.allocate_listener_address((), preferred_address=preferred)
+    monkeypatch.setattr(helper_addresses, 'random_address', lambda: fallback)
     try:
-        second = helper_addresses.allocate_listener_address((), preferred_address="127.64.0.7")
+        second = helper_addresses.allocate_listener_address((), preferred_address=preferred)
         try:
-            assert second == "127.64.0.8"
+            assert second == fallback
         finally:
             second.lease.close()
     finally:
         first.lease.close()
 
 
-def test_preferred_address_with_occupied_service_port_falls_back(monkeypatch):
-    monkeypatch.setattr(helper_addresses, 'random_address', lambda: "127.64.0.8")
+def test_preferred_address_with_occupied_service_port_falls_back(
+    monkeypatch, isolated_lease_addresses
+):
+    preferred, fallback = isolated_lease_addresses
+    monkeypatch.setattr(helper_addresses, 'random_address', lambda: fallback)
     with socket.socket() as listener:
-        listener.bind(("127.64.0.7", 0))
+        listener.bind((preferred, 0))
         port = listener.getsockname()[1]
-        allocated = helper_addresses.allocate_listener_address(
-            (port,), preferred_address="127.64.0.7"
-        )
+        allocated = helper_addresses.allocate_listener_address((port,), preferred_address=preferred)
         try:
-            assert allocated == "127.64.0.8"
+            assert allocated == fallback
             # Rejected candidates must release their address lease.
-            reused = helper_addresses.allocate_listener_address((), preferred_address="127.64.0.7")
+            reused = helper_addresses.allocate_listener_address((), preferred_address=preferred)
             reused.lease.close()
         finally:
             allocated.lease.close()
 
 
 @pytest.mark.parametrize("termination", ("exit", "kill"))
-def test_address_lease_coordinates_helpers_and_releases_on_exit(tmp_path, monkeypatch, termination):
-    address = "127.64.0.3"
-    other_address = "127.64.0.4"
+def test_address_lease_coordinates_helpers_and_releases_on_exit(
+    tmp_path, monkeypatch, isolated_lease_addresses, termination
+):
+    address, other_address = isolated_lease_addresses
     script = """
 import sys
 from pathlib import Path

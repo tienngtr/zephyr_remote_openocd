@@ -1855,7 +1855,10 @@ stage(sys.argv[2])
         assert "Python" in message["output"]
 
     @pytest.mark.parametrize("failure", ("diagnostic", "tcp-bind"))
-    def test_helper_does_not_repeat_spawned_startup_work(self, requires_loopback_listener, failure):
+    def test_helper_does_not_repeat_spawned_startup_work(
+        self, requires_loopback_listener, isolated_lease_addresses, failure
+    ):
+        preferred, _ = isolated_lease_addresses
         helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
@@ -1906,7 +1909,7 @@ stage(sys.argv[2])
                         environment={"ZRO_COLLISION_STATE": str(state)},
                         required_output_sentinels=(output_sentinel,),
                         argv_templates=[{"index": 2, "parts": [{"session": "address"}]}],
-                        preferred_address="127.64.0.7",
+                        preferred_address=preferred,
                     )
                 )
                 process.stdin.flush()
