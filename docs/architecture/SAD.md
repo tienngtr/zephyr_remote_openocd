@@ -1576,7 +1576,12 @@ When the wait reports control completion (including coincident readability),
 the reader calls `SessionAuthority.begin_control_exit()`. Under its existing
 lock the authority records transport end and a pending final observation, then
 notifies and releases the lock. START and dependent admission are immediately
-revoked. Acquisition/readiness waits cannot consume SESSION_CREATED or READY
+revoked, but a refusal issued while the observation is pending does not select
+the operation failure. The authority retains that refusal and records it after
+final accounting, behind any terminal or control-end failure, so it becomes
+primary only when accounting established no failure. Callers record it through
+the ordinary failure path; they need no pending-specific handling.
+Acquisition/readiness waits cannot consume SESSION_CREATED or READY
 while the observation is pending; absent an established failure, they continue
 through the ordinary notifier wait. Foreground/session waits observe the helper
 only through reader/authority notifications; control-process completion belongs

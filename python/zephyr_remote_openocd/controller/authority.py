@@ -23,6 +23,14 @@ class SessionClosedError(SessionError):
     pass
 
 
+class SessionEndingError(SessionClosedError):
+    """Refuse a new effect while final control observation is pending.
+
+    The refusal does not select the operation failure: the authority records
+    it only after final accounting, behind any detail that accounting finds.
+    """
+
+
 def _render_diagnostic(detail: Diagnostic) -> str:
     return "; ".join(
         (
@@ -79,6 +87,7 @@ class SessionAuthority:
         self._ready_address: str | None = None
         self._control_ended = False
         self._control_observation_pending = False
+        self._deferred_refusals: list[tuple[str, BaseException, object]] = []
         self._changed = threading.RLock()
         self._notify = notify
 
@@ -121,6 +130,10 @@ class SessionAuthority:
             if identity in self._failures or any(
                 record.error is error for record in self._failures.values()
             ):
+                return
+            if self._control_observation_pending and isinstance(error, SessionEndingError):
+                if all(deferred is not error for _, deferred, _ in self._deferred_refusals):
+                    self._deferred_refusals.append((code, error, identity))
                 return
             diagnostic = Diagnostic.from_exception(code, error)
             primary = self._failure()
@@ -175,14 +188,18 @@ class SessionAuthority:
         self.record_failure("READER_FAILURE", reader, key="reader")
 
     def begin_control_exit(self) -> None:
-        """Revoke admission before the reader accounts final protocol bytes."""
+        """Revoke admission before the reader completes final observation."""
         with self._changed:
             self._control_ended = True
             self._control_observation_pending = True
             self._notify()
 
     def finish_control_exit(self) -> None:
-        """Publish final accounting without holding the lock across physical I/O."""
+        """Publish final accounting without holding the lock across physical I/O.
+
+        Refusals issued while accounting was pending are recorded last, so
+        they become primary only when accounting established no failure.
+        """
         with self._changed:
             if self._terminal is None:
                 self.record_failure(
@@ -191,7 +208,15 @@ class SessionAuthority:
                     key="control_ended",
                 )
             self._control_observation_pending = False
+            refusals, self._deferred_refusals = self._deferred_refusals, []
+            for code, error, key in refusals:
+                self.record_failure(code, error, key=key)
             self._notify()
+
+    def _refuse_pending_observation(self, message: str) -> None:
+        """Refuse new effects without selecting a failure before final accounting."""
+        if self._control_observation_pending:
+            raise SessionEndingError(message)
 
     def record_control_status(self, status: int | None) -> None:
         if status not in (None, 0):
@@ -254,7 +279,10 @@ class SessionAuthority:
             error = self.publish_failure()
             if error is not None:
                 raise error
-            if self._closing or self._terminal is not None or self._control_ended:
+            if self._closing:
+                raise SessionClosedError("operation no longer permits dependent launch")
+            self._refuse_pending_observation("operation no longer permits dependent launch")
+            if self._terminal is not None or self._control_ended:
                 raise SessionClosedError("operation no longer permits dependent launch")
             ticket = self._gate.prepare(required)
             self._gate.observe_forwarded(forwarded)
@@ -268,6 +296,7 @@ class SessionAuthority:
             error = self.publish_failure()
             if error is not None:
                 raise error
+            self._refuse_pending_observation("helper session ended before START")
             if self._terminal is not None or self._control_ended:
                 raise SessionError("helper session ended before START")
             final_admission()

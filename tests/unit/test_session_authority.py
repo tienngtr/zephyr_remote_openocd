@@ -206,3 +206,54 @@ def test_control_observation_defers_successful_result_until_final_accounting():
     authority.finish_control_exit()
 
     assert authority.operation_status() == 0
+
+
+def _admit(authority: SessionAuthority, entry: str) -> None:
+    if entry == "work":
+        authority.admit_work((), ())
+    else:
+        authority.admit_process_start(lambda: None)
+
+
+@pytest.mark.parametrize("entry", ("work", "start"))
+@pytest.mark.parametrize("accounting", ("after-resolution", "before-resolution"))
+@pytest.mark.parametrize(
+    ("ending", "selected"),
+    (
+        ("terminal-failure", ["TERMINAL_FAILURE", "OPERATION_FAILURE"]),
+        ("orderly-terminal", ["OPERATION_FAILURE"]),
+        ("no-terminal", ["CONTROL_ENDED", "OPERATION_FAILURE"]),
+    ),
+)
+def test_refusal_during_final_observation_waits_for_final_accounting(
+    entry, accounting, ending, selected
+):
+    authority = SessionAuthority()
+    authority.record_ready()
+    authority.begin_control_exit()
+    with pytest.raises(SessionError) as refused:
+        _admit(authority, entry)
+
+    def account() -> None:
+        if ending == "terminal-failure":
+            authority.record_terminal(
+                terminal_snapshot(Trigger.HELPER_FAILURE, code="DETAIL", message="final detail")
+            )
+        elif ending == "orderly-terminal":
+            authority.record_terminal(terminal_snapshot(Trigger.CONTROLLER_EOF))
+        authority.finish_control_exit()
+
+    if accounting == "before-resolution":
+        account()
+    resolved = authority.resolve_effect_failure(refused.value)
+    if accounting == "after-resolution":
+        # The refusal is propagated but not selected while accounting is pending.
+        assert resolved is refused.value
+        assert authority.snapshot().failure is None
+        account()
+
+    snapshot = authority.snapshot()
+    assert [diagnostic.code for diagnostic in snapshot.diagnostics] == selected
+    assert (snapshot.failure is refused.value) == (ending == "orderly-terminal")
+    with pytest.raises(SessionError):
+        _admit(authority, entry)
