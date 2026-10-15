@@ -13,11 +13,13 @@ from typing import override
 import pytest
 from zephyr_remote_openocd.controller import _forwarding as forwarding_module
 from zephyr_remote_openocd.controller._ssh import ManagedSshProcess, SshCommand, SshForwardSpec
-from zephyr_remote_openocd.controller.authority import SessionError
-from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
+from zephyr_remote_openocd.controller.api import (
+    ForwardSpec,
+    SessionController,
+    SessionError,
+    SessionPlan,
+)
 from zephyr_remote_openocd.controller.helper_connection import HelperConnection
-from zephyr_remote_openocd.controller.plan import SessionPlan
-from zephyr_remote_openocd.controller.session import SessionController
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.protocol.wire import ProtocolError
 

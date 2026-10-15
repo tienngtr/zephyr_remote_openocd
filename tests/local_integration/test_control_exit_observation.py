@@ -19,12 +19,14 @@ from zephyr_remote_openocd.controller import helper_connection as connection_mod
 from zephyr_remote_openocd.controller import session as session_module
 from zephyr_remote_openocd.controller._deployment import DeploymentResult
 from zephyr_remote_openocd.controller._ssh import ManagedSshProcess, SshCommand, SshForwardSpec
-from zephyr_remote_openocd.controller.authority import SessionError
+from zephyr_remote_openocd.controller.api import (
+    ForwardSpec,
+    SessionController,
+    SessionError,
+    SessionPlan,
+)
 from zephyr_remote_openocd.controller.cancellation import OperationCancelled, operation_scope
-from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
 from zephyr_remote_openocd.controller.helper_connection import HelperConnection
-from zephyr_remote_openocd.controller.plan import SessionPlan
-from zephyr_remote_openocd.controller.session import SessionController
 from zephyr_remote_openocd.controller.waiting import (
     Descriptor,
     ProcessCompletion,

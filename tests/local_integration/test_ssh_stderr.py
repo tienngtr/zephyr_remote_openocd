@@ -14,9 +14,11 @@ from zephyr_remote_openocd.controller._ssh import (
     SshCommand,
     SshForwardSpec,
 )
-from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
-from zephyr_remote_openocd.controller.plan import SessionPlan
-from zephyr_remote_openocd.controller.session import SessionController
+from zephyr_remote_openocd.controller.api import (
+    ForwardSpec,
+    SessionController,
+    SessionPlan,
+)
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 
 pytestmark = pytest.mark.local

@@ -13,11 +13,16 @@ import pytest
 from zephyr_remote_openocd.controller import session as session_module
 from zephyr_remote_openocd.controller._deployment import DeploymentResult
 from zephyr_remote_openocd.controller._forwarding import ForwardFailure
-from zephyr_remote_openocd.controller._ssh import SshCommand
-from zephyr_remote_openocd.controller.authority import SessionClosedError, SessionError
-from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
-from zephyr_remote_openocd.controller.plan import SessionAllocation, SessionPlan
-from zephyr_remote_openocd.controller.session import SessionController, query_remote_openocd_version
+from zephyr_remote_openocd.controller.api import (
+    ForwardSpec,
+    SessionAllocation,
+    SessionClosedError,
+    SessionController,
+    SessionError,
+    SessionPlan,
+    SshCommand,
+    query_remote_openocd_version,
+)
 from zephyr_remote_openocd.controller.waiting import ProcessHandle, WaitResult, wait_for
 from zephyr_remote_openocd.protocol.outcome import Trigger
 from zephyr_remote_openocd.protocol.process import ProcessSpec

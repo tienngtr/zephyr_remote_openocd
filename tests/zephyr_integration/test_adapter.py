@@ -25,13 +25,16 @@ from zephyr_remote_openocd.config import ConfigError, PathMapping, ResolvedRemot
 from zephyr_remote_openocd.controller import session as session_module
 from zephyr_remote_openocd.controller._deployment import DeploymentResult
 from zephyr_remote_openocd.controller._forwarding import ForwardStartError
-from zephyr_remote_openocd.controller._ssh import SshCommand
-from zephyr_remote_openocd.controller.authority import SessionError
+from zephyr_remote_openocd.controller.api import (
+    ForwardSpec,
+    SessionAllocation,
+    SessionController,
+    SessionError,
+    SessionPlan,
+    SshCommand,
+)
 from zephyr_remote_openocd.controller.cancellation import OperationCancelled, operation_scope
-from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
 from zephyr_remote_openocd.controller.paths import PathPlanner
-from zephyr_remote_openocd.controller.plan import SessionAllocation, SessionPlan
-from zephyr_remote_openocd.controller.session import SessionController
 from zephyr_remote_openocd.openocd.debug import (
     DebugInputs,
     DebugPlan,

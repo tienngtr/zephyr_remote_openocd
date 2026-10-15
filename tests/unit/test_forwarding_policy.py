@@ -13,7 +13,7 @@ from zephyr_remote_openocd.controller import preferred_address_cache
 from zephyr_remote_openocd.controller import session as session_module
 from zephyr_remote_openocd.controller._forwarding import ForwardStartError
 from zephyr_remote_openocd.controller._ssh import ManagedSshProcess, SshCommand
-from zephyr_remote_openocd.controller.authority import SessionError
+from zephyr_remote_openocd.controller.api import SessionError
 from zephyr_remote_openocd.controller.helper_connection import HelperConnection
 from zephyr_remote_openocd.protocol.outcome import Trigger
 from zephyr_remote_openocd.protocol.wire import encode_frame

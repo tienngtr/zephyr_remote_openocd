@@ -17,14 +17,17 @@ from runners.core import FileType  # pylint: disable=no-name-in-module
 from runners.openocd import OpenOcdBinaryRunner  # pylint: disable=no-name-in-module
 
 from zephyr_remote_openocd.config import ConfigError, load_config, resolve_remote
-from zephyr_remote_openocd.controller._forwarding import ForwardAdvisory
 from zephyr_remote_openocd.controller._processes import run_finite
 from zephyr_remote_openocd.controller._rtt import run_rtt_client
-from zephyr_remote_openocd.controller._ssh import SshCommand
+from zephyr_remote_openocd.controller.api import (
+    ForwardAdvisory,
+    SessionController,
+    SessionPlan,
+    SshCommand,
+    query_remote_openocd_version,
+)
 from zephyr_remote_openocd.controller.cancellation import OperationCancelled, operation_scope
 from zephyr_remote_openocd.controller.paths import PathPlanner, PathPlanningError
-from zephyr_remote_openocd.controller.plan import SessionPlan
-from zephyr_remote_openocd.controller.session import SessionController, query_remote_openocd_version
 from zephyr_remote_openocd.openocd.debug import (
     DebugInputs,
     DebugPlanError,

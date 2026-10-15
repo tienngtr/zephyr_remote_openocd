@@ -23,12 +23,14 @@ from zephyr_remote_openocd.controller import _forwarding as forwarding_module
 from zephyr_remote_openocd.controller._deployment import build_helper_bundle, deploy_helper
 from zephyr_remote_openocd.controller._forwarding import ForwardManager
 from zephyr_remote_openocd.controller._ssh import SshCommand, SshForwardSpec
-from zephyr_remote_openocd.controller.authority import SessionError
-from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
+from zephyr_remote_openocd.controller.api import (
+    ForwardSpec,
+    SessionController,
+    SessionError,
+    SessionPlan,
+    StagedFile,
+)
 from zephyr_remote_openocd.controller.paths import PathPlanner
-from zephyr_remote_openocd.controller.plan import SessionPlan
-from zephyr_remote_openocd.controller.session import SessionController
-from zephyr_remote_openocd.controller.staging_spec import StagedFile
 from zephyr_remote_openocd.protocol.arguments import ArgumentTemplate, SessionValue
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
 from zephyr_remote_openocd.protocol.process import ProcessSpec

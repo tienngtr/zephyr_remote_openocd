@@ -15,12 +15,14 @@ import pytest
 from zephyr_remote_openocd.controller import helper_connection as connection_module
 from zephyr_remote_openocd.controller import session as session_module
 from zephyr_remote_openocd.controller._deployment import DeploymentResult
-from zephyr_remote_openocd.controller._ssh import SshCommand
+from zephyr_remote_openocd.controller.api import (
+    SessionController,
+    SessionPlan,
+    SshCommand,
+    StagedFile,
+)
 from zephyr_remote_openocd.controller.cancellation import OperationCancelled, operation_scope
 from zephyr_remote_openocd.controller.helper_connection import HelperConnection
-from zephyr_remote_openocd.controller.plan import SessionPlan
-from zephyr_remote_openocd.controller.session import SessionController
-from zephyr_remote_openocd.controller.staging_spec import StagedFile
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.protocol.wire import encode_frame

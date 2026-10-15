@@ -2,7 +2,7 @@
 
 """Local controller implementation.
 
-Domain modules provide package-internal collaboration interfaces. _modules
-contain shared implementation APIs; their _names remain module/class private.
-No implementation symbols are re-exported here.
+api provides the canonical package-internal vocabulary for session consumers.
+Domain modules and _modules provide specific collaboration interfaces; their
+_names remain module/class private. Keep initialization free of runtime imports.
 """

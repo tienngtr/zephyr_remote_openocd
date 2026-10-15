@@ -84,12 +84,13 @@ Use three distinct boundaries:
   is not a general-purpose supported Python SDK.
 - **Package-internal API:** shared implementation lives in cohesive `_module.py`
   modules, with normal names for intentionally consumed functions, classes,
-  types, and methods. For example, import `add_failure_note` from
-  `controller._cleanup`, and `Observation` from `helper._observations`. Existing
-  domain modules such as `protocol.commands` and `controller.session` also
-  provide internal collaboration interfaces; an unprefixed name alone does not
-  promise external compatibility. Do not re-export implementation helpers from
-  package initializers to make them appear public.
+  types, and methods. `controller.api` curates the vocabulary for constructing
+  and running sessions across implementation modules and tests. It is an
+  internal convenience, with no external compatibility promise. Domain modules
+  and explicit `_modules` remain the entry points for specific subsystem
+  collaboration; an unprefixed name alone does not promise external
+  compatibility. Do not re-export implementation helpers from package
+  initializers to make them appear public.
 - **Module/class-private implementation:** use `_name` for local helpers and
   state. Sibling modules should not import or access these names. Closely
   cooperating implementation classes within their defining module may access
@@ -101,6 +102,50 @@ into many small files. Keep module-local helpers private even within an internal
 module. Curate facades only where they decouple real callers from implementation
 layout; keep package initializers light so helper deployment stays independent
 of controller and Zephyr imports.
+
+### Canonical imports
+
+Choose imports by the dependency being expressed:
+
+| Dependency | Normal import location |
+| --- | --- |
+| Construct/run a controller session, consume its result or errors | `controller.api` (package-internal runtime facade) |
+| Offline path/forward/staging planning | `controller.paths`, `controller.forwarding_spec`, `controller.staging_spec`, `controller.plan` |
+| Specific controller collaboration | Its defining module, such as `controller.cancellation`, `controller.waiting`, or `controller._ssh` |
+| Pure OpenOCD operation planning | `openocd.debug` or `openocd.flash`; shared command/template work stays in `openocd.command` or `openocd.arguments` |
+| Shared protocol vocabulary | The domain module: `protocol.commands`, `protocol.responses`, `protocol.process`, `protocol.listeners`, `protocol.arguments`, `protocol.outcome`, or `protocol.wire` |
+| Helper collaboration | Its defining `helper` module; no aggregate facade |
+| Supported Zephyr integration | `zephyr44.runner`; adapter implementation tests may use `zephyr44._runner` |
+
+For example, session consumers use:
+
+```python
+from zephyr_remote_openocd.controller.api import (
+    ForwardSpec,
+    SessionController,
+    SessionError,
+    SessionPlan,
+    SshCommand,
+)
+```
+
+Controller collaborators continue importing their dependencies directly; never
+route them back through `controller.api`. Pure planners should import the
+specific offline descriptions without loading the runtime facade. Tests follow
+the same rule: use the facade for ordinary session setup, but import an explicit
+internal abstraction directly when that is what the test exercises. Module
+imports used for precise fault injection also stay direct.
+
+Add a facade export only when actual consumers share a coherent conceptual
+vocabulary and the defining file is incidental to those consumers. Keep explicit
+imports and `__all__`, import definitions directly rather than chaining facades,
+and exclude ownership machinery and local helpers. A clear domain module is
+already a canonical location; do not collect all its names elsewhere. Check the
+dependency graph before adding exports, including initialization of every parent
+package. Root, helper, and protocol initialization must stay independent of
+controller, configuration, OpenOCD planning, and Zephyr so the deployed helper
+continues to run with only the standard library. A canonical internal import
+does not enlarge the supported integration API.
 
 Tests may directly exercise a deliberate internal abstraction through its normal
 interface. Prefer normal construction and effect-boundary fakes over private

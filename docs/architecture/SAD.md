@@ -2770,13 +2770,36 @@ Python naming distinguishes supported integration, internal collaboration, and
 private implementation. The supported `zephyr44.runner` facade exports only
 `RemoteOpenOcdBinaryRunner`; adapter operations live in `zephyr44._runner`.
 Package initializers deliberately do not collect implementation exports.
+`controller.api` is a separate, explicitly package-internal runtime facade for
+session consumers: it groups session construction, results, errors, and advisory
+callbacks across the decomposed owners. It imports their definitions directly,
+without adding ownership or behavior. Controller collaborators continue to
+depend on their specific modules, never back on the facade. Offline planners
+retain direct imports of lightweight path, forwarding, staging, and session
+descriptions, avoiding a dependency on runtime coordination.
+
+The usage audit does not justify facades for the other implementation packages.
+OpenOCD debug and flash planning already have coherent operation entry points;
+their shared command and argument modules express more specific dependencies.
+Protocol command, response, process, listener, argument, outcome, and framing
+modules each name a distinct part of the wire vocabulary. Helper modules express
+coordinator, lifecycle, observation, and physical-owner dependencies, with no
+ordinary controller consumers. Aggregating those names would obscure boundaries
+and broaden initialization without decoupling real callers. In particular, root,
+helper, and protocol initialization stays independent of controller, configuration,
+OpenOCD planning, and Zephyr; the deployed bundle remains standard-library-only.
+
 Controller transport, process, cleanup, forwarding, deployment, and RTT
 implementation modules use an `_` module prefix. The helper's physical owners,
 observations, streams, output decoding, and cleanup use the same convention.
 Shared names within these modules are unprefixed; `_name` remains local to its
 class or defining module. Domain and protocol modules remain internal Python
 interfaces even when their names are unprefixed; the Protocol v1 wire contract
-is independently supported. See [contributor naming guidance](../../CONTRIBUTING.md#python-api-and-encapsulation).
+is independently supported. A facade does not change that compatibility policy.
+See [contributor naming guidance](../../CONTRIBUTING.md#python-api-and-encapsulation)
+and [canonical import rules](../../CONTRIBUTING.md#canonical-imports) for choosing
+between the runtime facade and a defining-module dependency and for deciding
+whether a new concept merits an export.
 
 These naming boundaries do not transfer resource ownership. Raw process
 registration and rollback still belong to their original owner, helper control

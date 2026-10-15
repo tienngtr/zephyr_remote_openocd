@@ -41,15 +41,20 @@ from zephyr_remote_openocd.controller._ssh import (
     SshForwardSpec,
     stop_process,
 )
-from zephyr_remote_openocd.controller.authority import SessionError
+from zephyr_remote_openocd.controller.api import (
+    ForwardSpec,
+    SessionAllocation,
+    SessionController,
+    SessionError,
+    SessionPlan,
+    StagedDirectory,
+    StagedFile,
+    query_remote_openocd_version,
+)
 from zephyr_remote_openocd.controller.cancellation import OperationCancelled, operation_scope
-from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
 from zephyr_remote_openocd.controller.helper_connection import HelperConnection
 from zephyr_remote_openocd.controller.paths import REMOTE_ADDRESS_PLACEHOLDER, PathPlanner
-from zephyr_remote_openocd.controller.plan import SessionAllocation, SessionPlan
-from zephyr_remote_openocd.controller.session import SessionController, query_remote_openocd_version
 from zephyr_remote_openocd.controller.staging import build_archive
-from zephyr_remote_openocd.controller.staging_spec import StagedDirectory, StagedFile
 from zephyr_remote_openocd.controller.waiting import WaitSources
 from zephyr_remote_openocd.helper import _workspace as workspace_module
 from zephyr_remote_openocd.protocol.listeners import ListenerSpec

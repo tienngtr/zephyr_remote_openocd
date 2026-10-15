@@ -12,9 +12,11 @@ from pathlib import Path
 import pytest
 from zephyr_remote_openocd.controller._deployment import DeploymentResult
 from zephyr_remote_openocd.controller._ssh import ManagedSshProcess, SshCommand
-from zephyr_remote_openocd.controller.authority import SessionError
-from zephyr_remote_openocd.controller.plan import SessionPlan
-from zephyr_remote_openocd.controller.session import SessionController
+from zephyr_remote_openocd.controller.api import (
+    SessionController,
+    SessionError,
+    SessionPlan,
+)
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.protocol.wire import encode_frame
 

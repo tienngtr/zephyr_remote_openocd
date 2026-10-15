@@ -15,9 +15,11 @@ from typing import override
 
 import pytest
 from zephyr_remote_openocd.controller._ssh import ManagedSshProcess, SshCommand, SshForwardSpec
+from zephyr_remote_openocd.controller.api import (
+    SessionController,
+    SessionPlan,
+)
 from zephyr_remote_openocd.controller.paths import PathPlanner
-from zephyr_remote_openocd.controller.plan import SessionPlan
-from zephyr_remote_openocd.controller.session import SessionController
 from zephyr_remote_openocd.openocd.flash import FlashInputs, build_flash_plan
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 
