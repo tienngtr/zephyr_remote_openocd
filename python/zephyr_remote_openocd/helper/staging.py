@@ -93,8 +93,9 @@ def _extract_archive(
             continue
         target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         source = archive.extractfile(member)
-        if source is None:
-            raise ValueError(f"missing archive content: {relative}")
+        # Validation admits only regular files here, for which tarfile always
+        # returns a file object; None is only reachable for other member types.
+        assert source is not None
         with target.open("wb") as output:
             while True:
                 chunk = source.read(1024 * 1024)
