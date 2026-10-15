@@ -222,13 +222,13 @@ def test_explicit_session_values_are_not_recursively_expanded():
 
 @pytest.mark.parametrize("image_type", ("hex", "bin", "elf"))
 @pytest.mark.parametrize(
-    "workspace, mapped_root, expected_image_root",
+    "workspace, mapped_root, expected_path_root",
     (
         (
             r'/runtime/[review] $value "quoted" \backslash {workspace} {address}/session',
             None,
             r'/runtime/\[review\] \$value \"quoted\" \\backslash '
-            r'\{workspace\} \{address\}/session/staged/files',
+            r'\{workspace\} \{address\}/session',
         ),
         ("/workspace", "/shared/{address}", r"/shared/\{address\}"),
         ("/workspace", "/shared/{workspace}", r"/shared/\{workspace\}"),
@@ -240,7 +240,7 @@ def test_flash_paths_are_quoted_after_session_allocation(
     image_type: str,
     workspace: str,
     mapped_root: str | None,
-    expected_image_root: str,
+    expected_path_root: str,
 ):
     image = tmp_path / f"firmware.{image_type}"
     if image_type == "elf":
@@ -301,6 +301,13 @@ def test_flash_paths_are_quoted_after_session_allocation(
     finally:
         client.close()
 
+    if mapped_root is None:
+        staged_images = [item for item in plan.staged_files if item.source == image]
+        assert len(staged_images) == 1
+        expected_image_path = f"{expected_path_root}/staged/{staged_images[0].destination}"
+    else:
+        expected_image_path = f"{expected_path_root}/firmware.{image_type}"
+
     assert argv[0] == executable
     assert argv[argv.index("-f") + 1] == config_remote
     assert "bindto 127.64.0.1" in argv
@@ -318,8 +325,8 @@ def test_flash_paths_are_quoted_after_session_allocation(
     ]
     suffix = " 0x1000" if image_type == "bin" else ""
     assert commands == [
-        f'load_image "{expected_image_root}/firmware.{image_type}"{suffix}',
-        f'verify_image "{expected_image_root}/firmware.{image_type}"{suffix}',
+        f'load_image "{expected_image_path}"{suffix}',
+        f'verify_image "{expected_image_path}"{suffix}',
     ]
 
 

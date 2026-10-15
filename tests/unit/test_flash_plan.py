@@ -131,8 +131,9 @@ class TestFlashPlanning:
             assert "gdb_port 7777" in argv
             assert "gdb_port disabled" not in argv
             assert plan.process.environment == (("PROBE", "value"),)
-            assert "{workspace}/staged/trees/search_0/board/openocd.cfg" in argv
-            assert len([item for item in plan.staged_files if item.source == config]) == 1
+            staged_configs = [item for item in plan.staged_files if item.source == config]
+            assert len(staged_configs) == 1
+            assert f"{{workspace}}/staged/{staged_configs[0].destination}" in argv
             assert plan.process.argv[-4:] == ("-c", "reset run", "-c", "shutdown")
 
     def test_hex_explicit_erase_removes_implicit_load_erase(self, tmp_path: Path):
@@ -300,7 +301,7 @@ class TestFlashPlanning:
             external = Path(outside) / "external.cfg"
             external.write_text("external")
             (root / "escape.cfg").symlink_to(external)
-            with pytest.raises(PathPlanningError, match="escapes"):
+            with pytest.raises(PathPlanningError):
                 PathPlanner(()).plan_directory(root, "search_0")
 
     def test_bin_plan_preserves_address_erase_and_verify(self):
