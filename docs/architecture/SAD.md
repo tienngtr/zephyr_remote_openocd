@@ -1570,7 +1570,12 @@ readability and the owned control process through `wait_for()`'s non-reaping
 completion source. One raw read of at most 64 KiB returns to that common wait;
 continuous stdout cannot prevent observation of process completion. EOF and
 process completion are independent facts. EOF without terminal information
-remains reader failure.
+remains reader failure. Because EOF also ends the sole protocol stream, the
+reader enters the same two-phase observation described below as soon as a read
+returns EOF: admission is revoked before the framer is finished or stderr
+diagnostics, which may wait for the drain, are collected. A terminal already
+recorded keeps its meaning, and otherwise the reader failure is selected when
+observation finishes.
 
 When the wait reports control completion (including coincident readability),
 the reader calls `SessionAuthority.begin_control_exit()`. Under its existing

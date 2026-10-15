@@ -395,12 +395,21 @@ class HelperConnection:
                 except BlockingIOError:
                     continue
                 if not chunk:
-                    frames.finish()
-                    if self._authority.snapshot().terminal is None:
-                        diagnostic = helper.stderr_tail().decode("utf-8", "replace")
-                        raise SessionError(
-                            "remote helper terminated: " + diagnostic
-                        ) from EOFError()
+                    # Sole stdout EOF ends protocol observation. Revoke
+                    # admission before final accounting or diagnostic
+                    # collection, which can wait for the stderr drain.
+                    self._authority.begin_control_exit()
+                    try:
+                        frames.finish()
+                        if self._authority.snapshot().terminal is None:
+                            diagnostic = helper.stderr_tail().decode("utf-8", "replace")
+                            raise SessionError(
+                                "remote helper terminated: " + diagnostic
+                            ) from EOFError()
+                    except BaseException as error:
+                        self._authority.record_reader_failure(error)
+                    finally:
+                        self._authority.finish_control_exit()
                     return
                 self._dispatch_frames(frames, chunk)
 
