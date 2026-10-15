@@ -6,6 +6,11 @@ import io
 
 import pytest
 from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
+from zephyr_remote_openocd.protocol.arguments import (
+    ArgumentTemplate,
+    SessionValue,
+    materialize_path,
+)
 from zephyr_remote_openocd.protocol.commands import decode_command, write_start
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
 from zephyr_remote_openocd.protocol.process import ProcessSpec, RequiredPathSpec
@@ -67,16 +72,20 @@ class TestProtocol:
     )
     def test_start_serializers_use_validated_domain_models(self, policy, preferred_address):
         stream = io.BytesIO()
+        path_template = ArgumentTemplate((SessionValue.WORKSPACE, "/staged"))
         process = ProcessSpec(
             ("openocd", "--fixed", ""),
             environment=(("ZRO_TEST", "value"),),
-            required_paths=(RequiredPathSpec("/firmware.elf", "file"),),
+            required_paths=(
+                RequiredPathSpec("/firmware.elf", "file"),
+                RequiredPathSpec(path_template.preview(), "directory", template=path_template),
+            ),
             required_output_sentinels=("INIT COMPLETE", "READY FOR START"),
-            readiness_timeout=47.5,
+            readiness_timeout=0.5,
             literal_prefix=2,
             completion_policy=policy,
         )
-        forwards = (ForwardSpec("gdb", 12345, 3333), ForwardSpec("rtt", 12346, 5566))
+        forwards = (ForwardSpec("gdb", 12345, 1), ForwardSpec("rtt", 12346, 65535))
         write_start(
             stream,
             process,
@@ -86,9 +95,13 @@ class TestProtocol:
         request = decode_command(decode_frame(stream.getvalue()))
         assert request.argv == process.argv
         assert request.environment == process.environment
-        assert [(check.path, check.kind) for check in request.required_paths] == [
-            (check.path, check.kind) for check in process.required_paths
-        ]
+        assert [
+            (
+                materialize_path(check.path, workspace="/allocated", address="127.64.0.7"),
+                check.kind,
+            )
+            for check in request.required_paths
+        ] == [("/firmware.elf", "file"), ("/allocated/staged", "directory")]
         assert [(listener.name, listener.remote_port) for listener in request.listeners] == [
             (forward.name, forward.remote_port) for forward in forwards
         ]

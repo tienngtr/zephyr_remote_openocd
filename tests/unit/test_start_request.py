@@ -42,8 +42,21 @@ def testdecode_command_rejects_invalid_address_preference(start_command, address
         protocol_commands.decode_command(start_command)
 
 
-def test_decode_command_rejects_malformed_required_path_before_launch(start_command):
-    start_command["required_paths"] = [{"kind": "socket", "path": "not-valid"}]
+@pytest.mark.parametrize(
+    "path",
+    (
+        pytest.param({"kind": "socket", "path": "not-valid"}, id="unsupported-kind"),
+        pytest.param({"kind": "file", "path": ""}, id="empty-path"),
+        pytest.param({"kind": "file", "path": "bad\0path"}, id="nul-path"),
+        pytest.param({"kind": "file", "path": "image", "future": True}, id="unknown-field"),
+        pytest.param(
+            {"kind": "file", "path": {"parts": ["image"], "future": True}},
+            id="unknown-template-field",
+        ),
+    ),
+)
+def test_decode_command_rejects_malformed_required_path_before_launch(start_command, path):
+    start_command["required_paths"] = [path]
     with pytest.raises(ValueError):
         protocol_commands.decode_command(start_command)
 
@@ -62,6 +75,10 @@ def test_decode_command_requires_explicit_argument_templates(start_command):
         [{"index": 0, "parts": ["cannot override configured prefix"]}],
         [{"index": 2, "parts": ["outside argv"]}],
         [{"index": 1, "parts": []}],
+        pytest.param([{"index": 1, "parts": "literal text"}], id="non-list-parts"),
+        pytest.param(
+            [{"index": 1, "parts": ["text"], "future": True}], id="unknown-template-field"
+        ),
         [{"index": 1, "parts": ["nul\0"]}],
         [{"index": 1, "parts": [{"session": "unknown"}]}],
         [{"index": 1, "parts": [{"session": "address", "extra": True}]}],
@@ -89,11 +106,26 @@ def test_decode_command_rejects_tcl_quoting_in_a_filesystem_path(start_command):
         pytest.param("version", 99, id="version-mismatch"),
         pytest.param("version", True, id="boolean-version"),
         pytest.param("argv", [], id="empty-argv"),
+        pytest.param("argv", ["openocd", "bad\0argument"], id="nul-in-argv"),
         pytest.param("environment", {"BAD=NAME": "value"}, id="environment-name"),
+        pytest.param("environment", {"": "value"}, id="empty-environment-name"),
+        pytest.param("environment", {"BAD\0NAME": "value"}, id="nul-in-environment-name"),
+        pytest.param("environment", {"KEY": ["value"]}, id="non-string-environment-value"),
+        pytest.param("environment", {"KEY": "bad\0value"}, id="nul-in-environment-value"),
+        pytest.param(
+            "services",
+            [{"name": "gdb", "remote_port": 3333, "future": True}],
+            id="unknown-service-field",
+        ),
         pytest.param("required_output_sentinels", [" READY "], id="untrimmed-marker"),
         pytest.param("required_output_sentinels", ["READY", "READY"], id="duplicate-marker"),
+        pytest.param("required_output_sentinels", ["RE\0ADY"], id="nul-in-marker"),
+        pytest.param("required_output_sentinels", ["RE\nADY"], id="newline-in-marker"),
+        pytest.param("required_output_sentinels", ["RE\rADY"], id="carriage-return-in-marker"),
         pytest.param("readiness_timeout", 0, id="zero-timeout"),
+        pytest.param("readiness_timeout", True, id="boolean-timeout"),
         pytest.param("literal_prefix", 3, id="prefix-outside-argv"),
+        pytest.param("literal_prefix", True, id="boolean-prefix"),
     ),
 )
 def test_decode_command_rejects_invalid_start_values(start_command, field, value):
