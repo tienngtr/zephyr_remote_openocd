@@ -25,10 +25,20 @@ def test_search_tree_token_text_remains_literal_through_helper_materialization(
     root.mkdir()
     config_name = "{workspace} {address}.cfg"
     (root / config_name).write_text("# fixture\n")
+    nested = root / "nested"
+    nested.mkdir()
+    (nested / config_name).write_text("# nested fixture\n")
     remote_root = "/remote/{workspace}/{address}"
     mappings = (PathMapping(root, PurePosixPath(remote_root)),) if mapped else ()
     planner = PathPlanner(mappings)
-    base = plan_openocd_base("openocd", None, (str(root),), (str(root / config_name),), planner, ())
+    base = plan_openocd_base(
+        "openocd",
+        None,
+        (str(root), str(nested)),
+        (str(root / config_name), str(nested / config_name)),
+        planner,
+        (),
+    )
     stream = io.BytesIO()
     write_start(
         stream,
@@ -50,16 +60,31 @@ def test_search_tree_token_text_remains_literal_through_helper_materialization(
         argv_templates=request.argv_templates,
     )
     if not mapped:
-        tree = next(item for item in planner.staged_files if isinstance(item, StagedDirectory))
+        tree = next(
+            item
+            for item in planner.staged_files
+            if isinstance(item, StagedDirectory) and item.source == root
+        )
         remote_root = f"{workspace}/staged/{tree.destination}"
 
-    assert argv[argv.index("-s") + 1] == remote_root
-    assert argv[argv.index("-f") + 1] == remote_root + "/" + config_name
+    assert [argv[index + 1] for index, arg in enumerate(argv[:-1]) if arg == "-s"] == [
+        remote_root,
+        remote_root + "/nested",
+    ]
+    assert [argv[index + 1] for index, arg in enumerate(argv[:-1]) if arg == "-f"] == [
+        remote_root + "/" + config_name,
+        remote_root + "/nested/" + config_name,
+    ]
     if mapped:
         assert tuple(
             materialize_path(check.path, workspace=workspace, address="127.64.0.1")
             for check in request.required_paths
-        ) == (remote_root, remote_root + "/" + config_name)
+        ) == (
+            remote_root,
+            remote_root + "/nested",
+            remote_root + "/" + config_name,
+            remote_root + "/nested/" + config_name,
+        )
 
 
 @pytest.mark.parametrize("mapped", (False, True), ids=("staged", "mapped"))
