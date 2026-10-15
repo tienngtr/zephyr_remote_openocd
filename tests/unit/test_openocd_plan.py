@@ -3,6 +3,7 @@
 """OpenOCD config lookup through real staged and mapped search trees."""
 
 import io
+import os
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -174,3 +175,12 @@ def test_unresolvable_config_fails_during_planning(
 
     with pytest.raises(PathPlanningError):
         plan_support_paths((str(search_root),), (config,), PathPlanner(()))
+
+
+def test_search_tree_rejects_special_files_before_staging(tmp_path: Path) -> None:
+    root = tmp_path / "scripts"
+    root.mkdir()
+    os.mkfifo(root / "control.fifo")
+
+    with pytest.raises(PathPlanningError):
+        plan_support_paths((str(root),), (), PathPlanner(()))

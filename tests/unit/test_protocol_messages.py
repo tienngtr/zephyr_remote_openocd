@@ -6,12 +6,12 @@ import io
 
 import pytest
 from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
-from zephyr_remote_openocd.protocol import commands as protocol_commands
-from zephyr_remote_openocd.protocol.commands import write_start
+from zephyr_remote_openocd.protocol.commands import decode_command, write_start
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
 from zephyr_remote_openocd.protocol.process import ProcessSpec, RequiredPathSpec
 from zephyr_remote_openocd.protocol.responses import (
     validate_deployment_response,
+    validate_error_response,
     validate_openocd_version_response,
     validate_staged_response,
 )
@@ -61,9 +61,11 @@ class TestProtocol:
         with pytest.raises(ProtocolError):
             validate_event(decode_frame(encode_frame("ATTEMPT", argv=argv)))
 
-    def test_start_serializers_use_validated_domain_models(self):
-        from zephyr_remote_openocd.protocol.commands import decode_command
-
+    @pytest.mark.parametrize(
+        "policy, preferred_address",
+        ((CompletionPolicy.LIVE_SERVER, None), (CompletionPolicy.PROCESS_EXIT, "127.64.0.7")),
+    )
+    def test_start_serializers_use_validated_domain_models(self, policy, preferred_address):
         stream = io.BytesIO()
         process = ProcessSpec(
             ("openocd", "--fixed", ""),
@@ -72,14 +74,14 @@ class TestProtocol:
             required_output_sentinels=("INIT COMPLETE", "READY FOR START"),
             readiness_timeout=47.5,
             literal_prefix=2,
-            completion_policy=CompletionPolicy.PROCESS_EXIT,
+            completion_policy=policy,
         )
         forwards = (ForwardSpec("gdb", 12345, 3333), ForwardSpec("rtt", 12346, 5566))
         write_start(
             stream,
             process,
             (forward.listener for forward in forwards),
-            preferred_address="127.64.0.7",
+            preferred_address=preferred_address,
         )
         request = decode_command(decode_frame(stream.getvalue()))
         assert request.argv == process.argv
@@ -94,13 +96,7 @@ class TestProtocol:
         assert request.completion_policy == process.completion_policy
         assert request.required_output_sentinels == process.required_output_sentinels
         assert request.readiness_timeout == process.readiness_timeout
-        assert request.preferred_address == "127.64.0.7"
-
-    def test_start_preferred_address_reaches_helper_validation(self):
-        stream = io.BytesIO()
-        write_start(stream, ProcessSpec(("child",)), (), preferred_address="127.64.0.7")
-        request = protocol_commands.decode_command(decode_frame(stream.getvalue()))
-        assert request.preferred_address == "127.64.0.7"
+        assert request.preferred_address == preferred_address
 
     @pytest.mark.parametrize(
         "address", ("127.0.0.1", "127.64.0.0", "127.127.255.255", "::1", "bad")
@@ -128,6 +124,12 @@ class TestProtocol:
     @pytest.mark.parametrize(
         ("validator", "valid", "mistyped_field"),
         (
+            pytest.param(
+                validate_error_response,
+                {"version": 1, "type": "ERROR", "code": "FAILED", "message": ""},
+                {"code": ""},
+                id="standalone-error",
+            ),
             pytest.param(
                 validate_staged_response,
                 {

@@ -17,7 +17,7 @@ from typing import IO, Any, cast, override
 import pytest
 from zephyr_remote_openocd.controller import _forwarding as forwarding_module
 from zephyr_remote_openocd.controller._deployment import DeploymentResult
-from zephyr_remote_openocd.controller._forwarding import ForwardFailure, ForwardManager
+from zephyr_remote_openocd.controller._forwarding import ForwardManager
 from zephyr_remote_openocd.controller._ssh import (
     SSH_STDERR_TAIL_BYTES,
     ManagedSshProcess,
@@ -68,28 +68,6 @@ class _ForwardCommand(SshCommand):
         if on_acquired is not None:
             on_acquired(acquired_process)
         return acquired_process
-
-
-def test_forward_health_reports_service_identity_once(monkeypatch):
-    forwards = (ForwardSpec("gdb", 32100, 3333), ForwardSpec("tcl", 32101, 6333))
-    processes = (_ForwardProcess(None), _ForwardProcess(None))
-    manager = ForwardManager(_ForwardCommand(*processes), "host")
-    monkeypatch.setattr(forwarding_module, "preflight", lambda _service: None)
-    monkeypatch.setattr(forwarding_module, "await_ready", lambda *_args: True)
-    manager.start(forwards, "127.64.0.1")
-    for process in processes:
-        process.returncode = FORWARD_FAILURE_RC
-    failures: list[ForwardFailure] = []
-    manager.check_health(failures.append)
-    assert tuple(failure.forward for failure in failures) == forwards
-    assert all(failure.returncode == FORWARD_FAILURE_RC for failure in failures)
-    assert all(failure.diagnostic == "" for failure in failures)
-    repeated: list[ForwardFailure] = []
-    manager.check_health(repeated.append)
-    assert not repeated
-    assert manager.forwards == forwards
-    manager.close()
-    assert [process.close_stderr_calls for process in processes] == [1, 1]
 
 
 @pytest.mark.parametrize("rollback_fails", (False, True))

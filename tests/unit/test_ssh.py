@@ -513,44 +513,6 @@ def test_initial_forward_failure_consumes_session_close_event(monkeypatch):
     assert close_seen.is_set()
 
 
-def test_drain_startup_error_is_primary_when_process_cleanup_fails(monkeypatch):
-    class Process:
-        pid = 1
-
-        def __init__(self):
-            self.stdin = io.BytesIO()
-            self.stdout = io.BytesIO()
-            self.stderr = io.BytesIO()
-            self.returncode = None
-
-        def poll(self):
-            return self.returncode
-
-        def kill(self):
-            raise RuntimeError("process kill failed")
-
-        def terminate(self):
-            pass
-
-        def wait(self, timeout=None):
-            assert timeout is not None and math.isfinite(timeout) and timeout > 0
-            raise subprocess.TimeoutExpired("fake-ssh", timeout)
-
-    process = Process()
-
-    startup_error = RuntimeError("stderr drain startup failed")
-
-    def fail_start(_drain):
-        raise startup_error
-
-    monkeypatch.setattr(ssh_module, "_OwnedSshPopen", lambda *_args: process)
-    monkeypatch.setattr(ssh_module.StderrDrain, "start", fail_start)
-    with pytest.raises(RuntimeError) as raised:
-        SshCommand(("fake-ssh",)).popen("host", "ignored")
-    assert raised.value is startup_error
-    assert any("process kill failed" in note for note in raised.value.__notes__)
-
-
 def test_acquisition_rollback_uses_bounded_process_waits(monkeypatch):
     startup_error = OSError("stderr drain startup failed")
     waits: list[float | None] = []
@@ -593,11 +555,14 @@ def test_acquisition_rollback_uses_bounded_process_waits(monkeypatch):
     assert process.stdin.closed and process.stdout.closed and process.stderr.closed
 
 
-@pytest.mark.parametrize("failure_phase", ("drain-construction", "drain-start"))
+@pytest.mark.parametrize(
+    "failure_phase, failure_type",
+    (("drain-construction", OSError), ("drain-start", OSError), ("drain-start", RuntimeError)),
+)
 def test_acquisition_rollback_attempts_every_stream_and_retains_all_failures(
-    monkeypatch, failure_phase
+    monkeypatch, failure_phase, failure_type
 ):
-    startup_error = OSError("stderr drain startup failed")
+    startup_error = failure_type("stderr drain startup failed")
     terminate_error = OSError("process terminate failed")
     kill_error = OSError("process kill failed")
     stdin_error = OSError("stdin close failed")
@@ -652,15 +617,19 @@ def test_acquisition_rollback_attempts_every_stream_and_retains_all_failures(
         )
     else:
         monkeypatch.setattr(ssh_module.StderrDrain, "start", fail_start)
-    with pytest.raises(ssh_module.SshProcessStartError) as raised:
+    with pytest.raises((ssh_module.SshProcessStartError, failure_type)) as raised:
         SshCommand(("configured-ssh",)).popen("host", "ignored")
 
     try:
         assert [
             stream.close_attempts for stream in (process.stdin, process.stdout, process.stderr)
         ] == [1, 1, 1]
-        assert raised.value.cause is startup_error
-        assert set(raised.value.cleanup_errors) == set(cleanup_errors)
+        if isinstance(startup_error, OSError):
+            assert isinstance(raised.value, ssh_module.SshProcessStartError)
+            assert raised.value.cause is startup_error
+            assert set(raised.value.cleanup_errors) == set(cleanup_errors)
+        else:
+            assert raised.value is startup_error
         retained = "\n".join(startup_error.__notes__)
         assert all(error.__notes__[0] in retained for error in cleanup_errors)
     finally:

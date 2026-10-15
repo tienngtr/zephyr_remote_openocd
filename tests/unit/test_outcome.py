@@ -2,10 +2,7 @@
 
 """Result provenance and failure composition at the pure lifecycle boundary."""
 
-import io
-
 import pytest
-from zephyr_remote_openocd.protocol.commands import write_start
 from zephyr_remote_openocd.protocol.outcome import (
     ChildResult,
     CleanupReport,
@@ -15,7 +12,6 @@ from zephyr_remote_openocd.protocol.outcome import (
     TerminalSnapshot,
     Trigger,
 )
-from zephyr_remote_openocd.protocol.process import ProcessSpec
 
 
 def test_established_failure_retains_ordered_nested_diagnostics() -> None:
@@ -152,13 +148,3 @@ def test_terminal_cannot_claim_no_child_after_observed_exit() -> None:
     outcome = Outcome(Trigger.CHILD_EXIT, child_result=ChildResult(0, False))
     with pytest.raises(ValueError):
         TerminalSnapshot(outcome, CleanupReport("not_acquired", "confirmed"))
-
-
-def test_completion_policy_is_explicit_in_protocol_v1() -> None:
-    frames = []
-    for policy in CompletionPolicy:
-        process = ProcessSpec(("openocd",), completion_policy=policy)
-        stream = io.BytesIO()
-        write_start(stream, process, ())
-        frames.append(stream.getvalue())
-    assert frames[0] != frames[1]

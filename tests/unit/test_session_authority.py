@@ -65,9 +65,18 @@ def test_queued_launch_rechecks_fatal_fact_at_execution_entry():
 
 def test_reported_terminal_failure_is_not_replayed_during_close():
     authority = SessionAuthority()
-    authority.record_terminal(terminal_snapshot(Trigger.HELPER_FAILURE, code="FAILED"))
+    authority.record_terminal(
+        terminal_snapshot(
+            Trigger.HELPER_FAILURE,
+            code="FAILED",
+            message="controlled terminal failure",
+            returncode=7,
+        )
+    )
     failure = authority.snapshot().failure
     assert failure is not None
+    assert "controlled terminal failure" in str(failure)
+    assert any("7" in note for note in failure.__notes__)
     assert authority.publish_failure() is failure
     assert authority.take_unreported_failure() is None
 
