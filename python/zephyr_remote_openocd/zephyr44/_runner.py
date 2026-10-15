@@ -535,8 +535,8 @@ def _json_value(value):
     return value
 
 
-def _request_record(request):
-    result = {
+def _request_record(request: SessionPlan) -> dict[str, object]:
+    return {
         "host": request.host,
         "ssh_command": list(request.ssh_command.argv_prefix),
         "staged_files": [
@@ -560,9 +560,7 @@ def _request_record(request):
             }
             for item in request.reserved_listeners
         ],
-    }
-    if request.process is not None:
-        result["process"] = {
+        "process": {
             # The current session model has one generic remote process path;
             # retain the historical recording label at this output boundary.
             "kind": "openocd",
@@ -584,8 +582,8 @@ def _request_record(request):
                 {"index": index, "parts": template.wire_parts()}
                 for index, template in request.process.argv_templates
             ],
-        }
-    return result
+        },
+    }
 
 
 def _file_type(value):
