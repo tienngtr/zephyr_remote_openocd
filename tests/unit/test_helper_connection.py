@@ -174,7 +174,7 @@ def test_helper_client_sends_preference_and_reports_attempt_before_startup_error
     try:
         with pytest.raises(SessionError):
             client.start_process(ProcessSpec(("openocd",)), (), preferred_address="127.64.0.1")
-        request = decode_command(decode_frame(bytes(helper_process.written)))
+        request = decode_command(bytes(helper_process.written))
         assert request.preferred_address == "127.64.0.1"
         assert observed == [first]
     finally:
@@ -206,7 +206,7 @@ def test_explicit_session_values_are_not_recursively_expanded():
     )
     stream = io.BytesIO()
     write_start(stream, process, ())
-    request = decode_command(decode_frame(stream.getvalue()))
+    request = decode_command(stream.getvalue())
     argv = materialize_argv(
         request.argv,
         workspace=r'/runtime/[review] $value "quoted" \backslash {workspace} {address}/session',
@@ -290,7 +290,7 @@ def test_flash_paths_are_quoted_after_session_allocation(
         assert client._join_reader()
         with pytest.raises(SessionError):
             authority.operation_status()
-        request = decode_command(decode_frame(process.written.splitlines(keepends=True)[0]))
+        request = decode_command(process.written.splitlines(keepends=True)[0])
         argv = materialize_argv(
             request.argv,
             workspace=workspace,

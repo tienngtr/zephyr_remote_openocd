@@ -92,7 +92,7 @@ class TestProtocol:
             (forward.listener for forward in forwards),
             preferred_address=preferred_address,
         )
-        request = decode_command(decode_frame(stream.getvalue()))
+        request = decode_command(stream.getvalue())
         assert request.argv == process.argv
         assert request.environment == process.environment
         assert [

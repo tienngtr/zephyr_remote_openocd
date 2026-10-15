@@ -482,10 +482,10 @@ def test_control_protocol_failure_survives_descriptor_restoration_failure(
             raise restoration
 
     monkeypatch.setattr(os, "set_blocking", fail_restore)
-    command = {"version": 1, "type": "UNEXPECTED"}
+    command = json.dumps({"version": 1, "type": "UNEXPECTED"}).encode() + b"\n"
     with pytest.raises(ValueError) as invalid:
         protocol_commands.decode_command(command)
-    writer.write(json.dumps(command).encode() + b"\n")
+    writer.write(command)
     _run_terminated(session, fails=True)
 
     snapshot = _terminal_event(events)

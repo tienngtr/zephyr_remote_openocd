@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from zephyr_remote_openocd.protocol import commands as protocol_commands
 
@@ -27,10 +29,14 @@ def start_command():
     }
 
 
+def _decode(command):
+    return protocol_commands.decode_command(json.dumps(command).encode() + b"\n")
+
+
 def testdecode_command_requires_address_preference_field(start_command):
     del start_command["preferred_address"]
     with pytest.raises(ValueError):
-        protocol_commands.decode_command(start_command)
+        _decode(start_command)
 
 
 @pytest.mark.parametrize(
@@ -39,7 +45,7 @@ def testdecode_command_requires_address_preference_field(start_command):
 def testdecode_command_rejects_invalid_address_preference(start_command, address):
     start_command["preferred_address"] = address
     with pytest.raises(ValueError):
-        protocol_commands.decode_command(start_command)
+        _decode(start_command)
 
 
 @pytest.mark.parametrize(
@@ -58,13 +64,13 @@ def testdecode_command_rejects_invalid_address_preference(start_command, address
 def test_decode_command_rejects_malformed_required_path_before_launch(start_command, path):
     start_command["required_paths"] = [path]
     with pytest.raises(ValueError):
-        protocol_commands.decode_command(start_command)
+        _decode(start_command)
 
 
 def test_decode_command_requires_explicit_argument_templates(start_command):
     del start_command["argv_templates"]
     with pytest.raises(ValueError):
-        protocol_commands.decode_command(start_command)
+        _decode(start_command)
 
 
 @pytest.mark.parametrize(
@@ -89,7 +95,7 @@ def test_decode_command_requires_explicit_argument_templates(start_command):
 def test_decode_command_rejects_malformed_owned_substitutions(start_command, templates):
     start_command["argv_templates"] = templates
     with pytest.raises(ValueError):
-        protocol_commands.decode_command(start_command)
+        _decode(start_command)
 
 
 def test_decode_command_rejects_tcl_quoting_in_a_filesystem_path(start_command):
@@ -97,14 +103,12 @@ def test_decode_command_rejects_tcl_quoting_in_a_filesystem_path(start_command):
         {"kind": "file", "path": {"parts": [{"tcl_word": ["not a path template"]}]}}
     ]
     with pytest.raises(ValueError):
-        protocol_commands.decode_command(start_command)
+        _decode(start_command)
 
 
 @pytest.mark.parametrize(
     ("field", "value"),
     (
-        pytest.param("version", 99, id="version-mismatch"),
-        pytest.param("version", True, id="boolean-version"),
         pytest.param("argv", [], id="empty-argv"),
         pytest.param("argv", ["openocd", "bad\0argument"], id="nul-in-argv"),
         pytest.param("environment", {"BAD=NAME": "value"}, id="environment-name"),
@@ -131,7 +135,7 @@ def test_decode_command_rejects_tcl_quoting_in_a_filesystem_path(start_command):
 def test_decode_command_rejects_invalid_start_values(start_command, field, value):
     start_command[field] = value
     with pytest.raises(ValueError):
-        protocol_commands.decode_command(start_command)
+        _decode(start_command)
 
 
 @pytest.mark.parametrize(
@@ -156,12 +160,12 @@ def test_decode_command_rejects_invalid_start_values(start_command, field, value
 def test_decode_command_rejects_duplicate_listeners(start_command, listeners):
     start_command["services"] = listeners
     with pytest.raises(ValueError):
-        protocol_commands.decode_command(start_command)
+        _decode(start_command)
 
 
 def test_decode_command_rejects_unknown_start_fields_and_unsupported_commands(start_command):
     start_command["future"] = True
     with pytest.raises(ValueError):
-        protocol_commands.decode_command(start_command)
+        _decode(start_command)
     with pytest.raises(ValueError):
-        protocol_commands.decode_command({"version": 1, "type": "UNEXPECTED", "future": True})
+        _decode({"version": 1, "type": "UNEXPECTED", "future": True})

@@ -30,7 +30,7 @@ from zephyr_remote_openocd.protocol.arguments import materialize_argv
 from zephyr_remote_openocd.protocol.commands import decode_command, write_start
 from zephyr_remote_openocd.protocol.listeners import ListenerSpec
 from zephyr_remote_openocd.protocol.process import ProcessSpec
-from zephyr_remote_openocd.protocol.wire import decode_frame, encode_frame
+from zephyr_remote_openocd.protocol.wire import encode_frame
 
 GDB = ForwardSpec("gdb", 3333, 3333)
 TCL = ForwardSpec("tcl", 6333, 6333)
@@ -109,7 +109,7 @@ class ControlledHelper:
         if self.process_start_handler is not None:
             stream = io.BytesIO()
             write_start(stream, process, (), preferred_address=preferred_address)
-            request = decode_command(decode_frame(stream.getvalue()))
+            request = decode_command(stream.getvalue())
             self.process_start_handler(
                 materialize_argv(
                     process.argv,

@@ -48,7 +48,7 @@ from zephyr_remote_openocd.protocol.outcome import (
     ResidualResource,
     Trigger,
 )
-from zephyr_remote_openocd.protocol.wire import ControlFrameBuffer, decode_frame, terminal_fields
+from zephyr_remote_openocd.protocol.wire import ControlFrameBuffer, terminal_fields
 
 MAX_PENDING_OBSERVATIONS = 64
 
@@ -133,7 +133,7 @@ class HelperSession:
                 frames.feed(chunk)
                 frame = frames.pop_frame()
                 if frame is not None:
-                    request = decode_command(decode_frame(frame))
+                    request = decode_command(frame)
                     if frames.has_pending_bytes:
                         raise ValueError("unexpected input after START")
                     started = True

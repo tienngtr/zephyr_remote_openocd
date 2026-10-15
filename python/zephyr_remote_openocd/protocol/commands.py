@@ -1,6 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Strict Protocol v1 START decoding and serialization."""
+"""Strict Protocol v1 START decoding and serialization.
+
+Validation ownership is layered. `decode_frame` owns framing and the envelope.
+START decoding owns wire shape and context: exact field sets, JSON types for
+values without a domain model, cross-field indexes, and where Tcl words may
+appear. Domain constructors (`ListenerSpec`, `ArgumentTemplate`, `TclWord`,
+`SessionValue`, `CompletionPolicy`) own value invariants, and decoding always
+constructs them rather than restating their checks.
+"""
 
 from __future__ import annotations
 
@@ -10,50 +18,18 @@ from typing import BinaryIO, NamedTuple
 
 from zephyr_remote_openocd.protocol.addresses import validate_preferred_address
 from zephyr_remote_openocd.protocol.arguments import ArgumentTemplate, SessionValue, TclWord
-from zephyr_remote_openocd.protocol.listeners import ListenerSpec
+from zephyr_remote_openocd.protocol.listeners import ListenerSpec, validated_listeners
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
 from zephyr_remote_openocd.protocol.process import ProcessSpec
-from zephyr_remote_openocd.protocol.wire import VERSION, encode_frame
+from zephyr_remote_openocd.protocol.wire import decode_frame, encode_frame
 
 
-def _protocol_kind(message):
-    if (
-        not isinstance(message, dict)
-        or not isinstance(message.get("version"), int)
-        or isinstance(message.get("version"), bool)
-        or message["version"] != VERSION
+def _parse_listeners(listeners):
+    if not isinstance(listeners, list) or not all(
+        isinstance(item, dict) and set(item) == {"name", "remote_port"} for item in listeners
     ):
-        raise ValueError("incompatible or missing protocol version")
-    kind = message.get("type")
-    if not isinstance(kind, str) or not kind:
-        raise ValueError("missing protocol command type")
-    return kind
-
-
-def _valid_listener(item):
-    return (
-        isinstance(item, dict)
-        and set(item) == {"name", "remote_port"}
-        and isinstance(item.get("name"), str)
-        and bool(item.get("name"))
-        and isinstance(item.get("remote_port"), int)
-        and not isinstance(item.get("remote_port"), bool)
-        and 1 <= item["remote_port"] <= 65535
-    )
-
-
-def _parse_listeners(listeners, label):
-    if not isinstance(listeners, list):
-        raise ValueError(f"{label} services are invalid")
-    if not all(_valid_listener(item) for item in listeners):
-        raise ValueError(f"{label} services are invalid")
-    ports = [item["remote_port"] for item in listeners]
-    names = [item["name"] for item in listeners]
-    if len(ports) != len(set(ports)):
-        raise ValueError(f"{label} services must use unique remote ports")
-    if len(names) != len(set(names)):
-        raise ValueError(f"{label} services must use unique names")
-    return tuple(ListenerSpec(item["name"], item["remote_port"]) for item in listeners)
+        raise ValueError("START services are invalid")
+    return validated_listeners(ListenerSpec(**item) for item in listeners)
 
 
 def validate_argv(argv: object) -> None:
@@ -122,15 +98,15 @@ def _validate_options(sentinels, timeout, literal_prefix, argv_length):
 
 
 def _parse_template_parts(values, *, allow_tcl=True):
+    # Tcl words are argv-only and contain no nested words. Enforcing that here
+    # keeps paths free of Tcl quoting and bounds recursion on hostile input.
     if not isinstance(values, list) or not values:
         raise ValueError("invalid argument template parts")
     parts: list[str | SessionValue | TclWord] = []
     for value in values:
-        if isinstance(value, str) and "\0" not in value:
+        if isinstance(value, str):
             parts.append(value)
         elif isinstance(value, dict) and set(value) == {"session"}:
-            if value["session"] not in ("workspace", "address"):
-                raise ValueError("invalid argument template session value")
             parts.append(SessionValue(value["session"]))
         elif allow_tcl and isinstance(value, dict) and set(value) == {"tcl_word"}:
             parts.append(TclWord(_parse_template_parts(value["tcl_word"], allow_tcl=False)))
@@ -227,7 +203,7 @@ def _decode_start(message):
     validate_argv(argv)
     _validate_environment(environment)
     _validate_options(sentinels, timeout, literal_prefix, len(argv))
-    listeners = _parse_listeners(message["services"], "START")
+    listeners = _parse_listeners(message["services"])
     checks = _parse_required_paths(message["required_paths"])
     templates = _parse_argv_templates(message["argv_templates"], len(argv), literal_prefix)
     preferred_address = message["preferred_address"]
@@ -246,10 +222,10 @@ def _decode_start(message):
     )
 
 
-def decode_command(message):
-    """Decode and validate one control command into an immutable request."""
-    kind = _protocol_kind(message)
-    if kind == "START":
+def decode_command(frame: bytes) -> StartRequest:
+    """Decode and validate one control frame into an immutable request."""
+    message = decode_frame(frame)
+    if message["type"] == "START":
         return _decode_start(message)
     raise ValueError("only START is valid on controller input")
 
