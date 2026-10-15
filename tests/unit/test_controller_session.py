@@ -11,20 +11,19 @@ from typing import override
 
 import pytest
 from zephyr_remote_openocd.controller import session as session_module
+from zephyr_remote_openocd.controller._deployment import DeploymentResult
+from zephyr_remote_openocd.controller._forwarding import ForwardFailure
+from zephyr_remote_openocd.controller._ssh import SshCommand
 from zephyr_remote_openocd.controller.authority import SessionClosedError, SessionError
-from zephyr_remote_openocd.controller.deployment import DeploymentResult
-from zephyr_remote_openocd.controller.forwarding import ForwardFailure
 from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
 from zephyr_remote_openocd.controller.plan import SessionAllocation, SessionPlan
 from zephyr_remote_openocd.controller.session import SessionController, query_remote_openocd_version
-from zephyr_remote_openocd.controller.ssh import SshCommand
-from zephyr_remote_openocd.controller.waiting import ProcessHandle
-from zephyr_remote_openocd.protocol.listeners import ListenerSpec
+from zephyr_remote_openocd.controller.waiting import ProcessHandle, WaitResult, wait_for
 from zephyr_remote_openocd.protocol.outcome import Trigger
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.protocol.wire import ProtocolError, encode_frame
 
-from tests.forwarding_support import ForwardingHarness
+from tests.forwarding_support import ControlledHelper, ForwardingHarness
 from tests.process_support import cleanup_on_exit
 from tests.protocol_support import terminal_snapshot
 
@@ -33,24 +32,7 @@ FORWARD_FAILURE_RC = 13
 HELPER_FAILURE_RC = 17
 
 
-class _BlockedHelper:
-    def acquire(self) -> None:
-        raise AssertionError("acquire() is not expected")
-
-    @property
-    def allocation(self) -> SessionAllocation:
-        raise AssertionError("allocation is not expected")
-
-    def start_process(
-        self,
-        process: ProcessSpec,
-        listeners: Iterable[ListenerSpec],
-        *,
-        preferred_address: str | None = None,
-    ) -> str:
-        del process, listeners, preferred_address
-        raise AssertionError("start_process() is not expected")
-
+class _BlockedHelper(ControlledHelper):
     def observe_status(self) -> None:
         pass
 
@@ -62,7 +44,7 @@ class _BlockedHelper:
         raise AssertionError("timeout_expired() is not expected")
 
     def close(self) -> None:
-        raise AssertionError("close() is not expected")
+        pass
 
 
 class _PreparedHelper(_BlockedHelper):
@@ -74,26 +56,33 @@ class _PreparedHelper(_BlockedHelper):
 class _BlockedForwards:
     @property
     def forwards(self) -> tuple[ForwardSpec, ...]:
-        raise AssertionError("services is not expected")
+        return ()
 
     def live_processes(self) -> tuple[ProcessHandle, ...]:
         raise AssertionError("live_processes() is not expected")
 
     def start(self, forwards: Iterable[ForwardSpec], remote_address: str) -> None:
-        del forwards, remote_address
-        raise AssertionError("start() is not expected")
+        del remote_address
+        assert not tuple(forwards)
 
     def check_health(self, report: Callable[[ForwardFailure], None]) -> None:
         raise AssertionError("check_health() is not expected")
 
     def close(self) -> None:
-        raise AssertionError("close() is not expected")
+        pass
 
 
-def _make_session() -> SessionController:
-    request = SessionPlan("host", SshCommand(), ProcessSpec(("openocd",)))
-    deployment = DeploymentResult("/helper.py", "digest", False)
-    return SessionController(request, deployment)
+def _make_session(monkeypatch, helper=None, forwards=None) -> SessionController:
+    """Acquire through the normal coordinator with controlled transport facts."""
+    harness = ForwardingHarness(monkeypatch)
+    monkeypatch.setattr(session_module, "wait_for", wait_for)
+    if helper is not None:
+        harness.helper = helper
+    if forwards is not None:
+        monkeypatch.setattr(session_module, "ForwardManager", lambda *_args: forwards)
+    session = harness.prepare((), ())
+    session.acquire()
+    return session
 
 
 def test_session_validates_reserved_services_without_forwarding_them(monkeypatch):
@@ -184,12 +173,11 @@ def test_staging_rejects_response_without_lf(monkeypatch):
             return subprocess.CompletedProcess(remote_command, 0, response, b"")
 
     class Helper(_PreparedHelper):
-        # start_process() inherits the explicit forbidden-operation guard.
-        # A framing regression must fail there, rather than at another check.
-        @property
+        allocation = SessionAllocation("session", "/workspace")
+
         @override
-        def allocation(self) -> SessionAllocation:
-            return SessionAllocation("session", "/workspace")
+        def start_process(self, process, listeners, *, preferred_address=None):
+            raise AssertionError("invalid staging response must prevent START")
 
         @override
         def close(self) -> None:
@@ -223,49 +211,63 @@ def test_staging_rejects_response_without_lf(monkeypatch):
     assert isinstance(raised.value.__cause__, ProtocolError)
 
 
-def test_closed_session_exposes_only_cached_openocd_result():
-    session = _make_session()
-    session.closed = True
-    session._helper_connection = _BlockedHelper()
+def test_closed_session_exposes_only_cached_openocd_result(monkeypatch):
+    harness = ForwardingHarness(monkeypatch)
+    session = harness.prepare((), ())
+    session.acquire()
+    session.close()
 
-    assert session.openocd_returncode is None
-    assert session.poll_operation() is None
-    with pytest.raises(SessionClosedError):
-        session.wait_for_openocd_exit()
-    with pytest.raises(SessionClosedError):
-        session.forward(())
+    def unexpected_observation():
+        raise AssertionError("a closed session must not observe the helper")
 
-    completed = _make_session()
-    completed.closed = True
-    completed._authority.record_terminal(
+    with monkeypatch.context() as closed:
+        closed.setattr(harness.helper, "observe_status", unexpected_observation)
+        assert session.openocd_returncode is None
+        assert session.poll_operation() is None
+        with pytest.raises(SessionClosedError):
+            session.wait_for_openocd_exit()
+        with pytest.raises(SessionClosedError):
+            session.forward(())
+
+    completed = harness.prepare((), ())
+    completed.acquire()
+    harness.helper.authority.record_terminal(
         terminal_snapshot(Trigger.CHILD_EXIT, returncode=OPENOCD_FAILURE_RC)
     )
-    assert completed.openocd_returncode == OPENOCD_FAILURE_RC
     with pytest.raises(SessionError):
-        completed.poll_operation()
-    with pytest.raises(SessionError):
-        completed.wait_for_openocd_exit()
+        completed.close()
+    with monkeypatch.context() as closed:
+        closed.setattr(harness.helper, "observe_status", unexpected_observation)
+        assert completed.openocd_returncode == OPENOCD_FAILURE_RC
+        with pytest.raises(SessionError):
+            completed.poll_operation()
+        with pytest.raises(SessionError):
+            completed.wait_for_openocd_exit()
 
 
-def test_check_openocd_exit_propagates_helper_observation_failure():
+def test_check_openocd_exit_propagates_helper_observation_failure(monkeypatch):
     observation_error = SessionError("helper event stream failed")
+    active = False
 
     class Helper(_BlockedHelper):
         @override
         def observe_status(self) -> None:
-            raise observation_error
+            if active:
+                raise observation_error
 
-    session = _make_session()
-    session._helper_connection = Helper()
+    session = _make_session(monkeypatch, Helper())
+    active = True
 
     with pytest.raises(SessionError) as raised:
         session.poll_operation()
 
     assert raised.value is observation_error
+    session.close()
 
 
-def test_check_openocd_exit_propagates_forward_failure_after_successful_openocd_exit():
+def test_check_openocd_exit_propagates_forward_failure_after_successful_openocd_exit(monkeypatch):
     forwarding_error = SessionError(f"SSH forwarding exited with status {FORWARD_FAILURE_RC}")
+    active = False
 
     class Helper(_BlockedHelper):
         @override
@@ -275,31 +277,33 @@ def test_check_openocd_exit_propagates_forward_failure_after_successful_openocd_
     class Forwards(_BlockedForwards):
         @override
         def check_health(self, report: Callable[[ForwardFailure], None]) -> None:
-            raise forwarding_error
+            if active:
+                raise forwarding_error
 
-    session = _make_session()
-    session._authority.record_terminal(terminal_snapshot(Trigger.CHILD_EXIT, returncode=0))
-    session._helper_connection = Helper()
-    session._forwards = Forwards()
+    helper = Helper()
+    session = _make_session(monkeypatch, helper, Forwards())
+    helper.authority.record_terminal(terminal_snapshot(Trigger.CHILD_EXIT, returncode=0))
+    active = True
 
     with pytest.raises(SessionError) as raised:
         session.poll_operation()
 
     assert raised.value is forwarding_error
+    session.close()
 
 
 @pytest.mark.parametrize("failure_phase", ("health", "disposal"))
-def test_close_attempts_all_cleanup_once_and_preserves_first_failure(failure_phase):
-    session = _make_session()
+def test_close_attempts_all_cleanup_once_and_preserves_first_failure(monkeypatch, failure_phase):
     first_error = RuntimeError("forward cleanup failed")
     later_error = RuntimeError("helper cleanup failed")
     later_error.add_note("helper cleanup also failed: stream close failed")
     actions: list[str] = []
+    active = False
 
     class Forwards(_BlockedForwards):
         @override
         def check_health(self, report: Callable[[ForwardFailure], None]) -> None:
-            if failure_phase == "health":
+            if active and failure_phase == "health":
                 raise first_error
 
         @override
@@ -312,10 +316,10 @@ def test_close_attempts_all_cleanup_once_and_preserves_first_failure(failure_pha
         @override
         def close(self) -> None:
             actions.append("helper")
-            session._authority.record_failure("HELPER_CLEANUP_FAILURE", later_error)
+            self.authority.record_failure("HELPER_CLEANUP_FAILURE", later_error)
 
-    session._forwards = Forwards()
-    session._helper_connection = Helper()
+    session = _make_session(monkeypatch, Helper(), Forwards())
+    active = True
 
     with pytest.raises(RuntimeError) as raised:
         session.close()
@@ -330,8 +334,7 @@ def test_close_attempts_all_cleanup_once_and_preserves_first_failure(failure_pha
     assert sorted(actions) == ["forwards", "helper"]
 
 
-def test_close_raises_helper_cleanup_only_error_after_closing_session():
-    session = _make_session()
+def test_close_raises_helper_cleanup_only_error_after_closing_session(monkeypatch):
     cleanup_error = RuntimeError("helper stream close failed")
     actions: list[str] = []
 
@@ -348,10 +351,9 @@ def test_close_raises_helper_cleanup_only_error_after_closing_session():
         @override
         def close(self) -> None:
             actions.append("helper")
-            session._authority.record_failure("HELPER_CLEANUP_FAILURE", cleanup_error)
+            self.authority.record_failure("HELPER_CLEANUP_FAILURE", cleanup_error)
 
-    session._forwards = Forwards()
-    session._helper_connection = Helper()
+    session = _make_session(monkeypatch, Helper(), Forwards())
 
     with pytest.raises(RuntimeError) as raised:
         session.close()
@@ -362,10 +364,13 @@ def test_close_raises_helper_cleanup_only_error_after_closing_session():
 
 
 @pytest.mark.timeout(60)
-def test_wait_for_openocd_exit_wakes_on_forward_exit():
+def test_wait_for_openocd_exit_wakes_on_forward_exit(monkeypatch):
     forward_process = subprocess.Popen(
         (sys.executable, "-c", "import sys; sys.stdin.read()"), stdin=subprocess.PIPE
     )
+
+    active = False
+    forwarding_error = SessionError(f"SSH forwarding exited with status {FORWARD_FAILURE_RC}")
 
     class Helper(_BlockedHelper):
         @override
@@ -373,7 +378,8 @@ def test_wait_for_openocd_exit_wakes_on_forward_exit():
             # The forward exits only after the first health observation, so the
             # wait can end only through its process-completion source.
             assert forward_process.stdin is not None
-            forward_process.stdin.close()
+            if active:
+                forward_process.stdin.close()
 
         @override
         def live_processes(self) -> tuple[ProcessHandle, ...]:
@@ -387,24 +393,25 @@ def test_wait_for_openocd_exit_wakes_on_forward_exit():
         @override
         def check_health(self, report: Callable[[ForwardFailure], None]) -> None:
             if forward_process.poll() is not None:
-                raise SessionError(f"SSH forwarding exited with status {FORWARD_FAILURE_RC}")
+                raise forwarding_error
 
-    session = _make_session()
-    session._helper_connection = Helper()
-    session._forwards = Forwards()
+    session = _make_session(monkeypatch, Helper(), Forwards())
+    active = True
     try:
         with pytest.raises(SessionError, match=f"status {FORWARD_FAILURE_RC}"):
             session.wait_for_openocd_exit()
         assert not session.closed
     finally:
         forward_process.wait(30)
+        session.close()
 
 
-def test_wait_for_openocd_exit_raises_helper_timeout_at_deadline():
-    requested_timeout = 0.05
+def test_wait_for_openocd_exit_raises_helper_timeout_at_deadline(monkeypatch):
+    requested_timeout = 15.0
 
     class Helper(_BlockedHelper):
         def __init__(self) -> None:
+            super().__init__()
             self.expired_timeout: float | None = None
             self.timeout_error = subprocess.TimeoutExpired(("python3", "helper"), requested_timeout)
 
@@ -431,15 +438,24 @@ def test_wait_for_openocd_exit_raises_helper_timeout_at_deadline():
             return None
 
     helper = Helper()
-    session = _make_session()
-    session._helper_connection = helper
-    session._forwards = Forwards()
+    session = _make_session(monkeypatch, helper, Forwards())
+    now = 100.0
+
+    def expire(*, sources, deadline):
+        nonlocal now
+        assert deadline == now + requested_timeout
+        now = deadline
+        return WaitResult(frozenset(), frozenset(), frozenset(), False, True)
+
+    monkeypatch.setattr(session_module.time, "monotonic", lambda: now)
+    monkeypatch.setattr(session_module, "wait_for", expire)
 
     with pytest.raises(subprocess.TimeoutExpired) as raised:
         session.wait_for_openocd_exit(requested_timeout)
 
     assert raised.value is helper.timeout_error
     assert helper.expired_timeout == requested_timeout
+    session.close()
 
 
 def test_forward_uses_allocated_remote_address_and_requested_services(monkeypatch):

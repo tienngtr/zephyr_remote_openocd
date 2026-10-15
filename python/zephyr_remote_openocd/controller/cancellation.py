@@ -17,7 +17,7 @@ from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from types import FrameType
 
-from zephyr_remote_openocd.controller.cleanup import _add_failure_note, _raise_cleanup_errors
+from zephyr_remote_openocd.controller._cleanup import add_failure_note, raise_cleanup_errors
 
 _SignalHandler = Callable[[int, FrameType | None], object] | int | None
 
@@ -132,7 +132,7 @@ class OperationCancellation:
             except BaseException as error:
                 if primary is None:
                     raise
-                _add_failure_note(primary, "runner Ctrl-C capture restoration also failed", error)
+                add_failure_note(primary, "runner Ctrl-C capture restoration also failed", error)
             finally:
                 self._client_owns_sigint = False
         self.dispatch()
@@ -189,7 +189,7 @@ class OperationCancellation:
                 except BaseException as error:
                     errors.append(error)
             self._wakeup_fds = None
-        _raise_cleanup_errors(errors)
+        raise_cleanup_errors(errors)
 
 
 _ACTIVE = threading.local()
@@ -235,7 +235,7 @@ def operation_scope() -> Generator[OperationCancellation, None, None]:
         except BaseException as error:
             if primary is None:
                 raise
-            _add_failure_note(primary, "runner Ctrl-C capture restoration also failed", error)
+            add_failure_note(primary, "runner Ctrl-C capture restoration also failed", error)
         if primary is not None and operation.requested and primary is not operation.cancellation:
             primary.add_note("operation cancellation (Ctrl-C) was also requested")
     if operation.requested:

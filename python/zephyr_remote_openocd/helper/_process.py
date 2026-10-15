@@ -16,13 +16,13 @@ from contextlib import suppress
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, NamedTuple, Protocol
 
-from zephyr_remote_openocd.helper.child_output import _OutputDecoder, _RequiredOutputSentinels
-from zephyr_remote_openocd.helper.cleanup import _raise_cleanup_errors
-from zephyr_remote_openocd.helper.streams import _AsyncInput, _readable
+from zephyr_remote_openocd.helper._child_output import OutputDecoder, RequiredOutputSentinels
+from zephyr_remote_openocd.helper._cleanup import raise_cleanup_errors
+from zephyr_remote_openocd.helper._streams import AsyncInput, readable
 from zephyr_remote_openocd.protocol.arguments import materialize_path
 
 if TYPE_CHECKING:
-    from zephyr_remote_openocd.helper.observations import _ObservationFailed
+    from zephyr_remote_openocd.helper._observations import ObservationFailed
 
 
 CHILD_TERM_TIMEOUT = 5
@@ -70,7 +70,7 @@ def _group_exit_waits(pid: int) -> Iterator[float]:
     raise TimeoutError(f"process group {pid} did not disappear during cleanup")
 
 
-class _ChildAcquisition:
+class ChildAcquisition:
     """Own spawn results before their adoption by the coordinator."""
 
     def __init__(self) -> None:
@@ -86,7 +86,7 @@ class _OwnedChildPopen(subprocess.Popen[bytes]):
 
     def __init__(
         self,
-        owner: _ChildAcquisition,
+        owner: ChildAcquisition,
         argv: Sequence[str],
         *,
         cwd: Path | None,
@@ -104,7 +104,7 @@ class _OwnedChildPopen(subprocess.Popen[bytes]):
         )
 
 
-class _ChildSettlement(NamedTuple):
+class ChildSettlement(NamedTuple):
     producer_quiescent: bool
     group_disposed: bool
     observers_settled: bool
@@ -141,14 +141,14 @@ class SupervisedProcess:
         self, process: ChildProcessHandle, required_output_sentinels: Iterable[str] = ()
     ) -> None:
         self.process = process
-        self.required_output_sentinels = _RequiredOutputSentinels(required_output_sentinels)
+        self.required_output_sentinels = RequiredOutputSentinels(required_output_sentinels)
         self.decoders = {
-            name: _OutputDecoder(name, self.required_output_sentinels)
+            name: OutputDecoder(name, self.required_output_sentinels)
             for name in ("stdout", "stderr")
         }
         self.output_finished: set[str] = set()
-        self.readers: dict[str, _AsyncInput] = {}
-        self.tasks: list[asyncio.Task[_ObservationFailed | None]] = []
+        self.readers: dict[str, AsyncInput] = {}
+        self.tasks: list[asyncio.Task[ObservationFailed | None]] = []
         self._observed_returncode: int | None = None
         self.group_disposed = False
         self.termination_requested = False
@@ -181,7 +181,7 @@ class SupervisedProcess:
                 await asyncio.sleep(CHILD_POLL_INTERVAL)
         else:
             try:
-                await _readable(descriptor)
+                await readable(descriptor)
             finally:
                 os.close(descriptor)
         returncode = self.poll()
@@ -296,7 +296,7 @@ class SupervisedProcess:
             self.group_disposed = True
         except BaseException as exc:
             errors.append(exc)
-        _raise_cleanup_errors(errors)
+        raise_cleanup_errors(errors)
 
     def close_streams(self) -> None:
         errors = []
@@ -306,10 +306,10 @@ class SupervisedProcess:
                     stream.close()
                 except BaseException as exc:
                     errors.append(exc)
-        _raise_cleanup_errors(errors)
+        raise_cleanup_errors(errors)
 
 
-def _rollback_spawned_process(process, ownership: _ChildAcquisition | None = None):
+def rollback_spawned_process(process, ownership: ChildAcquisition | None = None):
     errors = []
     try:
         observed = _poll_unreaped_process(process)
@@ -341,18 +341,18 @@ def _rollback_spawned_process(process, ownership: _ChildAcquisition | None = Non
             stream.close()
         except BaseException as error:
             errors.append(error)
-    _raise_cleanup_errors(errors)
+    raise_cleanup_errors(errors)
 
 
-def _spawn_child(
+def spawn_child(
     argv,
     *,
     cwd=None,
     environment=None,
     required_output_sentinels=(),
-    ownership: _ChildAcquisition | None = None,
+    ownership: ChildAcquisition | None = None,
 ) -> SupervisedProcess:
-    owner = ownership if ownership is not None else _ChildAcquisition()
+    owner = ownership if ownership is not None else ChildAcquisition()
     try:
         _OwnedChildPopen(
             owner,
@@ -370,7 +370,7 @@ def _spawn_child(
             owner.process = None
         if owner.process is not None:
             try:
-                _rollback_spawned_process(owner.process, owner)
+                rollback_spawned_process(owner.process, owner)
                 owner.rollback_confirmed = True
             except BaseException as cleanup_error:
                 error.add_note(f"child ownership rollback also failed: {cleanup_error}")
@@ -381,7 +381,7 @@ def _spawn_child(
         owner.producer_quiescent = True
 
 
-def _check_required_paths(checks, replacements):
+def check_required_paths(checks, replacements):
     for check in checks:
         path = materialize_path(check.path, **replacements)
         if not path:
@@ -392,7 +392,7 @@ def _check_required_paths(checks, replacements):
             raise ValueError(f"required remote {check.kind} is missing: {candidate}")
 
 
-def _child_environment(request):
+def child_environment(request):
     environment = os.environ.copy()
     environment.update(dict(request.environment))
     return environment

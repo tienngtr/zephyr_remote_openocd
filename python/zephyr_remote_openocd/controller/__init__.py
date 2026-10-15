@@ -1,3 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Controller responsibilities for remote OpenOCD."""
+"""Local controller implementation.
+
+Domain modules provide package-internal collaboration interfaces. _modules
+contain shared implementation APIs; their _names remain module/class private.
+No implementation symbols are re-exported here.
+"""

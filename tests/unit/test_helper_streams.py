@@ -8,7 +8,7 @@ import sys
 from contextlib import suppress
 
 import pytest
-from zephyr_remote_openocd.helper import streams as helper_streams
+from zephyr_remote_openocd.helper import _streams as helper_streams
 
 
 @pytest.mark.parametrize("boundary", ("reader", "writer"))
@@ -37,9 +37,9 @@ def test_nonblocking_acquisition_rolls_back_effect_before_failed_adoption(
         monkeypatch.setattr(os, "set_blocking", set_blocking)
         with pytest.raises(KeyboardInterrupt) as raised:
             if boundary == "reader":
-                helper_streams._AsyncInput(descriptor)
+                helper_streams.AsyncInput(descriptor)
             else:
-                helper_streams._ProtocolOutput()
+                helper_streams.ProtocolOutput()
         assert raised.value is primary
         assert os.get_blocking(descriptor)
         if rollback_fails:
@@ -53,7 +53,7 @@ def test_protocol_writer_close_releases_pending_buffer_after_interruption(monkey
     failure = KeyboardInterrupt("writer mode restoration interrupted")
     with os.fdopen(read_fd, "rb"), os.fdopen(write_fd, "w", encoding="utf-8") as stdout:
         monkeypatch.setattr(sys, "stdout", stdout)
-        output = helper_streams._ProtocolOutput()
+        output = helper_streams.ProtocolOutput()
         output.enqueue(b"queued frame\n")
 
         def set_blocking(descriptor, blocking):
@@ -86,7 +86,7 @@ def test_final_reader_scan_consumes_available_prefix_with_finite_budget(monkeypa
     monkeypatch.setattr(os, "read", read)
 
     async def run():
-        reader = helper_streams._AsyncInput(read_fd)
+        reader = helper_streams.AsyncInput(read_fd)
         next_read = None
         try:
             os.write(write_fd, prefix)

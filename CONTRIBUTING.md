@@ -74,6 +74,41 @@ lexical rules it expresses. Runtime configuration validation must use
 validators. Parser safeguards and contextual semantic checks remain separate
 from schema-defined validation.
 
+## Python API and encapsulation
+
+Use three distinct boundaries:
+
+- **Supported integration API:** the west runner entry point and the curated
+  `zephyr44.runner.RemoteOpenOcdBinaryRunner` facade. Configuration and Protocol
+  v1 retain their separately documented contracts; the implementation package
+  is not a general-purpose supported Python SDK.
+- **Package-internal API:** shared implementation lives in cohesive `_module.py`
+  modules, with normal names for intentionally consumed functions, classes,
+  types, and methods. For example, import `add_failure_note` from
+  `controller._cleanup`, and `Observation` from `helper._observations`. Existing
+  domain modules such as `protocol.commands` and `controller.session` also
+  provide internal collaboration interfaces; an unprefixed name alone does not
+  promise external compatibility. Do not re-export implementation helpers from
+  package initializers to make them appear public.
+- **Module/class-private implementation:** use `_name` for local helpers and
+  state. Sibling modules should not import or access these names. Closely
+  cooperating implementation classes within their defining module may access
+  private state when that preserves one ownership boundary, such as registering
+  a raw subprocess before its initializer can acquire resources.
+
+Prefer renaming an existing cohesive module to `_module.py` over splitting it
+into many small files. Keep module-local helpers private even within an internal
+module. Curate facades only where they decouple real callers from implementation
+layout; keep package initializers light so helper deployment stays independent
+of controller and Zephyr imports.
+
+Tests may directly exercise a deliberate internal abstraction through its normal
+interface. Prefer normal construction and effect-boundary fakes over private
+state mutation. Narrow private hooks may remain for deterministic acquisition,
+publication, reader-settlement, or cleanup fault injection when the precise
+interleaving is the regression under test; document that reason at the hook.
+See [test design](docs/development/test_design.md).
+
 Environment variables read by the product use the
 `ZEPHYR_REMOTE_OPENOCD_` prefix. Reserve the shorter `ZRO_` prefix for the test
 harness, validation tools, test payloads, and generated internal markers. In

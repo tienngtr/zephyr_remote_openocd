@@ -15,21 +15,21 @@ from types import FrameType, SimpleNamespace
 from typing import IO, Any, cast, override
 
 import pytest
-from zephyr_remote_openocd.controller import forwarding as forwarding_module
-from zephyr_remote_openocd.controller.authority import SessionError
-from zephyr_remote_openocd.controller.cancellation import operation_scope
-from zephyr_remote_openocd.controller.deployment import DeploymentResult
-from zephyr_remote_openocd.controller.forwarding import ForwardFailure, ForwardManager
-from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
-from zephyr_remote_openocd.controller.plan import SessionPlan
-from zephyr_remote_openocd.controller.session import SessionController
-from zephyr_remote_openocd.controller.ssh import (
+from zephyr_remote_openocd.controller import _forwarding as forwarding_module
+from zephyr_remote_openocd.controller._deployment import DeploymentResult
+from zephyr_remote_openocd.controller._forwarding import ForwardFailure, ForwardManager
+from zephyr_remote_openocd.controller._ssh import (
     SSH_STDERR_TAIL_BYTES,
     ManagedSshProcess,
     SshCommand,
     SshForwardSpec,
-    _stop_process,
+    stop_process,
 )
+from zephyr_remote_openocd.controller.authority import SessionError
+from zephyr_remote_openocd.controller.cancellation import operation_scope
+from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
+from zephyr_remote_openocd.controller.plan import SessionPlan
+from zephyr_remote_openocd.controller.session import SessionController
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 
 FORWARD_FAILURE_RC = 13
@@ -72,8 +72,8 @@ def test_forward_health_reports_service_identity_once(monkeypatch):
     forwards = (ForwardSpec("gdb", 32100, 3333), ForwardSpec("tcl", 32101, 6333))
     processes = (_ForwardProcess(None), _ForwardProcess(None))
     manager = ForwardManager(_ForwardCommand(*processes), "host")
-    monkeypatch.setattr(ForwardManager, "_preflight", staticmethod(lambda _service: None))
-    monkeypatch.setattr(ForwardManager, "_await_ready", staticmethod(lambda *_args: True))
+    monkeypatch.setattr(forwarding_module, "preflight", lambda _service: None)
+    monkeypatch.setattr(forwarding_module, "await_ready", lambda *_args: True)
     manager.start(forwards, "127.64.0.1")
     for process in processes:
         process.returncode = FORWARD_FAILURE_RC
@@ -96,8 +96,8 @@ def test_failed_start_exposes_rollback_outcome(monkeypatch, rollback_fails):
     cleanup_error = RuntimeError("rollback cleanup failed")
     process = _ForwardProcess(None, close_stderr_error=cleanup_error if rollback_fails else None)
     manager = ForwardManager(_ForwardCommand(process), "host")
-    monkeypatch.setattr(ForwardManager, "_preflight", staticmethod(lambda _service: None))
-    monkeypatch.setattr(ForwardManager, "_await_ready", staticmethod(lambda *_args: False))
+    monkeypatch.setattr(forwarding_module, "preflight", lambda _service: None)
+    monkeypatch.setattr(forwarding_module, "await_ready", lambda *_args: False)
     with pytest.raises(SessionError) as raised:
         manager.start((forward,), "127.64.0.1")
     error = raised.value
@@ -130,7 +130,7 @@ def test_process_creation_failure_has_service_identity_without_ownership(monkeyp
 
     forward = ForwardSpec("tcl", 32101, 6333)
     manager = ForwardManager(Command(), "host")
-    monkeypatch.setattr(ForwardManager, "_preflight", staticmethod(lambda _service: None))
+    monkeypatch.setattr(forwarding_module, "preflight", lambda _service: None)
     with pytest.raises(SessionError) as raised:
         manager.start((forward,), "127.64.0.1")
     assert isinstance(raised.value, forwarding_module.ForwardStartError)
@@ -156,7 +156,7 @@ def test_forward_readiness_timeout_does_not_block_on_partial_output():
     try:
         os.write(write_fd, b"ZRO_FORWARD_")
         # The readiness deadline has already passed when the marker is partial.
-        assert not ForwardManager._await_ready(
+        assert not forwarding_module.await_ready(
             cast(Any, process), "ZRO_FORWARD_ready", time.monotonic()
         )
     finally:
@@ -174,7 +174,7 @@ def test_forward_diagnostic_keeps_a_useful_tail_after_nonzero_exit():
     process = SshCommand((sys.executable, "-c", code)).popen("host", "ignored")
     try:
         assert process.wait(timeout=5) == SAMPLE_FORWARD_EXIT_CODE
-        diagnostic = ForwardManager._diagnostic(process)
+        diagnostic = forwarding_module.diagnostic(process)
         assert diagnostic.endswith("forward-tail")
         assert len(diagnostic.encode()) <= SSH_STDERR_TAIL_BYTES
     finally:
@@ -226,8 +226,8 @@ def test_forward_manager_rejects_a_service_already_forwarded(monkeypatch):
     forward = ForwardSpec("gdb", 32177, 3333)
     command = _ForwardCommand(_ForwardProcess(None))
     manager = ForwardManager(command, "host")
-    monkeypatch.setattr(ForwardManager, "_preflight", staticmethod(lambda _service: None))
-    monkeypatch.setattr(ForwardManager, "_await_ready", staticmethod(lambda *_args: True))
+    monkeypatch.setattr(forwarding_module, "preflight", lambda _service: None)
+    monkeypatch.setattr(forwarding_module, "await_ready", lambda *_args: True)
 
     try:
         manager.start((forward,), "127.64.0.1")
@@ -244,11 +244,11 @@ def test_failed_forward_batch_rolls_back_all_processes(monkeypatch):
     command = _ForwardCommand(*failed_processes)
     manager = ForwardManager(command, "host")
     readiness = iter((True, False))
-    monkeypatch.setattr(ForwardManager, "_preflight", staticmethod(lambda _service: None))
+    monkeypatch.setattr(forwarding_module, "preflight", lambda _service: None)
     monkeypatch.setattr(
-        ForwardManager,
-        "_await_ready",
-        staticmethod(lambda *_args: next(readiness)),
+        forwarding_module,
+        "await_ready",
+        lambda *_args: next(readiness),
     )
 
     with pytest.raises(SessionError):
@@ -286,8 +286,8 @@ def test_failed_forward_batch_keeps_startup_error_and_cleanup_diagnostics(monkey
             raise startup_error
         return True
 
-    monkeypatch.setattr(ForwardManager, "_preflight", staticmethod(lambda _service: None))
-    monkeypatch.setattr(ForwardManager, "_await_ready", staticmethod(await_ready))
+    monkeypatch.setattr(forwarding_module, "preflight", lambda _service: None)
+    monkeypatch.setattr(forwarding_module, "await_ready", await_ready)
 
     with pytest.raises(KeyboardInterrupt) as raised:
         manager.start(forwards, "127.64.0.1")
@@ -314,11 +314,11 @@ def test_failed_later_forward_batch_preserves_committed_processes(monkeypatch):
         "host",
     )
     readiness = iter((True, True, False))
-    monkeypatch.setattr(ForwardManager, "_preflight", staticmethod(lambda _service: None))
+    monkeypatch.setattr(forwarding_module, "preflight", lambda _service: None)
     monkeypatch.setattr(
-        ForwardManager,
-        "_await_ready",
-        staticmethod(lambda *_args: next(readiness)),
+        forwarding_module,
+        "await_ready",
+        lambda *_args: next(readiness),
     )
 
     manager.start((committed_service,), "127.64.0.1")
@@ -382,7 +382,7 @@ def test_interruption_during_forward_start_preserves_cleanup_ownership(monkeypat
 
     monkeypatch.setattr(subprocess.Popen, "__init__", launch)
     monkeypatch.setattr(os, "read", read_readiness)
-    monkeypatch.setattr(ForwardManager, "_preflight", staticmethod(lambda _service: None))
+    monkeypatch.setattr(forwarding_module, "preflight", lambda _service: None)
     try:
         with pytest.raises(KeyboardInterrupt) as raised:
             manager.start((forward,), "127.64.0.1")
@@ -397,7 +397,7 @@ def test_interruption_during_forward_start_preserves_cleanup_ownership(monkeypat
     finally:
         manager.close()
         for process in managed_processes:
-            _stop_process(process)
+            stop_process(process)
 
 
 @pytest.mark.parametrize("cleanup_fails", (False, True))
@@ -428,7 +428,7 @@ def test_ctrl_c_between_pending_forward_rollbacks_skips_no_cleanup(monkeypatch, 
             return process
 
     manager = ForwardManager(Command(), "target")
-    await_ready = ForwardManager._await_ready
+    await_ready = forwarding_module.await_ready
 
     def launch(process, argv, **kwargs):
         code = shlex.split(argv[-1])[2]
@@ -478,8 +478,8 @@ def test_ctrl_c_between_pending_forward_rollbacks_skips_no_cleanup(monkeypatch, 
         return interrupt_between_rollbacks
 
     monkeypatch.setattr(subprocess.Popen, "__init__", launch)
-    monkeypatch.setattr(ForwardManager, "_preflight", staticmethod(lambda _service: None))
-    monkeypatch.setattr(ForwardManager, "_await_ready", staticmethod(observe_readiness))
+    monkeypatch.setattr(forwarding_module, "preflight", lambda _service: None)
+    monkeypatch.setattr(forwarding_module, "await_ready", observe_readiness)
     failure = None
     try:
         with (
@@ -512,7 +512,7 @@ def test_ctrl_c_between_pending_forward_rollbacks_skips_no_cleanup(monkeypatch, 
         manager.close()
         for process in processes:
             with suppress(OSError):
-                _stop_process(process)
+                stop_process(process)
 
 
 @pytest.mark.parametrize("cleanup_fails", (False, True))
@@ -520,7 +520,7 @@ def test_interruption_at_forward_rollback_entry_keeps_both_transports_owned(
     monkeypatch, cleanup_fails
 ):
     initialize = subprocess.Popen.__init__
-    await_ready = ForwardManager._await_ready
+    await_ready = forwarding_module.await_ready
     previous_trace = sys.gettrace()
     processes: list[ManagedSshProcess] = []
     stderr_streams: list[IO[bytes]] = []
@@ -583,8 +583,8 @@ def test_interruption_at_forward_rollback_entry_keeps_both_transports_owned(
         return interrupt_at_rollback_entry
 
     monkeypatch.setattr(subprocess.Popen, "__init__", launch)
-    monkeypatch.setattr(ForwardManager, "_preflight", staticmethod(lambda _service: None))
-    monkeypatch.setattr(ForwardManager, "_await_ready", staticmethod(observe_readiness))
+    monkeypatch.setattr(forwarding_module, "preflight", lambda _service: None)
+    monkeypatch.setattr(forwarding_module, "await_ready", observe_readiness)
     try:
         sys.settrace(interrupt_at_rollback_entry)
         try:
@@ -626,7 +626,7 @@ def test_interruption_at_forward_rollback_entry_keeps_both_transports_owned(
             session.close()
         for process in processes:
             with suppress(OSError):
-                _stop_process(process)
+                stop_process(process)
 
 
 class _ForwardProcess:

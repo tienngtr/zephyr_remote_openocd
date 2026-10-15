@@ -7,7 +7,7 @@ import os
 import signal
 from contextlib import suppress
 
-from zephyr_remote_openocd.helper.process import SupervisedProcess
+from zephyr_remote_openocd.helper._process import SupervisedProcess
 
 
 def cleanup_supervised_process(child: SupervisedProcess, descendant_pidfd: int | None) -> None:

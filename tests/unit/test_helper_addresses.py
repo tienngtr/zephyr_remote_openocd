@@ -10,8 +10,8 @@ import sys
 from unittest.mock import create_autospec
 
 import pytest
-from zephyr_remote_openocd.helper import addresses as helper_addresses
-from zephyr_remote_openocd.helper import workspace as workspace_module
+from zephyr_remote_openocd.helper import _addresses as helper_addresses
+from zephyr_remote_openocd.helper import _workspace as workspace_module
 
 from tests.support import ROOT
 
@@ -101,8 +101,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(sys.argv[1]).resolve().parents[2]))
-from zephyr_remote_openocd.helper import addresses as helper_addresses
-from zephyr_remote_openocd.helper import workspace as workspace_module
+from zephyr_remote_openocd.helper import _addresses as helper_addresses
+from zephyr_remote_openocd.helper import _workspace as workspace_module
 workspace_module.workspace_root = lambda: Path(sys.argv[2])
 helper_addresses.random_address = lambda: sys.argv[3]
 allocated = helper_addresses.allocate_listener_address(())

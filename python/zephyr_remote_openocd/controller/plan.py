@@ -6,8 +6,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from zephyr_remote_openocd.controller._ssh import SshCommand
 from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec, validated_forwards
-from zephyr_remote_openocd.controller.ssh import SshCommand
 from zephyr_remote_openocd.controller.staging_spec import StagedEntry
 from zephyr_remote_openocd.protocol.listeners import ListenerSpec, validated_listeners
 from zephyr_remote_openocd.protocol.process import ProcessSpec

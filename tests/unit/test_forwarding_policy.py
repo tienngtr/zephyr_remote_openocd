@@ -4,22 +4,21 @@ from __future__ import annotations
 
 import io
 import math
-import os
 import subprocess
-from contextlib import suppress
 from typing import cast
-from unittest.mock import create_autospec
 
 import pytest
+from zephyr_remote_openocd.controller import _ssh as ssh_module
 from zephyr_remote_openocd.controller import preferred_address_cache
-from zephyr_remote_openocd.controller import ssh as ssh_module
+from zephyr_remote_openocd.controller import session as session_module
+from zephyr_remote_openocd.controller._forwarding import ForwardStartError
+from zephyr_remote_openocd.controller._ssh import ManagedSshProcess, SshCommand
 from zephyr_remote_openocd.controller.authority import SessionError
-from zephyr_remote_openocd.controller.forwarding import ForwardStartError
 from zephyr_remote_openocd.controller.helper_connection import HelperConnection
-from zephyr_remote_openocd.controller.ssh import ManagedSshProcess, SshCommand
 from zephyr_remote_openocd.protocol.outcome import Trigger
 from zephyr_remote_openocd.protocol.wire import encode_frame
 
+from tests.control_support import HelperPeerProcess
 from tests.forwarding_support import GDB, RTT, TCL, TELNET, ControlledSshCommand, ForwardingHarness
 from tests.process_support import cleanup_on_exit
 from tests.protocol_support import terminal_snapshot
@@ -37,62 +36,50 @@ def test_close_preserves_recorded_session_failure_over_forward_cleanup(
 ):
     session = harness.prepare((GDB,), ())
     with cleanup_on_exit(session.close):
-        session.acquire()
-        helper = HelperConnection(
-            harness.ssh,
-            session.plan.host,
-            session.deployment,
-            authority=session._authority,
-            notifier=session._notifier,
-        )
-        process = create_autospec(ManagedSshProcess, instance=True, spec_set=True)
-        read_fd, write_fd = os.pipe()
-        process.stdout = os.fdopen(read_fd, "rb", buffering=0)
-        process.stdin = io.BytesIO()
-        process.returncode = None
-        process.poll.return_value = 0
-
-        def exit_helper(timeout: float | None = None) -> int:
-            # Helper exit ends the event stream that the reader owns.
-            del timeout
-            with suppress(OSError):
-                os.close(write_fd)
-            return 0
-
-        process.wait.side_effect = exit_helper
-        process.stderr_tail.return_value = b""
-        os.write(
-            write_fd,
-            encode_frame(
-                "SESSION_CREATED",
-                session_id="session",
-                remote_workspace="/workspace",
-                helper="fake",
+        process = HelperPeerProcess(
+            (
+                encode_frame("ATTEMPT", argv=["openocd"]),
+                encode_frame("READY", remote_address="127.64.0.1", child_pid=1),
             ),
+            later=(),
         )
+        forward_transport = ControlledSshCommand.popen
 
-        def acquire_transport(*_args, on_acquired=None, **_kwargs):
+        def acquire_transport(command, *args, local_forward=None, on_acquired=None, **kwargs):
+            if local_forward is not None:
+                return forward_transport(
+                    command, *args, local_forward=local_forward, on_acquired=on_acquired, **kwargs
+                )
+            # A pipe-backed peer controls remote facts; the real connection owns
+            # its reader and receives it through the ordinary acquisition path.
             acquired = cast(ManagedSshProcess, process)
             if on_acquired is not None:
                 on_acquired(acquired)
             return acquired
 
         monkeypatch.setattr(ControlledSshCommand, "popen", acquire_transport)
-        session._helper_connection = helper
-        helper.acquire()
+
+        def make_helper(*args, **kwargs):
+            # Capture the normal constructor's authority at the helper boundary;
+            # use the real connection so reader/cleanup ordering remains covered.
+            harness.make_helper(*args, **kwargs)
+            return HelperConnection(*args, **kwargs)
+
+        monkeypatch.setattr(session_module, "HelperConnection", make_helper)
+        session.acquire()
         assert session.poll_operation() is None
         cleanup_error = RuntimeError("forward cleanup failed")
         cleanup_error.add_note("nested forward cleanup detail")
 
         def record_failure():
             if fact == "terminal":
-                session._authority.record_terminal(
+                harness.helper.authority.record_terminal(
                     terminal_snapshot(
                         Trigger.HELPER_FAILURE, code="FAILED", message="established failure"
                     )
                 )
             else:
-                session._authority.record_reader_failure(RuntimeError("established failure"))
+                harness.helper.authority.record_reader_failure(RuntimeError("established failure"))
 
         def fail_cleanup():
             if during_cleanup:
@@ -182,9 +169,9 @@ def test_recorded_failure_or_cancellation_prevents_forward_entry(
 
         monkeypatch.setattr(ControlledSshCommand, "popen", forbidden_forward)
         if fact == "reader":
-            session._authority.record_reader_failure(RuntimeError("earlier reader failure"))
+            harness.helper.authority.record_reader_failure(RuntimeError("earlier reader failure"))
         else:
-            session._authority.cancel()
+            harness.helper.authority.cancel()
         with pytest.raises(SessionError) as raised:
             session.forward((RTT,), required=required)
         if fact == "reader":
@@ -273,7 +260,7 @@ def test_auxiliary_factory_rollback_outcome_is_preserved(harness, monkeypatch, c
         session.acquire()
         monkeypatch.setattr(ControlledSshCommand, "popen", SshCommand.popen)
         monkeypatch.setattr(ssh_module, "_OwnedSshPopen", lambda *_args: acquired)
-        monkeypatch.setattr(ssh_module._StderrDrain, "start", fail_drain_start)
+        monkeypatch.setattr(ssh_module.StderrDrain, "start", fail_drain_start)
         if cleanup_fails:
             with pytest.raises(ForwardStartError) as raised:
                 session.forward((TCL,), required=False)
@@ -503,8 +490,8 @@ def test_best_effort_start_cannot_downgrade_an_established_forward_start_failure
 
         with pytest.MonkeyPatch.context() as patch:
             patch.setattr(
-                "zephyr_remote_openocd.controller.forwarding.ForwardManager._await_ready",
-                staticmethod(fail_readiness),
+                "zephyr_remote_openocd.controller._forwarding.await_ready",
+                fail_readiness,
             )
             with pytest.raises(ForwardStartError) as raised:
                 session.forward((TCL,), required=False)

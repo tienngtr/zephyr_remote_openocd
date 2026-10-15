@@ -11,20 +11,21 @@ import time
 from collections.abc import Callable, Iterable
 from typing import Protocol
 
+from zephyr_remote_openocd.controller._cleanup import add_failure_note
+from zephyr_remote_openocd.controller._deployment import DeploymentResult, deploy_helper
+from zephyr_remote_openocd.controller._forwarding import (
+    ForwardAdvisory,
+    ForwardFailure,
+    ForwardManager,
+    ForwardStartError,
+)
+from zephyr_remote_openocd.controller._ssh import SshCommand
 from zephyr_remote_openocd.controller.authority import (
     SessionAuthority,
     SessionClosedError,
     SessionError,
 )
 from zephyr_remote_openocd.controller.cancellation import admit_effect, current_operation
-from zephyr_remote_openocd.controller.cleanup import _add_failure_note
-from zephyr_remote_openocd.controller.deployment import DeploymentResult, deploy_helper
-from zephyr_remote_openocd.controller.forwarding import (
-    ForwardAdvisory,
-    ForwardFailure,
-    ForwardManager,
-    ForwardStartError,
-)
 from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
 from zephyr_remote_openocd.controller.helper_connection import HelperConnection
 from zephyr_remote_openocd.controller.plan import SessionAllocation, SessionDescriptor, SessionPlan
@@ -32,7 +33,6 @@ from zephyr_remote_openocd.controller.preferred_address_cache import (
     load_preferred_address,
     remember_preferred_address,
 )
-from zephyr_remote_openocd.controller.ssh import SshCommand
 from zephyr_remote_openocd.controller.staging import build_archive
 from zephyr_remote_openocd.controller.staging_spec import StagedEntry
 from zephyr_remote_openocd.controller.waiting import (
@@ -239,7 +239,7 @@ class SessionController:
             except BaseException as cleanup_error:
                 if primary is None:
                     raise
-                _add_failure_note(primary, "staging archive cleanup also failed", cleanup_error)
+                add_failure_note(primary, "staging archive cleanup also failed", cleanup_error)
         if result.returncode:
             raise SessionError(
                 f"remote staging failed ({result.returncode}): "

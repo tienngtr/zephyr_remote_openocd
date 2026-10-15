@@ -9,56 +9,56 @@ from typing import TYPE_CHECKING, NamedTuple
 from zephyr_remote_openocd.protocol.commands import StartRequest
 
 if TYPE_CHECKING:
-    from zephyr_remote_openocd.helper.process import SupervisedProcess
+    from zephyr_remote_openocd.helper._process import SupervisedProcess
 
 
-class _StartReceived(NamedTuple):
+class StartReceived(NamedTuple):
     request: StartRequest
 
 
-class _ControlEOF(NamedTuple):
+class ControlEOF(NamedTuple):
     pass
 
 
-class _ChildOutput(NamedTuple):
+class ChildOutput(NamedTuple):
     child: SupervisedProcess
     stream: str
     chunk: bytes
 
 
-class _ChildExited(NamedTuple):
+class ChildExited(NamedTuple):
     child: SupervisedProcess
     returncode: int
 
 
-class _Deadline(NamedTuple):
+class Deadline(NamedTuple):
     child: SupervisedProcess
     readiness: bool
     final: bool = False
 
 
-class _SignalReceived(NamedTuple):
+class SignalReceived(NamedTuple):
     signum: int
 
 
-class _ObservationFailed(NamedTuple):
+class ObservationFailed(NamedTuple):
     source: str
     exception: BaseException
     child: SupervisedProcess | None = None
 
 
-class _GroupCleaned(NamedTuple):
+class GroupCleaned(NamedTuple):
     child: SupervisedProcess
     exception: BaseException | None
 
 
-_Observation = (
-    _StartReceived
-    | _ControlEOF
-    | _ChildOutput
-    | _ChildExited
-    | _Deadline
-    | _SignalReceived
-    | _ObservationFailed
-    | _GroupCleaned
+Observation = (
+    StartReceived
+    | ControlEOF
+    | ChildOutput
+    | ChildExited
+    | Deadline
+    | SignalReceived
+    | ObservationFailed
+    | GroupCleaned
 )

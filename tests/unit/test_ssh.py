@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import math
@@ -17,21 +18,21 @@ from typing import Any, BinaryIO, cast, override
 from unittest.mock import create_autospec, patch
 
 import pytest
+from zephyr_remote_openocd.controller import _ssh as ssh_module
 from zephyr_remote_openocd.controller import session as session_module
-from zephyr_remote_openocd.controller import ssh as ssh_module
+from zephyr_remote_openocd.controller._deployment import DeploymentResult
+from zephyr_remote_openocd.controller._forwarding import ForwardManager
+from zephyr_remote_openocd.controller._ssh import (
+    SshCommand,
+    SshForwardSpec,
+    SshProcessStartError,
+    stop_process,
+)
 from zephyr_remote_openocd.controller.authority import SessionError
-from zephyr_remote_openocd.controller.deployment import DeploymentResult
-from zephyr_remote_openocd.controller.forwarding import ForwardManager
 from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
 from zephyr_remote_openocd.controller.helper_connection import HelperConnection
 from zephyr_remote_openocd.controller.plan import SessionPlan
 from zephyr_remote_openocd.controller.session import SessionController
-from zephyr_remote_openocd.controller.ssh import (
-    SshCommand,
-    SshForwardSpec,
-    SshProcessStartError,
-    _stop_process,
-)
 from zephyr_remote_openocd.protocol.outcome import Trigger
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.protocol.wire import encode_frame
@@ -138,7 +139,7 @@ def test_long_lived_launch_restores_calling_thread_signal_mask(
                     SshCommand((executable,)).popen("host", "serve")
             else:
                 process = SshCommand((sys.executable, "-c", "pass")).popen("host", "serve")
-                _stop_process(process)
+                stop_process(process)
             assert signal.pthread_sigmask(signal.SIG_BLOCK, set()) == expected
         finally:
             signal.pthread_sigmask(signal.SIG_SETMASK, original)
@@ -272,7 +273,7 @@ def test_stderr_tail_is_best_effort_when_drain_has_not_reached_eof(monkeypatch):
         def close(self):
             release_eof.set()
 
-    drain = ssh_module._StderrDrain(cast(BinaryIO, Stream()))
+    drain = ssh_module.StderrDrain(cast(BinaryIO, Stream()))
     original_wait = drain._finished.wait
     monkeypatch.setattr(drain._finished, "wait", lambda _timeout=None: False)
     drain.start()
@@ -312,7 +313,7 @@ def test_stderr_tail_waits_for_delayed_eof_with_a_bounded_timeout(monkeypatch):
         def close(self):
             release_suffix.set()
 
-    drain = ssh_module._StderrDrain(cast(BinaryIO, Stream()))
+    drain = ssh_module.StderrDrain(cast(BinaryIO, Stream()))
     wait_timeouts = []
     original_wait = drain._finished.wait
 
@@ -375,7 +376,7 @@ def test_process_cleanup_kills_after_graceful_termination_times_out():
 
     process = Process()
 
-    _stop_process(process)
+    stop_process(process)
 
     assert process.terminated
     assert process.graceful_wait_timed_out
@@ -412,7 +413,7 @@ def test_process_cleanup_retains_graceful_timeout_after_kill_failure():
             pass
 
     with pytest.raises(RuntimeError) as raised:
-        _stop_process(Process())
+        stop_process(Process())
 
     assert raised.value is kill_error
     assert any(str(timeout_error) in note for note in getattr(raised.value, "__notes__", ()))
@@ -468,7 +469,23 @@ def test_initial_forward_failure_consumes_session_close_event(monkeypatch):
         return deployment
 
     monkeypatch.setattr(session_module, "deploy_helper", deploy)
-    monkeypatch.setattr(SessionController, "_stage", lambda _session, _files: None)
+
+    def stage(_command, _host, remote_command, stream, *, timeout=60):
+        assert stream.read()
+        return subprocess.CompletedProcess(
+            remote_command,
+            0,
+            encode_frame(
+                "STAGED",
+                byte_count=0,
+                sha256=hashlib.sha256(b"").hexdigest(),
+                files=[],
+                directories=[],
+            ),
+            b"",
+        )
+
+    monkeypatch.setattr(_ForwardCommand, "run_stream", stage)
 
     def observe_close(helper_client, event):
         dispatch(helper_client, event)
@@ -525,7 +542,7 @@ def test_drain_startup_error_is_primary_when_process_cleanup_fails(monkeypatch):
         raise startup_error
 
     monkeypatch.setattr(ssh_module, "_OwnedSshPopen", lambda *_args: process)
-    monkeypatch.setattr(ssh_module._StderrDrain, "start", fail_start)
+    monkeypatch.setattr(ssh_module.StderrDrain, "start", fail_start)
     with pytest.raises(RuntimeError) as raised:
         SshCommand(("fake-ssh",)).popen("host", "ignored")
     assert raised.value is startup_error
@@ -564,7 +581,7 @@ def test_acquisition_rollback_uses_bounded_process_waits(monkeypatch):
         raise startup_error
 
     monkeypatch.setattr(ssh_module, "_OwnedSshPopen", lambda *_args: process)
-    monkeypatch.setattr(ssh_module._StderrDrain, "start", fail_start)
+    monkeypatch.setattr(ssh_module.StderrDrain, "start", fail_start)
     with pytest.raises(ssh_module.SshProcessStartError) as raised:
         SshCommand(("configured-ssh",)).popen("host", "ignored")
 
@@ -632,7 +649,7 @@ def test_acquisition_rollback_attempts_every_stream_and_retains_all_failures(
             create_autospec(threading.Thread, side_effect=startup_error),
         )
     else:
-        monkeypatch.setattr(ssh_module._StderrDrain, "start", fail_start)
+        monkeypatch.setattr(ssh_module.StderrDrain, "start", fail_start)
     with pytest.raises(ssh_module.SshProcessStartError) as raised:
         SshCommand(("configured-ssh",)).popen("host", "ignored")
 

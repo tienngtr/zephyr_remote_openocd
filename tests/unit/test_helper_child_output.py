@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import pytest
-from zephyr_remote_openocd.helper import child_output as helper_child_output
-from zephyr_remote_openocd.helper import streams as helper_streams
+from zephyr_remote_openocd.helper import _child_output as helper_child_output
+from zephyr_remote_openocd.helper import _streams as helper_streams
 
 
 def _decode_chunks(chunks: tuple[bytes, ...], name: str, sentinels=None) -> None:
     if sentinels is None:
-        sentinels = helper_child_output._RequiredOutputSentinels(())
-    decoder = helper_child_output._OutputDecoder(name, sentinels)
+        sentinels = helper_child_output.RequiredOutputSentinels(())
+    decoder = helper_child_output.OutputDecoder(name, sentinels)
     for chunk in (*chunks, b""):
         for fragment in decoder.feed(chunk):
             helper_streams.emit(
@@ -22,8 +22,8 @@ def _decode_chunks(chunks: tuple[bytes, ...], name: str, sentinels=None) -> None
 
 
 def test_relay_emits_short_fragment_before_complete_sentinel():
-    sentinels = helper_child_output._RequiredOutputSentinels(("READY",))
-    decoder = helper_child_output._OutputDecoder("stdout", sentinels)
+    sentinels = helper_child_output.RequiredOutputSentinels(("READY",))
+    decoder = helper_child_output.OutputDecoder("stdout", sentinels)
     fragments = decoder.feed(b"READY")
     assert [(item.payload, item.line_end) for item in fragments] == [("READY", False)]
     assert not sentinels.ready
@@ -43,7 +43,7 @@ def test_relay_emits_short_fragment_before_complete_sentinel():
 def test_relay_waits_for_each_complete_sentinel_across_streams(monkeypatch, first, second):
     monkeypatch.setattr(helper_streams, 'RELAY_CHUNK_SIZE', 8)
     monkeypatch.setattr(helper_streams, 'emit', lambda *_args, **_kwargs: None)
-    required_output_sentinels = helper_child_output._RequiredOutputSentinels(
+    required_output_sentinels = helper_child_output.RequiredOutputSentinels(
         ("OPENOCD INIT", "STARTUP COMPLETE")
     )
 

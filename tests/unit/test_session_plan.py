@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import pytest
+from zephyr_remote_openocd.controller._ssh import SshCommand
 from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
 from zephyr_remote_openocd.controller.plan import SessionPlan
-from zephyr_remote_openocd.controller.ssh import SshCommand
 from zephyr_remote_openocd.protocol.listeners import ListenerSpec
 from zephyr_remote_openocd.protocol.process import ProcessSpec, RequiredPathSpec
 

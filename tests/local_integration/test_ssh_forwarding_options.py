@@ -7,10 +7,10 @@ import subprocess
 from unittest.mock import patch
 
 import pytest
+from zephyr_remote_openocd.controller._forwarding import ForwardManager
+from zephyr_remote_openocd.controller._ssh import SshCommand
 from zephyr_remote_openocd.controller.authority import SessionError
-from zephyr_remote_openocd.controller.forwarding import ForwardManager
 from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
-from zephyr_remote_openocd.controller.ssh import SshCommand
 
 pytestmark = pytest.mark.local
 

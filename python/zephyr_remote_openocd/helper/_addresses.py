@@ -10,7 +10,7 @@ import secrets
 import socket
 from itertools import chain
 
-from zephyr_remote_openocd.helper.cleanup import _raise_cleanup_errors
+from zephyr_remote_openocd.helper._cleanup import raise_cleanup_errors
 from zephyr_remote_openocd.protocol.addresses import LOOPBACK_RANGE
 
 MAX_ADDRESS_ALLOCATION_ATTEMPTS = 32
@@ -27,7 +27,7 @@ def random_address():
     )
 
 
-class _AllocatedAddress(str):
+class AllocatedAddress(str):
     """An allocated address with a lease held for the session lifetime."""
 
     lease: socket.socket
@@ -53,7 +53,7 @@ def allocate_listener_address(ports, preferred_address=None):
             try:
                 lease.close()
             except BaseException as cleanup_error:
-                _raise_cleanup_errors([exc, cleanup_error])
+                raise_cleanup_errors([exc, cleanup_error])
             if isinstance(exc, OSError) and exc.errno == errno.EADDRINUSE:
                 continue
             raise
@@ -76,7 +76,7 @@ def allocate_listener_address(ports, preferred_address=None):
             try:
                 # Transfer only after independent probes settle; until the
                 # return value is constructed, the allocator owns rollback.
-                return _AllocatedAddress(address, lease)
+                return AllocatedAddress(address, lease)
             except BaseException as exc:
                 primary = exc
         try:
@@ -87,7 +87,7 @@ def allocate_listener_address(ports, preferred_address=None):
             continue
         if primary is not None:
             cleanup_errors.insert(0, primary)
-        _raise_cleanup_errors(cleanup_errors)
+        raise_cleanup_errors(cleanup_errors)
     raise RuntimeError(
         f"loopback allocation exhausted after {MAX_ADDRESS_ALLOCATION_ATTEMPTS} attempts"
     )

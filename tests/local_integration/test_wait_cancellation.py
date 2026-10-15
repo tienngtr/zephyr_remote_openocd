@@ -22,13 +22,13 @@ from types import SimpleNamespace
 from typing import override
 
 import pytest
-from zephyr_remote_openocd.controller import rtt as rtt_module
+from zephyr_remote_openocd.controller import _rtt as rtt_module
+from zephyr_remote_openocd.controller._forwarding import ForwardManager
+from zephyr_remote_openocd.controller._rtt import run_rtt_client
+from zephyr_remote_openocd.controller._ssh import SshCommand
 from zephyr_remote_openocd.controller.authority import SessionAuthority
 from zephyr_remote_openocd.controller.cancellation import OperationCancelled, operation_scope
-from zephyr_remote_openocd.controller.forwarding import ForwardManager
 from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
-from zephyr_remote_openocd.controller.rtt import run_rtt_client
-from zephyr_remote_openocd.controller.ssh import SshCommand
 
 from tests.forwarding_support import GDB, ControlledSshCommand, ForwardingHarness
 from tests.process_support import cleanup_on_exit

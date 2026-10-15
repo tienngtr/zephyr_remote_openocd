@@ -17,11 +17,11 @@ from typing import Any, BinaryIO, override
 import pytest
 from zephyr_remote_openocd.config import PathMapping
 from zephyr_remote_openocd.controller import helper_connection as connection_module
+from zephyr_remote_openocd.controller._deployment import DeploymentResult
+from zephyr_remote_openocd.controller._ssh import SshCommand, SshForwardSpec
 from zephyr_remote_openocd.controller.authority import SessionAuthority, SessionError
-from zephyr_remote_openocd.controller.deployment import DeploymentResult
 from zephyr_remote_openocd.controller.helper_connection import HelperConnection
 from zephyr_remote_openocd.controller.paths import PathPlanner
-from zephyr_remote_openocd.controller.ssh import SshCommand, SshForwardSpec
 from zephyr_remote_openocd.openocd.flash import FlashInputs, build_flash_plan
 from zephyr_remote_openocd.protocol.arguments import (
     ArgumentTemplate,
@@ -30,7 +30,7 @@ from zephyr_remote_openocd.protocol.arguments import (
     materialize_argv,
     materialize_path,
 )
-from zephyr_remote_openocd.protocol.commands import _decode_start, write_start
+from zephyr_remote_openocd.protocol.commands import decode_command, write_start
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy, Trigger
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.protocol.wire import ProtocolError, decode_frame, encode_frame
@@ -174,7 +174,7 @@ def test_helper_client_sends_preference_and_reports_attempt_before_startup_error
     try:
         with pytest.raises(SessionError):
             client.start_process(ProcessSpec(("openocd",)), (), preferred_address="127.64.0.1")
-        request = _decode_start(decode_frame(bytes(helper_process.written)))
+        request = decode_command(decode_frame(bytes(helper_process.written)))
         assert request.preferred_address == "127.64.0.1"
         assert observed == [first]
     finally:
@@ -206,7 +206,7 @@ def test_explicit_session_values_are_not_recursively_expanded():
     )
     stream = io.BytesIO()
     write_start(stream, process, ())
-    request = _decode_start(decode_frame(stream.getvalue()))
+    request = decode_command(decode_frame(stream.getvalue()))
     argv = materialize_argv(
         request.argv,
         workspace=r'/runtime/[review] $value "quoted" \backslash {workspace} {address}/session',
@@ -290,7 +290,7 @@ def test_flash_paths_are_quoted_after_session_allocation(
         assert client._join_reader()
         with pytest.raises(SessionError):
             authority.operation_status()
-        request = _decode_start(decode_frame(process.written.splitlines(keepends=True)[0]))
+        request = decode_command(decode_frame(process.written.splitlines(keepends=True)[0]))
         argv = materialize_argv(
             request.argv,
             workspace=workspace,
@@ -378,31 +378,41 @@ def test_contradictory_terminal_is_reader_failure_and_never_published(
 
 
 @pytest.mark.timeout(10)
-def test_session_observations_project_exit_while_reader_remains_alive(helper_client):
-    helper_client, authority = helper_client
-    close_recorded = threading.Event()
+def test_session_observations_project_exit_while_reader_remains_alive(
+    monkeypatch, open_client, notified_authority
+):
+    authority = notified_authority.authority
+    reader_blocked = threading.Event()
     release_reader = threading.Event()
+    wait = connection_module.wait_for
+    process = HelperPeerProcess(
+        (
+            encode_frame("ATTEMPT", argv=["child"]),
+            terminal_message(Trigger.CHILD_EXIT, returncode=OPENOCD_FAILURE_RC),
+        ),
+        later=(),
+    )
 
-    def consume_close() -> None:
-        helper_client._dispatch(
-            decode_frame(terminal_message(Trigger.CHILD_EXIT, returncode=OPENOCD_FAILURE_RC))
-        )
-        close_recorded.set()
-        release_reader.wait()
+    def hold_after_terminal(**kwargs):
+        # Block the actual production reader at its next OS wait, after its
+        # real pipe/frame path has published terminal state to the authority.
+        if kwargs.get("readable") == (process.stdout.fileno(),) and authority.snapshot().terminal:
+            reader_blocked.set()
+            assert release_reader.wait(5)
+        return wait(**kwargs)
 
-    reader = threading.Thread(target=consume_close)
-    reader.start()
-    assert close_recorded.wait(5)
+    monkeypatch.setattr(connection_module, "wait_for", hold_after_terminal)
+    client = open_client(process)
     try:
-        assert reader.is_alive()
+        with pytest.raises(SessionError):
+            client.start_process(ProcessSpec(("child",)), ())
+        assert reader_blocked.wait(5)
         assert authority.snapshot().terminal.outcome.child_result.returncode == OPENOCD_FAILURE_RC
         with pytest.raises(SessionError, match="exit status 7"):
             authority.operation_status()
     finally:
         release_reader.set()
-        reader.join(timeout=5)
-
-    assert not reader.is_alive()
+        client.close()
 
 
 def test_close_reaps_natural_exit_before_transport_cleanup(open_client, notified_authority):
@@ -555,7 +565,7 @@ def test_close_records_background_and_cleanup_failures(
         raise cleanup_error
 
     if cleanup_fails:
-        monkeypatch.setattr(connection_module, "_stop_process", fail_stop)
+        monkeypatch.setattr(connection_module, "stop_process", fail_stop)
 
     helper_client.close()
     error = authority.snapshot().failure
@@ -1050,8 +1060,8 @@ def test_helper_client_output_delivery_does_not_retain_event_history(notified_au
                 )
                 for index, payload in enumerate(payloads)
             ),
-            terminal_message(Trigger.CHILD_EXIT, returncode=0),
-        )
+        ),
+        later=(terminal_message(Trigger.CHILD_EXIT, returncode=0),),
     )
     handled: list[tuple[str, str, bool]] = []
     helper_client = _open_helper_client(
@@ -1063,6 +1073,9 @@ def test_helper_client_output_delivery_does_not_retain_event_history(notified_au
     )
     try:
         helper_client.start_process(ProcessSpec(("child",)), ())
+        # Keep the live peer open until READY is admitted; output volume must
+        # not make success depend on the coordinator outrunning transport EOF.
+        process.release_later()
         assert helper_client._join_reader(10)
         assert handled == [
             ("stdout" if index % 2 == 0 else "stderr", payload, False)
@@ -1083,7 +1096,7 @@ def test_child_and_control_status_use_one_persistent_arbitration_path(
     helper_client = open_client(process)
     authority.record_ready()
     if child_first:
-        helper_client._dispatch(decode_frame(terminal_message(Trigger.CHILD_EXIT, returncode=7)))
+        authority.record_terminal(terminal_snapshot(Trigger.CHILD_EXIT, returncode=7))
     process.returncode = 1
     # Exercise failure composition independently of physical reader settlement;
     # real transport observation now accounts final protocol bytes first.
@@ -1095,7 +1108,7 @@ def test_child_and_control_status_use_one_persistent_arbitration_path(
         authority.admit_work((), ())
     assert first_gate.value is initial.value
     if not child_first:
-        helper_client._dispatch(decode_frame(terminal_message(Trigger.CHILD_EXIT, returncode=7)))
+        authority.record_terminal(terminal_snapshot(Trigger.CHILD_EXIT, returncode=7))
     authority.record_control_status(process.returncode)
     with pytest.raises(SessionError) as later:
         authority.operation_status()

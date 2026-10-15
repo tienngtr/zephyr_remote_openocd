@@ -13,14 +13,15 @@ from typing import BinaryIO, cast, override
 from unittest.mock import Mock, PropertyMock, create_autospec
 
 import pytest
+from zephyr_remote_openocd.controller import _forwarding as forwarding_module
 from zephyr_remote_openocd.controller import session as session_module
+from zephyr_remote_openocd.controller._deployment import DeploymentResult
+from zephyr_remote_openocd.controller._forwarding import ForwardAdvisory
+from zephyr_remote_openocd.controller._ssh import ManagedSshProcess, SshCommand, SshForwardSpec
 from zephyr_remote_openocd.controller.authority import SessionAuthority
-from zephyr_remote_openocd.controller.deployment import DeploymentResult
-from zephyr_remote_openocd.controller.forwarding import ForwardAdvisory, ForwardManager
 from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
 from zephyr_remote_openocd.controller.plan import SessionAllocation, SessionPlan
 from zephyr_remote_openocd.controller.session import SessionController
-from zephyr_remote_openocd.controller.ssh import ManagedSshProcess, SshCommand, SshForwardSpec
 from zephyr_remote_openocd.controller.waiting import WaitResult, WaitSources, wait_for
 from zephyr_remote_openocd.protocol.arguments import materialize_argv
 from zephyr_remote_openocd.protocol.commands import decode_command, write_start
@@ -196,8 +197,8 @@ class ForwardingHarness:
         monkeypatch.setattr(session_module, "deploy_helper", lambda *_args: deployment)
         monkeypatch.setattr(session_module, "HelperConnection", self.make_helper)
         monkeypatch.setattr(session_module, "wait_for", self.wait)
-        monkeypatch.setattr(ForwardManager, "_await_ready", staticmethod(self.await_ready))
-        monkeypatch.setattr(ForwardManager, "_preflight", staticmethod(lambda _service: None))
+        monkeypatch.setattr(forwarding_module, "await_ready", self.await_ready)
+        monkeypatch.setattr(forwarding_module, "preflight", lambda _service: None)
 
     def wait(self, *, sources: WaitSources, deadline: float | None = None) -> WaitResult:
         # Publish controlled reader facts at the actual foreground wait boundary;

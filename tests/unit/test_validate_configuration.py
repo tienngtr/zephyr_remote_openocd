@@ -14,7 +14,7 @@ from unittest.mock import Mock
 
 import pytest
 from zephyr_remote_openocd.config import ResolvedRemote
-from zephyr_remote_openocd.controller.ssh import SshCommand
+from zephyr_remote_openocd.controller._ssh import SshCommand
 
 from tests.support import ROOT
 

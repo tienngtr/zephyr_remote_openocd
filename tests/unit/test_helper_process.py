@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from unittest.mock import create_autospec
 
 import pytest
-from zephyr_remote_openocd.helper import process as helper_process
+from zephyr_remote_openocd.helper import _process as helper_process
 
 from tests.helper_process_support import cleanup_supervised_process
 
@@ -106,7 +106,7 @@ def test_spawn_child_rolls_back_process_when_ownership_wrapper_fails(monkeypatch
     monkeypatch.setattr(helper_process, 'SupervisedProcess', fail_child_ownership)
     try:
         with pytest.raises(RuntimeError) as raised:
-            helper_process._spawn_child((sys.executable, "-c", "import signal; signal.pause()"))
+            helper_process.spawn_child((sys.executable, "-c", "import signal; signal.pause()"))
 
         assert raised.value is failure
         assert len(processes) == 1
@@ -136,7 +136,7 @@ def test_spawn_rollback_preserves_exited_leader_identity_until_group_signal(monk
     initialize = subprocess.Popen.__init__
     killpg = os.killpg
     failure = RuntimeError("supervisor construction failed after child exit")
-    owner = helper_process._ChildAcquisition()
+    owner = helper_process.ChildAcquisition()
     signalled = []
 
     def exited_process(process, *args, **kwargs):
@@ -159,7 +159,7 @@ def test_spawn_rollback_preserves_exited_leader_identity_until_group_signal(monk
     monkeypatch.setattr(helper_process, 'SupervisedProcess', fail_construction)
     monkeypatch.setattr(os, "killpg", signal_owned_group)
     with pytest.raises(RuntimeError) as raised:
-        helper_process._spawn_child(
+        helper_process.spawn_child(
             (sys.executable, "-c", f"import sys;sys.exit({SAMPLE_CHILD_EXIT_CODE})"),
             ownership=owner,
         )
@@ -175,7 +175,7 @@ def test_spawn_rollback_preserves_exited_leader_identity_until_group_signal(monk
 
 def test_supervised_child_terminates_descendant_after_leader_term(tmp_path):
     descendant_path = tmp_path / "descendant.pid"
-    child = helper_process._spawn_child(
+    child = helper_process.spawn_child(
         (sys.executable, "-c", _forking_child_code(True), str(descendant_path))
     )
     descendant_pid = None
@@ -203,7 +203,7 @@ def test_supervised_child_terminates_descendant_after_leader_term(tmp_path):
 
 def test_supervised_child_warns_and_terminates_descendant_after_leader_exit(tmp_path, capfd):
     descendant_path = tmp_path / "descendant.pid"
-    child = helper_process._spawn_child(
+    child = helper_process.spawn_child(
         (sys.executable, "-c", _forking_child_code(False), str(descendant_path))
     )
     descendant_pid = None
@@ -265,7 +265,12 @@ def test_supervised_child_skips_kill_after_group_disappears(monkeypatch):
 
     monkeypatch.setattr(os, "killpg", killpg)
     child = helper_process.SupervisedProcess(process)
-    child._observed_returncode = 0
+    monkeypatch.setattr(
+        os,
+        "waitid",
+        lambda *_args: SimpleNamespace(si_pid=process.pid, si_code=os.CLD_EXITED, si_status=0),
+    )
+    assert child.poll() == 0
 
     asyncio.run(child.terminate())
 
@@ -295,7 +300,12 @@ def test_supervised_child_reaps_and_cleans_up_after_signal_errors(monkeypatch):
 
     process = Process()
     child = helper_process.SupervisedProcess(process)
-    child._observed_returncode = 0
+    monkeypatch.setattr(
+        os,
+        "waitid",
+        lambda *_args: SimpleNamespace(si_pid=process.pid, si_code=os.CLD_EXITED, si_status=0),
+    )
+    assert child.poll() == 0
     term_error = RuntimeError("term failed")
 
     def fail_term(_pid, signum):
@@ -378,12 +388,17 @@ def cleanup_process(monkeypatch):
     return process
 
 
-def _run_group_cleanup(process, mode):
+def _run_group_cleanup(process, mode, monkeypatch):
     if mode == "rollback":
-        helper_process._rollback_spawned_process(process)
+        helper_process.rollback_spawned_process(process)
     else:
         child = helper_process.SupervisedProcess(process)
-        child._observed_returncode = 0
+        monkeypatch.setattr(
+            os,
+            "waitid",
+            lambda *_args: SimpleNamespace(si_pid=process.pid, si_code=os.CLD_EXITED, si_status=0),
+        )
+        assert child.poll() == 0
         try:
             asyncio.run(child.terminate())
         finally:
@@ -431,7 +446,7 @@ def test_group_cleanup_fails_when_disappearance_is_unconfirmed(
 
     expected = PermissionError if observation == "permission-denied" else TimeoutError
     with pytest.raises(expected):
-        _run_group_cleanup(cleanup_process, mode)
+        _run_group_cleanup(cleanup_process, mode, monkeypatch)
 
     assert cleanup_process.returncode is not None
     assert cleanup_process.stdout.closed and cleanup_process.stderr.closed
@@ -469,7 +484,7 @@ def test_group_cleanup_waits_for_disappearance_after_reaping(monkeypatch, cleanu
     )
     monkeypatch.setattr(asyncio, "sleep", async_finish_group_exit)
 
-    _run_group_cleanup(cleanup_process, mode)
+    _run_group_cleanup(cleanup_process, mode, monkeypatch)
 
     assert group_gone
     assert cleanup_process.returncode is not None

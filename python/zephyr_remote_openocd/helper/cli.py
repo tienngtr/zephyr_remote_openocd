@@ -6,9 +6,9 @@ from __future__ import annotations
 
 import argparse
 
+from zephyr_remote_openocd.helper._streams import error
 from zephyr_remote_openocd.helper.control import control
 from zephyr_remote_openocd.helper.staging import stage
-from zephyr_remote_openocd.helper.streams import error
 from zephyr_remote_openocd.helper.version import openocd_version
 
 

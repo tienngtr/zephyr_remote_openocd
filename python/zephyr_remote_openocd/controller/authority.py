@@ -8,8 +8,8 @@ import threading
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
+from zephyr_remote_openocd.controller._cleanup import add_failure_note
 from zephyr_remote_openocd.controller.admission import AdmissionGate
-from zephyr_remote_openocd.controller.cleanup import _add_failure_note
 from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
 from zephyr_remote_openocd.controller.plan import SessionAllocation
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy, Diagnostic, TerminalSnapshot
@@ -139,7 +139,7 @@ class SessionAuthority:
             primary = self._failure()
             self._failures[identity] = _FailureRecord(error, diagnostic)
             if primary is not None:
-                _add_failure_note(primary, "later session failure", error)
+                add_failure_note(primary, "later session failure", error)
             self._error_reported = False
             self._gate.fail(diagnostic)
             self._notify()

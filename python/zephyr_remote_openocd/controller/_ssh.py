@@ -12,9 +12,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import BinaryIO, Protocol, cast
 
+from zephyr_remote_openocd.controller._cleanup import add_failure_note, raise_cleanup_errors
+from zephyr_remote_openocd.controller._processes import run_finite, terminate_process
 from zephyr_remote_openocd.controller.cancellation import admit_effect
-from zephyr_remote_openocd.controller.cleanup import _add_failure_note, _raise_cleanup_errors
-from zephyr_remote_openocd.controller.processes import _terminate_process, run_finite
 
 # SSH diagnostics must never be allowed to fill the OS pipe, but retaining a
 # small tail keeps connection and forwarding failures actionable.  This limit
@@ -36,7 +36,7 @@ class SshProcessStartError(RuntimeError):
             self.add_note(note)
 
 
-class _StderrDrain:
+class StderrDrain:
     """Consume a process stderr pipe while retaining a bounded byte tail."""
 
     def __init__(self, stream: BinaryIO):
@@ -118,14 +118,14 @@ class ManagedSshProcess:
 
     def __init__(self) -> None:
         self._process: subprocess.Popen[bytes] | None = None
-        self._drain: _StderrDrain | None = None
+        self._drain: StderrDrain | None = None
 
     def acquire(self, argv: list[str]) -> None:
         """Populate an already-owned transport; its caller owns rollback."""
         assert self._process is None
         self._process = _OwnedSshPopen(self, argv)
         assert self._process.stderr is not None
-        self._drain = _StderrDrain(cast(BinaryIO, self._process.stderr))
+        self._drain = StderrDrain(cast(BinaryIO, self._process.stderr))
         self._drain.start()
         self._process.stderr = None
 
@@ -143,14 +143,14 @@ class ManagedSshProcess:
             )
         ):
             return
-        termination = _terminate_process(self)
+        termination = terminate_process(self)
         cleanup_errors = (
             *((termination.primary_error,) if termination.primary_error is not None else ()),
             *termination.secondary_errors,
             *_close_process_streams(self, close_streams=True),
         )
         for cleanup_failure in cleanup_errors:
-            _add_failure_note(error, "SSH process startup cleanup failed", cleanup_failure)
+            add_failure_note(error, "SSH process startup cleanup failed", cleanup_failure)
         if isinstance(error, (OSError, subprocess.SubprocessError)):
             raise SshProcessStartError(error, cleanup_errors) from error
 
@@ -216,7 +216,7 @@ class _OwnedSshPopen(subprocess.Popen[bytes]):
         )
 
 
-class _ProcessControl(Protocol):
+class ProcessControl(Protocol):
     """Process operations and resources needed during SSH cleanup."""
 
     @property
@@ -237,7 +237,7 @@ class _ProcessControl(Protocol):
 
 
 def _close_process_streams(
-    process: _ProcessControl, *, close_streams: bool
+    process: ProcessControl, *, close_streams: bool
 ) -> tuple[BaseException, ...]:
     """Close the stderr drain and optionally the process data streams."""
     cleanup_errors: list[BaseException] = []
@@ -257,22 +257,22 @@ def _close_process_streams(
     return tuple(cleanup_errors)
 
 
-def _stop_process(process: _ProcessControl, *, close_streams: bool = True) -> None:
+def stop_process(process: ProcessControl, *, close_streams: bool = True) -> None:
     """Stop and clean up one managed SSH process without hiding errors."""
-    termination = _terminate_process(process)
+    termination = terminate_process(process)
     cleanup_errors = [
         *termination.secondary_errors,
         *_close_process_streams(process, close_streams=close_streams),
     ]
     if termination.primary_error is not None:
         for cleanup_failure in cleanup_errors:
-            _add_failure_note(
+            add_failure_note(
                 termination.primary_error,
                 "process cleanup also failed",
                 cleanup_failure,
             )
         raise termination.primary_error
-    _raise_cleanup_errors(cleanup_errors)
+    raise_cleanup_errors(cleanup_errors)
 
 
 @dataclass(frozen=True)
@@ -356,7 +356,7 @@ class SshCommand:
                 except BaseException as error:
                     if acquisition_failure is None:
                         raise
-                    _add_failure_note(
+                    add_failure_note(
                         acquisition_failure, "SSH signal-mask restoration also failed", error
                     )
             if on_acquired is not None:

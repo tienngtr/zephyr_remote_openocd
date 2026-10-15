@@ -13,10 +13,10 @@ from typing import Any
 
 import pytest
 from zephyr_remote_openocd.controller import helper_connection as connection_module
+from zephyr_remote_openocd.controller._deployment import DeploymentResult
+from zephyr_remote_openocd.controller._ssh import SshCommand
 from zephyr_remote_openocd.controller.authority import SessionError
-from zephyr_remote_openocd.controller.deployment import DeploymentResult
 from zephyr_remote_openocd.controller.helper_connection import HelperConnection
-from zephyr_remote_openocd.controller.ssh import SshCommand
 from zephyr_remote_openocd.controller.waiting import Descriptor, WaitResult, WaitSources, wait_for
 from zephyr_remote_openocd.protocol.outcome import Trigger
 from zephyr_remote_openocd.protocol.process import ProcessSpec

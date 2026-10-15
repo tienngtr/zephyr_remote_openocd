@@ -16,7 +16,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from typing import BinaryIO, Protocol
 
-from zephyr_remote_openocd.controller.cleanup import _add_failure_note
+from zephyr_remote_openocd.controller._cleanup import add_failure_note
 from zephyr_remote_openocd.controller.waiting import WaitSources, wait_for
 
 
@@ -40,7 +40,7 @@ _CONNECT_RETRY_DELAY = 0.05
 _INITIAL_OUTPUT_GRACE = 0.25
 
 
-class _RttConnection:
+class RttConnection:
     """Acquire into an already-owned scope, without returning a live socket."""
 
     def __init__(self) -> None:
@@ -61,7 +61,7 @@ class _RttConnection:
                 try:
                     self.close()
                 except BaseException as cleanup_error:
-                    _add_failure_note(error, "RTT socket cleanup failed", cleanup_error)
+                    add_failure_note(error, "RTT socket cleanup failed", cleanup_error)
                     raise error from None
                 last_error = error
             # The retry delay passes through the common wait even when the
@@ -118,10 +118,10 @@ def _terminal_mode(input_fd: int) -> Generator[None, None, None]:
             except BaseException as error:
                 if primary_failure is None:
                     raise
-                _add_failure_note(primary_failure, "RTT terminal restoration failed", error)
+                add_failure_note(primary_failure, "RTT terminal restoration failed", error)
 
 
-class _RttRelay:
+class RttRelay:
     """Own pending input and output and interpret readiness for an owned socket.
 
     Output for a descriptor-backed stream is written to the descriptor only
@@ -267,13 +267,13 @@ def run_rtt_client(
     """Own the RTT socket and terminal scope until the relay or session exits."""
     input_stream = stdin or sys.stdin.buffer
     output_stream = stdout or sys.stdout.buffer
-    connection = _RttConnection()
+    connection = RttConnection()
     primary_failure: BaseException | None = None
     try:
         connection.acquire(port, startup_timeout)
         assert connection.socket is not None
         input_fd = input_stream.fileno()
-        relay = _RttRelay(connection.socket, input_fd, output_stream, session)
+        relay = RttRelay(connection.socket, input_fd, output_stream, session)
         with _terminal_mode(input_fd):
             return relay.run(connection.initial)
     except BaseException as error:
@@ -285,4 +285,4 @@ def run_rtt_client(
         except BaseException as error:
             if primary_failure is None:
                 raise
-            _add_failure_note(primary_failure, "RTT socket cleanup failed", error)
+            add_failure_note(primary_failure, "RTT socket cleanup failed", error)

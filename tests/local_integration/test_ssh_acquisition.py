@@ -15,12 +15,12 @@ from types import FrameType
 from typing import BinaryIO, cast
 
 import pytest
+from zephyr_remote_openocd.controller._deployment import DeploymentResult
+from zephyr_remote_openocd.controller._forwarding import ForwardManager
+from zephyr_remote_openocd.controller._ssh import SshCommand, stop_process
 from zephyr_remote_openocd.controller.cancellation import OperationCancelled, operation_scope
-from zephyr_remote_openocd.controller.deployment import DeploymentResult
-from zephyr_remote_openocd.controller.forwarding import ForwardManager
 from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
 from zephyr_remote_openocd.controller.helper_connection import HelperConnection
-from zephyr_remote_openocd.controller.ssh import SshCommand, _stop_process
 from zephyr_remote_openocd.controller.waiting import wait_for
 
 from tests.process_support import read_line
@@ -109,7 +109,7 @@ def test_transport_return_failure_cleans_callers_registered_process(
         helper.close()
         forwards.close()
         for transport in managed:
-            _stop_process(transport)
+            stop_process(transport)
 
 
 @pytest.mark.parametrize("search_path", (False, True), ids=("absolute", "search-path"))
@@ -213,7 +213,7 @@ def test_native_sigint_before_pid_publication_is_latched_without_breaking_owners
         else:
             assert isinstance(raised.value, OperationCancelled)
             assert managed is not None and managed.pid == child_pid
-            _stop_process(managed)
+            stop_process(managed)
             assert managed.returncode is not None
     finally:
         sys.settrace(previous_trace)

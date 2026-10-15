@@ -11,7 +11,7 @@ import zipfile
 from dataclasses import dataclass
 from importlib.resources import files
 
-from zephyr_remote_openocd.controller.ssh import SshCommand
+from zephyr_remote_openocd.controller._ssh import SshCommand
 from zephyr_remote_openocd.protocol.responses import validate_deployment_response
 from zephyr_remote_openocd.protocol.wire import ProtocolError, decode_frame
 
@@ -68,7 +68,7 @@ class DeploymentResult:
     reused: bool
 
 
-def _helper_source() -> bytes:
+def build_helper_bundle() -> bytes:
     try:
         package = files("zephyr_remote_openocd")
         entries = {
@@ -96,7 +96,7 @@ def _helper_source() -> bytes:
 
 
 def deploy_helper(ssh: SshCommand, host: str, *, source: bytes | None = None) -> DeploymentResult:
-    content = _helper_source() if source is None else source
+    content = build_helper_bundle() if source is None else source
     result = ssh.run(host, "python3 -c " + shlex.quote(BOOTSTRAP), input_data=content, timeout=30)
     if result.returncode:
         diagnostic = result.stderr.decode("utf-8", "replace").strip()

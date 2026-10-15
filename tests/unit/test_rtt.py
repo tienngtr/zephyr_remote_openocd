@@ -14,7 +14,7 @@ from types import FrameType, SimpleNamespace
 from typing import Any, override
 
 import pytest
-from zephyr_remote_openocd.controller import rtt as rtt_module
+from zephyr_remote_openocd.controller import _rtt as rtt_module
 from zephyr_remote_openocd.controller.waiting import WaitResult, WaitSources
 
 from tests.session_support import ObservedStatus
@@ -175,7 +175,7 @@ def test_session_result_gives_accepted_output_one_delivery_opportunity(
     ):
         with os.fdopen(write_end, "wb") as stdout:
             status = observed_session(lambda: 0 if accepted.is_set() else None)
-            relay = rtt_module._RttRelay(channel, stdin.fileno(), stdout, status)
+            relay = rtt_module.RttRelay(channel, stdin.fileno(), stdout, status)
             if source == "initial":
                 accepted.set()
                 assert relay.run(payload) == 0
@@ -227,7 +227,7 @@ def test_receive_tolerates_spurious_readiness(observed_session) -> None:
     with channel, peer, tempfile.TemporaryFile("w+b") as stdin, io.BytesIO() as stdout:
         peer.sendall(b"RTT output")
         status = observed_session(lambda: 0 if stdout.getvalue() == b"RTT output" else None)
-        assert rtt_module._RttRelay(channel, stdin.fileno(), stdout, status).run() == 0
+        assert rtt_module.RttRelay(channel, stdin.fileno(), stdout, status).run() == 0
 
 
 def test_connect_retries_refusal_until_startup_error(
@@ -329,7 +329,7 @@ def test_interruption_at_acquisition_boundaries_closes_owned_socket(
         if (
             phase == "acquire-return"
             and event == "return"
-            and frame.f_code is rtt_module._RttConnection.acquire.__code__
+            and frame.f_code is rtt_module.RttConnection.acquire.__code__
         ):
             interrupt()
         owner = frame.f_locals.get("connection")
@@ -337,7 +337,7 @@ def test_interruption_at_acquisition_boundaries_closes_owned_socket(
             phase == "caller-resumption"
             and event == "line"
             and frame.f_code is rtt_module.run_rtt_client.__code__
-            and isinstance(owner, rtt_module._RttConnection)
+            and isinstance(owner, rtt_module.RttConnection)
             and owner.socket is not None
             and "input_fd" not in frame.f_locals
         ):
@@ -400,7 +400,7 @@ def test_pending_input_survives_would_block_and_partial_send(observed_session) -
         receiver = threading.Thread(target=receive)
         receiver.start()
         try:
-            assert rtt_module._RttRelay(channel, stdin.fileno(), stdout, status).run() == 0
+            assert rtt_module.RttRelay(channel, stdin.fileno(), stdout, status).run() == 0
         finally:
             receiver.join(GUARD)
 
@@ -421,7 +421,7 @@ def test_zero_byte_send_reports_channel_failure(observed_session) -> None:
         stdin.write(b"input")
         stdin.seek(0)
         with pytest.raises(rtt_module.RttClientError):
-            rtt_module._RttRelay(
+            rtt_module.RttRelay(
                 channel, stdin.fileno(), stdout, observed_session(lambda: None)
             ).run()
 
@@ -436,7 +436,7 @@ def test_established_channel_closure_fails_while_session_is_running(observed_ses
         io.BytesIO() as stdout,
         pytest.raises(rtt_module.RttClientError),
     ):
-        rtt_module._RttRelay(local, stdin.fileno(), stdout, observed_session(lambda: None)).run()
+        rtt_module.RttRelay(local, stdin.fileno(), stdout, observed_session(lambda: None)).run()
 
 
 @pytest.mark.parametrize("phase", ("terminal-setup", "relay"))

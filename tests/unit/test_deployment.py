@@ -13,9 +13,9 @@ from pathlib import Path
 from typing import Any, BinaryIO, override
 
 import pytest
-from zephyr_remote_openocd.controller import deployment as deploy_module
-from zephyr_remote_openocd.controller.deployment import _helper_source
-from zephyr_remote_openocd.controller.ssh import SshCommand, SshForwardSpec
+from zephyr_remote_openocd.controller import _deployment as deploy_module
+from zephyr_remote_openocd.controller._deployment import build_helper_bundle
+from zephyr_remote_openocd.controller._ssh import SshCommand, SshForwardSpec
 from zephyr_remote_openocd.protocol.wire import (
     encode_frame,
 )
@@ -26,7 +26,7 @@ from tests.process_support import managed_process, read_line
 def test_missing_packaged_helper_is_actionable(monkeypatch, tmp_path):
     monkeypatch.setattr(deploy_module, "files", lambda _package: tmp_path)
     with pytest.raises(deploy_module.DeploymentError, match="packaged remote helper"):
-        _helper_source()
+        build_helper_bundle()
 
 
 class DeploymentReply(SshCommand):

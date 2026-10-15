@@ -11,15 +11,15 @@ import threading
 import time
 from collections.abc import Callable, Iterable
 
+from zephyr_remote_openocd.controller._deployment import DeploymentResult
+from zephyr_remote_openocd.controller._ssh import ManagedSshProcess, SshCommand, stop_process
 from zephyr_remote_openocd.controller.authority import (
     SessionAuthority,
     SessionError,
     SessionSnapshot,
 )
 from zephyr_remote_openocd.controller.cancellation import admit_effect
-from zephyr_remote_openocd.controller.deployment import DeploymentResult
 from zephyr_remote_openocd.controller.plan import SessionAllocation
-from zephyr_remote_openocd.controller.ssh import ManagedSshProcess, SshCommand, _stop_process
 from zephyr_remote_openocd.controller.waiting import (
     Notifier,
     ProcessCompletion,
@@ -242,7 +242,7 @@ class HelperConnection:
             self._authority.record_failure("HELPER_CLEANUP_FAILURE", error)
             reader_stopped = False
         try:
-            _stop_process(helper, close_streams=reader_stopped)
+            stop_process(helper, close_streams=reader_stopped)
         except BaseException as error:
             self._authority.record_failure("HELPER_CLEANUP_FAILURE", error)
 
@@ -255,7 +255,7 @@ class HelperConnection:
                 reader_stopped = False
             if reader_stopped and not initially_stopped:
                 try:
-                    _stop_process(helper, close_streams=True)
+                    stop_process(helper, close_streams=True)
                 except BaseException as error:
                     self._authority.record_failure("HELPER_CLEANUP_FAILURE", error)
             if not reader_stopped:

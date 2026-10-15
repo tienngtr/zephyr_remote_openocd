@@ -11,8 +11,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from zephyr_remote_openocd.helper import _workspace as workspace_module
 from zephyr_remote_openocd.helper import staging as helper_staging
-from zephyr_remote_openocd.helper import workspace as workspace_module
 
 
 @pytest.mark.parametrize("storage", ("runtime", "cache"))
@@ -126,7 +126,7 @@ def test_reclaimer_retains_entries_when_inspection_fails(
         uncertain = workspace / workspace_module.SESSION_LOCK
     else:
         uncertain = workspace
-    metadata = (workspace_module._lease_path(workspace), workspace_module._closure_path(workspace))
+    metadata = (workspace_module.lease_path(workspace), workspace_module.closure_path(workspace))
     metadata[1].touch()
     inputs = workspace / "staged/child-input"
     inputs.write_bytes(b"retain uncertain inputs")
@@ -237,10 +237,10 @@ def test_reclaimer_removes_orphaned_lease_but_preserves_live_workspace(
     monkeypatch.setattr(workspace_module, 'workspace_root', lambda: tmp_path)
     _session_id, workspace, owner_lock = workspace_module.new_workspace()
     try:
-        with workspace_module._stage_lease(workspace):
+        with workspace_module.stage_lease(workspace):
             orphan = tmp_path / f".removed.{suffix}"
             orphan.write_bytes(b"closed")
-            live_lease = workspace_module._lease_path(workspace)
+            live_lease = workspace_module.lease_path(workspace)
             for path in (orphan, live_lease):
                 os.utime(path, (1.0, 1.0))
             workspace_module.reclaim_stale_workspaces(
@@ -269,7 +269,7 @@ def test_closed_admission_rejects_stage_when_closure_inspection_fails(
         monkeypatch.setattr(sys, "stdin", SimpleNamespace(buffer=io.BytesIO(upload.getvalue())))
         # Failed inspection is not confirmed absence on any supported Python.
         with monkeypatch.context() as patch:
-            _fail_inspection(patch, workspace_module._closure_path(workspace), error_number)
+            _fail_inspection(patch, workspace_module.closure_path(workspace), error_number)
             with pytest.raises(OSError):
                 helper_staging.stage(workspace)
 
@@ -286,7 +286,7 @@ def test_workspace_removal_retains_closure_when_workspace_inspection_fails(tmp_p
     monkeypatch.setattr(workspace_module, 'workspace_root', lambda: tmp_path)
     _session_id, workspace, owner_lock = workspace_module.new_workspace()
     owner_lock.close()
-    closure = workspace_module._closure_path(workspace)
+    closure = workspace_module.closure_path(workspace)
 
     def vanished_entry(_path):
         raise FileNotFoundError("injected concurrent entry removal")

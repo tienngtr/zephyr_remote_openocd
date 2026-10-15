@@ -7,16 +7,16 @@ import sys
 from pathlib import Path
 
 import pytest
-from zephyr_remote_openocd.controller.deployment import DeploymentResult
-from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
-from zephyr_remote_openocd.controller.plan import SessionPlan
-from zephyr_remote_openocd.controller.session import SessionController
-from zephyr_remote_openocd.controller.ssh import (
+from zephyr_remote_openocd.controller._deployment import DeploymentResult
+from zephyr_remote_openocd.controller._ssh import (
     SSH_STDERR_TAIL_BYTES,
     ManagedSshProcess,
     SshCommand,
     SshForwardSpec,
 )
+from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
+from zephyr_remote_openocd.controller.plan import SessionPlan
+from zephyr_remote_openocd.controller.session import SessionController
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 
 pytestmark = pytest.mark.local

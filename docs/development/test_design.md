@@ -81,6 +81,22 @@ exception messages, diagnostics, logging strings, and helper wording should not
 become accidental APIs. Prefer exception types or semantic results unless exact
 text is externally required.
 
+* Make direct internal-abstraction tests explicit. Import the normal names
+from a cohesive `_module` when testing a package-internal role, such as output
+decoding, process disposal, or forwarding readiness. Use the existing ordinary
+entry point when it already covers the behavior (for example `decode_command`,
+not its private START parser). Do not promote private state to a public property
+solely to satisfy tests. Acquire session collaborators through normal
+construction rather than replacing private fields after initialization.
+
+* A private hook is an exception for a concrete regression, not an alternate
+API. Reader joins and dispatch gates may synchronize recognized versus dispatched
+facts; constructor-return hooks may expose an otherwise inaccessible ownership
+handoff; cleanup fault injection may force a physically unconfirmed outcome.
+Keep the real surrounding production path, explain the boundary at the hook,
+and assert observable outcomes and cleanup effects. Do not spread these hooks
+into ordinary behavior tests or hide private access behind generic test helpers.
+
 * Keep time and concurrency deterministic. Do not rely on `sleep()`, short
 real-time deadlines, call-count-driven fake clocks, retries, or scheduling
 assumptions. Advance fake clocks at meaningful events and use events, barriers,

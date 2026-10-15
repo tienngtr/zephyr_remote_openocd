@@ -15,9 +15,9 @@ from types import FrameType
 from typing import Any
 
 import pytest
-from zephyr_remote_openocd.controller import processes
+from zephyr_remote_openocd.controller import _processes as processes
+from zephyr_remote_openocd.controller._ssh import SshCommand
 from zephyr_remote_openocd.controller.cancellation import OperationCancelled, operation_scope
-from zephyr_remote_openocd.controller.ssh import SshCommand
 from zephyr_remote_openocd.controller.waiting import WaitResult
 
 pytestmark = [pytest.mark.local, pytest.mark.skipif(os.name != "posix", reason="POSIX pipes")]

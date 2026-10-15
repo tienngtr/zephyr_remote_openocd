@@ -9,7 +9,7 @@ import subprocess
 import sys
 
 import pytest
-from zephyr_remote_openocd.controller.ssh import SshCommand, _stop_process
+from zephyr_remote_openocd.controller._ssh import SshCommand, stop_process
 
 from tests.process_support import cleanup_on_exit, read_line, stop_and_close
 
@@ -33,7 +33,7 @@ def test_harness_cleanup_attempts_data_pipes_after_stderr_failure(monkeypatch):
         assert process.stdin is not None and process.stdin.closed
         assert process.stdout is not None and process.stdout.closed
     finally:
-        _stop_process(process)
+        stop_process(process)
 
 
 def test_harness_cleanup_escalation_uses_finite_waits(monkeypatch):
@@ -71,7 +71,7 @@ def test_harness_cleanup_escalation_uses_finite_waits(monkeypatch):
         if process.poll() is None:
             kill()
             wait(timeout=30)
-        _stop_process(process)
+        stop_process(process)
 
 
 @pytest.mark.parametrize("failed_pipe", ("stdin", "stderr"))
@@ -106,4 +106,4 @@ def test_process_cleanup_scope_preserves_assertion_and_closes_pipes(monkeypatch,
             assert process.stdin is not None and process.stdin.closed
             assert process.stdout is not None and process.stdout.closed
     finally:
-        _stop_process(process)
+        stop_process(process)

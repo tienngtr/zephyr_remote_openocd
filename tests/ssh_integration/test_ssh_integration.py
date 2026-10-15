@@ -19,14 +19,15 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 from zephyr_remote_openocd.config import PathMapping
+from zephyr_remote_openocd.controller import _forwarding as forwarding_module
+from zephyr_remote_openocd.controller._deployment import build_helper_bundle, deploy_helper
+from zephyr_remote_openocd.controller._forwarding import ForwardManager
+from zephyr_remote_openocd.controller._ssh import SshCommand, SshForwardSpec
 from zephyr_remote_openocd.controller.authority import SessionError
-from zephyr_remote_openocd.controller.deployment import _helper_source, deploy_helper
-from zephyr_remote_openocd.controller.forwarding import ForwardManager
 from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
 from zephyr_remote_openocd.controller.paths import PathPlanner
 from zephyr_remote_openocd.controller.plan import SessionPlan
 from zephyr_remote_openocd.controller.session import SessionController
-from zephyr_remote_openocd.controller.ssh import SshCommand, SshForwardSpec
 from zephyr_remote_openocd.controller.staging_spec import StagedFile
 from zephyr_remote_openocd.protocol.arguments import ArgumentTemplate, SessionValue
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
@@ -81,7 +82,7 @@ import json, os, sys, tempfile
 from contextlib import ExitStack
 
 sys.path.insert(0, sys.argv[1])
-from zephyr_remote_openocd.helper import workspace as helper
+from zephyr_remote_openocd.helper import _workspace as helper
 with tempfile.TemporaryDirectory(prefix='zro qualification ') as directory:
     os.environ['XDG_RUNTIME_DIR'] = directory
     with ExitStack() as owners:
@@ -102,7 +103,7 @@ with tempfile.TemporaryDirectory(prefix='zro qualification ') as directory:
         inactive = workspaces['inactive']
         active_input = workspaces['active'] / 'staged' / 'input.bin'
         unconfirmed_input = workspaces['unconfirmed'] / 'staged' / 'input.bin'
-        inactive_metadata = (helper._lease_path(inactive), helper._closure_path(inactive))
+        inactive_metadata = (helper.lease_path(inactive), helper.closure_path(inactive))
         print(json.dumps({
             'active_retained': active_input.read_bytes() == b'required input',
             'unconfirmed_retained': unconfirmed_input.read_bytes() == b'required input',
@@ -232,11 +233,11 @@ class TestSshTransportIntegration:
             sentinel = "ZRO_FORWARD_READY"
             tunnel = self.ssh.popen(
                 self.host,
-                ForwardManager._ready_command(sentinel),
+                forwarding_module.ready_command(sentinel),
                 local_forward=SshForwardSpec(local_port, "127.0.0.1", remote_port),
             )
             resources.enter_context(cleanup_on_exit(lambda: stop_and_close(tunnel)))
-            assert ForwardManager._await_ready(tunnel, sentinel, time.monotonic() + 20)
+            assert forwarding_module.await_ready(tunnel, sentinel, time.monotonic() + 20)
             wait_for_echo(local_port, b"zro_forwarding", 20)
 
             assert helper_process.stdin is not None
@@ -428,7 +429,7 @@ collision.listen()
         session = SessionController.prepare(request)
         with cleanup_on_exit(session.close), ExitStack() as resources:
             session.acquire()
-            bundle = io.BytesIO(_helper_source())
+            bundle = io.BytesIO(build_helper_bundle())
             with zipfile.ZipFile(bundle, "a") as archive:
                 archive.comment = uuid.uuid4().hex.encode("ascii")
             source = bundle.getvalue()

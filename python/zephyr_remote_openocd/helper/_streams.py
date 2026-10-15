@@ -18,14 +18,14 @@ RELAY_CHUNK_SIZE = 64 * 1024
 MAX_FINAL_OBSERVATION_BYTES = MAX_FRAME_SIZE
 MAX_PROTOCOL_OUTPUT_BYTES = 16 * 1024 * 1024
 CHILD_RELAY_JOIN_TIMEOUT = 2
-_protocol_output: contextvars.ContextVar[_ProtocolOutput | None] = contextvars.ContextVar(
+protocol_output: contextvars.ContextVar[ProtocolOutput | None] = contextvars.ContextVar(
     "protocol_output", default=None
 )
 
 
 def emit(kind, **values):
     frame = encode_frame(kind, **values)
-    output = _protocol_output.get()
+    output = protocol_output.get()
     if output is None:
         sys.stdout.write(frame.decode("utf-8"))
         sys.stdout.flush()
@@ -38,7 +38,7 @@ def error(message, code="HELPER_ERROR"):
     emit("ERROR", code=code, message=diagnostic)
 
 
-async def _readable(descriptor: int) -> None:
+async def readable(descriptor: int) -> None:
     """Wait for fd readiness without introducing a separately buffered reader."""
     loop = asyncio.get_running_loop()
     ready = loop.create_future()
@@ -70,7 +70,7 @@ def _acquire_nonblocking(descriptor: int) -> bool:
     return previous
 
 
-class _ProtocolOutput:
+class ProtocolOutput:
     """Session-owned nonblocking JSON output with bounded buffering and cleanup."""
 
     def __init__(self):
@@ -164,7 +164,7 @@ class _ProtocolOutput:
             self.empty.set()
 
 
-class _AsyncInput:
+class AsyncInput:
     """One cancellable raw observation path for an owned input descriptor."""
 
     def __init__(self, descriptor: int):
@@ -175,7 +175,7 @@ class _AsyncInput:
         self._closed = False
         self.was_blocking = _acquire_nonblocking(descriptor)
 
-    def __enter__(self) -> _AsyncInput:
+    def __enter__(self) -> AsyncInput:
         return self
 
     def __exit__(

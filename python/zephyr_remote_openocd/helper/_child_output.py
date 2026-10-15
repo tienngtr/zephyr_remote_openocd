@@ -8,10 +8,10 @@ import codecs
 from collections.abc import Iterable
 from typing import NamedTuple
 
-from zephyr_remote_openocd.helper import streams
+from zephyr_remote_openocd.helper import _streams as streams
 
 
-class _RequiredOutputSentinels:
+class RequiredOutputSentinels:
     """Session-owned state of required complete output lines."""
 
     def __init__(self, required_output_sentinels: Iterable[str]) -> None:
@@ -32,7 +32,7 @@ class _RequiredOutputSentinels:
 class _SentinelMatcher:
     """Recognize required startup output markers as complete trimmed lines."""
 
-    def __init__(self, required_output_sentinels: _RequiredOutputSentinels) -> None:
+    def __init__(self, required_output_sentinels: RequiredOutputSentinels) -> None:
         self.required_output_sentinels = required_output_sentinels
         self._reset_line()
 
@@ -61,7 +61,7 @@ class _SentinelMatcher:
         self._reset_line()
 
 
-class _CapturedFragment(NamedTuple):
+class CapturedFragment(NamedTuple):
     """Retained startup output with its stream and boundary metadata."""
 
     stream: str
@@ -69,22 +69,22 @@ class _CapturedFragment(NamedTuple):
     line_end: bool
 
 
-class _OutputDecoder:
+class OutputDecoder:
     """Decode one observed stream, preserving fragments and sentinel lines."""
 
     def __init__(
-        self, stream_name: str, required_output_sentinels: _RequiredOutputSentinels
+        self, stream_name: str, required_output_sentinels: RequiredOutputSentinels
     ) -> None:
         self.stream_name = stream_name
         self.decoder = codecs.getincrementaldecoder("utf-8")("replace")
         self.matcher = _SentinelMatcher(required_output_sentinels)
         self.pending: list[str] = []
 
-    def feed(self, chunk: bytes) -> list[_CapturedFragment]:
+    def feed(self, chunk: bytes) -> list[CapturedFragment]:
         fragments = []
 
         def fragment(line_end=False):
-            fragments.append(_CapturedFragment(self.stream_name, "".join(self.pending), line_end))
+            fragments.append(CapturedFragment(self.stream_name, "".join(self.pending), line_end))
             self.pending.clear()
 
         for character in self.decoder.decode(chunk, final=not chunk):

@@ -8,7 +8,7 @@ import base64
 import json
 import shlex
 
-from zephyr_remote_openocd.controller.ssh import ManagedSshProcess, _stop_process
+from zephyr_remote_openocd.controller._ssh import ManagedSshProcess, stop_process
 
 from tests.process_support import read_line
 
@@ -80,7 +80,7 @@ def read_event(process: ManagedSshProcess, timeout: float) -> dict[str, object]:
 
 def stop_reader(process: ManagedSshProcess) -> None:
     """Terminate a reader and close all of its pipes."""
-    _stop_process(process)
+    stop_process(process)
 
 
 def remote_serial_reader_command(

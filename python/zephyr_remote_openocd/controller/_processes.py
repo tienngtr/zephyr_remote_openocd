@@ -11,8 +11,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import IO, Any, BinaryIO, Protocol
 
+from zephyr_remote_openocd.controller._cleanup import add_failure_note
 from zephyr_remote_openocd.controller.cancellation import admit_effect
-from zephyr_remote_openocd.controller.cleanup import _add_failure_note
 from zephyr_remote_openocd.controller.waiting import WaitSources, wait_for
 
 _PROCESS_TERM_TIMEOUT = 5.0
@@ -21,7 +21,7 @@ _READ_SIZE = 65536
 _WRITE_SIZE = 65536
 
 
-class _Terminable(Protocol):
+class Terminable(Protocol):
     def poll(self) -> int | None: ...
 
     def wait(self, timeout: float | None = None) -> int: ...
@@ -32,14 +32,14 @@ class _Terminable(Protocol):
 
 
 @dataclass(frozen=True)
-class _TerminationResult:
+class TerminationResult:
     """Failures observed while attempting to stop a process."""
 
     primary_error: BaseException | None
     secondary_errors: tuple[BaseException, ...]
 
 
-def _terminate_process(process: _Terminable) -> _TerminationResult:
+def terminate_process(process: Terminable) -> TerminationResult:
     """Stop one process, escalating from graceful termination to a kill."""
     primary_error: BaseException | None = None
     secondary_errors: list[BaseException] = []
@@ -103,7 +103,7 @@ def _terminate_process(process: _Terminable) -> _TerminationResult:
     if graceful_timeout is not None and primary_error is not None:
         secondary_errors.append(graceful_timeout)
 
-    return _TerminationResult(primary_error, tuple(secondary_errors))
+    return TerminationResult(primary_error, tuple(secondary_errors))
 
 
 class _OwnedPopen(subprocess.Popen[bytes]):
@@ -245,7 +245,7 @@ class _FiniteProcess:
         ):
             # Failed exec already reaped the child and closed every pipe.
             return
-        termination = _terminate_process(process)
+        termination = terminate_process(process)
         failures = [
             *((termination.primary_error,) if termination.primary_error is not None else ()),
             *termination.secondary_errors,
@@ -257,7 +257,7 @@ class _FiniteProcess:
                 except BaseException as error:
                     failures.append(error)
         for failure in failures:
-            _add_failure_note(primary, "command cleanup also failed", failure)
+            add_failure_note(primary, "command cleanup also failed", failure)
 
 
 def run_finite(

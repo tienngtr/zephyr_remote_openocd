@@ -7,9 +7,9 @@ from __future__ import annotations
 import signal
 from types import FrameType
 
-from zephyr_remote_openocd.helper import streams
+from zephyr_remote_openocd.helper import _streams as streams
+from zephyr_remote_openocd.helper._session import HelperSession
 from zephyr_remote_openocd.helper.lifecycle import Closed
-from zephyr_remote_openocd.helper.session import HelperSession
 from zephyr_remote_openocd.protocol.outcome import (
     CleanupReport,
     Diagnostic,
@@ -50,7 +50,7 @@ def control() -> None:
         if session is not None:
             # run_async normally releases these resources. This also covers
             # failure before its cleanup scope is entered (e.g. loop setup).
-            session._release_workspace()
+            session.release_workspace()
             cleanup_errors.extend(session.cleanup_errors)
         for signum, handler in previous_handlers.items():
             try:
@@ -58,7 +58,7 @@ def control() -> None:
             except BaseException as exc:
                 cleanup_errors.append(exc)
     if session is not None:
-        session._account_recorded_failures()
+        session.account_recorded_failures()
         if (
             isinstance(session.lifecycle.state, Closed)
             and session.lifecycle.state.local_diagnostics

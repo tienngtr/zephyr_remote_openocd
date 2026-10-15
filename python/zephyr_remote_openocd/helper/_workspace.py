@@ -14,7 +14,7 @@ from collections.abc import Generator
 from contextlib import contextmanager, suppress
 from pathlib import Path
 
-from zephyr_remote_openocd.helper.cleanup import _raise_cleanup_errors
+from zephyr_remote_openocd.helper._cleanup import raise_cleanup_errors
 
 SESSION_LOCK = ".session.lock"
 UNCONFIRMED_CHILD = ".child-disposal-unconfirmed"
@@ -35,26 +35,26 @@ def workspace_root():
     )
 
 
-def _lease_path(work: Path) -> Path:
+def lease_path(work: Path) -> Path:
     return work.parent / f".{work.name}.lease"
 
 
-def _closure_path(work: Path) -> Path:
+def closure_path(work: Path) -> Path:
     return work.parent / f".{work.name}.closed"
 
 
 @contextmanager
-def _stage_lease(work: Path) -> Generator[None, None, None]:
+def stage_lease(work: Path) -> Generator[None, None, None]:
     # Acquire ownership before checking closure. If cleanup wins before this
     # check, reject; if it wins afterwards, our shared lease prevents removal.
     # Allocation creates the lease. A delayed upload must not recreate metadata
     # after successful cleanup has removed the workspace and its admission state.
-    with _lease_path(work).open("r+b") as lease:
+    with lease_path(work).open("r+b") as lease:
         try:
             fcntl.flock(lease, fcntl.LOCK_SH | fcntl.LOCK_NB)
         except BlockingIOError:
             raise ValueError("workspace cleanup has begun") from None
-        if not _path_absent(_closure_path(work)) or not work.is_dir():
+        if not path_absent(closure_path(work)) or not work.is_dir():
             raise ValueError("workspace is not an active helper session")
         yield
 
@@ -65,7 +65,7 @@ def remove_workspace(work: Path) -> None:
     # Keep the lease identity and closed admission until workspace removal
     # succeeds; delayed stages reject missing workspaces even on an old inode.
     close_staging_admission(work)
-    with _lease_path(work).open("a+b") as lease:
+    with lease_path(work).open("a+b") as lease:
         deadline = time.monotonic() + WORKSPACE_LEASE_TIMEOUT
         while True:
             try:
@@ -78,20 +78,20 @@ def remove_workspace(work: Path) -> None:
         try:
             shutil.rmtree(work)
         except FileNotFoundError:
-            if not _path_absent(work):
+            if not path_absent(work):
                 raise
         errors = []
-        for metadata in (_closure_path(work), _lease_path(work)):
+        for metadata in (closure_path(work), lease_path(work)):
             try:
                 metadata.unlink(missing_ok=True)
             except BaseException as exc:
                 errors.append(exc)
-        _raise_cleanup_errors(errors)
+        raise_cleanup_errors(errors)
 
 
 def close_staging_admission(work: Path) -> None:
     """Publish closure independently of child cleanup or an active upload."""
-    with _closure_path(work).open("ab"):
+    with closure_path(work).open("ab"):
         pass
 
 
@@ -170,7 +170,7 @@ def new_workspace():
             lock = (path / SESSION_LOCK).open("xb")
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             (path / "staged").mkdir(mode=0o700)
-            with _lease_path(path).open("xb"):
+            with lease_path(path).open("xb"):
                 pass
             return session_id, path, lock
         except BaseException as failure:
@@ -188,7 +188,7 @@ def new_workspace():
     raise RuntimeError("could not allocate an unpredictable session directory")
 
 
-def _path_absent(path: Path) -> bool:
+def path_absent(path: Path) -> bool:
     try:
         path.lstat()
     except FileNotFoundError:

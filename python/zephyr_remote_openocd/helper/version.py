@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import subprocess
 
-from zephyr_remote_openocd.helper import streams
+from zephyr_remote_openocd.helper import _streams as streams
 
 
 def openocd_version(argv):

@@ -1507,7 +1507,7 @@ transition and return remain inside the rollback guard.
 
 `ManagedSshProcess` remains a narrow ownership wrapper rather than a session
 abstraction. It delegates process status and termination to the underlying
-SSH subprocess and owns exactly one `_StderrDrain`. Standard input and output
+SSH subprocess and owns exactly one `StderrDrain`. Standard input and output
 remain available to the session protocol or forwarding-startup owner, while
 the stderr pipe is detached from the subprocess object and transferred to the
 drain so that it has only one local owner.
@@ -1531,7 +1531,7 @@ shutdown open indefinitely.
 This separation is intentional: `HelperConnection` and `ForwardManager`
 perform process cleanup within their own subsystem sequences,
 `SessionController.close()` coordinates those cleanup sequences, `ManagedSshProcess`
-exposes per-process control and diagnostic access, and `_StderrDrain` alone
+exposes per-process control and diagnostic access, and `StderrDrain` alone
 owns stderr consumption and stream closing. In this design, removing the
 wrapper, drain thread, bounded tail, or bounded reader shutdown would require
 another mechanism that preserves those ownership, backpressure, diagnostic,
@@ -2765,6 +2765,25 @@ isolated Python without a checkout or installed package.
 Diagnostics are produced at the subsystem boundary observing each failure and
 composed by the existing authority. Platform-specific SSH behavior remains in
 the configured SSH command boundary.
+
+Python naming distinguishes supported integration, internal collaboration, and
+private implementation. The supported `zephyr44.runner` facade exports only
+`RemoteOpenOcdBinaryRunner`; adapter operations live in `zephyr44._runner`.
+Package initializers deliberately do not collect implementation exports.
+Controller transport, process, cleanup, forwarding, deployment, and RTT
+implementation modules use an `_` module prefix. The helper's physical owners,
+observations, streams, output decoding, and cleanup use the same convention.
+Shared names within these modules are unprefixed; `_name` remains local to its
+class or defining module. Domain and protocol modules remain internal Python
+interfaces even when their names are unprefixed; the Protocol v1 wire contract
+is independently supported. See [contributor naming guidance](../../CONTRIBUTING.md#python-api-and-encapsulation).
+
+These naming boundaries do not transfer resource ownership. Raw process
+registration and rollback still belong to their original owner, helper control
+uses the session's explicit `release_workspace()` and
+`account_recorded_failures()` operations, and the stream context remains owned
+and restored by that session. No acquisition, adoption, publication, settlement,
+or failure-precedence boundary changes with a module rename.
 
 ### 43.1 Architecture maintenance invariants
 

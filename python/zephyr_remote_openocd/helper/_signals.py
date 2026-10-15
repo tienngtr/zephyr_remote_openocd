@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from types import FrameType
 
 
-class _SessionSignals:
+class SessionSignals:
     """Own installed session handlers, including partially completed setup."""
 
     def __init__(self) -> None:

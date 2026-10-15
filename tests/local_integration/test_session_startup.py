@@ -11,13 +11,13 @@ from pathlib import Path
 from typing import override
 
 import pytest
+from zephyr_remote_openocd.controller import _forwarding as forwarding_module
+from zephyr_remote_openocd.controller._ssh import ManagedSshProcess, SshCommand, SshForwardSpec
 from zephyr_remote_openocd.controller.authority import SessionError
-from zephyr_remote_openocd.controller.forwarding import ForwardManager
 from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
 from zephyr_remote_openocd.controller.helper_connection import HelperConnection
 from zephyr_remote_openocd.controller.plan import SessionPlan
 from zephyr_remote_openocd.controller.session import SessionController
-from zephyr_remote_openocd.controller.ssh import ManagedSshProcess, SshCommand, SshForwardSpec
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.protocol.wire import ProtocolError
 
@@ -157,7 +157,7 @@ def test_failure_recorded_during_forward_readiness_remains_primary(
         error.add_note("forward diagnostic detail")
         raise error
 
-    monkeypatch.setattr(ForwardManager, "_await_ready", staticmethod(fail_readiness))
+    monkeypatch.setattr(forwarding_module, "await_ready", fail_readiness)
     session = SessionController.prepare(
         SessionPlan("controlled-host", SshCommand((str(peer),)), ProcessSpec(("openocd",)))
     )

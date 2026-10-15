@@ -14,8 +14,8 @@ from typing import IO
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python"))
+from zephyr_remote_openocd.helper import _workspace as workspace_module
 from zephyr_remote_openocd.helper import control as helper_control
-from zephyr_remote_openocd.helper import workspace as workspace_module
 
 
 def report(record: dict[str, object]) -> None:
@@ -93,7 +93,7 @@ def main() -> None:
             report(
                 {
                     "workspace_remaining": workspace.exists(),
-                    "lease_remaining": workspace_module._lease_path(workspace).exists(),
+                    "lease_remaining": workspace_module.lease_path(workspace).exists(),
                     "lock_closed": lock.closed,
                     "handlers_restored": all(
                         signal.getsignal(signum) == handler

@@ -13,8 +13,23 @@ from pathlib import Path
 from types import FrameType
 from typing import IO, Any, Literal
 
-from zephyr_remote_openocd.helper import addresses, process, streams, workspace
-from zephyr_remote_openocd.helper.cleanup import _raise_cleanup_errors
+from zephyr_remote_openocd.helper import _addresses as addresses
+from zephyr_remote_openocd.helper import _process as process
+from zephyr_remote_openocd.helper import _streams as streams
+from zephyr_remote_openocd.helper import _workspace as workspace
+from zephyr_remote_openocd.helper._cleanup import raise_cleanup_errors
+from zephyr_remote_openocd.helper._observations import (
+    ChildExited,
+    ChildOutput,
+    ControlEOF,
+    Deadline,
+    GroupCleaned,
+    Observation,
+    ObservationFailed,
+    SignalReceived,
+    StartReceived,
+)
+from zephyr_remote_openocd.helper._signals import SessionSignals
 from zephyr_remote_openocd.helper.lifecycle import (
     AuthorizedAttempt,
     Closed,
@@ -24,18 +39,6 @@ from zephyr_remote_openocd.helper.lifecycle import (
     Starting,
     Terminating,
 )
-from zephyr_remote_openocd.helper.observations import (
-    _ChildExited,
-    _ChildOutput,
-    _ControlEOF,
-    _Deadline,
-    _GroupCleaned,
-    _Observation,
-    _ObservationFailed,
-    _SignalReceived,
-    _StartReceived,
-)
-from zephyr_remote_openocd.helper.signals import _SessionSignals
 from zephyr_remote_openocd.protocol.arguments import materialize_argv
 from zephyr_remote_openocd.protocol.commands import StartRequest, decode_command, validate_argv
 from zephyr_remote_openocd.protocol.outcome import (
@@ -60,22 +63,22 @@ class HelperSession:
         self.lifecycle: LifecycleAuthority[StartRequest] = LifecycleAuthority()
         self.request: StartRequest | None = None
         self.child: process.SupervisedProcess | None = None
-        self._child_acquisition: process._ChildAcquisition | None = None
-        self._child_settlement: process._ChildSettlement | None = None
+        self._child_acquisition: process.ChildAcquisition | None = None
+        self._child_settlement: process.ChildSettlement | None = None
         self._child_acquired = False
         self._address_lease: socket.socket | None = None
         self.address = ""
         self.cleanup_errors: list[BaseException] = []
-        self._events: asyncio.Queue[_Observation] = asyncio.Queue(MAX_PENDING_OBSERVATIONS)
+        self._events: asyncio.Queue[Observation] = asyncio.Queue(MAX_PENDING_OBSERVATIONS)
         self._signals: asyncio.Queue[int] = asyncio.Queue(1)
-        self._signal_scope = _SessionSignals()
+        self._signal_scope = SessionSignals()
         self._signal_accounted = False
         self._loop: asyncio.AbstractEventLoop | None = None
         self._tasks: asyncio.TaskGroup | None = None
-        self._session_tasks: list[asyncio.Task[_ObservationFailed | None]] = []
-        self._observation_failures: dict[asyncio.Task[Any], _ObservationFailed] = {}
-        self._deadline_task: asyncio.Task[_ObservationFailed | None] | None = None
-        self._child_cleanup: asyncio.Task[_ObservationFailed | None] | _GroupCleaned | None = None
+        self._session_tasks: list[asyncio.Task[ObservationFailed | None]] = []
+        self._observation_failures: dict[asyncio.Task[Any], ObservationFailed] = {}
+        self._deadline_task: asyncio.Task[ObservationFailed | None] | None = None
+        self._child_cleanup: asyncio.Task[ObservationFailed | None] | GroupCleaned | None = None
         self._attempt_finished = False
         self._staging_closed = False
         self._resources_released = False
@@ -113,17 +116,17 @@ class HelperSession:
             self._signals.put_nowait(signum)
 
     async def _observe_signals(self) -> None:
-        await self._events.put(_SignalReceived(await self._signals.get()))
+        await self._events.put(SignalReceived(await self._signals.get()))
 
     async def _observe_control(self) -> None:
         frames = ControlFrameBuffer()
         started = False
-        with streams._AsyncInput(sys.stdin.buffer.fileno()) as reader:
+        with streams.AsyncInput(sys.stdin.buffer.fileno()) as reader:
             while True:
                 chunk = await reader.read()
                 if not chunk:
                     frames.finish()
-                    await self._events.put(_ControlEOF())
+                    await self._events.put(ControlEOF())
                     return
                 if started:
                     raise ValueError("unexpected input after START")
@@ -134,40 +137,40 @@ class HelperSession:
                     if frames.has_pending_bytes:
                         raise ValueError("unexpected input after START")
                     started = True
-                    await self._events.put(_StartReceived(request))
+                    await self._events.put(StartReceived(request))
 
     async def _observe_output(
         self, child: process.SupervisedProcess, name: str, stream: IO[bytes]
     ) -> None:
-        with streams._AsyncInput(stream.fileno()) as reader:
+        with streams.AsyncInput(stream.fileno()) as reader:
             child.readers[name] = reader
             while True:
                 chunk = await reader.read()
-                await self._events.put(_ChildOutput(child, name, chunk))
+                await self._events.put(ChildOutput(child, name, chunk))
                 if not chunk:
                     return
 
     async def _observe_exit(self, child: process.SupervisedProcess) -> None:
-        await self._events.put(_ChildExited(child, await child.wait_for_exit()))
+        await self._events.put(ChildExited(child, await child.wait_for_exit()))
 
     async def _observe_deadline(
         self, child: process.SupervisedProcess, timeout: float, *, readiness: bool
     ) -> None:
         await asyncio.sleep(timeout)
-        await self._events.put(_Deadline(child, readiness))
+        await self._events.put(Deadline(child, readiness))
 
     async def _guard(
         self,
         source: str,
         observation: Coroutine[Any, Any, None],
         child: process.SupervisedProcess | None = None,
-    ) -> _ObservationFailed | None:
+    ) -> ObservationFailed | None:
         try:
             await observation
         except asyncio.CancelledError:
             raise
         except BaseException as exc:
-            failure = _ObservationFailed(source, exc, child)
+            failure = ObservationFailed(source, exc, child)
             task = asyncio.current_task()
             assert task is not None
             self._observation_failures[task] = failure
@@ -181,7 +184,7 @@ class HelperSession:
         source: str,
         observation: Coroutine[Any, Any, None],
         child: process.SupervisedProcess | None = None,
-    ) -> asyncio.Task[_ObservationFailed | None]:
+    ) -> asyncio.Task[ObservationFailed | None]:
         assert self._tasks is not None
         guarded = self._guard(source, observation, child)
         try:
@@ -201,7 +204,7 @@ class HelperSession:
         self.cleanup_errors.append(error)
         self._failure(Trigger.HELPER_FAILURE, "CLEANUP_FAILURE", error)
 
-    def _account_recorded_failures(self) -> None:
+    def account_recorded_failures(self) -> None:
         if self._signal_scope.pending_signum is not None and not self._signal_accounted:
             self._signal_accounted = True
             self.lifecycle.terminate(
@@ -213,7 +216,7 @@ class HelperSession:
         for failure in tuple(self._observation_failures.values()):
             self._observation_failed(failure)
 
-    def _observation_failed(self, failure: _ObservationFailed) -> None:
+    def _observation_failed(self, failure: ObservationFailed) -> None:
         for task, recorded in tuple(self._observation_failures.items()):
             if recorded is failure:
                 del self._observation_failures[task]
@@ -236,7 +239,7 @@ class HelperSession:
         self._failure(trigger, "OBSERVER_FAILURE", failure.exception)
 
     def _start_attempt(self) -> None:
-        self._account_recorded_failures()
+        self.account_recorded_failures()
         state = self.lifecycle.state
         if not isinstance(state, Starting) or not isinstance(state.attempt, AuthorizedAttempt):
             return
@@ -255,10 +258,10 @@ class HelperSession:
             argv_templates=request.argv_templates,
         )
         validate_argv(list(argv))
-        process._check_required_paths(
+        process.check_required_paths(
             request.required_paths, {"workspace": str(self.work), "address": self.address}
         )
-        self._account_recorded_failures()
+        self.account_recorded_failures()
         if not isinstance(self.lifecycle.state, Starting):
             return
         try:
@@ -268,14 +271,14 @@ class HelperSession:
             return
         if not self.lifecycle.enter_attempt(admitted=True):
             return
-        owner = process._ChildAcquisition()
+        owner = process.ChildAcquisition()
         self._child_acquisition = owner
         try:
             (self.work / workspace.UNCONFIRMED_CHILD).touch(mode=0o600)
-            self.child = process._spawn_child(
+            self.child = process.spawn_child(
                 argv,
                 cwd=self.work / "staged",
-                environment=process._child_environment(request),
+                environment=process.child_environment(request),
                 required_output_sentinels=request.required_output_sentinels,
                 ownership=owner,
             )
@@ -325,7 +328,7 @@ class HelperSession:
                 # owned by the child and is closed during attempt settlement.
                 child.output_finished.add(name)
                 errors.append(error)
-        _raise_cleanup_errors(errors)
+        raise_cleanup_errors(errors)
 
     def _record_exit(self, child: process.SupervisedProcess, returncode: int) -> None:
         if child.termination_requested:
@@ -345,7 +348,7 @@ class HelperSession:
             )
 
     def _ready(self) -> None:
-        self._account_recorded_failures()
+        self.account_recorded_failures()
         state = self.lifecycle.state
         child = self.child
         if (
@@ -371,7 +374,7 @@ class HelperSession:
             self._record_exit(child, returncode)
             return
         with self._signal_scope.commit():
-            self._account_recorded_failures()
+            self.account_recorded_failures()
             if not isinstance(self.lifecycle.state, Starting):
                 return
             try:
@@ -387,7 +390,7 @@ class HelperSession:
         if self._deadline_task is not None:
             self._deadline_task.cancel()
 
-    def _output(self, observation: _ChildOutput) -> None:
+    def _output(self, observation: ChildOutput) -> None:
         child = observation.child
         if child is not self.child:
             return
@@ -411,16 +414,16 @@ class HelperSession:
         readers = list(child.readers.values())
         if readers:
             await asyncio.wait([reader.checkpoint() for reader in readers])
-        await self._events.put(_Deadline(child, readiness=True, final=True))
+        await self._events.put(Deadline(child, readiness=True, final=True))
 
     @staticmethod
-    async def _dispose_group(child: process.SupervisedProcess) -> _GroupCleaned:
+    async def _dispose_group(child: process.SupervisedProcess) -> GroupCleaned:
         failure = None
         try:
             await child.terminate()
         except BaseException as error:
             failure = error
-        return _GroupCleaned(child, failure)
+        return GroupCleaned(child, failure)
 
     async def _clean_group(self, child: process.SupervisedProcess) -> None:
         await self._events.put(await self._dispose_group(child))
@@ -490,7 +493,7 @@ class HelperSession:
             self._record_exit(child, returncode)
         owner = self._child_acquisition
         assert owner is not None
-        self._child_settlement = process._ChildSettlement(
+        self._child_settlement = process.ChildSettlement(
             owner.producer_quiescent,
             child.group_disposed,
             all(task.done() for task in child.tasks),
@@ -500,7 +503,7 @@ class HelperSession:
             ),
         )
         self._close_address_lease()
-        self._account_recorded_failures()
+        self.account_recorded_failures()
         state = self.lifecycle.state
         if isinstance(state, Starting):
             failure = Diagnostic(
@@ -514,9 +517,9 @@ class HelperSession:
             self._cleanup_failure(RuntimeError("child disposal remains unconfirmed"))
         self._attempt_finished = True
 
-    def _handle(self, observation: _Observation) -> None:
-        if isinstance(observation, _StartReceived):
-            self._account_recorded_failures()
+    def _handle(self, observation: Observation) -> None:
+        if isinstance(observation, StartReceived):
+            self.account_recorded_failures()
             if isinstance(self.lifecycle.state, Created):
                 self.request = observation.request
                 self.lifecycle.start(observation.request)
@@ -524,18 +527,18 @@ class HelperSession:
                     self._start_attempt()
                 except BaseException as error:
                     self._failure(Trigger.STARTUP_FAILURE, "STARTUP_FAILURE", error)
-        elif isinstance(observation, _ControlEOF):
+        elif isinstance(observation, ControlEOF):
             self.lifecycle.terminate(Trigger.CONTROLLER_EOF)
-        elif isinstance(observation, _SignalReceived):
-            self._account_recorded_failures()
-        elif isinstance(observation, _ObservationFailed):
+        elif isinstance(observation, SignalReceived):
+            self.account_recorded_failures()
+        elif isinstance(observation, ObservationFailed):
             self._observation_failed(observation)
-        elif isinstance(observation, _ChildOutput):
+        elif isinstance(observation, ChildOutput):
             self._output(observation)
-        elif isinstance(observation, _ChildExited):
+        elif isinstance(observation, ChildExited):
             if observation.child is self.child:
                 self._record_exit(observation.child, observation.returncode)
-        elif isinstance(observation, _GroupCleaned):
+        elif isinstance(observation, GroupCleaned):
             if observation.child is self.child:
                 self._child_cleanup = observation
                 if observation.exception is not None:
@@ -552,7 +555,7 @@ class HelperSession:
                     except BaseException as error:
                         self._cleanup_failure(error)
                         observation.child.output_finished.update(("stdout", "stderr"))
-        elif isinstance(observation, _Deadline) and observation.child is self.child:
+        elif isinstance(observation, Deadline) and observation.child is self.child:
             state = self.lifecycle.state
             if observation.readiness and isinstance(state, Starting):
                 if observation.final:
@@ -583,7 +586,7 @@ class HelperSession:
 
     async def _coordinate(self) -> None:
         while True:
-            self._account_recorded_failures()
+            self.account_recorded_failures()
             state = self.lifecycle.state
             if isinstance(state, Terminating):
                 if not self._staging_closed:
@@ -602,7 +605,7 @@ class HelperSession:
             ):
                 await self._begin_child_cleanup()
             if (
-                isinstance(self._child_cleanup, _GroupCleaned)
+                isinstance(self._child_cleanup, GroupCleaned)
                 and self.child is not None
                 and self.child.output_finished == {"stdout", "stderr"}
             ):
@@ -624,7 +627,7 @@ class HelperSession:
             )
         )
 
-    def _release_workspace(self) -> None:
+    def release_workspace(self) -> None:
         if self._resources_released:
             return
         self._resources_released = True
@@ -650,7 +653,7 @@ class HelperSession:
 
     def _disposed_path(self, path: Path) -> bool:
         try:
-            return workspace._path_absent(path)
+            return workspace.path_absent(path)
         except BaseException as failure:
             self._cleanup_failure(failure)
             return False
@@ -683,7 +686,7 @@ class HelperSession:
             residuals.append("workspace")
         if not self.workspace_lock.closed or not all(
             self._disposed_path(path)
-            for path in (workspace._lease_path(self.work), workspace._closure_path(self.work))
+            for path in (workspace.lease_path(self.work), workspace.closure_path(self.work))
         ):
             residuals.append("workspace_metadata")
         workspace_status: Literal["not_created", "confirmed", "unconfirmed"] = (
@@ -697,7 +700,7 @@ class HelperSession:
         return CleanupReport(child_status, workspace_status, tuple(residuals))
 
     async def _run_session_tasks(
-        self, output: streams._ProtocolOutput, signals: _SessionSignals
+        self, output: streams.ProtocolOutput, signals: SessionSignals
     ) -> None:
         writer_task = None
         async with asyncio.TaskGroup() as tasks:
@@ -718,10 +721,10 @@ class HelperSession:
                 await self._coordinate()
             finally:
                 await self._cancel(task for task in self._session_tasks if task is not writer_task)
-                self._release_workspace()
+                self.release_workspace()
             cleanup = self._cleanup_report()
             with signals.commit():
-                self._account_recorded_failures()
+                self.account_recorded_failures()
                 snapshot = self.lifecycle.freeze(cleanup)
             try:
                 streams.emit("SESSION_ENDED", **terminal_fields(snapshot))
@@ -739,17 +742,17 @@ class HelperSession:
         output = None
         token = None
         try:
-            output = streams._ProtocolOutput()
-            token = streams._protocol_output.set(output)
+            output = streams.ProtocolOutput()
+            token = streams.protocol_output.set(output)
             await self._run_session_tasks(output, self._signal_scope)
         except BaseException as error:
             self._failure(Trigger.HELPER_FAILURE, "HELPER_FAILURE", error)
         finally:
             self._tasks = None
             self._loop = None
-            self._release_workspace()
+            self.release_workspace()
             if token is not None:
-                streams._protocol_output.reset(token)
+                streams.protocol_output.reset(token)
             if output is not None:
                 try:
                     output.close()
@@ -757,7 +760,7 @@ class HelperSession:
                     self._cleanup_failure(error)
             for restoration_error in self._signal_scope.restore():
                 self._cleanup_failure(restoration_error)
-            self._account_recorded_failures()
+            self.account_recorded_failures()
         state = self.lifecycle.state
         if (
             not isinstance(state, Closed)

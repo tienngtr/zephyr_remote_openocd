@@ -11,13 +11,13 @@ import zipfile
 from importlib.resources import files
 from pathlib import Path
 
-from zephyr_remote_openocd.controller.deployment import _helper_source
+from zephyr_remote_openocd.controller._deployment import build_helper_bundle
 from zephyr_remote_openocd.protocol.wire import VERSION
 
 
 def test_helper_bundle_is_deterministic_and_runs_without_local_package(tmp_path):
-    content = _helper_source()
-    assert content == _helper_source()
+    content = build_helper_bundle()
+    assert content == build_helper_bundle()
     helper = tmp_path / "helper-digest.py"
     helper.write_bytes(content)
     result = subprocess.run(
@@ -58,6 +58,6 @@ def test_helper_bundle_covers_canonical_sources_without_controller_dependencies(
         for module in package.joinpath(directory).iterdir():
             if module.name.endswith(".py"):
                 expected[f"zephyr_remote_openocd/{directory}/{module.name}"] = module
-    with zipfile.ZipFile(io.BytesIO(_helper_source())) as bundle:
+    with zipfile.ZipFile(io.BytesIO(build_helper_bundle())) as bundle:
         assert set(bundle.namelist()) == set(expected)
         assert all(bundle.read(name) == source.read_bytes() for name, source in expected.items())

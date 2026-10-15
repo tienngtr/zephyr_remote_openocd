@@ -14,16 +14,16 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Literal
 
-from zephyr_remote_openocd.controller.authority import SessionError
-from zephyr_remote_openocd.controller.cleanup import _add_failure_note, _raise_cleanup_errors
-from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec, validated_forwards
-from zephyr_remote_openocd.controller.ssh import (
+from zephyr_remote_openocd.controller._cleanup import add_failure_note, raise_cleanup_errors
+from zephyr_remote_openocd.controller._ssh import (
     ManagedSshProcess,
     SshCommand,
     SshForwardSpec,
     SshProcessStartError,
-    _stop_process,
+    stop_process,
 )
+from zephyr_remote_openocd.controller.authority import SessionError
+from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec, validated_forwards
 from zephyr_remote_openocd.controller.waiting import WaitSources, wait_for
 from zephyr_remote_openocd.protocol.listeners import DuplicateEndpointError
 
@@ -68,6 +68,64 @@ class ForwardAdvisory:
     failure: SessionError
 
 
+def preflight(forward: ForwardSpec) -> str | None:
+    try:
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", forward.local_port))
+        return None
+    except OSError as error:
+        return (
+            f"local port 127.0.0.1:{forward.local_port} for {forward.name} "
+            f"appears unavailable: {error}"
+        )
+
+
+def ready_command(sentinel: str) -> str:
+    code = f"import sys; print({sentinel!r}, flush=True); sys.stdin.buffer.read()"
+    return "python3 -c " + shlex.quote(code)
+
+
+def await_ready(process: ManagedSshProcess, sentinel: str, deadline: float) -> bool:
+    """Wait for the startup output marker from this exact SSH process.
+
+    Output, transport exit, the readiness deadline, and cancellation each
+    end the wait; transport exit is reported by the caller's status check.
+    """
+    if process.stdout is None:
+        return False
+    descriptor = process.stdout.fileno()
+    os.set_blocking(descriptor, False)
+    sentinel_bytes = sentinel.encode()
+    pending = b""
+    while True:
+        ready = wait_for(
+            readable=(descriptor,),
+            sources=WaitSources(processes=(process,)),
+            deadline=deadline,
+        )
+        if descriptor in ready.readable:
+            try:
+                chunk = os.read(descriptor, 4096)
+            except BlockingIOError:
+                chunk = None
+            if chunk == b"":
+                return False
+            pending += chunk or b""
+            while b"\n" in pending:
+                line, pending = pending.split(b"\n", 1)
+                if line.rstrip(b"\r") == sentinel_bytes:
+                    return True
+        if process.pid in ready.exited or ready.expired:
+            return False
+
+
+def diagnostic(process: ManagedSshProcess) -> str:
+    try:
+        return process.stderr_tail().decode("utf-8", "replace").strip()
+    except (OSError, ValueError):
+        return ""
+
+
 class ForwardManager:
     """Own local SSH forwards for one remote session."""
 
@@ -91,64 +149,6 @@ class ForwardManager:
         """Committed transports whose exit has not yet been observed."""
         return tuple(process for process in self._processes if process.returncode is None)
 
-    @staticmethod
-    def _preflight(forward: ForwardSpec) -> str | None:
-        try:
-            with socket.socket() as listener:
-                listener.bind(("127.0.0.1", forward.local_port))
-            return None
-        except OSError as error:
-            return (
-                f"local port 127.0.0.1:{forward.local_port} for {forward.name} "
-                f"appears unavailable: {error}"
-            )
-
-    @staticmethod
-    def _ready_command(sentinel: str) -> str:
-        code = f"import sys; print({sentinel!r}, flush=True); sys.stdin.buffer.read()"
-        return "python3 -c " + shlex.quote(code)
-
-    @staticmethod
-    def _await_ready(process: ManagedSshProcess, sentinel: str, deadline: float) -> bool:
-        """Wait for the startup output marker from this exact SSH process.
-
-        Output, transport exit, the readiness deadline, and cancellation each
-        end the wait; transport exit is reported by the caller's status check.
-        """
-        if process.stdout is None:
-            return False
-        descriptor = process.stdout.fileno()
-        os.set_blocking(descriptor, False)
-        sentinel_bytes = sentinel.encode()
-        pending = b""
-        while True:
-            ready = wait_for(
-                readable=(descriptor,),
-                sources=WaitSources(processes=(process,)),
-                deadline=deadline,
-            )
-            if descriptor in ready.readable:
-                try:
-                    chunk = os.read(descriptor, 4096)
-                except BlockingIOError:
-                    chunk = None
-                if chunk == b"":
-                    return False
-                pending += chunk or b""
-                while b"\n" in pending:
-                    line, pending = pending.split(b"\n", 1)
-                    if line.rstrip(b"\r") == sentinel_bytes:
-                        return True
-            if process.pid in ready.exited or ready.expired:
-                return False
-
-    @staticmethod
-    def _diagnostic(process: ManagedSshProcess) -> str:
-        try:
-            return process.stderr_tail().decode("utf-8", "replace").strip()
-        except (OSError, ValueError):
-            return ""
-
     def start(self, forwards: Iterable[ForwardSpec], remote_address: str) -> None:
         """Create and verify local forwards to remote listeners."""
         if self._pending_processes:
@@ -163,7 +163,7 @@ class ForwardManager:
         # completes leaves every transport reachable by close(). Pending
         # transports are not published as forwards.
         pending_processes = self._pending_processes
-        advisories = [message for forward in forward_specs if (message := self._preflight(forward))]
+        advisories = [message for forward in forward_specs if (message := preflight(forward))]
         active_forward = None
         try:
             for forward in forward_specs:
@@ -172,17 +172,15 @@ class ForwardManager:
                 # Registration in the pending set runs inside popen's rollback guard.
                 process = self._ssh_command.popen(
                     self._host,
-                    self._ready_command(sentinel),
+                    ready_command(sentinel),
                     local_forward=SshForwardSpec(
                         forward.local_port, remote_address, forward.remote_port
                     ),
                     on_acquired=pending_processes.append,
                 )
-                connected = self._await_ready(
-                    process, sentinel, time.monotonic() + FORWARD_START_TIMEOUT
-                )
+                connected = await_ready(process, sentinel, time.monotonic() + FORWARD_START_TIMEOUT)
                 if process.poll() is not None:
-                    detail = self._diagnostic(process)
+                    detail = diagnostic(process)
                     prefix = "; ".join(advisories)
                     raise SessionError(
                         (prefix + "; " if prefix else "")
@@ -195,7 +193,7 @@ class ForwardManager:
                         f"SSH forwarding did not become ready for {forward.name} on "
                         f"127.0.0.1:{forward.local_port}"
                     )
-                    detail = self._diagnostic(process)
+                    detail = diagnostic(process)
                     suffix = f": {detail}" if detail else ""
                     readiness_error.args = (readiness_error.args[0] + suffix,)
                     raise readiness_error
@@ -211,10 +209,10 @@ class ForwardManager:
             while pending_processes:
                 process = pending_processes[0]
                 try:
-                    _stop_process(process)
+                    stop_process(process)
                 except BaseException as cleanup_error:
                     cleanup_errors.append(cleanup_error)
-                    _add_failure_note(error, "forward startup cleanup also failed", cleanup_error)
+                    add_failure_note(error, "forward startup cleanup also failed", cleanup_error)
                 # Retire ownership only after the cleanup attempt and its
                 # diagnostics have completed, including a failed attempt.
                 pending_processes.pop(0)
@@ -231,7 +229,7 @@ class ForwardManager:
                 continue
             forward_status = process.poll()
             if forward_status is not None:
-                report(ForwardFailure(forward, forward_status, self._diagnostic(process)))
+                report(ForwardFailure(forward, forward_status, diagnostic(process)))
                 self._reported.add(forward)
 
     def close(self) -> None:
@@ -248,7 +246,7 @@ class ForwardManager:
         errors: list[BaseException] = []
         for process in pending:
             try:
-                _stop_process(process)
+                stop_process(process)
             except BaseException as error:
                 errors.append(error)
-        _raise_cleanup_errors(errors)
+        raise_cleanup_errors(errors)

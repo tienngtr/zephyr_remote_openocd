@@ -17,11 +17,11 @@ from typing import IO, cast
 from unittest.mock import create_autospec
 
 import pytest
+from zephyr_remote_openocd.helper import _process as helper_process
+from zephyr_remote_openocd.helper import _session as helper_session
+from zephyr_remote_openocd.helper import _streams as helper_streams
+from zephyr_remote_openocd.helper import _workspace as workspace_module
 from zephyr_remote_openocd.helper import control as helper_control
-from zephyr_remote_openocd.helper import process as helper_process
-from zephyr_remote_openocd.helper import session as helper_session
-from zephyr_remote_openocd.helper import streams as helper_streams
-from zephyr_remote_openocd.helper import workspace as workspace_module
 from zephyr_remote_openocd.helper.lifecycle import Closed
 from zephyr_remote_openocd.protocol import commands as protocol_commands
 from zephyr_remote_openocd.protocol.commands import write_start
@@ -123,21 +123,21 @@ def coordinated_helper(tmp_path, monkeypatch, control_pipe):
     _, writer = control_pipe
     events = []
     children = []
-    spawn = helper_process._spawn_child
+    spawn = helper_process.spawn_child
 
     def acquire(*args, **kwargs):
         child = spawn(*args, **kwargs)
         children.append(child)
         return child
 
-    monkeypatch.setattr(helper_process, '_spawn_child', acquire)
+    monkeypatch.setattr(helper_process, 'spawn_child', acquire)
     monkeypatch.setattr(
         helper_streams, 'emit', lambda kind, **fields: events.append((kind, fields))
     )
     yield session, writer, events, children
     for child in children:
         cleanup_supervised_process(child, None)
-    session._release_workspace()
+    session.release_workspace()
 
 
 def _terminal_event(events):
@@ -273,7 +273,7 @@ def test_signal_capture_and_spawn_handoff_keep_cleanup_reachable(
     coordinated_helper, monkeypatch, boundary
 ):
     session, writer, events, _children = coordinated_helper
-    spawn = helper_process._spawn_child
+    spawn = helper_process.spawn_child
     supervisor = helper_process.SupervisedProcess
 
     def acquire(*args, **kwargs):
@@ -289,7 +289,7 @@ def test_signal_capture_and_spawn_handoff_keep_cleanup_reachable(
         session.handle_signal(signal.SIGTERM)
         raise RuntimeError("supervisor adoption failed")
 
-    monkeypatch.setattr(helper_process, '_spawn_child', acquire)
+    monkeypatch.setattr(helper_process, 'spawn_child', acquire)
     if boundary == "wrapper_failure":
         monkeypatch.setattr(helper_process, 'SupervisedProcess', construct)
     write_start(writer, ProcessSpec((sys.executable, "-c", "import signal;signal.pause()")), ())
@@ -400,8 +400,8 @@ def test_cleanup_task_setup_failure_still_disposes_child_and_independent_resourc
     assert child.process.stdout.closed and child.process.stderr.closed
     assert all(task.done() for task in child.tasks)
     assert session.workspace_lock.closed and not session.work.exists()
-    assert not workspace_module._lease_path(session.work).exists()
-    assert not workspace_module._closure_path(session.work).exists()
+    assert not workspace_module.lease_path(session.work).exists()
+    assert not workspace_module.closure_path(session.work).exists()
 
 
 @pytest.mark.parametrize("failure", ("stdout", "stderr", "workspace"))
@@ -550,7 +550,7 @@ def test_readiness_deadline_processes_final_visible_observation(
     session = helper_session.HelperSession("session", workspace, lock)
     children = []
     events = []
-    original_spawn = helper_process._spawn_child
+    original_spawn = helper_process.spawn_child
     original_read = os.read
     original_sleep = asyncio.sleep
     output_blocked = True
@@ -574,7 +574,7 @@ def test_readiness_deadline_processes_final_visible_observation(
             assert stream is not None
             descriptor = os.dup(stream.fileno())
             try:
-                await helper_streams._readable(descriptor)
+                await helper_streams.readable(descriptor)
             finally:
                 os.close(descriptor)
             if final_observation == "exit":
@@ -582,7 +582,7 @@ def test_readiness_deadline_processes_final_visible_observation(
                 descriptor = os.pidfd_open(child.pid)
                 try:
                     os.kill(child.pid, signal.SIGUSR1)
-                    await helper_streams._readable(descriptor)
+                    await helper_streams.readable(descriptor)
                 finally:
                     os.close(descriptor)
             # The deadline producer enqueues its fact before yielding again.
@@ -595,7 +595,7 @@ def test_readiness_deadline_processes_final_visible_observation(
         if kind == "READY":
             writer.close()
 
-    monkeypatch.setattr(helper_process, '_spawn_child', spawn)
+    monkeypatch.setattr(helper_process, 'spawn_child', spawn)
     monkeypatch.setattr(os, "read", controlled_read)
     monkeypatch.setattr(asyncio, "sleep", controlled_sleep)
     monkeypatch.setattr(helper_streams, 'emit', emit)
@@ -662,7 +662,7 @@ def test_partial_signal_installation_restores_handlers_and_preserves_failure(
 
     async def run() -> None:
         tasks_before = asyncio.all_tasks()
-        output_before = helper_streams._protocol_output.get()
+        output_before = helper_streams.protocol_output.get()
         with pytest.raises(SystemExit):
             await session.run_async()
         state = session.lifecycle.state
@@ -670,7 +670,7 @@ def test_partial_signal_installation_restores_handlers_and_preserves_failure(
         assert state.snapshot.outcome.primary_failure is not None
         assert state.snapshot.outcome.primary_failure.message == str(failure)
         assert asyncio.all_tasks() == tasks_before
-        assert helper_streams._protocol_output.get() is output_before
+        assert helper_streams.protocol_output.get() is output_before
 
     try:
         asyncio.run(run())
@@ -685,7 +685,7 @@ def test_partial_signal_installation_restores_handlers_and_preserves_failure(
     finally:
         for signum, handler in previous.items():
             original_signal(signum, handler)
-        session._release_workspace()
+        session.release_workspace()
 
 
 @pytest.mark.parametrize("failure_type", (OSError, KeyboardInterrupt))
@@ -732,7 +732,7 @@ def test_signal_restoration_attempts_both_handlers_after_normal_exit(
     finally:
         for signum, handler in previous.items():
             original_signal(signum, handler)
-        session._release_workspace()
+        session.release_workspace()
 
 
 @pytest.mark.parametrize("primary_type", (None, OSError, asyncio.CancelledError))
@@ -783,7 +783,7 @@ def test_protocol_writer_and_close_failures_preserve_primary_exception(
 
     async def run() -> None:
         tasks_before = asyncio.all_tasks()
-        output_before = helper_streams._protocol_output.get()
+        output_before = helper_streams.protocol_output.get()
         with pytest.raises(SystemExit):
             await session.run_async()
         state = session.lifecycle.state
@@ -795,7 +795,7 @@ def test_protocol_writer_and_close_failures_preserve_primary_exception(
             assert state.snapshot.outcome.primary_failure is not None
             assert state.snapshot.outcome.primary_failure.message == str(primary)
         assert asyncio.all_tasks() == tasks_before
-        assert helper_streams._protocol_output.get() is output_before
+        assert helper_streams.protocol_output.get() is output_before
 
     try:
         with (
@@ -816,7 +816,7 @@ def test_protocol_writer_and_close_failures_preserve_primary_exception(
     finally:
         for signum, handler in previous.items():
             original_signal(signum, handler)
-        session._release_workspace()
+        session.release_workspace()
 
 
 @pytest.mark.parametrize("cleanup_failure", ("group", "lease"))
@@ -1040,15 +1040,15 @@ def test_workspace_cleanup_timeout_closes_admission_without_removing_live_stage(
 
     monkeypatch.setattr(helper_process.time, "monotonic", lambda: clock)
     monkeypatch.setattr(workspace_module.fcntl, "flock", observe_lease_contention)
-    with workspace_module._stage_lease(workspace):
-        session._release_workspace()
+    with workspace_module.stage_lease(workspace):
+        session.release_workspace()
         assert workspace.is_dir()
         assert len(session.cleanup_errors) == 1
         assert isinstance(session.cleanup_errors[0], TimeoutError)
-        with pytest.raises(ValueError), workspace_module._stage_lease(workspace):
+        with pytest.raises(ValueError), workspace_module.stage_lease(workspace):
             pytest.fail("cleanup admitted a new stage")
     # Closure survives the existing lease's release and a failed removal.
-    with pytest.raises(ValueError), workspace_module._stage_lease(workspace):
+    with pytest.raises(ValueError), workspace_module.stage_lease(workspace):
         pytest.fail("failed cleanup reopened staging")
     workspace_module.remove_workspace(workspace)
     assert tuple(tmp_path.iterdir()) == ()
@@ -1114,17 +1114,17 @@ def test_cleanup_closes_admission_without_waiting_for_global_gate(tmp_path, monk
             clock += workspace_module.WORKSPACE_LEASE_TIMEOUT + 1.0
             raise
 
-    with workspace_module._stage_lease(first):
+    with workspace_module.stage_lease(first):
         with (tmp_path / ".workspace.lock").open("a+b") as old_gate:
             original_flock(old_gate, fcntl.LOCK_EX)
             monkeypatch.setattr(workspace_module.fcntl, "flock", bounded_flock)
             monkeypatch.setattr(helper_process.time, "monotonic", lambda: clock)
-            first_session._release_workspace()
+            first_session.release_workspace()
             assert len(first_session.cleanup_errors) == 1
             assert isinstance(first_session.cleanup_errors[0], TimeoutError)
-            with pytest.raises(ValueError), workspace_module._stage_lease(first):
+            with pytest.raises(ValueError), workspace_module.stage_lease(first):
                 pytest.fail("timed-out cleanup left admission open")
-            second_session._release_workspace()
+            second_session.release_workspace()
             assert not second_session.cleanup_errors
             assert not second.exists()
         assert first.is_dir()

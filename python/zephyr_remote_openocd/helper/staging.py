@@ -13,7 +13,8 @@ import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Literal, NamedTuple
 
-from zephyr_remote_openocd.helper import streams, workspace
+from zephyr_remote_openocd.helper import _streams as streams
+from zephyr_remote_openocd.helper import _workspace as workspace
 
 
 def valid_member(member, seen):
@@ -121,7 +122,7 @@ def stage(workspace_path: str | os.PathLike[str]) -> None:
     spool = tempfile.SpooledTemporaryFile(max_size=1024 * 1024, mode="w+b")  # noqa: SIM115
     try:
         shutil.copyfileobj(sys.stdin.buffer, spool, length=1024 * 1024)
-        with workspace._stage_lease(work):
+        with workspace.stage_lease(work):
             spool.seek(0)
             with tarfile.open(fileobj=spool, mode="r:*") as archive:
                 validated = _validate_archive(archive, target_root)

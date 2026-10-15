@@ -27,7 +27,7 @@ def start_command():
     }
 
 
-def test_decode_start_accepts_full_output_lines_with_internal_spaces(start_command):
+def testdecode_command_accepts_full_output_lines_with_internal_spaces(start_command):
     start_command["required_output_sentinels"] = ["READY FOR START"]
 
     request = protocol_commands.decode_command(start_command)
@@ -36,12 +36,12 @@ def test_decode_start_accepts_full_output_lines_with_internal_spaces(start_comma
 
 
 @pytest.mark.parametrize("address", (None, "127.64.0.7"))
-def test_decode_start_accepts_address_preference(start_command, address):
+def testdecode_command_accepts_address_preference(start_command, address):
     start_command["preferred_address"] = address
     assert protocol_commands.decode_command(start_command).preferred_address == address
 
 
-def test_decode_start_requires_address_preference_field(start_command):
+def testdecode_command_requires_address_preference_field(start_command):
     del start_command["preferred_address"]
     with pytest.raises(ValueError):
         protocol_commands.decode_command(start_command)
@@ -50,7 +50,7 @@ def test_decode_start_requires_address_preference_field(start_command):
 @pytest.mark.parametrize(
     "address", (False, 1, [], "", "127.0.0.1", "127.64.0.0", "127.127.255.255", "::1")
 )
-def test_decode_start_rejects_invalid_address_preference(start_command, address):
+def testdecode_command_rejects_invalid_address_preference(start_command, address):
     start_command["preferred_address"] = address
     with pytest.raises(ValueError):
         protocol_commands.decode_command(start_command)
