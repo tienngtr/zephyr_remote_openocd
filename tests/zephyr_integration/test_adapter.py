@@ -1711,7 +1711,13 @@ def test_commands_match_built_in_runner(
     file_type,
     argv,
 ):
-    """Compare with Zephyr's runner; normalize only runner-owned remote differences."""
+    """Detect unexpected differences from Zephyr's runner in matching scenarios.
+
+    Only runner-owned remote differences are normalized. Matching does not make
+    every built-in behavior desirable: known intentional differences, such as
+    ``debugserver --serial`` and unsupported erase, stay out of these scenarios
+    rather than being normalized away.
+    """
     core, upstream, remote = runner_api
     cfg = comparison_config._replace(file_type=getattr(core.FileType, file_type))
     expected = _built_in_commands(
