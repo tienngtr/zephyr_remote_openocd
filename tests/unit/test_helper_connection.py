@@ -18,7 +18,7 @@ import pytest
 from zephyr_remote_openocd.config import PathMapping
 from zephyr_remote_openocd.controller import helper_connection as connection_module
 from zephyr_remote_openocd.controller._deployment import DeploymentResult
-from zephyr_remote_openocd.controller._ssh import SshCommand, SshForwardSpec
+from zephyr_remote_openocd.controller._ssh import ManagedSshProcess, SshCommand, SshForwardSpec
 from zephyr_remote_openocd.controller.authority import SessionAuthority, SessionError
 from zephyr_remote_openocd.controller.helper_connection import HelperConnection
 from zephyr_remote_openocd.controller.paths import PathPlanner
@@ -41,14 +41,16 @@ from tests.session_support import NotifiedAuthority
 
 OPENOCD_FAILURE_RC = 7
 
-# These tests intentionally retain narrow typing escapes at the process-control
-# boundary.  HelperConnection owns the complete ManagedSshProcess lifecycle, so a
-# smaller production protocol would exist only for tests.  The process-shaped
-# doubles below inject behavior a real wrapper cannot express deterministically:
-# poll and wait failures, stdin-close and exit races, termination and stderr-close
-# failures, reader shutdown ordering, and partial event-stream delivery.  Tests
-# that do not need those faults use real ManagedSshProcess construction in the
-# local-integration layer.
+# These tests intentionally retain one typing escape at the process-control
+# boundary.  HelperConnection, with stop_process() and ProcessCompletion, uses
+# every public ManagedSshProcess operation except acquire(): args, pid,
+# returncode, stdin, stdout, poll, wait, terminate, kill, stderr_tail, and
+# close_stderr.  A production protocol would duplicate that whole concrete API
+# solely for tests.  The process-shaped doubles below inject behavior a real
+# wrapper cannot express deterministically: poll and wait failures, stdin-close
+# and exit races, termination and stderr-close failures, reader shutdown
+# ordering, and partial event-stream delivery.  Tests that do not need those
+# faults use real ManagedSshProcess construction in the local-integration layer.
 
 
 class _PopenOnlySshCommand(SshCommand):
@@ -90,10 +92,11 @@ def _open_helper_client(
             remote_command: str,
             *,
             local_forward: SshForwardSpec | None = None,
-            on_acquired=None,
-        ) -> Any:
+            on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+        ) -> ManagedSshProcess:
             del host, remote_command, local_forward
-            acquired_process = process
+            # The single process-control typing escape described above.
+            acquired_process: Any = process
             if on_acquired is not None:
                 on_acquired(acquired_process)
             return acquired_process
@@ -1021,24 +1024,31 @@ def test_helper_close_retains_nested_process_cleanup_diagnostics(open_client, no
 
 @pytest.mark.timeout(60)
 def test_helper_startup_timeout_does_not_block_on_partial_output(monkeypatch, notified_authority):
-    class Clock:
-        now = 0.0
-
-        def monotonic(self) -> float:
-            return self.now
-
-    clock = Clock()
-    real_wait = connection_module.wait_for
-
-    def wait_until_deadline(**kwargs: Any) -> Any:
-        # The coordinator is blocked waiting while the reader holds a partial
-        # frame; advance its clock to the startup deadline at that event.
-        clock.now = connection_module.HELPER_START_TIMEOUT
-        return real_wait(**{**kwargs, "deadline": time.monotonic()})
+    class ElapsedStartupClock:
+        # Startup began one full timeout ago, so the production deadline has
+        # already passed when the coordinator waits.
+        @staticmethod
+        def monotonic() -> float:
+            return time.monotonic() - connection_module.HELPER_START_TIMEOUT
 
     process = ControlProcess(CREATED.rstrip(b"\n"))
-    monkeypatch.setattr(connection_module, "time", clock)
-    monkeypatch.setattr(connection_module, "wait_for", wait_until_deadline)
+    real_wait = connection_module.wait_for
+    reader_waits = 0
+    partial_held = threading.Event()
+
+    def wait_with_partial_frame_held(**kwargs: Any) -> Any:
+        nonlocal reader_waits
+        if kwargs.get("readable") == (process.stdout.fileno(),):
+            # The reader's second wait follows its read of the partial frame.
+            reader_waits += 1
+            if reader_waits == 2:
+                partial_held.set()
+        elif kwargs.get("deadline") is not None:
+            assert partial_held.wait(10), "reader did not consume the partial frame"
+        return real_wait(**kwargs)
+
+    monkeypatch.setattr(connection_module, "time", ElapsedStartupClock)
+    monkeypatch.setattr(connection_module, "wait_for", wait_with_partial_frame_held)
     try:
         with pytest.raises(SessionError) as raised:
             _open_helper_client(process, notified_authority)
