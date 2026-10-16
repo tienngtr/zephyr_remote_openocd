@@ -138,4 +138,5 @@ class HelperPeerProcess(ControlProcess):
         """Controller input, complete once the controller closed its lease."""
         if self.stdin.closed:
             self._peer.join(10)
+            assert not self._peer.is_alive(), "helper peer did not observe controller EOF"
         return bytes(self._written)
