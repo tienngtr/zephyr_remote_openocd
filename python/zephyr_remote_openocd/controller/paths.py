@@ -34,7 +34,6 @@ class PathPlanner:
         self.staged_files: list[StagedEntry] = []
         self.remote_checks: list[RequiredPathSpec] = []
         self._staged_roots: list[tuple[Path, PurePosixPath]] = []
-        self._destinations: dict[PurePosixPath, str] = {}
 
     @staticmethod
     def _relative(path: Path, root: Path) -> Path | None:
@@ -104,34 +103,22 @@ class PathPlanner:
         remote, template = self._staged_path(destination)
         return PlannedPath(remote, template)
 
-    def _add_entry(self, entry: StagedEntry) -> None:
-        destination = entry.destination
-        kind = "directory" if isinstance(entry, StagedDirectory) else "file"
-        if destination in self._destinations:
-            raise PathPlanningError(f"duplicate staged destination: {destination}")
-        if any(self._destinations.get(parent) == "file" for parent in destination.parents):
-            raise PathPlanningError(f"staged file ancestor conflict: {destination}")
-        if kind == "file" and any(destination in other.parents for other in self._destinations):
-            raise PathPlanningError(f"staged file ancestor conflict: {destination}")
-        self._destinations[destination] = kind
-        self.staged_files.append(entry)
-
+    # Generated namespaces keep staged destinations disjoint; build_archive owns
+    # manifest conflict rejection before any source is read.
     def _add_file(self, source: Path, destination: PurePosixPath) -> None:
-        self._add_entry(StagedFile(source, destination))
+        self.staged_files.append(StagedFile(source, destination))
 
     def _add_directory(self, source: Path, destination: PurePosixPath) -> None:
-        self._add_entry(StagedDirectory(source, destination))
+        self.staged_files.append(StagedDirectory(source, destination))
 
     def _walk(
-        self, physical: Path, root: Path, destination: PurePosixPath, stack: set[Path]
+        self, resolved: Path, root: Path, destination: PurePosixPath, stack: set[Path]
     ) -> None:
-        resolved = physical.resolve()
-        if resolved != root and root not in resolved.parents:
-            raise PathPlanningError(f"symlink escapes staged root {root}: {physical}")
+        # Callers pass the resolved root or a resolved child already checked for containment.
         if resolved in stack:
-            raise PathPlanningError(f"symlink cycle in staged root {root}: {physical}")
+            raise PathPlanningError(f"symlink cycle in staged root {root}: {resolved}")
         next_stack = stack | {resolved}
-        for child in sorted(physical.iterdir(), key=lambda item: item.name):
+        for child in sorted(resolved.iterdir(), key=lambda item: item.name):
             child_resolved = child.resolve()
             if child_resolved != root and root not in child_resolved.parents:
                 raise PathPlanningError(f"symlink escapes staged root {root}: {child}")
