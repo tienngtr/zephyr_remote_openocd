@@ -9,8 +9,9 @@ export EXTRA_ZEPHYR_MODULES="${EXTRA_ZEPHYR_MODULES:+$EXTRA_ZEPHYR_MODULES;}/pat
 
 For shell activation in every Zephyr session, put the same export in
 `~/.zephyrrc`. Then build a
-Zephyr application normally. The built-in `openocd` runner remains the default
-unless `default_runner: remote_openocd` is selected.
+Zephyr application normally. For OpenOCD-capable builds, `default_runner`
+selects the default flash and debug runner, even when the board's original
+default is another runner; select any other available runner with `-r`.
 
 For a concrete Zephyr 4.4.x example, build the `samples/hello_world` application
 for the OpenOCD-capable `stm32f746g_disco` board, inspect the available

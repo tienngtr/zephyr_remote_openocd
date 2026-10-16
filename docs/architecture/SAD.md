@@ -543,7 +543,9 @@ The Zephyr 4.4.x runner integration reuses `capabilities()` and the constructor.
 It overrides
 `name()`, `do_create()`, `do_add_parser()`, and `do_run()`. The parser override
 delegates to `OpenOcdBinaryRunner.do_add_parser()` before adding `--remote`.
-Constructor and version coupling is isolated in `zephyr44/runner.py`.
+Constructor and version coupling is isolated in the `zephyr44` package: the
+public `zephyr44/runner.py` facade exports the runner class implemented in
+`zephyr44/_runner.py`.
 
 Supporting a new Zephyr release requires validating this interface or updating
 the version-specific runner integration.

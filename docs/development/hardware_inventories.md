@@ -20,6 +20,7 @@ placeholder, validate the contract and local paths, and inspect test selection:
 .venv/bin/python scripts/contributor/validate_hardware_inventory.py \
   .scratch/config/hardware.yaml --check-local
 .venv/bin/python -m pytest --collect-only -q \
+  tests/ssh_integration tests/hardware \
   --hardware-inventory .scratch/config/hardware.yaml
 ```
 

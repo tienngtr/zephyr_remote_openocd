@@ -49,8 +49,10 @@ west flash -r remote_openocd --remote lab
 ```
 
 After that works, uncomment `default_remote: lab` if desired. Keep
-`default_runner: openocd` to preserve local OpenOCD as the default, or change it
-to `remote_openocd`. Once this module is already configured into the build,
+`default_runner: openocd` to select local OpenOCD as the default, or change it
+to `remote_openocd`. For OpenOCD-capable builds, either value replaces the
+board's original default flash and debug runner; other runners remain available
+with `-r`. Once this module is already configured into the build,
 changes to the contents, creation, or deletion of the configuration file selected
 when CMake last configured that build are detected by the pre-run incremental
 build of ordinary `west flash` or `west debug` commands. Run `west build` to apply
