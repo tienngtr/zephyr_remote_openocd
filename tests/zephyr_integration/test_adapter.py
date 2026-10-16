@@ -41,6 +41,7 @@ from zephyr_remote_openocd.openocd.debug import (
     OpenOcdVersion,
     build_debug_plan,
 )
+from zephyr_remote_openocd.openocd.flash import FlashPlanError
 from zephyr_remote_openocd.protocol.arguments import ArgumentTemplate, SessionValue
 from zephyr_remote_openocd.protocol.outcome import Trigger
 from zephyr_remote_openocd.protocol.process import ProcessSpec
@@ -1697,12 +1698,6 @@ def _recorded_commands(recording) -> list[list[str]]:
             ["--cmd-pre-init=echo pre-init", "--gdb-init=break main"],
             id="debug",
         ),
-        pytest.param(
-            "flash",
-            "HEX",
-            ["--cmd-load=flash write_image erase", "--cmd-verify=verify_image", "--erase"],
-            id="hex-erase-without-erase-command",
-        ),
     ),
 )
 def test_commands_match_built_in_runner(
@@ -1745,8 +1740,8 @@ def test_commands_match_built_in_runner(
         ]
 
 
-def test_live_flash_with_unsupported_erase_reports_error_without_remote_work(
-    runner_api, comparison_config, monkeypatch, caplog
+def test_live_flash_with_unsupported_erase_fails_without_remote_work(
+    runner_api, comparison_config, monkeypatch
 ):
     _, _, remote = runner_api
     for name in ("run", "popen", "run_stream"):
@@ -1762,14 +1757,11 @@ def test_live_flash_with_unsupported_erase_reports_error_without_remote_work(
         ),
     )
 
-    with caplog.at_level(logging.INFO, logger=runner.logger.name):
+    # Intentionally stricter than Zephyr 4.4, which logs an error and returns
+    # success without programming the target.
+    with pytest.raises(RuntimeError) as raised:
         runner.run("flash")
-
-    # Zephyr 4.4 reports the unsupported erase and returns successfully.
-    assert any(
-        record.levelno == logging.ERROR and "--cmd-erase" in record.getMessage()
-        for record in caplog.records
-    )
+    assert isinstance(raised.value.__cause__, FlashPlanError)
 
 
 def test_thread_info_recording_requires_injected_version_without_remote_query(

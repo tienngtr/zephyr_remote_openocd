@@ -34,12 +34,7 @@ from zephyr_remote_openocd.openocd.debug import (
     build_debug_plan,
     parse_openocd_version,
 )
-from zephyr_remote_openocd.openocd.flash import (
-    FlashInputs,
-    FlashPlanError,
-    FlashSkipped,
-    build_flash_plan,
-)
+from zephyr_remote_openocd.openocd.flash import FlashInputs, FlashPlanError, build_flash_plan
 
 
 class RemoteOpenOcdBinaryRunner(OpenOcdBinaryRunner):
@@ -132,8 +127,7 @@ def run_live_operation(runner, command, selected):
                 PathPlanningError,
             ) as error:
                 raise RuntimeError(str(error)) from error
-            if request is not None:
-                execute_operation(runner, command, request, plan)
+            execute_operation(runner, command, request, plan)
     except OperationCancelled as cancelled:
         # Capture is restored and settlement attempted; cancellation is primary.
         raise _interrupted(runner, cancelled) from None
@@ -408,12 +402,7 @@ def _flash_request(runner, selected):
         no_targets=runner.parsed_args.no_targets,
     )
     planner = PathPlanner(selected.path_mappings)
-    try:
-        plan = build_flash_plan(inputs, planner, environment)
-    except FlashSkipped as skipped:
-        # Zephyr 4.4 logs this error and returns without running OpenOCD.
-        runner.logger.error("%s", skipped)
-        return None
+    plan = build_flash_plan(inputs, planner, environment)
     return SessionPlan(
         selected.remote_host,
         SshCommand(selected.ssh_command),

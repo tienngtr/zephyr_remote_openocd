@@ -20,10 +20,6 @@ class FlashPlanError(RuntimeError):
     pass
 
 
-class FlashSkipped(Exception):
-    """Zephyr 4.4 reports this request as an error but returns without flashing."""
-
-
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -117,10 +113,7 @@ def _plan_erase_commands(inputs: FlashInputs, kind: str) -> tuple[str, ...]:
     if not inputs.erase or inputs.verify_only or kind == "elf":
         return ()
     if not inputs.erase_commands:
-        raise FlashSkipped(
-            "--erase not supported for target without --cmd-erase; "
-            "not flashing to preserve Zephyr 4.4 OpenOCD runner behavior"
-        )
+        raise FlashPlanError("erase requested but the target supplies no erase command")
     return inputs.erase_commands
 
 
@@ -265,6 +258,7 @@ def build_flash_plan(
 ) -> FlashPlan:
     kind = _image_kind(inputs)
     _validate_flash_options(inputs, kind)
+    erase_commands = _plan_erase_commands(inputs, kind)
     base = plan_openocd_base(
         inputs.executable,
         inputs.serial,
@@ -274,8 +268,6 @@ def build_flash_plan(
         (ArgumentTemplate(("bindto ", SessionValue.ADDRESS)),),
     )
     image = _plan_image(inputs, planner)
-    # Zephyr checks the image before deciding that erase cannot be honored.
-    erase_commands = _plan_erase_commands(inputs, kind)
     if image.kind == "bin" and (inputs.verify or inputs.verify_only) and not inputs.verify_command:
         _LOGGER.warning(
             "BIN verification requested but no verify command is available; "
