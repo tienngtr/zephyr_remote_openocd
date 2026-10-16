@@ -1092,6 +1092,37 @@ def test_required_gdb_startup_failure_aborts_operation(runner_api, monkeypatch, 
     assert harness.helper.close_calls == 1
 
 
+def test_best_effort_startup_failure_warns_with_service_and_port(
+    runner_api, monkeypatch, tmp_path, caplog
+):
+    from zephyr_remote_openocd.zephyr44 import _runner as runner_module
+
+    harness = ForwardingHarness(monkeypatch)
+    runner, request, plan = _forwarding_operation(
+        runner_api, monkeypatch, tmp_path, "debug", harness
+    )
+    harness.ssh.process(TCL).ready = False
+
+    def client_with_required_forwarding(_argv):
+        assert harness.ssh.process(GDB).returncode is None
+        harness.helper.authority.record_terminal(
+            terminal_snapshot(Trigger.CHILD_EXIT, returncode=0)
+        )
+
+    runner.run_client.side_effect = client_with_required_forwarding
+    with caplog.at_level(logging.INFO, logger=runner.logger.name):
+        runner_module.execute_operation(runner, "debug", request, plan)
+
+    runner.run_client.assert_called_once()
+    warnings = [
+        record.getMessage() for record in caplog.records if record.levelno == logging.WARNING
+    ]
+    assert any(
+        TCL.name in message and f"127.0.0.1:{TCL.local_port}" in message for message in warnings
+    )
+    assert harness.helper.close_calls == 1
+
+
 @pytest.mark.parametrize("command", ("debug", "attach", "debugserver"))
 @pytest.mark.parametrize("phase", ("startup", "runtime"))
 def test_requested_rtt_failure_aborts_operation(

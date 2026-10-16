@@ -116,11 +116,16 @@ def test_deployment_rejects_digest_that_differs_from_source():
         deploy_module.deploy_helper(ssh, "host", source=source)
 
 
-def _run_bootstrap(home: Path, source: bytes) -> dict[str, object]:
+def _run_bootstrap(
+    home: Path,
+    source: bytes,
+    program: str = deploy_module.BOOTSTRAP,
+    args: tuple[str, ...] = (),
+) -> dict[str, object]:
     environment = os.environ.copy()
     environment["HOME"] = str(home)
     result = subprocess.run(
-        [sys.executable, "-c", deploy_module.BOOTSTRAP],
+        [sys.executable, "-c", program, *args],
         input=source,
         capture_output=True,
         check=False,
@@ -166,6 +171,48 @@ def test_helper_deployment_is_content_addressed_and_prunes_stale_revisions(tmp_p
     assert second_path.read_bytes() == second_source
     assert not stale_path.exists()
     assert not list(helper_directory.glob(".helper_*"))
+
+
+@pytest.mark.parametrize("operation", ("stat", "unlink"))
+def test_stale_revision_failure_does_not_block_deployment_or_other_pruning(tmp_path, operation):
+    source = b"selected helper revision"
+    helper_directory = tmp_path / ".local/libexec/zephyr_remote_openocd/protocol_v1"
+    helper_directory.mkdir(parents=True)
+    stale_revisions = {helper_directory / ("helper-" + digit * 64 + ".py") for digit in ("a", "b")}
+    stale_time = time.time() - 25 * 60 * 60
+    for stale in stale_revisions:
+        stale.write_bytes(b"stale helper revision")
+        os.utime(stale, (stale_time, stale_time))
+    # Fail the first stale revision the bootstrap inspects or removes, whatever
+    # the directory order; the real bootstrap and its filesystem effects remain.
+    wrapper = f"""
+import pathlib, sys
+operation, *stale_names = sys.argv[1:]
+original = getattr(pathlib.Path, operation)
+failed = []
+
+def fail_first_stale_revision(path, *args, **kwargs):
+    if path.name in stale_names and not failed:
+        failed.append(path)
+        raise PermissionError(f"injected {{operation}} failure: {{path}}")
+    return original(path, *args, **kwargs)
+
+setattr(pathlib.Path, operation, fail_first_stale_revision)
+exec({deploy_module.BOOTSTRAP!r}, {{"__name__": "__main__"}})
+"""
+
+    deployed = _run_bootstrap(
+        tmp_path, source, wrapper, (operation, *(stale.name for stale in stale_revisions))
+    )
+
+    selected = helper_directory / f"helper-{hashlib.sha256(source).hexdigest()}.py"
+    assert deployed["status"] == "deployed"
+    assert deployed["path"] == str(selected.resolve())
+    assert selected.read_bytes() == source
+    # The failed revision is retained; the other eligible revision is still pruned.
+    assert sum(stale.exists() for stale in stale_revisions) == 1
+    assert not list(helper_directory.glob(".helper_*"))
+    assert _run_bootstrap(tmp_path, source)["status"] == "reused"
 
 
 def test_helper_deployment_serializes_refresh_and_pruning(tmp_path):

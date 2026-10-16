@@ -266,6 +266,21 @@ class TestFlashPlanning:
             assert planned.remote == "/specific/image.hex"
             assert planner.remote_checks[0].path == "/specific/image.hex"
 
+    def test_mapping_does_not_match_sibling_with_shared_name_prefix(self, tmp_path: Path):
+        root = tmp_path.resolve()
+        (root / "src").mkdir()
+        sibling = root / "src2"
+        sibling.mkdir()
+        image = sibling / "firmware.hex"
+        image.write_text(":00000001FF\n")
+        planner = PathPlanner((PathMapping(root / "src", PurePosixPath("/remote/a")),))
+
+        planned = planner.plan_file(image, "firmware")
+
+        assert not planned.remote.startswith("/remote/a")
+        assert not planner.remote_checks
+        assert [entry.source for entry in planner.staged_files] == [image]
+
     def test_paths_with_spaces_remain_single_argv_and_quoted_tcl_words(self, tmp_path: Path):
         local = tmp_path / "local images"
         local.mkdir()
