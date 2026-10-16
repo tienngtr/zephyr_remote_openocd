@@ -1697,6 +1697,12 @@ def _recorded_commands(recording) -> list[list[str]]:
             ["--cmd-pre-init=echo pre-init", "--gdb-init=break main"],
             id="debug",
         ),
+        pytest.param(
+            "flash",
+            "HEX",
+            ["--cmd-load=flash write_image erase", "--cmd-verify=verify_image", "--erase"],
+            id="hex-erase-without-erase-command",
+        ),
     ),
 )
 def test_commands_match_built_in_runner(
@@ -1737,6 +1743,33 @@ def test_commands_match_built_in_runner(
             item.replace("target extended-remote :", "target extended-remote 127.0.0.1:")
             for item in expected[1]
         ]
+
+
+def test_live_flash_with_unsupported_erase_reports_error_without_remote_work(
+    runner_api, comparison_config, monkeypatch, caplog
+):
+    _, _, remote = runner_api
+    for name in ("run", "popen", "run_stream"):
+        monkeypatch.setattr(
+            SshCommand,
+            name,
+            Mock(side_effect=AssertionError(f"SshCommand.{name}() is not expected in this test")),
+        )
+    runner = remote.create(
+        comparison_config,
+        parser_for(remote).parse_args(
+            ["--cmd-load=flash write_image erase", "--cmd-verify=verify_image", "--erase"]
+        ),
+    )
+
+    with caplog.at_level(logging.INFO, logger=runner.logger.name):
+        runner.run("flash")
+
+    # Zephyr 4.4 reports the unsupported erase and returns successfully.
+    assert any(
+        record.levelno == logging.ERROR and "--cmd-erase" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 def test_thread_info_recording_requires_injected_version_without_remote_query(

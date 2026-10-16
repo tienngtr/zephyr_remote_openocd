@@ -59,10 +59,9 @@ class TestFlashPlanning:
         assert not planner.remote_checks
 
     @pytest.mark.parametrize("kind", ("hex", "bin"))
-    def test_unsupported_erase_fails_before_planning_paths(self, tmp_path: Path, kind: str):
+    def test_load_erase_without_erase_command_skips_flash(self, tmp_path: Path, kind: str):
         image = tmp_path / f"firmware.{kind}"
         image.write_bytes(b":00000001FF\n")
-        planner = PathPlanner(())
         inputs = FlashInputs(
             executable="openocd",
             image_type=kind,
@@ -78,14 +77,8 @@ class TestFlashPlanning:
             erase=True,
         )
 
-        with pytest.raises(flash_module.FlashPlanError) as error:
-            build_flash_plan(inputs, planner)
-
-        message = str(error.value).lower()
-        assert "erase requested" in message
-        assert "no erase command" in message
-        assert not planner.staged_files
-        assert not planner.remote_checks
+        with pytest.raises(flash_module.FlashSkipped):
+            build_flash_plan(inputs, PathPlanner(()))
 
     def test_plan_directory_rejects_ancestor_symlink_cycle(self, tmp_path: Path):
         root = tmp_path / "search"
