@@ -46,6 +46,7 @@ from zephyr_remote_openocd.protocol.outcome import Trigger
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 
 from tests.concurrency_support import ConcurrentSessions
+from tests.elf_fixtures import elf_memory_witness_bytes
 from tests.forwarding_support import GDB, RTT, TCL, TELNET, ForwardingHarness
 from tests.process_support import cleanup_on_exit, local_transport
 from tests.protocol_support import terminal_snapshot
@@ -1557,6 +1558,185 @@ def test_recording_runs_real_runner_integration_without_external_io(
             assert "rtt server start 19021 0" in argv
     if command == "rtt":
         assert result["rtt"]["port"] == 19021
+
+
+@pytest.fixture
+def comparison_config(runner_api, runner_config, tmp_path, monkeypatch):
+    """Inputs shared by the built-in runner and an identity-mapped remote runner."""
+    core, _, _ = runner_api
+    executables = tmp_path / "bin"
+    executables.mkdir()
+    for name in ("openocd", "gdb"):
+        (executables / name).write_text("#!/bin/sh\n")
+        (executables / name).chmod(0o755)
+    (tmp_path / "support").mkdir()
+    (tmp_path / "support" / "openocd.cfg").write_text("# board configuration\n")
+    (tmp_path / "search").mkdir()
+    images = Path(runner_config.build_dir) / "zephyr"
+    (images / "zephyr.elf").write_bytes(elf_memory_witness_bytes())
+    (images / "zephyr.hex").write_text(":00000001FF\n")
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "default_remote": "chosen",
+                "remotes": {
+                    "chosen": {
+                        "ssh_host": "selected_host",
+                        "openocd_command": [str(executables / "openocd")],
+                        # Remote paths equal local paths, so no path translation applies.
+                        "path_mappings": {"/": "/"},
+                    }
+                },
+            }
+        )
+    )
+    monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", str(config))
+    monkeypatch.delenv("ZEPHYR_REMOTE_OPENOCD_REMOTE", raising=False)
+    return runner_config._replace(
+        elf_file=str(images / "zephyr.elf"),
+        hex_file=str(images / "zephyr.hex"),
+        gdb=str(executables / "gdb"),
+        openocd=str(executables / "openocd"),
+        openocd_search=[str(tmp_path / "search")],
+        file_type=core.FileType.HEX,
+    )
+
+
+def _remove_runner_command(argv: list[str], command: str) -> list[str]:
+    indices = [
+        index for index in range(len(argv) - 1) if argv[index : index + 2] == ["-c", command]
+    ]
+    assert len(indices) == 1, f"expected one runner-owned command {command!r}: {argv}"
+    return argv[: indices[0]] + argv[indices[0] + 2 :]
+
+
+def _without_service_ports(argv: list[str]) -> tuple[list[str], dict[str, str]]:
+    """Separate runner-owned service-port settings, whose position is not contractual."""
+    rest: list[str] = []
+    ports: dict[str, str] = {}
+    index = 0
+    while index < len(argv):
+        name, _, value = argv[index + 1].partition(" ") if index + 1 < len(argv) else ("", "", "")
+        if argv[index] == "-c" and name in {"tcl_port", "telnet_port", "gdb_port"}:
+            ports[name] = value
+            index += 2
+        else:
+            rest.append(argv[index])
+            index += 1
+    return rest, ports
+
+
+def _built_in_commands(runner, command: str, caplog) -> list[list[str]]:
+    """Commands logged by the built-in runner's public dry-run execution mode."""
+    executables = (runner.cfg.openocd, runner.cfg.gdb)
+    runner.dry_run = True
+    with caplog.at_level(logging.INFO, logger=runner.logger.name):
+        runner.run(command)
+    commands = [
+        shlex.split(record.getMessage())
+        for record in caplog.records
+        if record.name == runner.logger.name
+        and record.getMessage().startswith(tuple(shlex.quote(item) + " " for item in executables))
+    ]
+    caplog.clear()
+    # Zephyr may pass "-c init" as one argv element; OpenOCD reads the same command.
+    return [
+        [
+            part
+            for argument in argv
+            for part in (("-c", argument[3:]) if argument.startswith("-c ") else (argument,))
+        ]
+        for argv in commands
+    ]
+
+
+def _recorded_commands(recording) -> list[list[str]]:
+    request = recording["remote_session_request"]
+    if request is None:
+        return []
+    process = request["process"]
+    argv = _remove_runner_command(process["argv"], "bindto {address}")
+    sentinels = process["required_output_sentinels"]
+    if sentinels:
+        initialized, complete = sentinels
+        argv = _remove_runner_command(argv, f"lappend post_init_commands {{echo {initialized}}}")
+        argv = _remove_runner_command(argv, f"echo {complete}")
+    gdb = recording["local_gdb_argv"]
+    return [argv, *([gdb] if gdb is not None else [])]
+
+
+@pytest.mark.parametrize(
+    "command, file_type, argv",
+    (
+        pytest.param(
+            "flash",
+            "HEX",
+            [
+                "--cmd-load=flash write_image erase",
+                "--cmd-verify=verify_image",
+                "--cmd-erase=flash erase_sector 0 0 last",
+                "--erase",
+                "--verify",
+                "--cmd-pre-init=echo pre-init",
+                "--cmd-pre-load=echo pre-load",
+                "--cmd-post-verify=echo post-verify",
+                "--serial=probe",
+            ],
+            id="hex-erase-verify",
+        ),
+        pytest.param(
+            "flash",
+            "ELF",
+            ["--verify-only", "--cmd-pre-load=echo pre-load", "--cmd-post-verify=echo post-verify"],
+            id="elf-verify-only",
+        ),
+        pytest.param(
+            "debug",
+            "ELF",
+            ["--cmd-pre-init=echo pre-init", "--gdb-init=break main"],
+            id="debug",
+        ),
+    ),
+)
+def test_commands_match_built_in_runner(
+    runner_api,
+    comparison_config,
+    monkeypatch,
+    capsys,
+    caplog,
+    forbid_external_io,
+    command,
+    file_type,
+    argv,
+):
+    """Compare with Zephyr's runner; normalize only runner-owned remote differences."""
+    core, upstream, remote = runner_api
+    cfg = comparison_config._replace(file_type=getattr(core.FileType, file_type))
+    expected = _built_in_commands(
+        upstream.create(cfg, parser_for(upstream).parse_args(argv)), command, caplog
+    )
+    monkeypatch.setenv("ZRO_RECORD", "1")
+    remote.create(cfg, parser_for(remote).parse_args(argv)).run(command)
+    actual = _recorded_commands(json.loads(capsys.readouterr().out))
+
+    assert len(actual) == len(expected)
+    if expected:
+        expected_openocd, expected_ports = _without_service_ports(expected[0])
+        actual_openocd, actual_ports = _without_service_ports(actual[0])
+        # Runner-generated firmware paths are quoted as Tcl words remotely.
+        image = getattr(cfg, f"{file_type.lower()}_file")
+        actual_openocd = [item.replace(f'"{image}"', image) for item in actual_openocd]
+        assert actual_openocd == expected_openocd
+        assert actual_ports == expected_ports
+        if "--serial=probe" not in argv:
+            assert not any("_ZEPHYR_BOARD_SERIAL" in item for item in actual[0])
+    if len(expected) == 2:
+        # The local GDB client reaches the forwarded endpoint on IPv4 loopback.
+        assert actual[1] == [
+            item.replace("target extended-remote :", "target extended-remote 127.0.0.1:")
+            for item in expected[1]
+        ]
 
 
 def test_thread_info_recording_requires_injected_version_without_remote_query(
