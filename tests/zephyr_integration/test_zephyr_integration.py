@@ -77,33 +77,9 @@ class TestZephyrIntegration:
         cls._write_config("openocd")
 
         sample = cls.zephyr_base / "samples" / "hello_world"
-        cls._west(
-            "build",
-            "--cmake-only",
-            "-b",
-            cls.openocd_board,
-            str(sample),
-            "-d",
-            str(cls.build_in_tree),
-            "--",
-            f"-DUSER_CACHE_DIR={cls.cache}",
-            f"-DOPENOCD={cls.fake_openocd}",
-        )
-        cls._create_recording_flash_artifact(cls.build_in_tree)
+        cls._configure_recording_build(sample, cls.build_in_tree)
         shutil.copytree(sample, cls.app_out_tree)
-        cls._west(
-            "build",
-            "--cmake-only",
-            "-b",
-            cls.openocd_board,
-            str(cls.app_out_tree),
-            "-d",
-            str(cls.build_out_tree),
-            "--",
-            f"-DUSER_CACHE_DIR={cls.cache}",
-            f"-DOPENOCD={cls.fake_openocd}",
-        )
-        cls._create_recording_flash_artifact(cls.build_out_tree)
+        cls._configure_recording_build(cls.app_out_tree, cls.build_out_tree)
         cls._west(
             "build",
             "--cmake-only",
@@ -177,6 +153,24 @@ class TestZephyrIntegration:
         artifact.parent.mkdir(parents=True, exist_ok=True)
         artifact.touch()
 
+    @classmethod
+    def _configure_recording_build(cls, application: Path, build: Path, *, extra_env=None):
+        """Configure real runner metadata and supply the no-build flash artifact."""
+        cls._west(
+            "build",
+            "--cmake-only",
+            "-b",
+            cls.openocd_board,
+            str(application),
+            "-d",
+            str(build),
+            "--",
+            f"-DUSER_CACHE_DIR={cls.cache}",
+            f"-DOPENOCD={cls.fake_openocd}",
+            extra_env=extra_env,
+        )
+        cls._create_recording_flash_artifact(build)
+
     @staticmethod
     def _recording(output: str):
         start = output.find("{\n")
@@ -246,20 +240,7 @@ class TestZephyrIntegration:
             config = root / "created-config.yaml"
             config_environment = {"ZEPHYR_REMOTE_OPENOCD_CONFIG": str(config)}
             sample = self.zephyr_base / "samples" / "hello_world"
-            self._west(
-                "build",
-                "--cmake-only",
-                "-b",
-                self.openocd_board,
-                str(sample),
-                "-d",
-                str(build),
-                "--",
-                f"-DUSER_CACHE_DIR={self.cache}",
-                f"-DOPENOCD={self.fake_openocd}",
-                extra_env=config_environment,
-            )
-            self._create_recording_flash_artifact(build)
+            self._configure_recording_build(sample, build, extra_env=config_environment)
             assert self._runner_state(build)["flash-runner"] == "openocd"
 
             self._write_config("remote_openocd", path=config)

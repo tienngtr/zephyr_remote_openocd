@@ -15,7 +15,7 @@ import socket
 import subprocess
 import sys
 import threading
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import override
 from unittest.mock import Mock, create_autospec
 
@@ -106,6 +106,37 @@ def runner_api(monkeypatch):
     return core, openocd.OpenOcdBinaryRunner, RemoteOpenOcdBinaryRunner
 
 
+@pytest.fixture
+def runner_config(runner_api, tmp_path):
+    """Minimal build metadata for normal upstream runner initialization."""
+    core, _, _ = runner_api
+    build = tmp_path / "build"
+    (build / "zephyr").mkdir(parents=True)
+    (build / "zephyr" / ".config").write_text("# CONFIG_DEBUG_THREAD_INFO is not set\n")
+    return core.RunnerConfig(
+        build_dir=str(build),
+        board_dir=str(tmp_path),
+        elf_file=None,
+        exe_file=None,
+        hex_file=None,
+        bin_file=None,
+        uf2_file=None,
+        mot_file=None,
+        file=None,
+        gdb="gdb",
+        openocd="openocd",
+        openocd_search=[],
+    )
+
+
+@pytest.fixture
+def firmware(runner_config) -> Path:
+    """An explicit no-build artifact; these tests never parse its ELF contents."""
+    image = Path(runner_config.build_dir) / "zephyr" / "zephyr.elf"
+    image.write_bytes(b"test image")
+    return image
+
+
 def test_runner_output_reconstructs_fragment_boundaries(runner_api, monkeypatch):
     from zephyr_remote_openocd.zephyr44 import _runner as runner_module
 
@@ -125,11 +156,11 @@ def test_runner_output_reconstructs_fragment_boundaries(runner_api, monkeypatch)
 @pytest.mark.parametrize("level", (logging.INFO, logging.DEBUG), ids=("normal", "verbose"))
 @pytest.mark.parametrize("forward_ready", (True, False), ids=("success", "forward-failure"))
 def test_runner_logs_effective_remote_argv(
-    runner_api, monkeypatch, tmp_path, caplog, level, forward_ready
+    runner_api, runner_config, monkeypatch, tmp_path, caplog, level, forward_ready
 ):
     from zephyr_remote_openocd.zephyr44 import _runner as runner_module
 
-    core, _, remote = runner_api
+    _, _, remote = runner_api
     harness = ForwardingHarness(monkeypatch)
     harness.helper.allocation = SessionAllocation("session", "/workspace with spaces")
     harness.helper.on_wait = lambda: harness.helper.authority.record_terminal(
@@ -139,9 +170,6 @@ def test_runner_logs_effective_remote_argv(
         harness.ssh.process(forward)
     harness.ssh.process(GDB).ready = forward_ready
     monkeypatch.setattr(runner_module, "SshCommand", lambda _prefix: harness.ssh)
-    build = tmp_path / "build"
-    (build / "zephyr").mkdir(parents=True)
-    (build / "zephyr" / ".config").write_text("# CONFIG_DEBUG_THREAD_INFO is not set\n")
     fixed = ["/tools/open ocd", "-c", "init", "-f", "fixed {workspace} {address}.cfg", ""]
     config = tmp_path / "config.yaml"
     config.write_text(
@@ -153,20 +181,9 @@ def test_runner_logs_effective_remote_argv(
         )
     )
     monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", str(config))
-    cfg = core.RunnerConfig(
-        build_dir=str(build),
-        board_dir=str(tmp_path),
-        elf_file=None,
-        exe_file=None,
-        hex_file=None,
-        bin_file=None,
-        uf2_file=None,
-        mot_file=None,
-        file=None,
-        openocd_search=[],
-    )
     runner = remote.create(
-        cfg, parser_for(remote).parse_args(["--cmd-pre-init=echo {workspace}/generated.cfg"])
+        runner_config,
+        parser_for(remote).parse_args(["--cmd-pre-init=echo {workspace}/generated.cfg"]),
     )
     processes: list[ProcessSpec] = []
     start_process = harness.helper.start_process
@@ -669,29 +686,15 @@ def test_observed_openocd_failure_retains_forward_exit_before_cleanup(
         session.close()
 
 
-def test_operation_build_queries_version_without_session(runner_api, monkeypatch, tmp_path):
+def test_operation_build_queries_version_without_session(
+    runner_api, runner_config, firmware, monkeypatch, tmp_path
+):
     from zephyr_remote_openocd.zephyr44 import _runner as runner_module
 
-    core, _, remote = runner_api
-    build = tmp_path / "build"
-    (build / "zephyr").mkdir(parents=True)
+    _, _, remote = runner_api
+    build = Path(runner_config.build_dir)
     (build / "zephyr" / ".config").write_text("CONFIG_DEBUG_THREAD_INFO=y\n")
-    image = build / "zephyr" / "zephyr.elf"
-    image.write_bytes(b"planning does not read ELF contents")
-    cfg = core.RunnerConfig(
-        build_dir=str(build),
-        board_dir=str(tmp_path),
-        elf_file=str(image),
-        exe_file=None,
-        hex_file=None,
-        bin_file=None,
-        uf2_file=None,
-        mot_file=None,
-        file=None,
-        gdb="gdb",
-        openocd="openocd",
-        openocd_search=[],
-    )
+    cfg = runner_config._replace(elf_file=str(firmware))
     runner = remote.create(cfg, parser_for(remote).parse_args([]))
     selected = ResolvedRemote(
         "lab",
@@ -1039,6 +1042,7 @@ def test_rtt_execution_defers_forward_until_after_gdb(runner_api, monkeypatch):
 
 
 def _forwarding_operation(runner_api, monkeypatch, tmp_path, command, harness, rtt_server=False):
+    """Control client dispatch while exercising real forwarding and cleanup."""
     from zephyr_remote_openocd.zephyr44 import _runner as runner_module
 
     plan = build_debug_plan(
@@ -1277,7 +1281,7 @@ def test_parser_preserves_applicable_upstream_options(runner_api, argv):
 
 @pytest.mark.parametrize("child_returncode", (0, OPENOCD_FAILURE_RC))
 def test_attach_rtt_server_forwards_without_loading(
-    runner_api, tmp_path, monkeypatch, caplog, child_returncode
+    runner_api, runner_config, firmware, tmp_path, monkeypatch, caplog, child_returncode
 ):
     from zephyr_remote_openocd.zephyr44 import _runner as runner_module
 
@@ -1287,11 +1291,6 @@ def test_attach_rtt_server_forwards_without_loading(
     for forward in (GDB, TCL, TELNET, rtt_forward):
         harness.ssh.process(forward)
     monkeypatch.setattr(runner_module, "SshCommand", lambda _prefix: harness.ssh)
-    build = tmp_path / "build"
-    (build / "zephyr").mkdir(parents=True)
-    (build / "zephyr" / ".config").write_text("# CONFIG_DEBUG_THREAD_INFO is not set\n")
-    image = build / "zephyr" / "zephyr.elf"
-    image.write_bytes(b"test image")
     config = tmp_path / "config.yaml"
     config.write_text(
         "default_remote: chosen\n"
@@ -1304,20 +1303,10 @@ def test_attach_rtt_server_forwards_without_loading(
     monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", str(config))
     monkeypatch.delenv("ZEPHYR_REMOTE_OPENOCD_REMOTE", raising=False)
 
-    cfg = core.RunnerConfig(
-        build_dir=str(build),
-        board_dir=str(tmp_path),
-        elf_file=str(image),
-        exe_file=None,
-        hex_file=None,
-        bin_file=str(image),
-        uf2_file=None,
-        mot_file=None,
-        file=None,
+    cfg = runner_config._replace(
+        elf_file=str(firmware),
+        bin_file=str(firmware),
         file_type=core.FileType.BIN,
-        gdb="gdb",
-        openocd="openocd",
-        openocd_search=[],
         rtt_address=0x20000000,
     )
     args = parser_for(remote).parse_args(["--rtt-server", "--rtt-port=19021"])
@@ -1354,7 +1343,7 @@ def test_attach_rtt_server_forwards_without_loading(
     assert len(client_argv) == 1
     assert client_argv[0][0] == "gdb"
     assert "target extended-remote 127.0.0.1:3333" in client_argv[0]
-    assert str(image) in client_argv[0]
+    assert str(firmware) in client_argv[0]
     assert "load" not in client_argv[0]
     assert any(
         "RTT" in record.getMessage() and "127.0.0.1:19021" in record.getMessage()
@@ -1403,6 +1392,8 @@ def forbid_external_io(monkeypatch):
 @pytest.mark.parametrize("thread_info", (False, True))
 def test_recording_runs_real_runner_integration_without_external_io(
     runner_api,
+    runner_config,
+    firmware,
     tmp_path,
     monkeypatch,
     capsys,
@@ -1414,13 +1405,10 @@ def test_recording_runs_real_runner_integration_without_external_io(
     rtt_server = command.endswith("-rtt")
     command = command.removesuffix("-rtt")
     core, _, remote = runner_api
-    build = tmp_path / "build"
-    (build / "zephyr").mkdir(parents=True)
+    build = Path(runner_config.build_dir)
     (build / "zephyr" / ".config").write_text(
         "CONFIG_DEBUG_THREAD_INFO=y\n" if thread_info else "# CONFIG_DEBUG_THREAD_INFO is not set\n"
     )
-    image = build / "zephyr" / "zephyr.elf"
-    image.write_bytes(b"test image; RTT address is explicitly supplied")
     (tmp_path / "interface").mkdir()
     (tmp_path / "interface" / "example.cfg").write_text("# search-relative config\n")
     monkeypatch.chdir(build)
@@ -1442,19 +1430,10 @@ def test_recording_runs_real_runner_integration_without_external_io(
         "ZRO_RECORD_OPENOCD_VERSION",
         "Open On-Chip Debugger 0.12.0" if thread_info else "unused invalid version",
     )
-    cfg = core.RunnerConfig(
-        build_dir=str(build),
-        board_dir=str(tmp_path),
-        elf_file=str(image),
-        exe_file=None,
-        hex_file=None,
-        bin_file=str(image),
-        uf2_file=None,
-        mot_file=None,
-        file=None,
+    cfg = runner_config._replace(
+        elf_file=str(firmware),
+        bin_file=str(firmware),
         file_type=core.FileType.BIN,
-        gdb="gdb",
-        openocd="openocd",
         openocd_search=[str(tmp_path)],
         rtt_address=0x20000000,
     )
@@ -1550,34 +1529,18 @@ def test_recording_runs_real_runner_integration_without_external_io(
 
 
 def test_thread_info_recording_requires_injected_version_without_remote_query(
-    runner_api, tmp_path, monkeypatch, capsys, forbid_external_io
+    runner_api, runner_config, firmware, tmp_path, monkeypatch, capsys, forbid_external_io
 ):
-    core, _, remote = runner_api
-    build = tmp_path / "build"
-    (build / "zephyr").mkdir(parents=True)
+    _, _, remote = runner_api
+    build = Path(runner_config.build_dir)
     (build / "zephyr/.config").write_text("CONFIG_DEBUG_THREAD_INFO=y\n")
-    image = build / "zephyr/zephyr.elf"
-    image.write_bytes(b"recording metadata only")
     config = tmp_path / "config.yaml"
     config.write_text(
         "default_remote: chosen\nremotes:\n  chosen:\n    openocd_command: [openocd]\n"
     )
     monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", str(config))
     monkeypatch.setenv("ZRO_RECORD", "1")
-    cfg = core.RunnerConfig(
-        build_dir=str(build),
-        board_dir=str(tmp_path),
-        elf_file=str(image),
-        exe_file=None,
-        hex_file=None,
-        bin_file=None,
-        uf2_file=None,
-        mot_file=None,
-        file=None,
-        gdb="gdb",
-        openocd="openocd",
-        openocd_search=[],
-    )
+    cfg = runner_config._replace(elf_file=str(firmware))
     runner = remote.create(cfg, parser_for(remote).parse_args([]))
     # Establish a valid recording path before removing only its version input.
     monkeypatch.setenv("ZRO_RECORD_OPENOCD_VERSION", "Open On-Chip Debugger 0.12.0")
@@ -1591,9 +1554,9 @@ def test_thread_info_recording_requires_injected_version_without_remote_query(
 
 
 def test_adapter_allows_same_probe_session_to_finish_while_another_is_active(
-    runner_api, tmp_path, monkeypatch
+    runner_api, runner_config, tmp_path, monkeypatch
 ):
-    core, _, remote = runner_api
+    _, _, remote = runner_api
     concurrent = ConcurrentSessions(tmp_path)
     opened = (threading.Event(), threading.Event())
     config = tmp_path / "config.yaml"
@@ -1612,21 +1575,7 @@ def test_adapter_allows_same_probe_session_to_finish_while_another_is_active(
         )
     )
     monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", str(config))
-    build = tmp_path / "build"
-    (build / "zephyr").mkdir(parents=True)
-    (build / "zephyr" / ".config").write_text("# CONFIG_DEBUG_THREAD_INFO is not set\n")
-    cfg = core.RunnerConfig(
-        build_dir=str(build),
-        board_dir=str(tmp_path),
-        elf_file=None,
-        exe_file=None,
-        hex_file=str(concurrent.image),
-        bin_file=None,
-        uf2_file=None,
-        mot_file=None,
-        file=None,
-        openocd_search=[],
-    )
+    cfg = runner_config._replace(hex_file=str(concurrent.image))
     runners = tuple(
         remote.create(
             cfg,
@@ -1837,7 +1786,15 @@ def test_ctrl_c_after_the_last_wait_is_recognized_at_closure(
     ),
 )
 def test_existing_cwd_config_reaches_real_initialization_and_recording(
-    runner_api, tmp_path, monkeypatch, capsys, forbid_external_io, reference, command
+    runner_api,
+    runner_config,
+    firmware,
+    tmp_path,
+    monkeypatch,
+    capsys,
+    forbid_external_io,
+    reference,
+    command,
 ):
     core, _, remote = runner_api
     board = tmp_path / "board"
@@ -1848,11 +1805,6 @@ def test_existing_cwd_config_reaches_real_initialization_and_recording(
     invocation.mkdir()
     selected = invocation / "board.cfg"
     selected.write_text("# cwd selection\n")
-    build = tmp_path / "build"
-    (build / "zephyr").mkdir(parents=True)
-    (build / "zephyr" / ".config").write_text("# CONFIG_DEBUG_THREAD_INFO is not set\n")
-    image = build / "zephyr" / "zephyr.elf"
-    image.write_bytes(b"test image")
     configuration = tmp_path / "config.yaml"
     configuration.write_text(
         "default_remote: chosen\n"
@@ -1864,19 +1816,11 @@ def test_existing_cwd_config_reaches_real_initialization_and_recording(
     monkeypatch.chdir(invocation)
     monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", str(configuration))
     monkeypatch.setenv("ZRO_RECORD", "1")
-    cfg = core.RunnerConfig(
-        build_dir=str(build),
+    cfg = runner_config._replace(
         board_dir=str(board),
-        elf_file=str(image),
-        exe_file=None,
-        hex_file=None,
-        bin_file=str(image),
-        uf2_file=None,
-        mot_file=None,
-        file=None,
+        elf_file=str(firmware),
+        bin_file=str(firmware),
         file_type=core.FileType.BIN,
-        gdb="gdb",
-        openocd="openocd",
         openocd_search=[str(support)],
         rtt_address=0x20000000,
     )
