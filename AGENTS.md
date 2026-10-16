@@ -14,14 +14,16 @@ Follow `CONTRIBUTING.md` for setup, naming, environment variables, and ordinary
 checks. Before external validation, follow `docs/development/testing.md` and
 `docs/development/hardware_inventories.md`. Tests live under `tests/unit/`,
 `tests/local_integration/`, `tests/zephyr_integration/`,
-`tests/ssh_integration/`, and `tests/hardware/`; the last two require external
-resources. External tests can build and flash:
-collect nodes first, run destructive profiles serially, and inspect cleanup.
+`tests/ssh_integration/`, and `tests/hardware/`; the last three require external
+resources. Zephyr integration needs a Zephyr 4.4.x environment; SSH and
+hardware tests need a contributor-provided hardware inventory. External tests
+can build and flash: collect nodes first, run destructive profiles serially,
+and inspect cleanup.
 
 Keep builds, populated hardware inventories, and temporary agent notes in
-ignored `.scratch/`. Put populated hardware inventories in
-`.scratch/config/hardware.yaml`; `.scratch/hardware/` is the hardware-test build
-cache. Put agent handoffs in `.scratch/agents/`.
+ignored `.scratch/`; create inventories as described in
+`docs/development/hardware_inventories.md`. Put agent handoffs in
+`.scratch/agents/`.
 
 ## Implementation and Contracts
 
