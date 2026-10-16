@@ -1612,20 +1612,24 @@ def _remove_runner_command(argv: list[str], command: str) -> list[str]:
     return argv[: indices[0]] + argv[indices[0] + 2 :]
 
 
-def _without_service_ports(argv: list[str]) -> tuple[list[str], dict[str, str]]:
-    """Separate runner-owned service-port settings, whose position is not contractual."""
+def _without_service_ports(argv: list[str]) -> tuple[list[str], list[str]]:
+    """Separate runner-owned service-port commands, whose position is not contractual.
+
+    The commands are returned sorted rather than collapsed, so a duplicate, missing,
+    or malformed service-port command still fails the comparison.
+    """
     rest: list[str] = []
-    ports: dict[str, str] = {}
+    ports: list[str] = []
     index = 0
     while index < len(argv):
-        name, _, value = argv[index + 1].partition(" ") if index + 1 < len(argv) else ("", "", "")
-        if argv[index] == "-c" and name in {"tcl_port", "telnet_port", "gdb_port"}:
-            ports[name] = value
+        command = argv[index + 1] if argv[index] == "-c" and index + 1 < len(argv) else ""
+        if command.split(" ", 1)[0] in {"tcl_port", "telnet_port", "gdb_port"}:
+            ports.append(command)
             index += 2
         else:
             rest.append(argv[index])
             index += 1
-    return rest, ports
+    return rest, sorted(ports)
 
 
 def _built_in_commands(runner, command: str, caplog) -> list[list[str]]:
@@ -1641,7 +1645,9 @@ def _built_in_commands(runner, command: str, caplog) -> list[list[str]]:
         and record.getMessage().startswith(tuple(shlex.quote(item) + " " for item in executables))
     ]
     caplog.clear()
-    # Zephyr may pass "-c init" as one argv element; OpenOCD reads the same command.
+    # Zephyr passes some commands, such as init, targets, halt, and serial selection,
+    # as one "-c <command>" argv element. OpenOCD reads the same command as from the
+    # separate "-c" and "<command>" elements, so only that argv spelling is split.
     return [
         [
             part
