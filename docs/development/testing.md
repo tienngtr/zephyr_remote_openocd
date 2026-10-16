@@ -134,10 +134,13 @@ Validate the inventory without external I/O before collection:
   .scratch/config/hardware.yaml --check-local
 ```
 
-Validate collection before execution:
+Validate collection before execution. Name the external test directories;
+without them, pytest collects only the default unit and local integration
+suites configured in `pytest.ini`:
 
 ```sh
 .venv/bin/python -m pytest --collect-only -q \
+  tests/ssh_integration tests/hardware \
   --hardware-inventory /path/to/hardware.yaml
 ```
 

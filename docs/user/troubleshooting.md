@@ -122,9 +122,12 @@ name must exist in the YAML file.
 `ssh_command`, including fixed options, and verify that remote `python3` and
 the configured OpenOCD executable are available to that SSH environment.
 
-**The remote reports that `python3` is missing or too old.** The helper is a
-Python program deployed and started through the configured SSH command. Install
-a remote `python3` version 3.12 or newer that is available to non-interactive
+**Remote helper deployment or startup fails with a `python3` error.** The
+helper is a Python program deployed and started with the remote `python3`
+through the configured SSH command. The runner does not check the remote Python
+version itself: a missing `python3` typically appears as an SSH or
+command-not-found diagnostic, and an older one can fail with a Python error.
+Install a remote `python3` version 3.12 or newer that is available to non-interactive
 SSH commands, then repeat the two remote prerequisite checks from the README
 with the same SSH options.
 

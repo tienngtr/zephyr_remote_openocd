@@ -4,21 +4,24 @@
 
 Use Python 3.12+. Production code lives in `python/zephyr_remote_openocd/`:
 board-independent logic in `controller/`, `helper/`, `protocol/`, and `openocd/`,
-Zephyr 4.4 integration in
-`zephyr44/runner.py`, and the west entry point in `runners/remote_openocd.py`.
+Zephyr 4.4 integration in the
+`zephyr44/` package (public facade `runner.py`, implementation `_runner.py`),
+and the west entry point in `runners/remote_openocd.py`.
 Requirements and architecture live in `docs/requirements/SRS.md` and
 `docs/architecture/SAD.md`.
 
 Follow `CONTRIBUTING.md` for setup, naming, environment variables, and ordinary
 checks. Before external validation, follow `docs/development/testing.md` and
 `docs/development/hardware_inventories.md`. Tests live under `tests/unit/`,
-`tests/zephyr_integration/`, `tests/ssh_integration/`, and `tests/hardware/`;
-the last two require external resources. External tests can build and flash:
+`tests/local_integration/`, `tests/zephyr_integration/`,
+`tests/ssh_integration/`, and `tests/hardware/`; the last two require external
+resources. External tests can build and flash:
 collect nodes first, run destructive profiles serially, and inspect cleanup.
 
 Keep builds, populated hardware inventories, and temporary agent notes in
-ignored `.scratch/`. Put real equipment data in `.scratch/hardware/` and agent
-handoffs in `.scratch/agents/`.
+ignored `.scratch/`. Put populated hardware inventories in
+`.scratch/config/hardware.yaml`; `.scratch/hardware/` is the hardware-test build
+cache. Put agent handoffs in `.scratch/agents/`.
 
 ## Implementation and Contracts
 

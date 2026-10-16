@@ -124,8 +124,12 @@ west flash -r remote_openocd --remote lab
 to flash the board through the remote OpenOCD. Uncomment `default_remote: lab`
 in the configuration if you want to omit `--remote lab` later.
 
-The built-in local runner remains the default. Once this module is already
-configured into the build, update `default_runner` and run `west flash` or
+For OpenOCD-capable builds, activating this module makes `default_runner`
+select the default flash and debug runner. The generated configuration selects
+local `openocd`, which can override a board's original default runner, such as
+`jlink` or `stm32cubeprogrammer`. Other available runners remain selectable
+with `-r`. Once this module is already configured into the build, update
+`default_runner` and run `west flash` or
 `west debug` normally; their pre-run incremental build refreshes the generated
 runner configuration. An ordinary `west build` remains an explicit
 regeneration option. A pristine build or full firmware compile is not required
