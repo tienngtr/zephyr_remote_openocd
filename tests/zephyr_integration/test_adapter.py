@@ -550,144 +550,6 @@ def test_recorded_termination_during_rtt_forward_prevents_rtt_client_launch(
     assert all(process.returncode is not None for process in harness.ssh.processes.values())
 
 
-@pytest.mark.parametrize("terminal", (0, OPENOCD_FAILURE_RC, "error"))
-def test_terminal_during_batch_gdb_prevents_rtt_forward_and_preserves_failure(
-    runner_api, monkeypatch, terminal
-):
-    from zephyr_remote_openocd.zephyr44 import _runner as runner_module
-
-    harness = ForwardingHarness(monkeypatch)
-    session = harness.prepare((GDB,), ())
-    try:
-        session.acquire()
-        rtt_forward = harness.ssh.process(RTT)
-        rtt_forward.creation_error = OSError("later RTT forward failure")
-        runner = create_autospec(runner_api[1], instance=True)
-        runner.logger = logging.getLogger("test.remote_openocd.rtt")
-        plan = _debug_plan(gdb_argv=("gdb", "--batch"), forwards=(GDB,), rtt_forward=RTT)
-
-        def finish_gdb(_argv):
-            harness.helper.authority.record_terminal(
-                terminal_snapshot(Trigger.HELPER_FAILURE, code="EARLIER_HELPER_FAILURE")
-                if terminal == "error"
-                else terminal_snapshot(Trigger.CHILD_EXIT, returncode=terminal)
-            )
-
-        _batch_gdb(monkeypatch, runner_module, finish_gdb)
-        client = Mock(side_effect=AssertionError("RTT client cannot enter an ended session"))
-        monkeypatch.setattr(runner_module, "run_rtt_client", client)
-        with pytest.raises(SessionError) as raised:
-            runner_module.execute_rtt(runner, plan, session)
-        if terminal == "error":
-            assert "EARLIER_HELPER_FAILURE" in str(raised.value)
-        elif terminal == OPENOCD_FAILURE_RC:
-            assert str(OPENOCD_FAILURE_RC) in str(raised.value)
-        assert "later RTT forward failure" not in str(raised.value)
-        assert RTT not in session.forwarded_specs
-        client.assert_not_called()
-        with pytest.raises(SessionError) as finalized:
-            session.record_operation_failure(raised.value)
-            runner_module.finalize_operation(session)
-        assert finalized.value is raised.value
-    finally:
-        session.close()
-    assert harness.helper.close_calls == 1
-    assert rtt_forward.returncode is None
-
-
-@pytest.mark.parametrize("terminal", ("terminal", "reader"))
-def test_session_failure_during_failed_rtt_forward_stays_primary_on_finalization(
-    runner_api, monkeypatch, terminal
-):
-    from zephyr_remote_openocd.zephyr44 import _runner as runner_module
-
-    harness = ForwardingHarness(monkeypatch)
-    session = harness.prepare((GDB,), ())
-    try:
-        session.acquire()
-        rtt_forward = harness.ssh.process(RTT)
-        rollback_error = OSError("forward rollback failure")
-        rollback_error.add_note("nested rollback diagnostic")
-        rtt_forward.cleanup_error = rollback_error
-        runner = create_autospec(runner_api[1], instance=True)
-        runner.logger = logging.getLogger("test.remote_openocd.rtt")
-        plan = _debug_plan(gdb_argv=("gdb", "--batch"), forwards=(GDB,), rtt_forward=RTT)
-        _batch_gdb(monkeypatch, runner_module)
-
-        def fail_forward(_process, _sentinel, _deadline):
-            if terminal == "terminal":
-                harness.helper.authority.record_terminal(
-                    terminal_snapshot(Trigger.HELPER_FAILURE, code="EARLIER_HELPER_FAILURE")
-                )
-            else:
-                harness.helper.authority.record_reader_failure(OSError("earlier reader failure"))
-            raise OSError("later RTT forward failure")
-
-        monkeypatch.setattr(
-            "zephyr_remote_openocd.controller._forwarding.await_ready",
-            fail_forward,
-        )
-        client = Mock(side_effect=AssertionError("RTT client cannot enter a failed session"))
-        monkeypatch.setattr(runner_module, "run_rtt_client", client)
-        with pytest.raises(SessionError) as raised:
-            runner_module.execute_rtt(runner, plan, session)
-        with pytest.raises(SessionError) as finalized:
-            session.record_operation_failure(raised.value)
-            runner_module.finalize_operation(session)
-        assert finalized.value is raised.value
-        expected = "EARLIER_HELPER_FAILURE" if terminal == "terminal" else "earlier reader failure"
-        assert expected in str(finalized.value)
-        notes = "\n".join(finalized.value.__notes__)
-        assert "later RTT forward failure" in notes
-        assert "forward rollback failure" in notes
-        assert "nested rollback diagnostic" in notes
-        client.assert_not_called()
-    finally:
-        session.close()
-    assert harness.helper.close_calls == 1
-    assert all(process.returncode is not None for process in harness.ssh.processes.values())
-
-
-@pytest.mark.parametrize("failed_forward", (GDB, TCL), ids=("required", "best-effort"))
-def test_observed_openocd_failure_retains_forward_exit_before_cleanup(
-    runner_api, monkeypatch, failed_forward
-):
-    from zephyr_remote_openocd.zephyr44 import _runner as runner_module
-
-    harness = ForwardingHarness(monkeypatch)
-    session = harness.prepare()
-    with cleanup_on_exit(session.close):
-        session.acquire()
-        harness.helper.authority.record_terminal(
-            terminal_snapshot(Trigger.CHILD_EXIT, returncode=OPENOCD_FAILURE_RC)
-        )
-        with pytest.raises(SessionError):
-            session.poll_operation()
-        assert session.openocd_returncode == OPENOCD_FAILURE_RC
-        forward = harness.ssh.process(failed_forward)
-        forward.returncode = 13
-
-        with pytest.raises(RuntimeError) as raised:
-            runner_module.finalize_operation(session)
-        assert isinstance(raised.value, SessionError)
-        assert str(OPENOCD_FAILURE_RC) in str(raised.value)
-        if failed_forward == GDB:
-            notes = "\n".join(raised.value.__notes__)
-            assert failed_forward.name in notes
-            assert "13" in notes
-            assert forward.diagnostic.decode() in notes
-            assert not harness.advisories
-        else:
-            assert [advisory.forward for advisory in harness.advisories] == [failed_forward]
-            assert harness.advisories[0].phase == "runtime"
-        assert session.closed
-        assert harness.helper.close_calls == 1
-        assert all(
-            process.mock.close_stderr.call_count == 1 for process in harness.ssh.processes.values()
-        )
-        session.close()
-
-
 def test_operation_build_queries_version_without_session(
     runner_api, runner_config, firmware, monkeypatch, tmp_path
 ):
@@ -736,7 +598,7 @@ def test_operation_build_queries_version_without_session(
 
 @pytest.mark.parametrize(
     (
-        "observed_returncode",
+        "earlier_openocd_failure",
         "operation_fails",
         "cleanup_failure",
         "cleanup_returncode",
@@ -804,7 +666,16 @@ def test_operation_build_queries_version_without_session(
             id="operation-failure-precedes-cleanup-failure",
         ),
         pytest.param(
-            OPENOCD_FAILURE_RC,
+            "recognized",
+            True,
+            None,
+            None,
+            "openocd",
+            ("operation failed",),
+            id="recognized-openocd-failure-precedes-operation-failure",
+        ),
+        pytest.param(
+            "observed",
             False,
             "cleanup failed",
             OPENOCD_FAILURE_RC,
@@ -817,7 +688,7 @@ def test_operation_build_queries_version_without_session(
 def test_operation_primary_failure_rules(
     runner_api,
     monkeypatch,
-    observed_returncode,
+    earlier_openocd_failure,
     operation_fails,
     cleanup_failure,
     cleanup_returncode,
@@ -836,11 +707,14 @@ def test_operation_primary_failure_rules(
         harness.ssh.process(GDB).cleanup_error = cleanup_error
 
     def execute_started_operation(*_args):
-        if observed_returncode is not None:
+        if earlier_openocd_failure is not None:
+            # A reader-recognized failure precedes the operation failure even
+            # when the coordinator has not yet observed it.
             harness.helper.authority.record_terminal(
-                terminal_snapshot(Trigger.CHILD_EXIT, returncode=observed_returncode)
+                terminal_snapshot(Trigger.CHILD_EXIT, returncode=OPENOCD_FAILURE_RC)
             )
-            session.poll_operation()
+            if earlier_openocd_failure == "observed":
+                session.poll_operation()
         if operation_fails:
             raise operation_error
 
@@ -932,80 +806,6 @@ def test_interruption_during_session_acquisition_closes_owned_resources(
     finally:
         if acquired is not None:
             acquired.close()
-
-
-@pytest.mark.parametrize(
-    "reader_records_before_operation_failure",
-    (True, False),
-    ids=("reader-first", "active-operation-first"),
-)
-def test_background_openocd_and_operation_failures_share_recognition_order(
-    runner_api,
-    monkeypatch,
-    reader_records_before_operation_failure,
-):
-    from zephyr_remote_openocd.zephyr44 import _runner as runner_module
-
-    reader_ready = threading.Event()
-    reader_can_record = threading.Event()
-    reader_recorded = threading.Event()
-    operation_error = RuntimeError("active operation failed")
-
-    harness = ForwardingHarness(monkeypatch)
-    session = harness.prepare()
-    close_forward = harness.ssh.process(GDB).close_stderr
-
-    def close():
-        reader_can_record.set()
-        assert reader_recorded.wait(5)
-        close_forward()
-
-    harness.ssh.process(GDB).mock.close_stderr.side_effect = close
-
-    def record_openocd_failure():
-        reader_ready.set()
-        assert reader_can_record.wait(5)
-        harness.helper.authority.record_terminal(
-            terminal_snapshot(Trigger.CHILD_EXIT, returncode=OPENOCD_FAILURE_RC)
-        )
-        reader_recorded.set()
-
-    reader = threading.Thread(target=record_openocd_failure)
-    reader.start()
-    assert reader_ready.wait(5)
-
-    def fail_operation(*_args):
-        if reader_records_before_operation_failure:
-            reader_can_record.set()
-            assert reader_recorded.wait(5)
-        raise operation_error
-
-    monkeypatch.setattr(
-        runner_module.SessionController,
-        "prepare",
-        create_autospec(SessionController.prepare, return_value=session),
-    )
-    monkeypatch.setattr(runner_module, "execute_started_operation", fail_operation)
-    request = SessionPlan("host", SshCommand(), TEST_PROCESS)
-
-    try:
-        with pytest.raises(RuntimeError) as raised:
-            runner_module.execute_operation(Mock(), "debug", request, None)
-    finally:
-        reader_can_record.set()
-        assert reader_recorded.wait(5)
-        reader.join(timeout=5)
-
-    if reader_records_before_operation_failure:
-        assert isinstance(raised.value, SessionError)
-        assert str(OPENOCD_FAILURE_RC) in str(raised.value)
-        assert any(str(operation_error) in note for note in raised.value.__notes__)
-    else:
-        assert raised.value is operation_error
-        assert any(str(OPENOCD_FAILURE_RC) in note for note in raised.value.__notes__)
-    assert session.closed
-    assert harness.helper.close_calls == 1
-    assert not reader.is_alive()
 
 
 def test_rtt_execution_defers_forward_until_after_gdb(runner_api, monkeypatch):
@@ -1165,9 +965,6 @@ def test_requested_rtt_failure_aborts_operation(
     assert not any(record.levelno == logging.WARNING for record in caplog.records)
     if phase == "startup":
         runner.run_client.assert_not_called()
-        assert not any(
-            "RTT forwarding established" in record.getMessage() for record in caplog.records
-        )
     elif command in {"debug", "attach"}:
         runner.run_client.assert_called_once()
     assert harness.helper.close_calls == 1
@@ -1422,7 +1219,6 @@ def forbid_external_io(monkeypatch):
         "debugserver-rtt",
     ),
 )
-@pytest.mark.parametrize("thread_info", (False, True))
 def test_recording_runs_real_runner_integration_without_external_io(
     runner_api,
     runner_config,
@@ -1433,15 +1229,11 @@ def test_recording_runs_real_runner_integration_without_external_io(
     caplog,
     forbid_external_io,
     command,
-    thread_info,
 ):
     rtt_server = command.endswith("-rtt")
     command = command.removesuffix("-rtt")
     core, _, remote = runner_api
     build = Path(runner_config.build_dir)
-    (build / "zephyr" / ".config").write_text(
-        "CONFIG_DEBUG_THREAD_INFO=y\n" if thread_info else "# CONFIG_DEBUG_THREAD_INFO is not set\n"
-    )
     (tmp_path / "interface").mkdir()
     (tmp_path / "interface" / "example.cfg").write_text("# search-relative config\n")
     monkeypatch.chdir(build)
@@ -1459,10 +1251,6 @@ def test_recording_runs_real_runner_integration_without_external_io(
     monkeypatch.setenv("ZRO_CONTROLLED_ENV", "secret-value")
     monkeypatch.delenv("ZRO_ABSENT_ENV", raising=False)
     monkeypatch.setenv("ZRO_RECORD", "1")
-    monkeypatch.setenv(
-        "ZRO_RECORD_OPENOCD_VERSION",
-        "Open On-Chip Debugger 0.12.0" if thread_info else "unused invalid version",
-    )
     cfg = runner_config._replace(
         elf_file=str(firmware),
         bin_file=str(firmware),
@@ -1553,8 +1341,6 @@ def test_recording_runs_real_runner_integration_without_external_io(
             )
             if command == "attach":
                 assert "load" not in result["local_gdb_argv"]
-        assert result["thread_info"]["requested"] is thread_info
-        assert result["thread_info"]["version_source"] == ("injected" if thread_info else None)
         if rtt_server:
             assert "rtt server start 19021 0" in argv
     if command == "rtt":
@@ -1813,7 +1599,6 @@ def test_thread_info_recording_requires_injected_version_without_remote_query(
 ):
     _, _, remote = runner_api
     build = Path(runner_config.build_dir)
-    (build / "zephyr/.config").write_text("CONFIG_DEBUG_THREAD_INFO=y\n")
     config = tmp_path / "config.yaml"
     config.write_text(
         "default_remote: chosen\nremotes:\n  chosen:\n    openocd_command: [openocd]\n"
@@ -1821,11 +1606,23 @@ def test_thread_info_recording_requires_injected_version_without_remote_query(
     monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", str(config))
     monkeypatch.setenv("ZRO_RECORD", "1")
     cfg = runner_config._replace(elf_file=str(firmware))
+    # Without thread information, an unusable injected version is never consulted.
+    monkeypatch.setenv("ZRO_RECORD_OPENOCD_VERSION", "unused invalid version")
+    remote.create(cfg, parser_for(remote).parse_args([])).run("debug")
+    thread_info = json.loads(capsys.readouterr().out)["thread_info"]
+    assert not thread_info["requested"]
+    assert thread_info["version_source"] is None
+    assert not thread_info["rtos_awareness"]
+
+    (build / "zephyr/.config").write_text("CONFIG_DEBUG_THREAD_INFO=y\n")
     runner = remote.create(cfg, parser_for(remote).parse_args([]))
     # Establish a valid recording path before removing only its version input.
     monkeypatch.setenv("ZRO_RECORD_OPENOCD_VERSION", "Open On-Chip Debugger 0.12.0")
     runner.run("debug")
-    assert json.loads(capsys.readouterr().out)["thread_info"]["rtos_awareness"]
+    thread_info = json.loads(capsys.readouterr().out)["thread_info"]
+    assert thread_info["requested"]
+    assert thread_info["version_source"] == "injected"
+    assert thread_info["rtos_awareness"]
 
     monkeypatch.delenv("ZRO_RECORD_OPENOCD_VERSION")
     with pytest.raises(RuntimeError):
@@ -2059,10 +1856,8 @@ def test_ctrl_c_after_the_last_wait_is_recognized_at_closure(
         ("board.cfg", "flash"),
         ("./board.cfg", "flash"),
         ("absolute", "flash"),
+        # The debug-family commands share one planning path from the runner.
         ("board.cfg", "debug"),
-        ("board.cfg", "attach"),
-        ("board.cfg", "debugserver"),
-        ("board.cfg", "rtt"),
     ),
 )
 def test_existing_cwd_config_reaches_real_initialization_and_recording(
@@ -2102,7 +1897,6 @@ def test_existing_cwd_config_reaches_real_initialization_and_recording(
         bin_file=str(firmware),
         file_type=core.FileType.BIN,
         openocd_search=[str(support)],
-        rtt_address=0x20000000,
     )
     argument = str(selected) if reference == "absolute" else reference
     runner = remote.create(

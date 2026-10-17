@@ -223,13 +223,17 @@ class TestZephyrIntegration:
         assert state["flash-runner"] == "openocd"
         self._write_config("remote_openocd")
         self._west("build", "-d", str(self.build_in_tree), "-t", "help")
-        self._west("flash", "-d", str(self.build_in_tree), "--no-rebuild")
+        result = self._west("flash", "-d", str(self.build_in_tree), "--no-rebuild")
         assert self._runner_state(self.build_in_tree)["flash-runner"] == "remote_openocd"
+        assert self._recording(result.stdout)["command"] == "flash"
 
         self._write_config("openocd")
         self._west("build", "-d", str(self.build_in_tree), "-t", "help")
-        self._west("flash", "-d", str(self.build_in_tree), "--no-rebuild")
+        result = self._west("flash", "-d", str(self.build_in_tree), "--no-rebuild")
         assert self._runner_state(self.build_in_tree)["flash-runner"] == "openocd"
+        # Only remote_openocd honors recording; the default built-in runner ran instead.
+        with pytest.raises(AssertionError, match="recording JSON absent"):
+            self._recording(result.stdout)
 
     def test_created_config_regenerates_default_runner(self):
         with tempfile.TemporaryDirectory(
@@ -334,7 +338,7 @@ class TestZephyrIntegration:
                 )
                 if check and result.returncode:
                     raise AssertionError(
-                        f"west {' '.join(args)} failed ({result.returncode}):\\n{result.stdout}"
+                        f"west {' '.join(args)} failed ({result.returncode}):\n{result.stdout}"
                     )
                 return result
 

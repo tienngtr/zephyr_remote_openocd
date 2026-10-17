@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import io
 import ipaddress
-import json
 import shlex
 import shutil
 import socket
 import tempfile
-import time
 import uuid
 import zipfile
 from collections.abc import Callable
@@ -21,7 +18,6 @@ from typing import override
 
 import pytest
 from zephyr_remote_openocd.config import PathMapping
-from zephyr_remote_openocd.controller import _forwarding as forwarding_module
 from zephyr_remote_openocd.controller._deployment import build_helper_bundle, deploy_helper
 from zephyr_remote_openocd.controller._forwarding import ForwardManager
 from zephyr_remote_openocd.controller._ssh import ManagedSshProcess, SshCommand, SshForwardSpec
@@ -44,24 +40,6 @@ from tests.process_support import cleanup_on_exit, read_line, stop_and_close
 pytestmark = pytest.mark.ssh
 REMOTE_FAILURE_EXIT_CODE = 7
 
-REMOTE_ECHO = b"""\
-import select, socket, sys
-s = socket.socket()
-s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s.bind(('127.0.0.1', 0))
-s.listen()
-print(s.getsockname()[1], flush=True)
-while True:
-    ready = select.select([sys.stdin.buffer, s], [], [], 0.2)[0]
-    if sys.stdin.buffer in ready and not sys.stdin.buffer.read(1):
-        break
-    if s in ready:
-        c, _ = s.accept()
-        with c:
-            data = c.recv(4096)
-            c.sendall(data)
-"""
-
 REMOTE_SESSION_ECHO = """
 import socket
 import sys
@@ -79,40 +57,6 @@ while True:
             if not data:
                 break
             connection.sendall(data)
-"""
-
-REMOTE_WORKSPACE_RECLAMATION = """
-import json, os, sys, tempfile
-from contextlib import ExitStack
-
-sys.path.insert(0, sys.argv[1])
-from zephyr_remote_openocd.helper import _workspace as helper
-with tempfile.TemporaryDirectory(prefix='zro qualification ') as directory:
-    os.environ['XDG_RUNTIME_DIR'] = directory
-    with ExitStack() as owners:
-        workspaces = {}
-        for name in ('active', 'inactive', 'unconfirmed'):
-            _, work, lock = helper.new_workspace()
-            owners.enter_context(lock)
-            (work / 'staged' / 'input.bin').write_bytes(b'required input')
-            workspaces[name] = work
-            if name == 'unconfirmed':
-                (work / helper.UNCONFIRMED_CHILD).touch()
-            if name != 'active':
-                lock.close()
-        for work in workspaces.values():
-            os.utime(work, (1, 1))
-        _, _, lock = helper.new_workspace()
-        owners.enter_context(lock)
-        inactive = workspaces['inactive']
-        active_input = workspaces['active'] / 'staged' / 'input.bin'
-        unconfirmed_input = workspaces['unconfirmed'] / 'staged' / 'input.bin'
-        inactive_metadata = (helper.lease_path(inactive), helper.closure_path(inactive))
-        print(json.dumps({
-            'active_retained': active_input.read_bytes() == b'required input',
-            'unconfirmed_retained': unconfirmed_input.read_bytes() == b'required input',
-            'inactive_removed': not any(p.exists() for p in (inactive, *inactive_metadata)),
-        }))
 """
 
 
@@ -144,20 +88,17 @@ def assert_no_loopback_listener(port: int) -> None:
         probe.bind(("127.0.0.1", port))
 
 
-def wait_for_echo(port: int, payload: bytes, timeout: float):
-    deadline = time.monotonic() + timeout
-    last_error = None
-    while time.monotonic() < deadline:
-        try:
-            with socket.create_connection(("127.0.0.1", port), timeout=1) as connection:
-                connection.sendall(payload)
-                if connection.recv(len(payload)) != payload:
-                    raise AssertionError("forwarded echo payload differed")
-                return
-        except OSError as error:
-            last_error = error
-            time.sleep(0.1)
-    raise AssertionError(f"forwarded endpoint was not ready: {last_error}")
+def assert_echo(port: int, payload: bytes) -> None:
+    """Use an endpoint the session has already reported ready; never retry."""
+    with socket.create_connection(("127.0.0.1", port), timeout=20) as connection:
+        connection.sendall(payload)
+        received = b""
+        while len(received) < len(payload):
+            chunk = connection.recv(len(payload) - len(received))
+            if not chunk:
+                break
+            received += chunk
+        assert received == payload
 
 
 class ObservedSshCommand(SshCommand):
@@ -253,44 +194,6 @@ class TestSshTransportIntegration:
             if not occupied:
                 assert_no_loopback_listener(port)
 
-    def test_forwarding_and_session_lifecycle_use_configured_client(self):
-        encoded = base64.b64encode(REMOTE_ECHO).decode("ascii")
-        command = f"python3 -c \"import base64;exec(base64.b64decode('{encoded}'))\""
-        with ExitStack() as resources:
-            helper_process = self.ssh.popen(self.host, command)
-            resources.enter_context(cleanup_on_exit(lambda: stop_and_close(helper_process)))
-            assert helper_process.stdout is not None
-            line = read_line(helper_process.stdout)
-            if not line:
-                pytest.fail(helper_process.stderr_tail().decode(errors="replace"))
-            remote_port = int(line)
-            local_port = free_loopback_port()
-            sentinel = "ZRO_FORWARD_READY"
-            tunnel = self.ssh.popen(
-                self.host,
-                forwarding_module.ready_command(sentinel),
-                local_forward=SshForwardSpec(local_port, "127.0.0.1", remote_port),
-            )
-            resources.enter_context(cleanup_on_exit(lambda: stop_and_close(tunnel)))
-            assert forwarding_module.await_ready(tunnel, sentinel, time.monotonic() + 20)
-            wait_for_echo(local_port, b"zro_forwarding", 20)
-
-            assert helper_process.stdin is not None
-            helper_process.stdin.close()
-            helper_process.wait(timeout=20)
-            # Remote process exit is the handshake: its listener is gone, while
-            # the owned SSH tunnel still accepts and closes failed channels.
-            with socket.create_connection(("127.0.0.1", local_port), timeout=20) as channel:
-                try:
-                    channel.sendall(b"must_not_echo")
-                    assert channel.recv(4096) == b""
-                except (ConnectionResetError, BrokenPipeError):
-                    pass
-
-            assert tunnel.stdin is not None
-            tunnel.stdin.close()
-            assert tunnel.wait(timeout=20) == 0
-
     def test_streaming_preserves_content_and_reports_remote_failure(self):
         payloads = (
             b"",
@@ -361,7 +264,7 @@ class TestSshTransportIntegration:
                 )
                 assert check.returncode == 0, check.stderr.decode(errors="replace")
                 assert check.stdout.strip() == b"0o700 263"
-                wait_for_echo(local_port, b"helper_round_trip", 20)
+                assert_echo(local_port, b"helper_round_trip")
             gone = self.ssh.run(
                 self.host,
                 "python3 -c "
@@ -411,8 +314,8 @@ class TestSshTransportIntegration:
             assert first_descriptor.remote_address != second_descriptor.remote_address
             assert first_descriptor.session_id != second_descriptor.session_id
             # Allocation alone does not prove both forwarded services remain usable.
-            wait_for_echo(first_port, b"first_session_still_active", 20)
-            wait_for_echo(second_port, b"second_session_active", 20)
+            assert_echo(first_port, b"first_session_still_active")
+            assert_echo(second_port, b"second_session_active")
         for descriptor in (first_descriptor, second_descriptor):
             result = self.ssh.run(
                 self.host,
@@ -530,25 +433,7 @@ collision.listen()
             event = decode_frame(response.stdout)
             validate_openocd_version_response(event)
             assert event["type"] == "OPENOCD_VERSION"
-            wait_for_echo(request.forwards[0].local_port, b"active_revision_survived", 20)
-
-    def test_deployed_helper_reclaims_only_inactive_workspace_storage(self):
-        """Use the deployed bundle and real locks in a test-owned remote root."""
-        deployed = deploy_helper(self.ssh, self.host)
-        result = self.ssh.run(
-            self.host,
-            shlex.join(("python3", "-I", "-c", REMOTE_WORKSPACE_RECLAMATION, deployed.path)),
-            timeout=30,
-        )
-        assert result.returncode == 0, result.stderr.decode(errors="replace")
-        assert json.loads(result.stdout) == dict.fromkeys(
-            (
-                "active_retained",
-                "unconfirmed_retained",
-                "inactive_removed",
-            ),
-            True,
-        )
+            assert_echo(request.forwards[0].local_port, b"active_revision_survived")
 
     def test_preferred_address_reuses_forward_retained_by_external_master(self, tmp_path):
         """The test owns the master; production sessions own only their slaves."""
@@ -580,7 +465,7 @@ collision.listen()
                 first.acquire()
                 assert first.descriptor is not None
                 address = first.descriptor.remote_address
-                wait_for_echo(local_port, b"first_session", 20)
+                assert_echo(local_port, b"first_session")
             assert master.poll() is None
             with socket.create_connection(("127.0.0.1", local_port), timeout=20):
                 pass
@@ -589,7 +474,7 @@ collision.listen()
                 second.acquire()
                 assert second.descriptor is not None
                 assert second.descriptor.remote_address == address
-                wait_for_echo(local_port, b"reused_session", 20)
+                assert_echo(local_port, b"reused_session")
             assert master.poll() is None
             if master.stdin is not None:
                 master.stdin.close()

@@ -501,3 +501,76 @@ def test_best_effort_start_cannot_downgrade_an_established_forward_start_failure
         assert process.returncode is not None
     finally:
         session.close()
+
+
+@pytest.mark.parametrize("failed_forward", (GDB, TCL), ids=("required", "best-effort"))
+def test_observed_openocd_failure_retains_forward_exit_discovered_at_finish(
+    harness, failed_forward
+):
+    session = harness.prepare()
+    with cleanup_on_exit(session.close):
+        session.acquire()
+        harness.helper.authority.record_terminal(
+            terminal_snapshot(Trigger.CHILD_EXIT, returncode=7)
+        )
+        with pytest.raises(SessionError):
+            session.poll_operation()
+        assert session.openocd_returncode == 7
+        forward = harness.ssh.process(failed_forward)
+        forward.returncode = 13
+
+        with pytest.raises(SessionError, match="exit status 7") as raised:
+            session.finish()
+        if failed_forward == GDB:
+            notes = "\n".join(raised.value.__notes__)
+            assert failed_forward.name in notes
+            assert "13" in notes
+            assert forward.diagnostic.decode() in notes
+            assert not harness.advisories
+        else:
+            assert [advisory.forward for advisory in harness.advisories] == [failed_forward]
+            assert harness.advisories[0].phase == "runtime"
+        assert session.closed
+        assert harness.helper.close_calls == 1
+        assert all(
+            process.mock.close_stderr.call_count == 1 for process in harness.ssh.processes.values()
+        )
+
+
+@pytest.mark.parametrize("fact", ("terminal", "reader"))
+def test_session_failure_during_failed_forward_keeps_rollback_diagnostics_through_finish(
+    harness, monkeypatch, fact
+):
+    session = harness.prepare((GDB,), ())
+    with cleanup_on_exit(session.close):
+        session.acquire()
+        rollback_error = OSError("forward rollback failure")
+        rollback_error.add_note("nested rollback diagnostic")
+        harness.ssh.process(RTT).cleanup_error = rollback_error
+
+        def fail_forward(_process, _sentinel, _deadline):
+            if fact == "terminal":
+                harness.helper.authority.record_terminal(
+                    terminal_snapshot(Trigger.HELPER_FAILURE, code="EARLIER_HELPER_FAILURE")
+                )
+            else:
+                harness.helper.authority.record_reader_failure(OSError("earlier reader failure"))
+            raise OSError("later forward failure")
+
+        monkeypatch.setattr(
+            "zephyr_remote_openocd.controller._forwarding.await_ready", fail_forward
+        )
+        with pytest.raises(SessionError) as raised:
+            session.forward((RTT,), required=True)
+        with pytest.raises(SessionError) as finished:
+            session.record_operation_failure(raised.value)
+            session.finish()
+        assert finished.value is raised.value
+        expected = "EARLIER_HELPER_FAILURE" if fact == "terminal" else "earlier reader failure"
+        assert expected in str(finished.value)
+        notes = "\n".join(finished.value.__notes__)
+        assert "later forward failure" in notes
+        assert "forward rollback failure" in notes
+        assert "nested rollback diagnostic" in notes
+        assert harness.helper.close_calls == 1
+        assert all(process.returncode is not None for process in harness.ssh.processes.values())
