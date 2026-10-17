@@ -31,6 +31,25 @@ _CLIENT_TIMEOUT = 30
 
 DebugHardwareFixture = DebugFixture | AttachFixture | DebugServerFixture | ThreadInfoFixture
 
+_THREADS_BEGIN = "ZRO_THREADS_BEGIN"
+_THREADS_END = "ZRO_THREADS_END"
+# GDB ``info threads`` rows start with an optional current-thread marker and an id.
+_THREAD_ROW = re.compile(r"\*?\s+\d+\s+\S")
+
+
+def assert_listed_threads(output: str, patterns: tuple[str, ...]) -> None:
+    """Require each pattern to identify a different row of the bracketed thread list."""
+    match = re.search(rf"{_THREADS_BEGIN}\n(.*?){_THREADS_END}", output, re.DOTALL)
+    assert match is not None, output
+    listing = match.group(1)
+    rows = [line for line in listing.splitlines() if _THREAD_ROW.match(line)]
+    identified = set()
+    for pattern in patterns:
+        matches = [index for index, row in enumerate(rows) if re.search(pattern, row)]
+        assert len(matches) == 1, f"{pattern!r} matched {len(matches)} thread rows:\n{listing}"
+        identified.update(matches)
+    assert len(identified) == len(patterns), f"thread patterns share a row:\n{listing}"
+
 
 class DebugAcceptance:
     def _west_command(
@@ -276,7 +295,13 @@ class DebugAcceptance:
             fixture,
             "attach",
             fixture.target.build_dir,
-            ("--gdb-init=info threads", "--gdb-init=detach", "--gdb-init=quit"),
+            (
+                f'--gdb-init=printf "{_THREADS_BEGIN}\\n"',
+                "--gdb-init=info threads",
+                f'--gdb-init=printf "{_THREADS_END}\\n"',
+                "--gdb-init=detach",
+                "--gdb-init=quit",
+            ),
         )
         result = run_process(
             command,
@@ -289,4 +314,4 @@ class DebugAcceptance:
             timeout=180,
         )
         assert result.returncode == 0, result.stdout
-        assert re.search(fixture.operation.pattern, result.stdout)
+        assert_listed_threads(result.stdout, fixture.operation.threads)

@@ -133,7 +133,7 @@ class DebugServerOperation:
 
 @dataclass(frozen=True)
 class ThreadInfoOperation:
-    pattern: str
+    threads: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -143,7 +143,6 @@ class RttOperation:
     input: str
     timeout: float
     program_survives_reset: bool
-    breakpoint: str
 
 
 @dataclass(frozen=True)
@@ -427,15 +426,14 @@ def _operation(
             _serial_expectation(raw["serial"], serial, path, f"{location}.serial"),
         )
     if name == "thread_info":
-        return ThreadInfoOperation(raw["pattern"])
+        return ThreadInfoOperation(tuple(raw["threads"]))
     if name == "rtt":
         return RttOperation(
             raw["port"],
             raw["response"],
-            raw.get("input", ""),
+            raw["input"],
             float(raw["timeout"]),
             raw["program_survives_reset"],
-            raw["breakpoint"],
         )
     if name == "semihosting":
         return SemihostingOperation(

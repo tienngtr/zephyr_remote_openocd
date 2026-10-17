@@ -575,7 +575,7 @@
         },
         "thread_info": {
           "$ref": "#/$defs/threadInfo",
-          "description": "Verify that the remote debug service reports Zephyr thread information."
+          "description": "Verify that GDB lists configured application threads through OpenOCD Zephyr thread awareness."
         },
         "rtt": {
           "$ref": "#/$defs/rtt",
@@ -707,33 +707,42 @@
     },
     "threadInfo": {
       "title": "Thread-info operation",
-      "description": "Checks GDB thread listings produced by an OpenOCD build with Zephyr thread awareness.",
+      "description": "Flashes the profile build, attaches, and requires GDB's info threads output to list application threads discovered by OpenOCD's Zephyr thread awareness.",
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "pattern"
+        "threads"
       ],
       "properties": {
-        "pattern": {
-          "$ref": "#/$defs/nonemptyString",
-          "description": "Regular expression expected in GDB's thread information output.",
+        "threads": {
+          "description": "Regular expressions that each identify exactly one different application thread row in GDB's info threads output, such as Zephyr thread names. At least two are required so that a single generic remote thread cannot satisfy the operation.",
+          "type": "array",
+          "minItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/nonemptyString",
+            "description": "Regular expression matched against one info threads row."
+          },
           "examples": [
-            "Thread"
+            [
+              "Philosopher 0",
+              "Philosopher 1"
+            ]
           ]
         }
       }
     },
     "rtt": {
       "title": "RTT operation",
-      "description": "Exercises west rtt and RTT alongside debug services. The target must reference a toolchain.",
+      "description": "Exercises west rtt, and an RTT round trip while a GDB session stays connected through debug, attach, and debugserver. The target must reference a toolchain.",
       "type": "object",
       "additionalProperties": false,
       "required": [
         "port",
+        "input",
         "response",
         "timeout",
-        "program_survives_reset",
-        "breakpoint"
+        "program_survives_reset"
       ],
       "properties": {
         "port": {
@@ -746,16 +755,18 @@
           ]
         },
         "input": {
-          "type": "string",
-          "description": "Text sent to the target through RTT after connecting.",
-          "default": "",
+          "$ref": "#/$defs/nonemptyString",
+          "description": "Request sent from the client to the target through RTT after connecting; it proves client-to-target communication.",
           "examples": [
             "help\n"
           ]
         },
         "response": {
           "$ref": "#/$defs/nonemptyString",
-          "description": "Application-specific text expected in the RTT response."
+          "description": "Application-specific text the target emits only in response to input. The program must not emit it unprompted, so its arrival proves the round trip.",
+          "examples": [
+            "Available commands:"
+          ]
         },
         "timeout": {
           "$ref": "#/$defs/positiveNumber",
@@ -764,13 +775,6 @@
         "program_survives_reset": {
           "const": true,
           "description": "Required acknowledgement that the selected program remains usable after standalone west rtt resets the target."
-        },
-        "breakpoint": {
-          "$ref": "#/$defs/identifier",
-          "description": "C symbol used to prove GDB and RTT work concurrently.",
-          "examples": [
-            "main"
-          ]
         }
       }
     },

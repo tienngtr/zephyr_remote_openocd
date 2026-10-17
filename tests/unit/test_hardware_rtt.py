@@ -38,7 +38,7 @@ def test_simultaneous_gdb_rtt_acceptance_does_not_require_runner_prose(tmp_path,
         (),
         (),
     )
-    fixture = RttFixture(target, RttOperation(rtt_port, "pong", "ping", 30, True, "main"))
+    fixture = RttFixture(target, RttOperation(rtt_port, "pong", "ping", 30, True))
 
     with ExitStack() as resources:
 

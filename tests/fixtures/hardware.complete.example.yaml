@@ -89,12 +89,12 @@ targets:
             response: "Available commands:"
             timeout: 30
             program_survives_reset: true
-            breakpoint: main
       thread_info:
         build: threads
         operations:
           thread_info:
-            pattern: Thread
+            # Thread names set by samples/philosophers.
+            threads: [Philosopher 0, Philosopher 1]
       semihosting:
         build: semihosting_console
         operations:

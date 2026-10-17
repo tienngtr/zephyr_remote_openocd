@@ -70,6 +70,7 @@ def inventory_document(*, zephyr_base: str = "/zephyr", west: str = "/west") -> 
                                     "timeout": 30,
                                 },
                             },
+                            "thread_info": {"threads": ["worker 0", "worker 1"]},
                         },
                     },
                     "rtt_profile": {
@@ -81,7 +82,6 @@ def inventory_document(*, zephyr_base: str = "/zephyr", west: str = "/west") -> 
                                 "response": "commands",
                                 "timeout": 30,
                                 "program_survives_reset": True,
-                                "breakpoint": "main",
                             }
                         },
                     },
