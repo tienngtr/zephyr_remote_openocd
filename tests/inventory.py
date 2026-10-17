@@ -143,7 +143,6 @@ class RttOperation:
     input: str
     timeout: float
     program_survives_reset: bool
-    breakpoint: str
 
 
 @dataclass(frozen=True)
@@ -435,7 +434,6 @@ def _operation(
             raw["input"],
             float(raw["timeout"]),
             raw["program_survives_reset"],
-            raw["breakpoint"],
         )
     if name == "semihosting":
         return SemihostingOperation(

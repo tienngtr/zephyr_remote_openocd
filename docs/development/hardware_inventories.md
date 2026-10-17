@@ -143,7 +143,7 @@ session.
 | `attach` | Distinct precondition build | Flashes it, attaches without loading, and checks memory |
 | `debugserver` | Target toolchain, distinct precondition build, serial expectation | Starts the GDB service and proves that local GDB controls the observed board |
 | `thread_info` | Two or more application thread patterns | Flashes the build, attaches, and requires each pattern in GDB's thread list |
-| `rtt` | Target toolchain, port, input, response, breakpoint | Exercises `west rtt` and debug-integrated RTT |
+| `rtt` | Target toolchain, port, input, response | Exercises `west rtt` and debug-integrated RTT |
 | `semihosting` | OpenOCD commands, expected output, timeout | Runs direct semihosting to natural completion |
 
 Flash uses an application-specific serial pattern to distinguish the selected

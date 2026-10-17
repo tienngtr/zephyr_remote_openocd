@@ -102,7 +102,7 @@ def test_hardware_cleanup_stops_descendant_after_leader_exit(tmp_path, monkeypat
                 )
             else:
                 fixture = RttFixture(
-                    target, RttOperation(RTT.local_port, "pong", "ping", SYNC_TIMEOUT, True, "main")
+                    target, RttOperation(RTT.local_port, "pong", "ping", SYNC_TIMEOUT, True)
                 )
                 if operation == "rtt-abort":
                     RttAcceptance().gdb_server(fixture, tmp_path, "debug")
