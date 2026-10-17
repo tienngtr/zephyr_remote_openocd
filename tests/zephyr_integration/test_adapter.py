@@ -1633,7 +1633,7 @@ def _without_service_ports(argv: list[str]) -> tuple[list[str], list[str]]:
 
 
 def _built_in_commands(runner, command: str, caplog) -> list[list[str]]:
-    """Commands logged by the built-in runner's public dry-run execution mode."""
+    """Commands logged by the built-in runner with its inherited dry_run flag set."""
     executables = (runner.cfg.openocd, runner.cfg.gdb)
     runner.dry_run = True
     with caplog.at_level(logging.INFO, logger=runner.logger.name):
@@ -1720,9 +1720,9 @@ def test_commands_match_built_in_runner(
     """Detect unexpected differences from Zephyr's runner in matching scenarios.
 
     Only runner-owned remote differences are normalized. Matching does not make
-    every built-in behavior desirable: known intentional differences, such as
-    ``debugserver --serial`` and unsupported erase, stay out of these scenarios
-    rather than being normalized away.
+    every built-in behavior desirable: deliberate differences
+    (REQ-FUNC-OPT-008) stay out of these scenarios rather than being normalized
+    away.
     """
     core, upstream, remote = runner_api
     cfg = comparison_config._replace(file_type=getattr(core.FileType, file_type))
@@ -1752,25 +1752,57 @@ def test_commands_match_built_in_runner(
         ]
 
 
-def test_live_flash_with_unsupported_erase_fails_without_remote_work(
-    runner_api, comparison_config, monkeypatch
+@pytest.mark.parametrize(
+    ("file_type", "argv"),
+    (
+        pytest.param(
+            "HEX",
+            ["--cmd-load=flash write_image erase", "--cmd-verify=verify_image", "--erase"],
+            id="erase-without-erase-command",
+        ),
+        pytest.param(
+            "BIN",
+            ["--cmd-load=flash write_image", "--flash-address=0x20000000", "--verify-only"],
+            id="bin-verify-without-verify-command",
+        ),
+    ),
+)
+def test_live_flash_with_unperformable_request_fails_without_remote_work(
+    runner_api, comparison_config, tmp_path, monkeypatch, file_type, argv
 ):
-    _, _, remote = runner_api
+    core, _, remote = runner_api
     for name in ("run", "popen", "run_stream"):
         monkeypatch.setattr(
             SshCommand,
             name,
             Mock(side_effect=AssertionError(f"SshCommand.{name}() is not expected in this test")),
         )
-    runner = remote.create(
-        comparison_config,
-        parser_for(remote).parse_args(
-            ["--cmd-load=flash write_image erase", "--cmd-verify=verify_image", "--erase"]
-        ),
+    # Remote-relative paths would otherwise require a remote home query.
+    config = tmp_path / "home-relative.yaml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "default_remote": "chosen",
+                "remotes": {
+                    "chosen": {
+                        "ssh_host": "selected_host",
+                        "openocd_command": ["~/bin/openocd"],
+                        "path_mappings": {"/": "~/mirror"},
+                    }
+                },
+            }
+        )
     )
+    monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", str(config))
+    image = Path(comparison_config.hex_file).with_suffix(".bin")
+    image.write_bytes(b"\x00")
+    cfg = comparison_config._replace(
+        file_type=getattr(core.FileType, file_type), bin_file=str(image)
+    )
+    runner = remote.create(cfg, parser_for(remote).parse_args(argv))
 
-    # Intentionally stricter than Zephyr 4.4, which logs an error and returns
-    # success without programming the target.
+    # Deliberately stricter than Zephyr 4.4 (REQ-FUNC-OPT-008), which returns
+    # success without performing the requested erase or verification.
     with pytest.raises(RuntimeError) as raised:
         runner.run("flash")
     assert isinstance(raised.value.__cause__, FlashPlanError)

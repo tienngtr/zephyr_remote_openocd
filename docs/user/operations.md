@@ -109,6 +109,14 @@ the selected image on the target and should produce that application's normal
 output. Use `west flash --context` first if you need to inspect available
 runners.
 
+Unlike the built-in `openocd` runner, `remote_openocd` fails instead of
+reporting success when it cannot perform a requested step: `--erase` on a HEX
+or BIN image needs an erase command (`--cmd-erase`), and `--verify` or
+`--verify-only` on a BIN image needs a verify command (`--cmd-verify`), whether
+supplied on the command line or by the board. Likewise, `debugserver` honors
+`--serial`, which the built-in runner ignores for that command, so the
+requested probe is selected on a remote host with several probes.
+
 ### Debug
 
 Run `west debug -r remote_openocd --remote lab`. The command starts remote

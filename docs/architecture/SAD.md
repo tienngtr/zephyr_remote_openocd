@@ -532,10 +532,18 @@ The compatibility policy is:
 
 The built-in `openocd` runner from the particular supported Zephyr 4.4.x
 environment in use defines the compatibility boundary for the supported west
-commands. The
-adapter preserves the functional effect of inherited options while translating
-them into remote plans, except where a specific SRS requirement defines
-different remote behavior. In particular, the remote runner owns the remote
+commands. Compatibility is semantic rather than bug-for-bug: the adapter
+preserves inherited option names, value forms, and their intended effect while
+translating them into remote plans, except where a specific SRS requirement
+defines different remote behavior. Built-in runner behavior that reports
+success without performing a requested erase or verification, or that ignores
+an explicit `debugserver --serial`, is deliberately not reproduced;
+REQ-FUNC-OPT-008 is the complete list of such semantic differences, and each
+has focused tests. The differential comparison with the built-in runner classifies
+differences: an unexpected difference fails and must be resolved as a
+regression, a necessary remote difference, or a deliberate difference added to
+REQ-FUNC-OPT-008. There is no option selecting literal built-in behavior. In
+particular, the remote runner owns the remote
 bind address and service and forwarding configuration because it must allocate
 remote ports and construct SSH forwards before local clients can use them.
 
@@ -718,7 +726,10 @@ HEX operation plan. The public flash-plan result remains the runner boundary.
 Explicit erase commands are resolved and validated once for the selected
 operation, then consumed by command construction. Only HEX/BIN load operations
 with erase requested require them; ELF and verification-only operations omit
-explicit erase commands, matching the inherited Zephyr behavior.
+explicit erase commands, matching the inherited Zephyr behavior. Likewise, BIN
+verification or verification-only requires a verify command. The adapter
+runs this pure validation before remote-home resolution, so either missing
+command fails before any remote work (REQ-FUNC-OPT-008).
 
 Planning distinguishes literal strings from explicit runner-owned session-value
 references. Mapped paths are literal; staged paths carry a workspace reference

@@ -731,19 +731,21 @@ Users SHALL NOT need to duplicate built-in OpenOCD board-runner arguments in:
 For the west commands in REQ-FUNC-SCOPE-002, the custom runner SHALL accept
 the user-facing runner option names and value forms exposed by the built-in
 `openocd` runner from the particular supported Zephyr 4.4.x environment in use.
-Unless another requirement in this SRS defines
-different remote-execution behavior, inherited options SHALL preserve their
-functional effect on runner configuration and generated OpenOCD or GDB
-behavior. Identical diagnostics, logging, help text, or other incidental
-presentation SHALL NOT be required.
+Inherited options SHALL preserve their supported, intended effect on runner
+configuration and generated OpenOCD or GDB behavior, except for
+remote-execution behavior defined by another requirement in this SRS and the
+deliberate deviations in REQ-FUNC-OPT-008, whose listed built-in runner
+behavior SHALL NOT be reproduced. Identical diagnostics, logging, help text, or
+other incidental presentation SHALL NOT be required.
 
 The custom runner MAY add remote-specific options.
 
 Rationale:
 
-This defines a versioned functional compatibility boundary without duplicating
+This defines a versioned semantic compatibility boundary without duplicating
 Zephyr's runner option list or incidental presentation behavior in this
-specification.
+specification, and without requiring bug-for-bug reproduction of the built-in
+runner.
 
 ### REQ-FUNC-OPT-002
 
@@ -770,13 +772,37 @@ locally at the same port; the unused `--gdb-client-port` SHALL have no effect.
 ### REQ-FUNC-OPT-006
 
 User-supplied OpenOCD command options inherited under REQ-FUNC-OPT-001 SHALL
-retain their semantics from the built-in `openocd` runner in the particular
-supported Zephyr 4.4.x environment in use when constructing the remote OpenOCD
-command.
+retain their intended semantics from the built-in `openocd` runner in the
+particular supported Zephyr 4.4.x environment in use when constructing the
+remote OpenOCD command, subject to REQ-FUNC-OPT-008.
 
 ### REQ-FUNC-OPT-007
 
 The runner SHALL NOT be required to translate arbitrary local paths embedded in arbitrary user-written Tcl.
+
+### REQ-FUNC-OPT-008
+
+The custom runner SHALL deliberately differ from the built-in `openocd` runner
+of the particular supported Zephyr 4.4.x environment in use as follows:
+
+- `west flash` of a HEX or BIN image with `--erase` but no erase command SHALL
+  fail before remote work rather than succeed without programming the target;
+- `west flash` of a BIN image with `--verify` or `--verify-only` but no verify
+  command SHALL fail before remote work rather than succeed without verifying
+  the target;
+- `west debugserver` SHALL apply an explicit `--serial` as for the other
+  supported commands (REQ-FUNC-OPT-002), rather than ignore it.
+
+Any further deliberate semantic or correctness-motivated difference from the
+built-in runner SHALL be added to this requirement. Remote-execution
+differences required by other requirements in this SRS are not listed here. A global option selecting literal built-in runner behavior
+SHALL NOT be required.
+
+Rationale:
+
+A remote runner cannot let a user observe a silently skipped operation, and
+remote hosts commonly connect several probes. Listing each deliberate
+difference keeps the compatibility boundary reviewable.
 
 ---
 
@@ -944,8 +970,8 @@ NOT rewrite user-provided Tcl or opaque fixed arguments.
 ### REQ-FUNC-FLASH-004
 
 Flash-related options inherited under REQ-FUNC-OPT-001 SHALL retain their
-semantics from the built-in `openocd` runner from the particular supported
-Zephyr 4.4.x environment in use for:
+intended semantics from the built-in `openocd` runner from the particular
+supported Zephyr 4.4.x environment in use, subject to REQ-FUNC-OPT-008, for:
 
 - erase;
 - load;
@@ -1018,7 +1044,8 @@ allow an independent GDB client to control the target.
 `west debug -r remote_openocd` SHALL preserve the GDB invocation and
 initialization behavior of the built-in `openocd` runner from the particular
 supported Zephyr 4.4.x environment in use, except for remote-execution
-behavior explicitly defined by this specification.
+behavior explicitly defined by this specification and the deliberate
+deviations in REQ-FUNC-OPT-008.
 
 ---
 

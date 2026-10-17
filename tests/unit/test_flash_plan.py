@@ -87,6 +87,35 @@ class TestFlashPlanning:
         assert not planner.staged_files
         assert not planner.remote_checks
 
+    @pytest.mark.parametrize(("verify", "verify_only"), ((True, False), (False, True)))
+    def test_bin_verification_without_verify_command_fails_before_planning_paths(
+        self, tmp_path: Path, verify: bool, verify_only: bool
+    ):
+        image = tmp_path / "firmware.bin"
+        image.write_bytes(b"\x00")
+        planner = PathPlanner(())
+        inputs = FlashInputs(
+            executable="openocd",
+            image_type="bin",
+            file=str(image),
+            elf_file=None,
+            hex_file=None,
+            bin_file=str(image),
+            search_paths=(),
+            config_files=(),
+            load_command="program",
+            flash_address="0x8000000",
+            verify=verify,
+            verify_only=verify_only,
+        )
+
+        with pytest.raises(flash_module.FlashPlanError) as error:
+            build_flash_plan(inputs, planner)
+
+        assert "no verify command" in str(error.value).lower()
+        assert not planner.staged_files
+        assert not planner.remote_checks
+
     def test_plan_directory_rejects_ancestor_symlink_cycle(self, tmp_path: Path):
         root = tmp_path / "search"
         ancestor = root / "a"

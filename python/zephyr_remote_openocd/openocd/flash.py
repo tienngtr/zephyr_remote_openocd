@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,9 +17,6 @@ from zephyr_remote_openocd.protocol.process import ProcessSpec
 
 class FlashPlanError(RuntimeError):
     pass
-
-
-_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -104,8 +100,17 @@ def _image_source(inputs: FlashInputs, kind: str) -> str | None:
 def _validate_flash_options(inputs: FlashInputs, kind: str) -> None:
     if kind == "bin" and (not inputs.load_command or inputs.flash_address is None):
         raise FlashPlanError("cannot flash BIN; load command and flash address are required")
+    if kind == "bin" and (inputs.verify or inputs.verify_only) and not inputs.verify_command:
+        raise FlashPlanError("BIN verification requested but no verify command is available")
     if kind not in ("elf", "bin") and (not inputs.load_command or not inputs.verify_command):
         raise FlashPlanError("cannot flash image; load and verify commands are required")
+
+
+def validate_flash_inputs(inputs: FlashInputs) -> None:
+    """Reject requests that cannot be performed, using only local inputs."""
+    kind = _image_kind(inputs)
+    _validate_flash_options(inputs, kind)
+    _plan_erase_commands(inputs, kind)
 
 
 def _plan_erase_commands(inputs: FlashInputs, kind: str) -> tuple[str, ...]:
@@ -186,7 +191,7 @@ def _bin_flash_commands(
                 ),
             )
         )
-    if (inputs.verify or inputs.verify_only) and inputs.verify_command:
+    if inputs.verify or inputs.verify_only:
         commands.extend(("-c", inputs.reset_halt))
         commands.extend(
             (
@@ -268,11 +273,6 @@ def build_flash_plan(
         (ArgumentTemplate(("bindto ", SessionValue.ADDRESS)),),
     )
     image = _plan_image(inputs, planner)
-    if image.kind == "bin" and (inputs.verify or inputs.verify_only) and not inputs.verify_command:
-        _LOGGER.warning(
-            "BIN verification requested but no verify command is available; "
-            "skipping verification to preserve Zephyr 4.4 OpenOCD runner behavior"
-        )
 
     arguments = _flash_argv(inputs, base, image, erase_commands)
     process = ProcessSpec(

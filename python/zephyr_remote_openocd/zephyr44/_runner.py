@@ -34,7 +34,12 @@ from zephyr_remote_openocd.openocd.debug import (
     build_debug_plan,
     parse_openocd_version,
 )
-from zephyr_remote_openocd.openocd.flash import FlashInputs, FlashPlanError, build_flash_plan
+from zephyr_remote_openocd.openocd.flash import (
+    FlashInputs,
+    FlashPlanError,
+    build_flash_plan,
+    validate_flash_inputs,
+)
 
 
 class RemoteOpenOcdBinaryRunner(OpenOcdBinaryRunner):
@@ -157,9 +162,12 @@ def _select_remote(runner, recording):
 
 
 def build_operation(runner, command, selected):
-    selected = prepare_remote_paths(selected)
     if command == "flash":
+        # Locally unperformable requests fail before remote-home resolution.
+        validate_flash_inputs(_flash_inputs(runner, selected))
+        selected = prepare_remote_paths(selected)
         return selected, _flash_request(runner, selected), None
+    selected = prepare_remote_paths(selected)
     if command not in {"debug", "attach", "debugserver", "rtt"}:
         raise RuntimeError(f"remote_openocd {command} is not implemented")
     version = None
@@ -373,18 +381,15 @@ def _recorded_rtt(runner, command, plan):
     }
 
 
-def _flash_request(runner, selected):
-    executable = _remote_openocd(selected)
-    environment = _forwarded_environment(runner, selected)
-    search_paths = _search_paths(runner)
-    inputs = FlashInputs(
-        executable=executable,
+def _flash_inputs(runner, selected):
+    return FlashInputs(
+        executable=_remote_openocd(selected),
         image_type=_file_type(runner.image_type),
         file=runner.remote_config.file,
         elf_file=runner.remote_config.elf_file,
         hex_file=runner.remote_config.hex_file,
         bin_file=runner.remote_config.bin_file,
-        search_paths=search_paths,
+        search_paths=_search_paths(runner),
         config_files=tuple(runner.openocd_config or ()),
         pre_init=tuple(runner.pre_init),
         reset_halt=runner.reset_halt_cmd,
@@ -401,8 +406,12 @@ def _flash_request(runner, selected):
         no_init=runner.parsed_args.no_init,
         no_targets=runner.parsed_args.no_targets,
     )
+
+
+def _flash_request(runner, selected):
+    environment = _forwarded_environment(runner, selected)
     planner = PathPlanner(selected.path_mappings)
-    plan = build_flash_plan(inputs, planner, environment)
+    plan = build_flash_plan(_flash_inputs(runner, selected), planner, environment)
     return SessionPlan(
         selected.remote_host,
         SshCommand(selected.ssh_command),
