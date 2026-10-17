@@ -89,7 +89,6 @@ targets:
             response: "Available commands:"
             timeout: 30
             program_survives_reset: true
-            breakpoint: main
       thread_info:
         build: threads
         operations:

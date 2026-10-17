@@ -82,7 +82,6 @@ def inventory_document(*, zephyr_base: str = "/zephyr", west: str = "/west") -> 
                                 "response": "commands",
                                 "timeout": 30,
                                 "program_survives_reset": True,
-                                "breakpoint": "main",
                             }
                         },
                     },

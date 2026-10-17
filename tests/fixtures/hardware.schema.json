@@ -734,7 +734,7 @@
     },
     "rtt": {
       "title": "RTT operation",
-      "description": "Exercises west rtt and RTT alongside debug services. The target must reference a toolchain.",
+      "description": "Exercises west rtt, and an RTT round trip while a GDB session stays connected through debug, attach, and debugserver. The target must reference a toolchain.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -742,8 +742,7 @@
         "input",
         "response",
         "timeout",
-        "program_survives_reset",
-        "breakpoint"
+        "program_survives_reset"
       ],
       "properties": {
         "port": {
@@ -776,13 +775,6 @@
         "program_survives_reset": {
           "const": true,
           "description": "Required acknowledgement that the selected program remains usable after standalone west rtt resets the target."
-        },
-        "breakpoint": {
-          "$ref": "#/$defs/identifier",
-          "description": "C symbol used to prove GDB and RTT work concurrently.",
-          "examples": [
-            "main"
-          ]
         }
       }
     },
