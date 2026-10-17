@@ -126,7 +126,8 @@ class AttachOperation:
 
 @dataclass(frozen=True)
 class DebugServerOperation:
-    pass
+    precondition_build: str
+    serial: SerialExpectation
 
 
 @dataclass(frozen=True)
@@ -343,6 +344,18 @@ def _serial(name: str, raw: dict[str, Any]) -> SerialEndpoint:
     )
 
 
+def _serial_expectation(
+    raw: dict[str, Any],
+    serial: Mapping[str, SerialEndpoint],
+    path: Path,
+    location: str,
+) -> SerialExpectation:
+    endpoint = raw["endpoint"]
+    if endpoint not in serial:
+        raise _error(path, f"{location}.endpoint", f"references unknown serial {endpoint!r}")
+    return SerialExpectation(endpoint, raw["pattern"], float(raw["timeout"]))
+
+
 def _precondition(
     value: str,
     builds: Mapping[str, BuildRecipe],
@@ -367,14 +380,6 @@ def _operation(
     location: str,
 ) -> Operation:
     if name == "flash":
-        serial_raw = raw["serial"]
-        endpoint = serial_raw["endpoint"]
-        if endpoint not in serial:
-            raise _error(
-                path,
-                f"{location}.serial.endpoint",
-                f"references unknown serial {endpoint!r}",
-            )
         return FlashOperation(
             _precondition(
                 raw["precondition_build"],
@@ -383,7 +388,7 @@ def _operation(
                 path,
                 f"{location}.precondition_build",
             ),
-            SerialExpectation(endpoint, serial_raw["pattern"], float(serial_raw["timeout"])),
+            _serial_expectation(raw["serial"], serial, path, f"{location}.serial"),
             tuple(raw.get("output_patterns", [])),
             raw.get("assert_bindto", False),
         )
@@ -400,7 +405,16 @@ def _operation(
             )
         )
     if name == "debugserver":
-        return DebugServerOperation()
+        return DebugServerOperation(
+            _precondition(
+                raw["precondition_build"],
+                builds,
+                selected_build,
+                path,
+                f"{location}.precondition_build",
+            ),
+            _serial_expectation(raw["serial"], serial, path, f"{location}.serial"),
+        )
     if name == "thread_info":
         return ThreadInfoOperation(raw["pattern"])
     if name == "rtt":

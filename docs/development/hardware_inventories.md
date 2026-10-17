@@ -142,7 +142,7 @@ session.
 | `flash` | Distinct precondition build, serial expectation | Flashes both images and proves fresh serial output |
 | `debug` | Breakpoint symbol in an ELF with debug information | Loads firmware and verifies a source-level stop |
 | `attach` | Distinct precondition build | Flashes it, attaches without loading, and checks memory |
-| `debugserver` | Target toolchain | Starts the GDB service and connects local GDB |
+| `debugserver` | Target toolchain, distinct precondition build, serial expectation | Starts the GDB service and proves that local GDB controls the observed board |
 | `thread_info` | Expected thread-list pattern | Checks Zephyr-aware GDB thread output |
 | `rtt` | Target toolchain, port, response, breakpoint | Exercises `west rtt` and debug-integrated RTT |
 | `semihosting` | OpenOCD commands, expected output, timeout | Runs direct semihosting to natural completion |
@@ -154,6 +154,17 @@ profile build. `output_patterns` match combined west/OpenOCD output;
 allocated loopback address. The precondition must be quiet with respect to the
 selected image pattern; the harness treats that as a test invariant rather
 than opening a second serial session to observe a timed quiet period.
+
+Debugserver's `serial` expectation proves that the GDB session controls the
+board wired to that endpoint. Its `precondition_build` has the same distinct,
+quiet requirements as flash. The harness flashes the
+precondition and starts debugserver. When the service is ready, it arms the
+reader. An independent GDB client then starts the profile build through
+debugserver the way Zephyr's ELF flash does: `monitor reset init`, `load`, and
+`monitor resume` at the ELF entry. The pattern must then appear. With `probe_serial` set and
+several probes on the host, this shows that `debugserver --serial` selected the
+requested probe. If debugserver controlled another probe, the observed board
+would keep running the quiet precondition.
 
 Attach has the same distinct-precondition requirement. It derives identifying
 bytes from that ELF and verifies that attaching does not replace them.

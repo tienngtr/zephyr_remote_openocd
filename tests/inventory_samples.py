@@ -59,7 +59,14 @@ def inventory_document(*, zephyr_base: str = "/zephyr", west: str = "/west") -> 
                             },
                             "debug": {"breakpoint": "main"},
                             "attach": {"precondition_build": "precondition"},
-                            "debugserver": {},
+                            "debugserver": {
+                                "precondition_build": "precondition",
+                                "serial": {
+                                    "endpoint": "console",
+                                    "pattern": "ready",
+                                    "timeout": 30,
+                                },
+                            },
                         },
                     },
                     "rtt_profile": {

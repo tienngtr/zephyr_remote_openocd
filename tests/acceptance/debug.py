@@ -10,6 +10,8 @@ import time
 from pathlib import Path
 
 import pytest
+from elftools.elf.elffile import ELFFile
+from zephyr_remote_openocd.controller._ssh import SshCommand
 
 from tests.hardware_support import (
     AttachFixture,
@@ -20,9 +22,12 @@ from tests.hardware_support import (
     free_loopback_ports,
     hardware_operation_environment,
 )
-from tests.process_support import managed_process, run_process
+from tests.process_support import cleanup_on_exit, managed_process, run_process
+from tests.serial_reader import captured_text, endpoint_reader_command, read_event, stop_reader
 
 pytestmark = [pytest.mark.hardware, pytest.mark.destructive]
+
+_CLIENT_TIMEOUT = 30
 
 DebugHardwareFixture = DebugFixture | AttachFixture | DebugServerFixture | ThreadInfoFixture
 
@@ -146,6 +151,18 @@ class DebugAcceptance:
         assert observed != selected_bytes
 
     def debugserver(self, fixture: DebugServerFixture, output_path: Path) -> None:
+        # A quiet image ensures the pattern can only come from the GDB session.
+        prepared = run_process(
+            self._west_command(fixture, "flash", fixture.precondition_build_dir),
+            cwd=fixture.target.workspace,
+            env=hardware_operation_environment(fixture.target),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=180,
+        )
+        assert prepared.returncode == 0, prepared.stdout
         gdb_port, tcl_port, telnet_port = free_loopback_ports(3)
         extra_args = (
             f"--gdb-port={gdb_port}",
@@ -190,36 +207,81 @@ class DebugAcceptance:
             assert process.poll() is None, (
                 "debugserver exited before client connection:\n" + diagnostics()
             )
-            client = run_process(
-                [
-                    str(fixture.target.gdb),
-                    "-q",
-                    "-batch",
-                    str(fixture.target.elf_file),
-                    "-ex",
-                    f"target extended-remote 127.0.0.1:{gdb_port}",
-                    "-ex",
-                    "monitor halt",
-                    "-ex",
-                    "monitor resume",
-                    "-ex",
-                    "detach",
-                    "-ex",
-                    "quit",
-                ],
-                env=hardware_operation_environment(fixture.target),
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                check=False,
-                timeout=30,
-            )
-            assert client.returncode == 0, client.stdout
+            self._debugserver_controls_observed_board(fixture, gdb_port)
             assert process.poll() is None, (
                 "debugserver did not remain persistent:\n" + diagnostics()
             )
             process.send_signal(signal.SIGINT)
             process.wait(timeout=15)
+
+    def _debugserver_controls_observed_board(
+        self, fixture: DebugServerFixture, gdb_port: int
+    ) -> None:
+        """Require output on this target's serial port caused by the GDB session."""
+        observation = fixture.operation.serial
+        host = fixture.target.host
+        reader = SshCommand(host.ssh_command).popen(
+            host.ssh_host,
+            # The reader deadline starts when armed and also covers the GDB client.
+            endpoint_reader_command(
+                fixture.serial, observation.pattern, observation.timeout + _CLIENT_TIMEOUT
+            ),
+        )
+        with cleanup_on_exit(lambda: stop_reader(reader)):
+            assert read_event(reader, 15)["type"] == "READY"
+            assert reader.stdin is not None
+            # Arm after debugserver startup so only output caused by the client counts.
+            reader.stdin.write(b"ARM\n")
+            reader.stdin.flush()
+            assert read_event(reader, 15)["type"] == "ARMED"
+            with fixture.target.elf_file.open("rb") as stream:
+                entry = ELFFile(stream).header["e_entry"]
+            # Start the image as Zephyr's ELF flash does: a reset alone may boot
+            # unrelated persistent firmware instead.
+            client = self._debugserver_client(
+                fixture,
+                gdb_port,
+                ("monitor reset init", "load", f"monitor resume 0x{entry:x}"),
+            )
+            try:
+                event = read_event(reader, observation.timeout + _CLIENT_TIMEOUT + 2)
+            except AssertionError:
+                pytest.fail(
+                    f"serial reader failed after debugserver client:\n{client.stdout}",
+                    pytrace=False,
+                )
+            captured = captured_text(event)
+            assert client.returncode == 0, client.stdout + "\nserial:\n" + captured
+            assert event["type"] == "MATCH", f"serial oracle failed: {event}\n{captured}"
+            assert reader.wait(timeout=5) == 0
+
+    @staticmethod
+    def _debugserver_client(
+        fixture: DebugServerFixture, gdb_port: int, commands: tuple[str, ...]
+    ) -> subprocess.CompletedProcess[str]:
+        """Run an independent GDB client that connects, then runs ``commands``."""
+        arguments = [
+            str(fixture.target.gdb),
+            "-q",
+            "-batch",
+            str(fixture.target.elf_file),
+        ]
+        for command in (
+            f"target extended-remote 127.0.0.1:{gdb_port}",
+            *commands,
+            "detach",
+            "quit",
+        ):
+            arguments.extend(("-ex", command))
+        return run_process(
+            arguments,
+            env=hardware_operation_environment(fixture.target),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=_CLIENT_TIMEOUT,
+        )
 
     def thread_info(self, thread_info_fixture: ThreadInfoFixture) -> None:
         fixture = thread_info_fixture

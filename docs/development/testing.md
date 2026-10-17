@@ -253,6 +253,9 @@ observation before flashing the selected image (normally
 `samples/hello_world`) and requires its marker. Precondition quietness is a
 test invariant; the test does not spend a timed observation re-proving it.
 Attach acceptance reads the PC and current instruction without loading.
+Debugserver acceptance likewise flashes a quiet precondition, then arms serial
+observation before an independent GDB client loads and starts the selected
+image through debugserver, and requires its marker.
 RTT-server acceptance combines an active GDB session with a bidirectional RTT
 exchange. The debugserver variant waits for a connection to the local GDB
 endpoint before launching its independent client; runner diagnostic wording

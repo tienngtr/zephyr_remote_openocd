@@ -290,6 +290,8 @@ class AttachFixture:
 class DebugServerFixture:
     target: PreparedTarget
     operation: DebugServerOperation
+    serial: SerialEndpoint
+    precondition_build_dir: Path
 
 
 @dataclass(frozen=True)
@@ -394,7 +396,12 @@ class HardwarePreparation:
             )
             return AttachFixture(prepared, operation, precondition)
         if isinstance(operation, DebugServerOperation):
-            return DebugServerFixture(prepared, operation)
+            precondition = self._prepare_build(
+                target, prepared.build_environment, operation.precondition_build, config_path
+            )
+            return DebugServerFixture(
+                prepared, operation, target.endpoint(operation.serial.endpoint), precondition
+            )
         if isinstance(operation, ThreadInfoOperation):
             return ThreadInfoFixture(prepared, operation)
         if isinstance(operation, RttOperation):

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import ipaddress
 import re
 import subprocess
@@ -13,8 +12,8 @@ from zephyr_remote_openocd.controller._ssh import SshCommand
 
 from tests.hardware_support import FlashFixture, hardware_operation_environment
 from tests.process_support import cleanup_on_exit, run_process
+from tests.serial_reader import captured_text, endpoint_reader_command
 from tests.serial_reader import read_event as _read_event
-from tests.serial_reader import remote_serial_reader_command
 from tests.serial_reader import stop_reader as _stop
 
 
@@ -26,7 +25,9 @@ class FlashAcceptance:
         assert precondition.returncode == 0, precondition.stdout
 
         observation = fixture.operation.serial
-        remote_command = self._reader_command(fixture, observation.timeout + 180)
+        remote_command = endpoint_reader_command(
+            fixture.serial, observation.pattern, observation.timeout + 180
+        )
         reader = ssh.popen(fixture.target.host.ssh_host, remote_command)
         with cleanup_on_exit(lambda: _stop(reader)):
             assert _read_event(reader, 15)["type"] == "READY"
@@ -39,33 +40,13 @@ class FlashAcceptance:
                 event = _read_event(reader, observation.timeout + 2)
             except AssertionError:
                 pytest.fail(f"serial reader failed after flash:\n{flash.stdout}", pytrace=False)
-            captured = self._captured_text(event)
+            captured = captured_text(event)
             assert flash.returncode == 0, flash.stdout + "\nserial:\n" + captured
             assert event["type"] == "MATCH", f"serial oracle failed: {event}\n{captured}"
             self._assert_bindto(fixture, flash.stdout)
             for pattern in fixture.operation.output_patterns:
                 assert re.search(pattern, flash.stdout)
             assert reader.wait(timeout=5) == 0
-
-    @staticmethod
-    def _reader_command(fixture: FlashFixture, timeout: float) -> str:
-        endpoint = fixture.serial
-        return remote_serial_reader_command(
-            endpoint.device,
-            endpoint.baud,
-            fixture.operation.serial.pattern,
-            timeout,
-            data_bits=endpoint.data_bits,
-            parity=endpoint.parity,
-            stop_bits=endpoint.stop_bits,
-            flow_control=endpoint.flow_control,
-        )
-
-    @staticmethod
-    def _captured_text(event: dict[str, object]) -> str:
-        encoded = event.get("data", "")
-        assert isinstance(encoded, str), f"invalid serial reader event: {event}"
-        return base64.b64decode(encoded).decode("utf-8", "replace")
 
     @staticmethod
     def flash(fixture: FlashFixture, build_dir: Path) -> subprocess.CompletedProcess[str]:

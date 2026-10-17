@@ -73,7 +73,12 @@ targets:
             output_patterns: [Open On-Chip Debugger]
           attach:
             precondition_build: minimal
-          debugserver: {}
+          debugserver:
+            precondition_build: minimal
+            serial:
+              endpoint: console
+              pattern: Hello World
+              timeout: 30
       rtt:
         build: rtt_shell
         operations:

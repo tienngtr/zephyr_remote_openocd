@@ -10,6 +10,7 @@ import shlex
 
 from zephyr_remote_openocd.controller._ssh import ManagedSshProcess, stop_process
 
+from tests.inventory import SerialEndpoint
 from tests.process_support import read_line
 
 SERIAL_READER_SOURCE = r'''import base64,json,os,re,select,sys,termios,time
@@ -114,3 +115,24 @@ def remote_serial_reader_command(
             *(shlex.quote(value) for value in args),
         )
     )
+
+
+def endpoint_reader_command(endpoint: SerialEndpoint, pattern: str, timeout: float) -> str:
+    """Return the remote reader command for an inventory serial endpoint."""
+    return remote_serial_reader_command(
+        endpoint.device,
+        endpoint.baud,
+        pattern,
+        timeout,
+        data_bits=endpoint.data_bits,
+        parity=endpoint.parity,
+        stop_bits=endpoint.stop_bits,
+        flow_control=endpoint.flow_control,
+    )
+
+
+def captured_text(event: dict[str, object]) -> str:
+    """Decode the serial data carried by a MATCH or TIMEOUT event."""
+    encoded = event.get("data", "")
+    assert isinstance(encoded, str), f"invalid serial reader event: {event}"
+    return base64.b64decode(encoded).decode("utf-8", "replace")

@@ -571,7 +571,7 @@
         },
         "debugserver": {
           "$ref": "#/$defs/debugserver",
-          "description": "Start west debugserver and verify its GDB service using the target toolchain."
+          "description": "Start west debugserver and prove, using the target toolchain, that its GDB service controls the board behind the selected probe."
         },
         "thread_info": {
           "$ref": "#/$defs/threadInfo",
@@ -638,7 +638,7 @@
         },
         "timeout": {
           "$ref": "#/$defs/positiveNumber",
-          "description": "Seconds to wait for the serial pattern after flashing."
+          "description": "Seconds to wait for the serial pattern after flashing or resetting."
         }
       }
     },
@@ -682,9 +682,23 @@
     },
     "debugserver": {
       "title": "Debugserver operation",
-      "description": "An empty object enables GDB-service acceptance. The target must reference a toolchain.",
+      "description": "Proves that an independent GDB client starts the selected build through debugserver on the observed board. The target must reference a toolchain.",
       "type": "object",
-      "additionalProperties": false
+      "additionalProperties": false,
+      "required": [
+        "precondition_build",
+        "serial"
+      ],
+      "properties": {
+        "precondition_build": {
+          "$ref": "#/$defs/identifier",
+          "description": "A quiet declared build different from the profile build, flashed before debugserver starts."
+        },
+        "serial": {
+          "$ref": "#/$defs/serialExpectation",
+          "description": "Remote serial endpoint of the board behind the profile's probe and the fresh-output expectation after the GDB client loads and starts the profile build through debugserver."
+        }
+      }
     },
     "threadInfo": {
       "title": "Thread-info operation",
