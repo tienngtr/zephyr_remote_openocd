@@ -126,7 +126,6 @@ profile environment key is valid only when the selected host lists it in
 | `data_bits`, `parity`, `stop_bits`, `flow_control` | `8`, `none`, `1`, `none` |
 | `output_patterns`, `gdb_commands` | Empty |
 | `assert_bindto` | `false` |
-| RTT `input` | Empty string |
 
 Schema defaults are editor hints; the inventory loader applies the matching
 runtime defaults.
@@ -144,7 +143,7 @@ session.
 | `attach` | Distinct precondition build | Flashes it, attaches without loading, and checks memory |
 | `debugserver` | Target toolchain, distinct precondition build, serial expectation | Starts the GDB service and proves that local GDB controls the observed board |
 | `thread_info` | Two or more application thread patterns | Flashes the build, attaches, and requires each pattern in GDB's thread list |
-| `rtt` | Target toolchain, port, response, breakpoint | Exercises `west rtt` and debug-integrated RTT |
+| `rtt` | Target toolchain, port, input, response, breakpoint | Exercises `west rtt` and debug-integrated RTT |
 | `semihosting` | OpenOCD commands, expected output, timeout | Runs direct semihosting to natural completion |
 
 Flash uses an application-specific serial pattern to distinguish the selected
@@ -175,8 +174,12 @@ the breakpoint. A precondition with no such witness fails the test before it
 flashes anything.
 
 RTT requires `program_survives_reset: true` because the `west rtt` command
-resets the target. Its input is sent through RTT and its response is matched in
-the target output. RTT and debugserver require a target `toolchain` because the
+resets the target. Its non-empty input is sent through RTT and its response is
+matched in the target output. The response must be application-specific text
+that the program emits only in reply to that input, never unprompted, so a
+match proves both client-to-target and target-to-client transfer. The harness
+treats that as a test invariant rather than observing a quiet period before
+sending the input. RTT and debugserver require a target `toolchain` because the
 tests launch GDB directly.
 
 Thread-info flashes the profile build, attaches, and has GDB log its

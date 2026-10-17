@@ -739,6 +739,7 @@
       "additionalProperties": false,
       "required": [
         "port",
+        "input",
         "response",
         "timeout",
         "program_survives_reset",
@@ -755,16 +756,18 @@
           ]
         },
         "input": {
-          "type": "string",
-          "description": "Text sent to the target through RTT after connecting.",
-          "default": "",
+          "$ref": "#/$defs/nonemptyString",
+          "description": "Request sent from the client to the target through RTT after connecting; it proves client-to-target communication.",
           "examples": [
             "help\n"
           ]
         },
         "response": {
           "$ref": "#/$defs/nonemptyString",
-          "description": "Application-specific text expected in the RTT response."
+          "description": "Application-specific text the target emits only in response to input. The program must not emit it unprompted, so its arrival proves the round trip.",
+          "examples": [
+            "Available commands:"
+          ]
         },
         "timeout": {
           "$ref": "#/$defs/positiveNumber",
