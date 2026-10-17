@@ -432,7 +432,7 @@ def _operation(
         return RttOperation(
             raw["port"],
             raw["response"],
-            raw.get("input", ""),
+            raw["input"],
             float(raw["timeout"]),
             raw["program_survives_reset"],
             raw["breakpoint"],
