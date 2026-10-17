@@ -31,6 +31,28 @@ _CLIENT_TIMEOUT = 30
 
 DebugHardwareFixture = DebugFixture | AttachFixture | DebugServerFixture | ThreadInfoFixture
 
+# A GDB ``info threads`` row: optional current-thread marker, id, and remote
+# target id, followed by the thread name. GDB quotes the name when the stub
+# reports one; otherwise it appears only in OpenOCD's "(Name: <name>, <extra>)"
+# description. A name containing ", " is truncated and so fails conservatively.
+# The frame column is ignored.
+_THREAD_NAME = re.compile(r'\*?\s+\d+\s+Thread\s+\S+\s+(?:"([^"]*)"|\(Name: (.*?)(?:, [^)]*)?\))')
+
+
+def assert_listed_threads(listing: str, patterns: tuple[str, ...]) -> None:
+    """Require each pattern to fully match a different thread name GDB lists."""
+    names = [
+        match.group(1) if match.group(1) is not None else match.group(2)
+        for line in listing.splitlines()
+        if (match := _THREAD_NAME.match(line))
+    ]
+    identified = set()
+    for pattern in patterns:
+        matches = [index for index, name in enumerate(names) if re.fullmatch(pattern, name)]
+        assert len(matches) == 1, f"{pattern!r} matched {len(matches)} thread names:\n{listing}"
+        identified.update(matches)
+    assert len(identified) == len(patterns), f"thread patterns share a thread:\n{listing}"
+
 
 class DebugAcceptance:
     def _west_command(
@@ -254,7 +276,7 @@ class DebugAcceptance:
             timeout=_CLIENT_TIMEOUT,
         )
 
-    def thread_info(self, thread_info_fixture: ThreadInfoFixture) -> None:
+    def thread_info(self, thread_info_fixture: ThreadInfoFixture, listing_path: Path) -> None:
         fixture = thread_info_fixture
         prepare = self._west_command(
             fixture,
@@ -276,7 +298,18 @@ class DebugAcceptance:
             fixture,
             "attach",
             fixture.target.build_dir,
-            ("--gdb-init=info threads", "--gdb-init=detach", "--gdb-init=quit"),
+            (
+                # Relayed OpenOCD output can split lines of the combined
+                # transcript, so GDB logs the listing to a file of its own.
+                f"--gdb-init=set logging file {listing_path}",
+                "--gdb-init=set logging overwrite on",
+                "--gdb-init=set logging redirect on",
+                "--gdb-init=set logging enabled on",
+                "--gdb-init=info threads",
+                "--gdb-init=set logging enabled off",
+                "--gdb-init=detach",
+                "--gdb-init=quit",
+            ),
         )
         result = run_process(
             command,
@@ -289,4 +322,4 @@ class DebugAcceptance:
             timeout=180,
         )
         assert result.returncode == 0, result.stdout
-        assert re.search(fixture.operation.pattern, result.stdout)
+        assert_listed_threads(listing_path.read_text(encoding="utf-8"), fixture.operation.threads)

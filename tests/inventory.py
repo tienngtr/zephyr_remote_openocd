@@ -133,7 +133,7 @@ class DebugServerOperation:
 
 @dataclass(frozen=True)
 class ThreadInfoOperation:
-    pattern: str
+    threads: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -427,7 +427,7 @@ def _operation(
             _serial_expectation(raw["serial"], serial, path, f"{location}.serial"),
         )
     if name == "thread_info":
-        return ThreadInfoOperation(raw["pattern"])
+        return ThreadInfoOperation(tuple(raw["threads"]))
     if name == "rtt":
         return RttOperation(
             raw["port"],

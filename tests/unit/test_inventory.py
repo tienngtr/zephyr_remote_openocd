@@ -165,6 +165,19 @@ def test_rendered_inventory_round_trips_through_product_schema(tmp_path, name):
             False,
             "program_survives_reset",
         ),
+        (
+            (
+                "targets",
+                "target",
+                "profiles",
+                "profile",
+                "operations",
+                "thread_info",
+                "threads",
+            ),
+            ["worker 0"],
+            "threads",
+        ),
     ),
 )
 def test_schema_rejects_invalid_structure(tmp_path, path, value, diagnostic) -> None:

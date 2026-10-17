@@ -23,5 +23,7 @@ class TestRealOpenOcdDebug:
     def test_debugserver(self, debugserver_fixture: DebugServerFixture, tmp_path) -> None:
         DebugAcceptance().debugserver(debugserver_fixture, tmp_path / "debugserver.log")
 
-    def test_thread_info_on_capable_fixture(self, thread_info_fixture: ThreadInfoFixture) -> None:
-        DebugAcceptance().thread_info(thread_info_fixture)
+    def test_thread_info_on_capable_fixture(
+        self, thread_info_fixture: ThreadInfoFixture, tmp_path
+    ) -> None:
+        DebugAcceptance().thread_info(thread_info_fixture, tmp_path / "threads.log")
