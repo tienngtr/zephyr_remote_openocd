@@ -26,4 +26,4 @@ targets:
         build: unused
         operations:
           thread_info:
-            pattern: Thread
+            threads: [unused-a, unused-b]

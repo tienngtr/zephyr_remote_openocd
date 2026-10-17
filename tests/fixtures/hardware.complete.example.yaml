@@ -94,7 +94,8 @@ targets:
         build: threads
         operations:
           thread_info:
-            pattern: Thread
+            # Thread names set by samples/philosophers.
+            threads: [Philosopher 0, Philosopher 1]
       semihosting:
         build: semihosting_console
         operations:

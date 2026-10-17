@@ -143,7 +143,7 @@ session.
 | `debug` | Distinct precondition build, breakpoint symbol in an ELF with debug information | Flashes the precondition, loads firmware, checks memory, and verifies a source-level stop |
 | `attach` | Distinct precondition build | Flashes it, attaches without loading, and checks memory |
 | `debugserver` | Target toolchain, distinct precondition build, serial expectation | Starts the GDB service and proves that local GDB controls the observed board |
-| `thread_info` | Expected thread-list pattern | Checks Zephyr-aware GDB thread output |
+| `thread_info` | Two or more application thread patterns | Flashes the build, attaches, and requires each pattern in GDB's thread list |
 | `rtt` | Target toolchain, port, response, breakpoint | Exercises `west rtt` and debug-integrated RTT |
 | `semihosting` | OpenOCD commands, expected output, timeout | Runs direct semihosting to natural completion |
 
@@ -179,8 +179,15 @@ resets the target. Its input is sent through RTT and its response is matched in
 the target output. RTT and debugserver require a target `toolchain` because the
 tests launch GDB directly.
 
-Thread-info works best with a multithreaded application such as
-`samples/philosophers`. Semihosting requires an application configured for the
+Thread-info flashes the profile build, attaches, and brackets GDB's
+`info threads` output with test-owned markers. Each `threads` regular
+expression must match exactly one row of that list, and no two patterns may
+match the same row. A plain GDB remote session reports a single generic
+thread, so the patterns must name application threads that only OpenOCD's
+Zephyr thread awareness can discover. Use a multithreaded application built
+with `CONFIG_DEBUG_THREAD_INFO=y` that names its threads, such as
+`samples/philosophers`, whose `Philosopher 0` and `Philosopher 1` threads the
+complete example uses. Semihosting requires an application configured for the
 console backend; the complete example uses Zephyr's console test with
 `prj_semihost.conf`. Semihosting GDB commands must allow the process to finish
 naturally within its timeout.

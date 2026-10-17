@@ -575,7 +575,7 @@
         },
         "thread_info": {
           "$ref": "#/$defs/threadInfo",
-          "description": "Verify that the remote debug service reports Zephyr thread information."
+          "description": "Verify that GDB lists configured application threads through OpenOCD Zephyr thread awareness."
         },
         "rtt": {
           "$ref": "#/$defs/rtt",
@@ -707,18 +707,27 @@
     },
     "threadInfo": {
       "title": "Thread-info operation",
-      "description": "Checks GDB thread listings produced by an OpenOCD build with Zephyr thread awareness.",
+      "description": "Flashes the profile build, attaches, and requires GDB's info threads output to list application threads discovered by OpenOCD's Zephyr thread awareness.",
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "pattern"
+        "threads"
       ],
       "properties": {
-        "pattern": {
-          "$ref": "#/$defs/nonemptyString",
-          "description": "Regular expression expected in GDB's thread information output.",
+        "threads": {
+          "description": "Regular expressions that each identify exactly one different application thread row in GDB's info threads output, such as Zephyr thread names. At least two are required so that a single generic remote thread cannot satisfy the operation.",
+          "type": "array",
+          "minItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/nonemptyString",
+            "description": "Regular expression matched against one info threads row."
+          },
           "examples": [
-            "Thread"
+            [
+              "Philosopher 0",
+              "Philosopher 1"
+            ]
           ]
         }
       }
