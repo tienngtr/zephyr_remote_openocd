@@ -25,7 +25,9 @@ from tests.elf_fixtures import (
     elf_memory_witness_bytes,
 )
 from tests.hardware_support import (
+    AttachFixture,
     DebugFixture,
+    DebugServerFixture,
     FlashFixture,
     HardwarePreparation,
     elf_memory_witness,
@@ -74,12 +76,16 @@ def _preparation_with_unavailable_recipe(
     return HardwarePreparation(inventory, build_root, config_root), inventory, build_root
 
 
-def test_preparation_builds_only_requested_recipes(tmp_path):
+@pytest.mark.parametrize("operation", ("flash", "debug", "attach", "debugserver"))
+def test_preparation_builds_only_requested_recipes(tmp_path, operation):
     preparation, _inventory, build_root = _preparation_with_unavailable_recipe(tmp_path)
     with patch("tests.hardware_support.subprocess.run", autospec=True) as run:
         run.return_value = subprocess.CompletedProcess([], 0, "")
-        preparation.prepare("target:profile", "flash")
+        prepared = preparation.prepare("target:profile", operation)
 
+    assert isinstance(prepared, FlashFixture | DebugFixture | AttachFixture | DebugServerFixture)
+    assert prepared.precondition.build_dir == build_root / "target" / "precondition"
+    assert prepared.target.build_dir == build_root / "target" / "application"
     assert run.call_count == 2
     commands = [call.args[0] for call in run.call_args_list]
     assert all(not any("/unavailable" in value for value in command) for command in commands)
@@ -114,7 +120,7 @@ def test_preparation_preserves_typed_user_cache_dir(tmp_path: Path) -> None:
 
     with patch("tests.hardware_support.subprocess.run", autospec=True) as run:
         run.return_value = subprocess.CompletedProcess([], 0, "")
-        preparation.prepare("target:profile", "debug")
+        preparation.prepare("target:rtt_profile", "rtt")
 
     command = run.call_args.args[0]
     definitions = [argument for argument in command if argument.startswith("-DUSER_CACHE_DIR")]
@@ -142,7 +148,8 @@ def test_preparation_retries_failed_build_and_caches_success(tmp_path, monkeypat
     assert flash.target.build_dir == debug.target.build_dir
     assert flash.target.id == debug.target.id
     assert "--serial=probe" in flash.target.runner_args
-    assert flash.precondition_build_dir == build_root / "target" / "precondition"
+    assert flash.precondition == debug.precondition
+    assert flash.precondition.build_dir == build_root / "target" / "precondition"
     environment = run.call_args.kwargs["env"]
     assert "ZEPHYR_REMOTE_OPENOCD_REMOTE" not in environment
     assert environment["ZEPHYR_REMOTE_OPENOCD_CONFIG"] == str(flash.target.config_path)
@@ -279,7 +286,7 @@ def test_preparation_reuses_warm_build_with_redirected_caches(tmp_path: Path) ->
 
     with patch("tests.hardware_support.subprocess.run", autospec=True) as run:
         run.return_value = subprocess.CompletedProcess([], 0, "")
-        preparation.prepare("target:profile", "debug")
+        preparation.prepare("target:rtt_profile", "rtt")
 
     command = run.call_args.args[0]
     assert command[command.index("-d") + 1] == str(build_root / "target" / "application")
@@ -308,10 +315,10 @@ def test_elf_memory_witness_finds_bytes_that_distinguish_images(tmp_path: Path) 
     before_path.write_bytes(original)
     selected_path.write_bytes(selected_data)
 
-    address, before, selected = elf_memory_witness(before_path, selected_path)
-    assert address == ELF_WITNESS_ADDRESS
-    assert before == ELF_WITNESS_BYTES[:16]
-    assert selected == bytes((ELF_WITNESS_BYTES[0] ^ 0xFF, *ELF_WITNESS_BYTES[1:16]))
+    witness = elf_memory_witness(before_path, selected_path)
+    assert witness.address == ELF_WITNESS_ADDRESS
+    assert witness.precondition == ELF_WITNESS_BYTES[:16]
+    assert witness.selected == bytes((ELF_WITNESS_BYTES[0] ^ 0xFF, *ELF_WITNESS_BYTES[1:16]))
 
 
 def test_elf_memory_witness_ignores_load_segment_padding(tmp_path: Path) -> None:

@@ -25,5 +25,5 @@ targets:
       inventory_schema:
         build: unused
         operations:
-          debug:
-            breakpoint: main
+          thread_info:
+            pattern: Thread

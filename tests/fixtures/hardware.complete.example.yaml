@@ -69,6 +69,7 @@ targets:
             output_patterns: [Open On-Chip Debugger]
             assert_bindto: true
           debug:
+            precondition_build: minimal
             breakpoint: main
             output_patterns: [Open On-Chip Debugger]
           attach:

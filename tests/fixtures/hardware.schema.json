@@ -563,7 +563,7 @@
         },
         "debug": {
           "$ref": "#/$defs/debug",
-          "description": "Load the selected build with west debug and stop at a source-level breakpoint."
+          "description": "Flash a precondition image, load the selected build with west debug, prove its memory replaced the precondition, and stop at a source-level breakpoint."
         },
         "attach": {
           "$ref": "#/$defs/attach",
@@ -644,13 +644,18 @@
     },
     "debug": {
       "title": "Debug operation",
-      "description": "Loads the profile build, continues without a post-load reset, and verifies a source-level stop.",
+      "description": "Loads the profile build over a distinct precondition image, verifies that the load replaced it, continues without a post-load reset, and verifies a source-level stop.",
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "precondition_build",
         "breakpoint"
       ],
       "properties": {
+        "precondition_build": {
+          "$ref": "#/$defs/identifier",
+          "description": "A declared build different from the profile build, flashed before west debug loads the profile build."
+        },
         "breakpoint": {
           "$ref": "#/$defs/identifier",
           "description": "C symbol present in the ELF debug information at which GDB must stop.",

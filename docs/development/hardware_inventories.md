@@ -140,7 +140,7 @@ session.
 | Operation | Required configuration | Test effect |
 | --- | --- | --- |
 | `flash` | Distinct precondition build, serial expectation | Flashes both images and proves fresh serial output |
-| `debug` | Breakpoint symbol in an ELF with debug information | Loads firmware and verifies a source-level stop |
+| `debug` | Distinct precondition build, breakpoint symbol in an ELF with debug information | Flashes the precondition, loads firmware, checks memory, and verifies a source-level stop |
 | `attach` | Distinct precondition build | Flashes it, attaches without loading, and checks memory |
 | `debugserver` | Target toolchain, distinct precondition build, serial expectation | Starts the GDB service and proves that local GDB controls the observed board |
 | `thread_info` | Expected thread-list pattern | Checks Zephyr-aware GDB thread output |
@@ -166,8 +166,13 @@ several probes on the host, this shows that `debugserver --serial` selected the
 requested probe. If debugserver controlled another probe, the observed board
 would keep running the quiet precondition.
 
-Attach has the same distinct-precondition requirement. It derives identifying
-bytes from that ELF and verifies that attaching does not replace them.
+Attach and debug have the same distinct-precondition requirement, but not the
+quietness requirement. Each derives a memory witness: bytes at one load address
+that differ between the precondition and profile ELFs. After flashing the
+precondition, attach requires that the witness still holds the precondition
+bytes, and debug requires that `west debug` loaded the profile bytes before
+the breakpoint. A precondition with no such witness fails the test before it
+flashes anything.
 
 RTT requires `program_survives_reset: true` because the `west rtt` command
 resets the target. Its input is sent through RTT and its response is matched in

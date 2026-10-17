@@ -13,12 +13,12 @@ import pytest
 from elftools.elf.elffile import ELFFile
 from zephyr_remote_openocd.controller._ssh import SshCommand
 
+from tests.acceptance.firmware import establish_precondition
 from tests.hardware_support import (
     AttachFixture,
     DebugFixture,
     DebugServerFixture,
     ThreadInfoFixture,
-    elf_memory_witness,
     free_loopback_ports,
     hardware_operation_environment,
 )
@@ -56,8 +56,12 @@ class DebugAcceptance:
         return result
 
     def debug(self, fixture: DebugFixture) -> None:
+        witness = fixture.precondition.memory_witness(fixture.target)
+        establish_precondition(fixture.target, fixture.precondition)
         breakpoint = fixture.operation.breakpoint
         commands = (
+            # The runner loads before --gdb-init, so this reads what load wrote.
+            *witness.gdb_commands(),
             f"break {breakpoint}",
             "continue",
             'printf "ZRO_PC_BEGIN\\n"',
@@ -83,6 +87,7 @@ class DebugAcceptance:
             timeout=180,
         )
         assert result.returncode == 0, result.stdout
+        assert witness.observed(result.stdout) == witness.selected, result.stdout
         assert re.search(rf"Breakpoint \d+,\s+{re.escape(breakpoint)}\b", result.stdout)
         assert re.search(r"ZRO_PC_BEGIN\s*\$\d+\s*=\s*0x[0-9a-fA-F]+", result.stdout)
         assert re.search(r"ZRO_INSN_BEGIN\s*=>\s*0x[0-9a-fA-F]+", result.stdout)
@@ -92,20 +97,8 @@ class DebugAcceptance:
             assert re.search(pattern, result.stdout)
 
     def attach(self, fixture: AttachFixture) -> None:
-        prepared = run_process(
-            self._west_command(fixture, "flash", fixture.precondition_build_dir),
-            cwd=fixture.target.workspace,
-            env=hardware_operation_environment(fixture.target),
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            check=False,
-            timeout=180,
-        )
-        assert prepared.returncode == 0, prepared.stdout
-        address, precondition_bytes, selected_bytes = elf_memory_witness(
-            fixture.precondition_elf_file, fixture.target.elf_file
-        )
+        witness = fixture.precondition.memory_witness(fixture.target)
+        establish_precondition(fixture.target, fixture.precondition)
         command = self._west_command(
             fixture,
             "attach",
@@ -116,9 +109,7 @@ class DebugAcceptance:
                 '--gdb-init=printf "ZRO_INSN_BEGIN\\n"',
                 "--gdb-init=x/1i $pc",
                 '--gdb-init=printf "ZRO_INSN_END\\n"',
-                '--gdb-init=printf "ZRO_IMAGE_BEGIN\\n"',
-                f"--gdb-init=x/{len(precondition_bytes)}bx 0x{address:x}",
-                '--gdb-init=printf "ZRO_IMAGE_END\\n"',
+                *(f"--gdb-init={item}" for item in witness.gdb_commands()),
                 "--gdb-init=detach",
                 "--gdb-init=quit",
             ),
@@ -138,31 +129,11 @@ class DebugAcceptance:
         assert re.search(r"ZRO_INSN_BEGIN\s*=>?\s*0x[0-9a-fA-F]+", result.stdout)
         assert "ZRO_PC_END" in result.stdout
         assert "ZRO_INSN_END" in result.stdout
-        image_match = re.search(
-            r"ZRO_IMAGE_BEGIN\s*(.*?)\s*ZRO_IMAGE_END", result.stdout, re.DOTALL
-        )
-        assert image_match is not None, result.stdout
-        observed = bytes(
-            int(value, 16)
-            for line in image_match.group(1).splitlines()
-            for value in re.findall(r"0x([0-9a-fA-F]{2})\b", line.partition(":")[2])
-        )
-        assert observed == precondition_bytes
-        assert observed != selected_bytes
+        assert witness.observed(result.stdout) == witness.precondition, result.stdout
 
     def debugserver(self, fixture: DebugServerFixture, output_path: Path) -> None:
         # A quiet image ensures the pattern can only come from the GDB session.
-        prepared = run_process(
-            self._west_command(fixture, "flash", fixture.precondition_build_dir),
-            cwd=fixture.target.workspace,
-            env=hardware_operation_environment(fixture.target),
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            check=False,
-            timeout=180,
-        )
-        assert prepared.returncode == 0, prepared.stdout
+        establish_precondition(fixture.target, fixture.precondition)
         gdb_port, tcl_port, telnet_port = free_loopback_ports(3)
         extra_args = (
             f"--gdb-port={gdb_port}",

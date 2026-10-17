@@ -57,7 +57,10 @@ def inventory_document(*, zephyr_base: str = "/zephyr", west: str = "/west") -> 
                                     "timeout": 30,
                                 },
                             },
-                            "debug": {"breakpoint": "main"},
+                            "debug": {
+                                "precondition_build": "precondition",
+                                "breakpoint": "main",
+                            },
                             "attach": {"precondition_build": "precondition"},
                             "debugserver": {
                                 "precondition_build": "precondition",

@@ -115,6 +115,7 @@ class FlashOperation:
 
 @dataclass(frozen=True)
 class DebugOperation:
+    precondition_build: str
     breakpoint: str
     output_patterns: tuple[str, ...]
 
@@ -393,7 +394,17 @@ def _operation(
             raw.get("assert_bindto", False),
         )
     if name == "debug":
-        return DebugOperation(raw["breakpoint"], tuple(raw.get("output_patterns", [])))
+        return DebugOperation(
+            _precondition(
+                raw["precondition_build"],
+                builds,
+                selected_build,
+                path,
+                f"{location}.precondition_build",
+            ),
+            raw["breakpoint"],
+            tuple(raw.get("output_patterns", [])),
+        )
     if name == "attach":
         return AttachOperation(
             _precondition(

@@ -10,12 +10,13 @@ from pathlib import Path
 import pytest
 
 from tests.acceptance.debug import DebugAcceptance
-from tests.acceptance.flash import FlashAcceptance
+from tests.acceptance.firmware import west_flash
 from tests.acceptance.rtt import RttAcceptance
 from tests.acceptance.semihosting import SemihostingAcceptance
+from tests.elf_fixtures import ELF_WITNESS_OFFSET, elf_memory_witness_bytes
 from tests.hardware_support import (
     DebugFixture,
-    FlashFixture,
+    FirmwarePrecondition,
     PreparedTarget,
     RttFixture,
     SemihostingFixture,
@@ -23,12 +24,9 @@ from tests.hardware_support import (
 from tests.inventory import (
     BuildEnvironment,
     DebugOperation,
-    FlashOperation,
     InventoryHost,
     RttOperation,
     SemihostingOperation,
-    SerialEndpoint,
-    SerialExpectation,
     Toolchain,
 )
 from tests.support import ROOT
@@ -98,15 +96,21 @@ def test_hardware_launch_uses_selected_environment(tmp_path: Path, monkeypatch, 
     monkeypatch.setattr(subprocess, "Popen", launch)
     with pytest.raises(LaunchReached):
         if operation == "flash":
-            fixture = FlashFixture(
-                target,
-                FlashOperation("before", SerialExpectation("console", "ready", 30), (), False),
-                SerialEndpoint("console", "/unused", 115200, 8, "none", 1, "none"),
-                tmp_path / "before",
-            )
-            FlashAcceptance().flash(fixture, target.build_dir)
+            west_flash(target, target.build_dir)
         elif operation == "debug":
-            DebugAcceptance().debug(DebugFixture(target, DebugOperation("main", ())))
+            # Debug first establishes its precondition, which needs a witness.
+            precondition = FirmwarePrecondition(tmp_path / "before")
+            selected = bytearray(elf_memory_witness_bytes())
+            selected[ELF_WITNESS_OFFSET] ^= 0xFF
+            for elf, image in (
+                (precondition.elf_file, elf_memory_witness_bytes()),
+                (target.elf_file, selected),
+            ):
+                elf.parent.mkdir(parents=True)
+                elf.write_bytes(image)
+            DebugAcceptance().debug(
+                DebugFixture(target, DebugOperation("before", "main", ()), precondition)
+            )
         elif operation in ("rtt", "rtt-flash"):
             rtt = RttFixture(target, RttOperation(12345, "pong", "ping", 30, True, "main"))
             if operation == "rtt":

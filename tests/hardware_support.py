@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import socket
 import subprocess
 import time
@@ -153,9 +154,39 @@ def free_loopback_ports(count: int) -> tuple[int, ...]:
             listener.close()
 
 
+@dataclass(frozen=True)
+class MemoryWitness:
+    """Target bytes at one address that differ between two loadable images."""
+
+    address: int
+    precondition: bytes
+    selected: bytes
+
+    _BEGIN = "ZRO_WITNESS_BEGIN"
+    _END = "ZRO_WITNESS_END"
+
+    def gdb_commands(self) -> tuple[str, ...]:
+        """GDB commands that print the witnessed target memory between markers."""
+        return (
+            f'printf "{self._BEGIN}\\n"',
+            f"x/{len(self.precondition)}bx 0x{self.address:x}",
+            f'printf "{self._END}\\n"',
+        )
+
+    def observed(self, output: str) -> bytes:
+        """Return the target bytes printed by ``gdb_commands()`` in GDB output."""
+        match = re.search(rf"{self._BEGIN}\s*(.*?)\s*{self._END}", output, re.DOTALL)
+        assert match is not None, output
+        return bytes(
+            int(value, 16)
+            for line in match.group(1).splitlines()
+            for value in re.findall(r"0x([0-9a-fA-F]{2})\b", line.partition(":")[2])
+        )
+
+
 def elf_memory_witness(
     precondition_elf: Path | str, selected_elf: Path | str, *, size: int = 16
-) -> tuple[int, bytes, bytes]:
+) -> MemoryWitness:
     """Find loadable-section bytes that distinguish two ELF files."""
 
     def loadable_sections(path_value: Path | str) -> list[tuple[bool, int, bytes]]:
@@ -207,7 +238,7 @@ def elf_memory_witness(
                 before = before_data[before_offset + offset : before_offset + offset + size]
                 selected = selected_data[selected_offset + offset : selected_offset + offset + size]
                 if before != selected:
-                    return start + offset, before, selected
+                    return MemoryWitness(start + offset, before, selected)
     raise ValueError(
         f"no {size}-byte loadable-section witness distinguishes "
         f"{precondition_elf} from {selected_elf}"
@@ -262,28 +293,44 @@ def hardware_operation_environment(target: PreparedTarget) -> dict[str, str]:
 
 
 @dataclass(frozen=True)
+class FirmwarePrecondition:
+    """Known firmware, distinct from the selected build, that an operation starts from.
+
+    Acceptance establishes it explicitly so the result never depends on ambient
+    target state, then discriminates the operation's outcome from it.
+    """
+
+    build_dir: Path
+
+    @property
+    def elf_file(self) -> Path:
+        return self.build_dir / "zephyr" / "zephyr.elf"
+
+    def memory_witness(self, target: PreparedTarget) -> MemoryWitness:
+        """Derive memory whose contents distinguish this image from the selected build."""
+        return elf_memory_witness(self.elf_file, target.elf_file)
+
+
+@dataclass(frozen=True)
 class FlashFixture:
     target: PreparedTarget
     operation: FlashOperation
     serial: SerialEndpoint
-    precondition_build_dir: Path
+    precondition: FirmwarePrecondition
 
 
 @dataclass(frozen=True)
 class DebugFixture:
     target: PreparedTarget
     operation: DebugOperation
+    precondition: FirmwarePrecondition
 
 
 @dataclass(frozen=True)
 class AttachFixture:
     target: PreparedTarget
     operation: AttachOperation
-    precondition_build_dir: Path
-
-    @property
-    def precondition_elf_file(self) -> Path:
-        return self.precondition_build_dir / "zephyr" / "zephyr.elf"
+    precondition: FirmwarePrecondition
 
 
 @dataclass(frozen=True)
@@ -291,7 +338,7 @@ class DebugServerFixture:
     target: PreparedTarget
     operation: DebugServerOperation
     serial: SerialEndpoint
-    precondition_build_dir: Path
+    precondition: FirmwarePrecondition
 
 
 @dataclass(frozen=True)
@@ -382,23 +429,18 @@ class HardwarePreparation:
         config_path: Path,
     ) -> PreparedOperation:
         if isinstance(operation, FlashOperation):
-            precondition = self._prepare_build(
-                target, prepared.build_environment, operation.precondition_build, config_path
-            )
+            precondition = self._prepare_precondition(prepared, target, operation, config_path)
             return FlashFixture(
                 prepared, operation, target.endpoint(operation.serial.endpoint), precondition
             )
         if isinstance(operation, DebugOperation):
-            return DebugFixture(prepared, operation)
+            precondition = self._prepare_precondition(prepared, target, operation, config_path)
+            return DebugFixture(prepared, operation, precondition)
         if isinstance(operation, AttachOperation):
-            precondition = self._prepare_build(
-                target, prepared.build_environment, operation.precondition_build, config_path
-            )
+            precondition = self._prepare_precondition(prepared, target, operation, config_path)
             return AttachFixture(prepared, operation, precondition)
         if isinstance(operation, DebugServerOperation):
-            precondition = self._prepare_build(
-                target, prepared.build_environment, operation.precondition_build, config_path
-            )
+            precondition = self._prepare_precondition(prepared, target, operation, config_path)
             return DebugServerFixture(
                 prepared, operation, target.endpoint(operation.serial.endpoint), precondition
             )
@@ -409,6 +451,19 @@ class HardwarePreparation:
         if isinstance(operation, SemihostingOperation):
             return SemihostingFixture(prepared, operation)
         raise AssertionError(f"unsupported operation {type(operation).__name__}: {operation!r}")
+
+    def _prepare_precondition(
+        self,
+        prepared: PreparedTarget,
+        target: InventoryTarget,
+        operation: FlashOperation | DebugOperation | AttachOperation | DebugServerOperation,
+        config_path: Path,
+    ) -> FirmwarePrecondition:
+        return FirmwarePrecondition(
+            self._prepare_build(
+                target, prepared.build_environment, operation.precondition_build, config_path
+            )
+        )
 
     @staticmethod
     def _prepared_target(

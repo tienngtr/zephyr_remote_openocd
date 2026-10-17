@@ -241,9 +241,13 @@ runs on GitHub-hosted runners. Spike and virtual OpenOCD target testing are not
 part of this CI setup.
 
 Real `west debug` acceptance is source-level and architecture-independent. The
-selected debug profile supplies an ELF and breakpoint symbol. GDB loads that
-ELF, continues without a post-load reset, stops at the symbol, reads `$pc` and
-the current instruction, then detaches. This deliberately does not use serial
+selected debug profile supplies an ELF, a breakpoint symbol, and a distinct
+precondition build. The test flashes the precondition, then GDB loads the
+selected ELF. Before continuing, GDB reads a memory witness derived from the
+two ELFs, which must hold the selected image's bytes. GDB then continues without
+a post-load reset, stops at the symbol, reads `$pc` and the current
+instruction, and detaches. Without the load, the witness still holds the
+precondition bytes and the test fails. This deliberately does not use serial
 output: RAM-loaded targets can lose the new image on reset, and Zephyr does not
 promise fresh application output from `west debug`.
 
@@ -252,7 +256,8 @@ precondition image (normally `samples/basic/minimal`), then arms serial
 observation before flashing the selected image (normally
 `samples/hello_world`) and requires its marker. Precondition quietness is a
 test invariant; the test does not spend a timed observation re-proving it.
-Attach acceptance reads the PC and current instruction without loading.
+Attach acceptance reads the PC, the current instruction, and the same kind of
+memory witness without loading, and requires the precondition bytes.
 Debugserver acceptance likewise flashes a quiet precondition, then arms serial
 observation before an independent GDB client loads and starts the selected
 image through debugserver, and requires its marker.

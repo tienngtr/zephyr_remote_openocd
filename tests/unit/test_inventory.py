@@ -120,6 +120,19 @@ def test_rendered_inventory_round_trips_through_product_schema(tmp_path, name):
                 "profiles",
                 "profile",
                 "operations",
+                "debug",
+                "precondition_build",
+            ),
+            DELETE,
+            "precondition_build",
+        ),
+        (
+            (
+                "targets",
+                "target",
+                "profiles",
+                "profile",
+                "operations",
                 "debugserver",
                 "precondition_build",
             ),
@@ -233,6 +246,19 @@ def test_schema_rejects_invalid_structure(tmp_path, path, value, diagnostic) -> 
             ),
             "missing",
             "unknown serial",
+        ),
+        (
+            (
+                "targets",
+                "target",
+                "profiles",
+                "profile",
+                "operations",
+                "debug",
+                "precondition_build",
+            ),
+            "application",
+            "must differ",
         ),
         (
             (

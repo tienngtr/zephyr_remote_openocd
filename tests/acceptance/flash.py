@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import ipaddress
 import re
-import subprocess
-from pathlib import Path
 
 import pytest
 from zephyr_remote_openocd.controller._ssh import SshCommand
 
-from tests.hardware_support import FlashFixture, hardware_operation_environment
-from tests.process_support import cleanup_on_exit, run_process
+from tests.acceptance.firmware import establish_precondition, west_flash
+from tests.hardware_support import FlashFixture
+from tests.process_support import cleanup_on_exit
 from tests.serial_reader import captured_text, endpoint_reader_command
 from tests.serial_reader import read_event as _read_event
 from tests.serial_reader import stop_reader as _stop
@@ -21,8 +20,7 @@ class FlashAcceptance:
     def run(self, flash_fixture: FlashFixture) -> None:
         fixture = flash_fixture
         ssh = SshCommand(fixture.target.host.ssh_command)
-        precondition = self.flash(fixture, fixture.precondition_build_dir)
-        assert precondition.returncode == 0, precondition.stdout
+        establish_precondition(fixture.target, fixture.precondition)
 
         observation = fixture.operation.serial
         remote_command = endpoint_reader_command(
@@ -35,7 +33,7 @@ class FlashAcceptance:
             reader.stdin.write(b"ARM\n")
             reader.stdin.flush()
             assert _read_event(reader, 15)["type"] == "ARMED"
-            flash = self.flash(fixture, fixture.target.build_dir)
+            flash = west_flash(fixture.target, fixture.target.build_dir)
             try:
                 event = _read_event(reader, observation.timeout + 2)
             except AssertionError:
@@ -47,31 +45,6 @@ class FlashAcceptance:
             for pattern in fixture.operation.output_patterns:
                 assert re.search(pattern, flash.stdout)
             assert reader.wait(timeout=5) == 0
-
-    @staticmethod
-    def flash(fixture: FlashFixture, build_dir: Path) -> subprocess.CompletedProcess[str]:
-        target = fixture.target
-        command = [
-            str(target.build_environment.west),
-            "flash",
-            "-d",
-            str(build_dir),
-            "-r",
-            "remote_openocd",
-            "--no-rebuild",
-        ]
-        if target.runner_args:
-            command.extend(("--", *target.runner_args))
-        return run_process(
-            command,
-            cwd=target.workspace,
-            env=hardware_operation_environment(target),
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            check=False,
-            timeout=180,
-        )
 
     @staticmethod
     def _assert_bindto(fixture: FlashFixture, output: str) -> None:
