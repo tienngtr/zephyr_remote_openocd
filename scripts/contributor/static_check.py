@@ -79,6 +79,18 @@ def markdown_files(root: Path) -> tuple[str, ...]:
     return tuple(path for path in result.stdout.splitlines() if (root / path).is_file())
 
 
+def shell_files(root: Path) -> tuple[str, ...]:
+    """Return existing tracked or untracked shell scripts."""
+    result = subprocess.run(
+        ("git", "ls-files", "--cached", "--others", "--exclude-standard", "--", "*.sh"),
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return tuple(path for path in result.stdout.splitlines() if (root / path).is_file())
+
+
 def json_schema_files() -> tuple[str, ...]:
     """Return repository JSON schemas that use the canonical formatting."""
     return (
@@ -166,6 +178,7 @@ def commands(
     python_files: tuple[str, ...],
     yaml_paths: tuple[str, ...],
     markdown_paths: tuple[str, ...],
+    shell_paths: tuple[str, ...],
 ) -> tuple[tuple[str, tuple[str, ...]], ...]:
     """Build the ordered static-check commands."""
     python = sys.executable
@@ -252,8 +265,19 @@ def commands(
             ),
         ),
         (
+            "shellcheck",
+            (tool_executable("shellcheck"), *shell_paths),
+        ),
+        (
             "actionlint",
-            (tool_executable("actionlint"), "-no-color", *workflow_paths),
+            # actionlint silently skips run: scripts when it cannot find
+            # shellcheck, which is not on PATH for an unactivated virtualenv.
+            (
+                tool_executable("actionlint"),
+                "-no-color",
+                f"-shellcheck={tool_executable('shellcheck')}",
+                *workflow_paths,
+            ),
         ),
         (
             "rumdl",
@@ -291,7 +315,9 @@ def main() -> int:
     report_phase("Zephyr import boundary check")
     if not check_zephyr_import_boundary(root, python_files):
         return 1
-    for name, command in commands(python_files, yaml_files(root), markdown_files(root)):
+    for name, command in commands(
+        python_files, yaml_files(root), markdown_files(root), shell_files(root)
+    ):
         report_phase(name)
         result = subprocess.run(
             command,
