@@ -22,7 +22,12 @@ from tests.hardware_support import (
     hardware_shared_cache_root,
 )
 from tests.inventory import Inventory, InventoryError, InventoryHost, load_inventory
-from tests.session_support import NotifiedAuthority, ObservedStatus, pipe_control_wait
+from tests.session_support import (
+    NotifiedAuthority,
+    ObservedStatus,
+    ObservedStatusFactory,
+    pipe_control_wait,
+)
 
 __all__ = ["pipe_control_wait"]
 
@@ -61,7 +66,7 @@ def notified_authority() -> Iterator[NotifiedAuthority]:
 
 
 @pytest.fixture
-def observed_session() -> Iterator[Callable[[Callable[[], int | None]], ObservedStatus]]:
+def observed_session() -> Iterator[ObservedStatusFactory]:
     """Create observed sessions whose notifiers are released after the test."""
     statuses: list[ObservedStatus] = []
 

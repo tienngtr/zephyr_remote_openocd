@@ -51,6 +51,11 @@ HELPER_START_TIMEOUT = 10.0
 _FINAL_OBSERVATION_BYTES = MAX_FRAME_SIZE
 _READ_CHUNK_SIZE = 64 * 1024
 
+# Relayed child output: stream name, decoded payload, and whether it ended a line.
+type OutputHandler = Callable[[str, str, bool], None]
+# The materialized argv of each helper launch attempt.
+type ProcessStartHandler = Callable[[tuple[str, ...]], None]
+
 
 class HelperConnection:
     """Own one helper control connection and its controller-lifetime lease.
@@ -65,9 +70,9 @@ class HelperConnection:
         ssh_command: SshCommand,
         host: str,
         deployment: DeploymentResult,
-        output_handler: Callable[[str, str, bool], None] | None = None,
+        output_handler: OutputHandler | None = None,
         *,
-        process_start_handler: Callable[[tuple[str, ...]], None] | None = None,
+        process_start_handler: ProcessStartHandler | None = None,
         authority: SessionAuthority,
         notifier: Notifier,
     ) -> None:

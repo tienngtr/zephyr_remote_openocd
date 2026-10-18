@@ -16,7 +16,12 @@ import pytest
 from zephyr_remote_openocd.controller import _forwarding as forwarding_module
 from zephyr_remote_openocd.controller import session as session_module
 from zephyr_remote_openocd.controller._deployment import DeploymentResult
-from zephyr_remote_openocd.controller._ssh import ManagedSshProcess, SshCommand, SshForwardSpec
+from zephyr_remote_openocd.controller._ssh import (
+    ManagedSshProcess,
+    ProcessAcquiredHandler,
+    SshCommand,
+    SshForwardSpec,
+)
 from zephyr_remote_openocd.controller.api import (
     ForwardAdvisory,
     ForwardSpec,
@@ -25,6 +30,7 @@ from zephyr_remote_openocd.controller.api import (
     SessionPlan,
 )
 from zephyr_remote_openocd.controller.authority import SessionAuthority
+from zephyr_remote_openocd.controller.helper_connection import OutputHandler, ProcessStartHandler
 from zephyr_remote_openocd.controller.waiting import Notifier, WaitResult, WaitSources, wait_for
 from zephyr_remote_openocd.protocol.arguments import materialize_argv
 from zephyr_remote_openocd.protocol.commands import decode_command, write_start
@@ -83,7 +89,7 @@ class ControlledHelper:
         self.listeners: tuple[ListenerSpec, ...] = ()
         self.close_calls = 0
         self.on_wait: Callable[[], None] | None = None
-        self.process_start_handler: Callable[[tuple[str, ...]], None] | None = None
+        self.process_start_handler: ProcessStartHandler | None = None
         self.preferred_address: str | None = None
 
     @property
@@ -151,7 +157,7 @@ class ControlledSshCommand(SshCommand):
         remote_command: str,
         *,
         local_forward: SshForwardSpec | None = None,
-        on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+        on_acquired: ProcessAcquiredHandler | None = None,
     ) -> ManagedSshProcess:
         del host, remote_command
         assert local_forward is not None
@@ -222,9 +228,9 @@ class ForwardingHarness:
         ssh_command: SshCommand,
         host: str,
         deployment: DeploymentResult,
-        output_handler: Callable[[str, str, bool], None] | None = None,
+        output_handler: OutputHandler | None = None,
         *,
-        process_start_handler: Callable[[tuple[str, ...]], None] | None = None,
+        process_start_handler: ProcessStartHandler | None = None,
         authority: SessionAuthority,
         notifier: Notifier,
     ) -> ControlledHelper:

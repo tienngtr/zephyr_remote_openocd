@@ -37,6 +37,7 @@ from zephyr_remote_openocd.controller._forwarding import ForwardManager
 from zephyr_remote_openocd.controller._rtt import RttClientError, run_rtt_client
 from zephyr_remote_openocd.controller._ssh import (
     ManagedSshProcess,
+    ProcessAcquiredHandler,
     SshCommand,
     SshForwardSpec,
     stop_process,
@@ -53,7 +54,7 @@ from zephyr_remote_openocd.controller.api import (
 )
 from zephyr_remote_openocd.controller.authority import SessionSnapshot
 from zephyr_remote_openocd.controller.cancellation import OperationCancelled, operation_scope
-from zephyr_remote_openocd.controller.helper_connection import HelperConnection
+from zephyr_remote_openocd.controller.helper_connection import HelperConnection, OutputHandler
 from zephyr_remote_openocd.controller.paths import REMOTE_ADDRESS_PLACEHOLDER, PathPlanner
 from zephyr_remote_openocd.controller.staging import build_archive
 from zephyr_remote_openocd.controller.waiting import WaitSources
@@ -66,7 +67,7 @@ from zephyr_remote_openocd.protocol.wire import ProtocolError, decode_terminal, 
 from tests.control_support import ControlProcess
 from tests.process_support import cleanup_on_exit, local_transport, read_line, read_lines
 from tests.protocol_support import terminal_message, terminal_snapshot
-from tests.session_support import NotifiedAuthority, ObservedStatus
+from tests.session_support import NotifiedAuthority, ObservedStatus, ObservedStatusFactory
 from tests.support import ROOT
 
 if TYPE_CHECKING:
@@ -100,7 +101,7 @@ class _BlockedSshCommand(SshCommand):
         remote_command: str,
         *,
         local_forward: SshForwardSpec | None = None,
-        on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+        on_acquired: ProcessAcquiredHandler | None = None,
     ) -> ManagedSshProcess:
         raise AssertionError("popen() is not expected in this test")
 
@@ -136,7 +137,7 @@ def test_interrupted_helper_acquisition_cleans_owned_control_process(
             remote_command: str,
             *,
             local_forward: SshForwardSpec | None = None,
-            on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+            on_acquired: ProcessAcquiredHandler | None = None,
         ) -> ManagedSshProcess:
             del host, remote_command
             assert local_forward is None
@@ -275,7 +276,7 @@ def test_helper_close_allows_recorded_natural_exit_before_termination(
             remote_command: str,
             *,
             local_forward: SshForwardSpec | None = None,
-            on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+            on_acquired: ProcessAcquiredHandler | None = None,
         ) -> ManagedSshProcess:
             acquired_process = managed
             if on_acquired is not None:
@@ -493,7 +494,7 @@ class TestForwardingLifecycle:
             remote_command: str,
             *,
             local_forward: SshForwardSpec | None = None,
-            on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+            on_acquired: ProcessAcquiredHandler | None = None,
         ) -> ManagedSshProcess:
             self.calls.append((host, remote_command, local_forward))
             acquired_process = self.process
@@ -632,7 +633,7 @@ class TestForwardingLifecycle:
                 remote_command: str,
                 *,
                 local_forward: SshForwardSpec | None = None,
-                on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+                on_acquired: ProcessAcquiredHandler | None = None,
             ) -> ManagedSshProcess:
                 del host, remote_command, local_forward
                 acquired_process = self.processes.pop(0)
@@ -707,7 +708,7 @@ def test_repeated_ctrl_c_during_session_close_skips_no_cleanup(
             remote_command: str,
             *,
             local_forward: SshForwardSpec | None = None,
-            on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+            on_acquired: ProcessAcquiredHandler | None = None,
         ) -> ManagedSshProcess:
             process = SshCommand.popen(
                 self, host, remote_command, local_forward=local_forward, on_acquired=on_acquired
@@ -843,7 +844,7 @@ class TestRttClient:
     def test_bidirectional_non_tty_channel(
         self,
         requires_loopback_listener: None,
-        observed_session: Callable[[Callable[[], int | None]], ObservedStatus],
+        observed_session: ObservedStatusFactory,
     ) -> None:
         expected_input = b"local_input"
         expected_output = b"remote_output"
@@ -913,7 +914,7 @@ class TestRttClient:
                 assert stdout.getvalue() == expected_output
 
     def test_non_consuming_channel_does_not_block_session_poll(
-        self, observed_session: Callable[[Callable[[], int | None]], ObservedStatus]
+        self, observed_session: ObservedStatusFactory
     ) -> None:
         local, peer = socket.socketpair()
         local.setblocking(False)
@@ -956,7 +957,7 @@ class TestRttClient:
     def test_full_input_queue_pauses_and_resumes_stdin_after_partial_send(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        observed_session: Callable[[Callable[[], int | None]], ObservedStatus],
+        observed_session: ObservedStatusFactory,
     ) -> None:
         sent: list[bytes] = []
         received = bytearray()
@@ -1023,7 +1024,7 @@ class TestRttClient:
     def test_immediate_forwarded_channel_failure_is_authoritative(
         self,
         requires_loopback_listener: None,
-        observed_session: Callable[[Callable[[], int | None]], ObservedStatus],
+        observed_session: ObservedStatusFactory,
     ) -> None:
         def server(listener: socket.socket) -> None:
             with listener, listener.accept()[0]:
@@ -1037,7 +1038,7 @@ class TestRttClient:
     def test_tty_preserves_signals_and_restores_complete_state(
         self,
         requires_loopback_listener: None,
-        observed_session: Callable[[Callable[[], int | None]], ObservedStatus],
+        observed_session: ObservedStatusFactory,
     ) -> None:
         request = b"tty input"
         received = bytearray()
@@ -2289,7 +2290,7 @@ class TestRealProcessHelper:
                     remote_command: str,
                     *,
                     local_forward: SshForwardSpec | None = None,
-                    on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+                    on_acquired: ProcessAcquiredHandler | None = None,
                 ) -> ManagedSshProcess:
                     return local_transport(
                         [sys.executable, str(helper), "control"],
@@ -2371,7 +2372,7 @@ class TestRealProcessHelper:
                     remote_command: str,
                     *,
                     local_forward: SshForwardSpec | None = None,
-                    on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+                    on_acquired: ProcessAcquiredHandler | None = None,
                 ) -> ManagedSshProcess:
                     return local_transport(
                         [sys.executable, str(helper), "control"],
@@ -2480,7 +2481,7 @@ class TestRealProcessHelper:
                 remote_command: str,
                 *,
                 local_forward: SshForwardSpec | None = None,
-                on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+                on_acquired: ProcessAcquiredHandler | None = None,
             ) -> ManagedSshProcess:
                 return local_transport(helper_argv, on_acquired=on_acquired)
 
@@ -2533,7 +2534,7 @@ class TestRealProcessHelper:
                 remote_command: str,
                 *,
                 local_forward: SshForwardSpec | None = None,
-                on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+                on_acquired: ProcessAcquiredHandler | None = None,
             ) -> ManagedSshProcess:
                 process = local_transport(helper_argv, on_acquired=on_acquired)
                 inner.process = process
@@ -2592,7 +2593,7 @@ class TestRealProcessHelper:
                     remote_command: str,
                     *,
                     local_forward: SshForwardSpec | None = None,
-                    on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+                    on_acquired: ProcessAcquiredHandler | None = None,
                 ) -> ManagedSshProcess:
                     process = local_transport(
                         [sys.executable, str(helper), "control"],
@@ -2656,7 +2657,7 @@ class TestRealProcessHelper:
                     remote_command: str,
                     *,
                     local_forward: SshForwardSpec | None = None,
-                    on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+                    on_acquired: ProcessAcquiredHandler | None = None,
                 ) -> ManagedSshProcess:
                     return local_transport(
                         [sys.executable, str(helper), "control"],
@@ -2717,7 +2718,7 @@ class TestRealProcessHelper:
 def _helper_client(
     request: SessionPlan,
     deployment: DeploymentResult,
-    output_handler: Callable[[str, str, bool], None] | None = None,
+    output_handler: OutputHandler | None = None,
     *,
     wiring: NotifiedAuthority,
 ) -> HelperConnection:

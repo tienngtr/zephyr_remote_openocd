@@ -18,7 +18,12 @@ from typing import IO, Any
 from unittest.mock import patch
 
 from zephyr_remote_openocd.controller._cleanup import add_failure_note
-from zephyr_remote_openocd.controller._ssh import ManagedSshProcess, SshCommand, stop_process
+from zephyr_remote_openocd.controller._ssh import (
+    ManagedSshProcess,
+    ProcessAcquiredHandler,
+    SshCommand,
+    stop_process,
+)
 
 PROCESS_CLEANUP_TIMEOUT = 10
 
@@ -28,7 +33,7 @@ def local_transport(
     *,
     environment: Mapping[str, str] | None = None,
     pass_fds: tuple[int, ...] = (),
-    on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+    on_acquired: ProcessAcquiredHandler | None = None,
 ) -> ManagedSshProcess:
     """Exercise SSH acquisition with a local command at the Popen boundary."""
     initialize = subprocess.Popen.__init__

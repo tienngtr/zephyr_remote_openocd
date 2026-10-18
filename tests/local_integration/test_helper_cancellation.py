@@ -10,7 +10,7 @@ import signal
 import subprocess
 import sys
 import threading
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, cast, override
 
@@ -18,7 +18,11 @@ import pytest
 from zephyr_remote_openocd.controller import helper_connection as connection_module
 from zephyr_remote_openocd.controller import session as session_module
 from zephyr_remote_openocd.controller._deployment import DeploymentResult
-from zephyr_remote_openocd.controller._ssh import ManagedSshProcess, SshForwardSpec
+from zephyr_remote_openocd.controller._ssh import (
+    ManagedSshProcess,
+    ProcessAcquiredHandler,
+    SshForwardSpec,
+)
 from zephyr_remote_openocd.controller.api import (
     SessionController,
     SessionPlan,
@@ -261,7 +265,7 @@ def test_latched_cancellation_wins_over_an_expired_helper_startup(
             remote_command: str,
             *,
             local_forward: SshForwardSpec | None = None,
-            on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+            on_acquired: ProcessAcquiredHandler | None = None,
         ) -> ManagedSshProcess:
             del host, remote_command, local_forward
             # The process-control typing escape in tests/unit/test_helper_connection.py.

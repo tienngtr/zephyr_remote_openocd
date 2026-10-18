@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from pathlib import Path
 
 import pytest
@@ -11,6 +11,7 @@ from zephyr_remote_openocd.controller._deployment import DeploymentResult
 from zephyr_remote_openocd.controller._ssh import (
     SSH_STDERR_TAIL_BYTES,
     ManagedSshProcess,
+    ProcessAcquiredHandler,
     SshCommand,
     SshForwardSpec,
 )
@@ -55,7 +56,7 @@ def test_control_progresses_when_configured_ssh_stderr_exceeds_pipe_capacity(
         remote_command: str,
         *,
         local_forward: SshForwardSpec | None = None,
-        on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+        on_acquired: ProcessAcquiredHandler | None = None,
     ) -> ManagedSshProcess:
         transport = popen(
             command, host, remote_command, local_forward=local_forward, on_acquired=on_acquired

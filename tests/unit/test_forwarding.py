@@ -10,7 +10,7 @@ import signal
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Collection, Iterator
+from collections.abc import Collection, Iterator
 from contextlib import suppress
 from types import FrameType, SimpleNamespace, TracebackType
 from typing import IO, TYPE_CHECKING, Any, Literal, Self, override
@@ -22,6 +22,7 @@ from zephyr_remote_openocd.controller._forwarding import ForwardManager
 from zephyr_remote_openocd.controller._ssh import (
     SSH_STDERR_TAIL_BYTES,
     ManagedSshProcess,
+    ProcessAcquiredHandler,
     SshCommand,
     SshForwardSpec,
     stop_process,
@@ -68,7 +69,7 @@ class _ForwardCommand(SshCommand):
         remote_command: str,
         *,
         local_forward: SshForwardSpec | None = None,
-        on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+        on_acquired: ProcessAcquiredHandler | None = None,
     ) -> Any:
         self.calls.append((host, remote_command, local_forward))
         acquired_process = next(self.processes)
@@ -115,7 +116,7 @@ def test_process_creation_failure_has_service_identity_without_ownership(
             remote_command: str,
             *,
             local_forward: SshForwardSpec | None = None,
-            on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+            on_acquired: ProcessAcquiredHandler | None = None,
         ) -> Any:
             raise cause
 
@@ -350,7 +351,7 @@ def test_interruption_during_forward_start_preserves_cleanup_ownership(
             remote_command: str,
             *,
             local_forward: SshForwardSpec | None = None,
-            on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+            on_acquired: ProcessAcquiredHandler | None = None,
         ) -> ManagedSshProcess:
             process = super().popen(
                 host, remote_command, local_forward=local_forward, on_acquired=on_acquired
@@ -417,7 +418,7 @@ def test_ctrl_c_between_pending_forward_rollbacks_skips_no_cleanup(
             remote_command: str,
             *,
             local_forward: SshForwardSpec | None = None,
-            on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+            on_acquired: ProcessAcquiredHandler | None = None,
         ) -> ManagedSshProcess:
             process = super().popen(
                 host, remote_command, local_forward=local_forward, on_acquired=on_acquired
@@ -547,7 +548,7 @@ def test_interruption_at_forward_rollback_entry_keeps_both_transports_owned(
             remote_command: str,
             *,
             local_forward: SshForwardSpec | None = None,
-            on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+            on_acquired: ProcessAcquiredHandler | None = None,
         ) -> ManagedSshProcess:
             process = super().popen(
                 host, remote_command, local_forward=local_forward, on_acquired=on_acquired

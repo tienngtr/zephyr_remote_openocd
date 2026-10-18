@@ -5,7 +5,6 @@ from __future__ import annotations
 import io
 import math
 import subprocess
-from collections.abc import Callable
 from typing import cast
 
 import pytest
@@ -16,13 +15,18 @@ from zephyr_remote_openocd.controller._deployment import DeploymentResult
 from zephyr_remote_openocd.controller._forwarding import ForwardStartError
 from zephyr_remote_openocd.controller._ssh import (
     ManagedSshProcess,
+    ProcessAcquiredHandler,
     SshCommand,
     SshForwardSpec,
     StderrDrain,
 )
 from zephyr_remote_openocd.controller.api import ForwardSpec, SessionError
 from zephyr_remote_openocd.controller.authority import SessionAuthority
-from zephyr_remote_openocd.controller.helper_connection import HelperConnection
+from zephyr_remote_openocd.controller.helper_connection import (
+    HelperConnection,
+    OutputHandler,
+    ProcessStartHandler,
+)
 from zephyr_remote_openocd.controller.waiting import Notifier
 from zephyr_remote_openocd.protocol.outcome import Trigger
 from zephyr_remote_openocd.protocol.wire import encode_frame
@@ -60,7 +64,7 @@ def test_close_preserves_recorded_session_failure_over_forward_cleanup(
             remote_command: str,
             *,
             local_forward: SshForwardSpec | None = None,
-            on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+            on_acquired: ProcessAcquiredHandler | None = None,
         ) -> ManagedSshProcess:
             if local_forward is not None:
                 return forward_transport(
@@ -83,9 +87,9 @@ def test_close_preserves_recorded_session_failure_over_forward_cleanup(
             ssh_command: SshCommand,
             host: str,
             deployment: DeploymentResult,
-            output_handler: Callable[[str, str, bool], None] | None = None,
+            output_handler: OutputHandler | None = None,
             *,
-            process_start_handler: Callable[[tuple[str, ...]], None] | None = None,
+            process_start_handler: ProcessStartHandler | None = None,
             authority: SessionAuthority,
             notifier: Notifier,
         ) -> HelperConnection:

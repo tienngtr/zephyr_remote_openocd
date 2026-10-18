@@ -8,7 +8,6 @@ import os
 import subprocess
 import sys
 import time
-from collections.abc import Callable
 from contextlib import ExitStack
 from io import FileIO
 from pathlib import Path
@@ -17,7 +16,12 @@ from typing import BinaryIO, override
 import pytest
 from zephyr_remote_openocd.controller import _deployment as deploy_module
 from zephyr_remote_openocd.controller._deployment import build_helper_bundle
-from zephyr_remote_openocd.controller._ssh import ManagedSshProcess, SshCommand, SshForwardSpec
+from zephyr_remote_openocd.controller._ssh import (
+    ManagedSshProcess,
+    ProcessAcquiredHandler,
+    SshCommand,
+    SshForwardSpec,
+)
 from zephyr_remote_openocd.protocol.wire import (
     encode_frame,
 )
@@ -61,7 +65,7 @@ class DeploymentReply(SshCommand):
         remote_command: str,
         *,
         local_forward: SshForwardSpec | None = None,
-        on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+        on_acquired: ProcessAcquiredHandler | None = None,
     ) -> ManagedSshProcess:
         raise AssertionError("popen() is not expected in this test")
 

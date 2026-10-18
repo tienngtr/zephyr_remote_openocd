@@ -24,6 +24,7 @@ from zephyr_remote_openocd.controller.api import (
     query_remote_openocd_version,
 )
 from zephyr_remote_openocd.controller.authority import SessionAuthority
+from zephyr_remote_openocd.controller.helper_connection import OutputHandler, ProcessStartHandler
 from zephyr_remote_openocd.controller.waiting import (
     Notifier,
     ProcessHandle,
@@ -220,8 +221,8 @@ def test_staging_rejects_response_without_lf(monkeypatch: pytest.MonkeyPatch) ->
         _host: str,
         _deployment: DeploymentResult,
         *,
-        output_handler: Callable[[str, str, bool], None] | None = None,
-        process_start_handler: Callable[[tuple[str, ...]], None] | None = None,
+        output_handler: OutputHandler | None = None,
+        process_start_handler: ProcessStartHandler | None = None,
         authority: SessionAuthority | None = None,
         notifier: Notifier | None = None,
     ) -> Helper:

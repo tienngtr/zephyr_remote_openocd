@@ -27,7 +27,11 @@ from zephyr_remote_openocd.controller.authority import (
 )
 from zephyr_remote_openocd.controller.cancellation import admit_effect, current_operation
 from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
-from zephyr_remote_openocd.controller.helper_connection import HelperConnection
+from zephyr_remote_openocd.controller.helper_connection import (
+    HelperConnection,
+    OutputHandler,
+    ProcessStartHandler,
+)
 from zephyr_remote_openocd.controller.plan import SessionAllocation, SessionDescriptor, SessionPlan
 from zephyr_remote_openocd.controller.preferred_address_cache import (
     load_preferred_address,
@@ -194,8 +198,8 @@ class SessionController:
     def acquire(
         self,
         *,
-        output_handler: Callable[[str, str, bool], None] | None = None,
-        process_start_handler: Callable[[tuple[str, ...]], None] | None = None,
+        output_handler: OutputHandler | None = None,
+        process_start_handler: ProcessStartHandler | None = None,
     ) -> None:
         """Acquire resources on an owned coordinator; the caller must close it."""
         if self.closed or self._helper_connection is not None:

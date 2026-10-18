@@ -18,7 +18,12 @@ import pytest
 from zephyr_remote_openocd.controller import helper_connection as connection_module
 from zephyr_remote_openocd.controller import session as session_module
 from zephyr_remote_openocd.controller._deployment import DeploymentResult
-from zephyr_remote_openocd.controller._ssh import ManagedSshProcess, SshCommand, SshForwardSpec
+from zephyr_remote_openocd.controller._ssh import (
+    ManagedSshProcess,
+    ProcessAcquiredHandler,
+    SshCommand,
+    SshForwardSpec,
+)
 from zephyr_remote_openocd.controller.api import (
     ForwardSpec,
     SessionController,
@@ -103,7 +108,7 @@ class ExitPeer:
                 remote_command: str,
                 *,
                 local_forward: SshForwardSpec | None = None,
-                on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+                on_acquired: ProcessAcquiredHandler | None = None,
             ) -> ManagedSshProcess:
                 if local_forward is not None:
                     owner.forward_entries.append(local_forward)

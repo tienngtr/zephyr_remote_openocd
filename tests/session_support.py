@@ -88,3 +88,7 @@ class ObservedStatus:
 
     def close(self) -> None:
         self.notifier.close()
+
+
+# The observed_session fixture: create a session around its result producer.
+type ObservedStatusFactory = Callable[[Callable[[], int | None]], ObservedStatus]

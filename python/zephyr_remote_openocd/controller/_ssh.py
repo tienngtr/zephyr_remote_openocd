@@ -297,6 +297,11 @@ class SshForwardSpec:
         )
 
 
+# Receives a launched process inside acquisition rollback, so the caller owns
+# it before popen() returns.
+type ProcessAcquiredHandler = Callable[[ManagedSshProcess], None]
+
+
 @dataclass(frozen=True)
 class SshCommand:
     """Build and execute SSH argv without shell interpretation."""
@@ -329,7 +334,7 @@ class SshCommand:
         remote_command: str,
         *,
         local_forward: SshForwardSpec | None = None,
-        on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+        on_acquired: ProcessAcquiredHandler | None = None,
     ) -> ManagedSshProcess:
         """Start SSH and register caller ownership inside rollback before returning."""
         # OpenSSH uses the first value of these options. Runner-owned forwarding

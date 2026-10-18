@@ -7,7 +7,6 @@ from __future__ import annotations
 import os
 import select
 import sys
-from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from threading import Event
@@ -15,7 +14,12 @@ from types import FrameType
 from typing import TYPE_CHECKING, override
 
 import pytest
-from zephyr_remote_openocd.controller._ssh import ManagedSshProcess, SshCommand, SshForwardSpec
+from zephyr_remote_openocd.controller._ssh import (
+    ManagedSshProcess,
+    ProcessAcquiredHandler,
+    SshCommand,
+    SshForwardSpec,
+)
 from zephyr_remote_openocd.controller.api import (
     SessionController,
     SessionPlan,
@@ -51,7 +55,7 @@ def test_interruption_after_session_acquisition_cleans_helper_and_child(
             remote_command: str,
             *,
             local_forward: SshForwardSpec | None = None,
-            on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+            on_acquired: ProcessAcquiredHandler | None = None,
         ) -> ManagedSshProcess:
             process = super().popen(
                 host, remote_command, local_forward=local_forward, on_acquired=on_acquired

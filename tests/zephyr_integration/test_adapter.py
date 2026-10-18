@@ -28,7 +28,11 @@ from zephyr_remote_openocd.controller import session as session_module
 from zephyr_remote_openocd.controller._deployment import DeploymentResult
 from zephyr_remote_openocd.controller._forwarding import ForwardStartError
 from zephyr_remote_openocd.controller._rtt import ObservedSession
-from zephyr_remote_openocd.controller._ssh import ManagedSshProcess, SshForwardSpec
+from zephyr_remote_openocd.controller._ssh import (
+    ManagedSshProcess,
+    ProcessAcquiredHandler,
+    SshForwardSpec,
+)
 from zephyr_remote_openocd.controller.api import (
     ForwardSpec,
     SessionAllocation,
@@ -38,6 +42,7 @@ from zephyr_remote_openocd.controller.api import (
     SshCommand,
 )
 from zephyr_remote_openocd.controller.cancellation import OperationCancelled, operation_scope
+from zephyr_remote_openocd.controller.helper_connection import OutputHandler, ProcessStartHandler
 from zephyr_remote_openocd.controller.paths import PathPlanner
 from zephyr_remote_openocd.openocd.debug import (
     DebugInputs,
@@ -278,7 +283,7 @@ def test_runner_logs_effective_argv_when_remote_startup_fails(
             remote_command: str,
             *,
             local_forward: SshForwardSpec | None = None,
-            on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+            on_acquired: ProcessAcquiredHandler | None = None,
         ) -> ManagedSshProcess:
             del host, remote_command
             assert local_forward is None
@@ -856,8 +861,8 @@ def test_interruption_during_session_acquisition_closes_owned_resources(
     def acquire_and_interrupt(
         session: SessionController,
         *,
-        output_handler: Callable[[str, str, bool], None] | None = None,
-        process_start_handler: Callable[[tuple[str, ...]], None] | None = None,
+        output_handler: OutputHandler | None = None,
+        process_start_handler: ProcessStartHandler | None = None,
     ) -> None:
         nonlocal acquired
         acquired = session
@@ -1814,8 +1819,8 @@ def test_adapter_allows_same_probe_session_to_finish_while_another_is_active(
     def acquire(
         session: SessionController,
         *,
-        output_handler: Callable[[str, str, bool], None] | None = None,
-        process_start_handler: Callable[[tuple[str, ...]], None] | None = None,
+        output_handler: OutputHandler | None = None,
+        process_start_handler: ProcessStartHandler | None = None,
     ) -> None:
         original_acquire(
             session, output_handler=output_handler, process_start_handler=process_start_handler

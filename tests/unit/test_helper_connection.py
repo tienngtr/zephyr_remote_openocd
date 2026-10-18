@@ -20,12 +20,17 @@ from zephyr_remote_openocd.controller import helper_connection as connection_mod
 from zephyr_remote_openocd.controller._deployment import DeploymentResult
 from zephyr_remote_openocd.controller._ssh import (
     ManagedSshProcess,
+    ProcessAcquiredHandler,
     ProcessControl,
     SshCommand,
     SshForwardSpec,
 )
 from zephyr_remote_openocd.controller.authority import SessionAuthority, SessionError
-from zephyr_remote_openocd.controller.helper_connection import HelperConnection
+from zephyr_remote_openocd.controller.helper_connection import (
+    HelperConnection,
+    OutputHandler,
+    ProcessStartHandler,
+)
 from zephyr_remote_openocd.controller.paths import PathPlanner
 from zephyr_remote_openocd.controller.waiting import Descriptor, WaitResult, WaitSources
 from zephyr_remote_openocd.openocd.flash import FlashInputs, build_flash_plan
@@ -96,8 +101,8 @@ def _open_helper_client(
     process: ControlProcess,
     wiring: NotifiedAuthority,
     *,
-    process_start_handler: Callable[[tuple[str, ...]], None] | None = None,
-    output_handler: Callable[[str, str, bool], None] | None = None,
+    process_start_handler: ProcessStartHandler | None = None,
+    output_handler: OutputHandler | None = None,
 ) -> HelperConnection:
     class Command(_PopenOnlySshCommand):
         @override
@@ -107,7 +112,7 @@ def _open_helper_client(
             remote_command: str,
             *,
             local_forward: SshForwardSpec | None = None,
-            on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+            on_acquired: ProcessAcquiredHandler | None = None,
         ) -> ManagedSshProcess:
             del host, remote_command, local_forward
             # The single process-control typing escape described above.
@@ -137,17 +142,21 @@ def _open_helper_client_with_events(
     *events: bytes,
     wiring: NotifiedAuthority,
     later: tuple[bytes, ...] | None = None,
-    process_start_handler: Callable[[tuple[str, ...]], None] | None = None,
+    process_start_handler: ProcessStartHandler | None = None,
 ) -> tuple[HelperConnection, HelperPeerProcess]:
     process = HelperPeerProcess(events, later=later)
     client = _open_helper_client(process, wiring, process_start_handler=process_start_handler)
     return client, process
 
 
+# The open_client fixture: connect a helper client over a process double.
+type OpenClient = Callable[[ControlProcess], HelperConnection]
+
+
 @pytest.fixture
 def open_client(
     notified_authority: NotifiedAuthority,
-) -> Iterator[Callable[[ControlProcess], HelperConnection]]:
+) -> Iterator[OpenClient]:
     opened: list[tuple[HelperConnection, ControlProcess]] = []
 
     def open_with(process: ControlProcess) -> HelperConnection:
@@ -169,7 +178,7 @@ def open_client(
 
 @pytest.fixture
 def helper_client(
-    open_client: Callable[[ControlProcess], HelperConnection],
+    open_client: OpenClient,
     notified_authority: NotifiedAuthority,
 ) -> tuple[HelperConnection, SessionAuthority]:
     return open_client(ControlProcess()), notified_authority.authority
@@ -405,7 +414,7 @@ def test_contradictory_terminal_is_reader_failure_and_never_published(
 @pytest.mark.timeout(10)
 def test_session_observations_project_exit_while_reader_remains_alive(
     monkeypatch: pytest.MonkeyPatch,
-    open_client: Callable[[ControlProcess], HelperConnection],
+    open_client: OpenClient,
     notified_authority: NotifiedAuthority,
 ) -> None:
     authority = notified_authority.authority
@@ -449,7 +458,7 @@ def test_session_observations_project_exit_while_reader_remains_alive(
 
 
 def test_close_reaps_natural_exit_before_transport_cleanup(
-    open_client: Callable[[ControlProcess], HelperConnection], notified_authority: NotifiedAuthority
+    open_client: OpenClient, notified_authority: NotifiedAuthority
 ) -> None:
     authority = notified_authority.authority
     natural_exit_reaped = threading.Event()
@@ -688,7 +697,7 @@ def test_terminal_failure_stays_primary_after_trailing_protocol_failure(
 @pytest.mark.parametrize("terminal_failure", ("startup", "child"))
 @pytest.mark.parametrize("shutdown_failure", ("stdin", "wait"))
 def test_close_preserves_terminal_failure_before_shutdown(
-    open_client: Callable[[ControlProcess], HelperConnection],
+    open_client: OpenClient,
     notified_authority: NotifiedAuthority,
     terminal_failure: str,
     shutdown_failure: str,
@@ -740,7 +749,7 @@ def test_close_preserves_terminal_failure_before_shutdown(
 
 
 def test_close_keeps_shutdown_failure_primary_when_forced_cleanup_also_fails(
-    open_client: Callable[[ControlProcess], HelperConnection], notified_authority: NotifiedAuthority
+    open_client: OpenClient, notified_authority: NotifiedAuthority
 ) -> None:
     authority = notified_authority.authority
     graceful_stop_error = RuntimeError("graceful stop failed")
@@ -778,7 +787,7 @@ def test_close_keeps_shutdown_failure_primary_when_forced_cleanup_also_fails(
 
 
 def test_close_cleans_up_helper_when_initial_status_observation_fails(
-    open_client: Callable[[ControlProcess], HelperConnection], notified_authority: NotifiedAuthority
+    open_client: OpenClient, notified_authority: NotifiedAuthority
 ) -> None:
     authority = notified_authority.authority
     observation_error = RuntimeError("helper status failed")
@@ -810,7 +819,7 @@ def test_close_cleans_up_helper_when_initial_status_observation_fails(
 
 
 def test_close_cleans_up_helper_when_reader_join_fails(
-    open_client: Callable[[ControlProcess], HelperConnection], notified_authority: NotifiedAuthority
+    open_client: OpenClient, notified_authority: NotifiedAuthority
 ) -> None:
     authority = notified_authority.authority
     join_error = RuntimeError("helper reader join failed")
@@ -848,7 +857,7 @@ def test_close_cleans_up_helper_when_reader_join_fails(
 
 
 def test_close_preserves_cleanup_error_when_final_status_observation_fails(
-    open_client: Callable[[ControlProcess], HelperConnection], notified_authority: NotifiedAuthority
+    open_client: OpenClient, notified_authority: NotifiedAuthority
 ) -> None:
     authority = notified_authority.authority
     status_error = RuntimeError("helper final status failed")
@@ -924,7 +933,7 @@ def test_failed_reader_start_rolls_back_control_acquisition(
 )
 @pytest.mark.parametrize("terminal_fails", (False, True))
 def test_close_forces_cleanup_after_helper_wait_failure(
-    open_client: Callable[[ControlProcess], HelperConnection],
+    open_client: OpenClient,
     notified_authority: NotifiedAuthority,
     wait_failure_type: type[BaseException],
     stdin_close_fails: bool,
@@ -995,7 +1004,7 @@ def test_close_forces_cleanup_after_helper_wait_failure(
 
 
 def test_helper_close_keeps_reader_owned_stdout_open_until_reader_stops(
-    open_client: Callable[[ControlProcess], HelperConnection], notified_authority: NotifiedAuthority
+    open_client: OpenClient, notified_authority: NotifiedAuthority
 ) -> None:
     authority = notified_authority.authority
     readers: list[threading.Thread] = []
@@ -1030,7 +1039,7 @@ def test_helper_close_keeps_reader_owned_stdout_open_until_reader_stops(
 
 
 def test_helper_close_retains_nested_process_cleanup_diagnostics(
-    open_client: Callable[[ControlProcess], HelperConnection], notified_authority: NotifiedAuthority
+    open_client: OpenClient, notified_authority: NotifiedAuthority
 ) -> None:
     authority = notified_authority.authority
     terminate_error = RuntimeError("helper terminate failed")
@@ -1152,7 +1161,7 @@ def test_helper_client_output_delivery_does_not_retain_event_history(
 
 @pytest.mark.parametrize("child_first", (True, False), ids=("child-first", "transport-first"))
 def test_child_and_control_status_use_one_persistent_arbitration_path(
-    open_client: Callable[[ControlProcess], HelperConnection],
+    open_client: OpenClient,
     notified_authority: NotifiedAuthority,
     child_first: bool,
 ) -> None:

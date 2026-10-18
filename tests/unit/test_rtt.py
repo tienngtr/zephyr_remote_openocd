@@ -17,7 +17,7 @@ import pytest
 from zephyr_remote_openocd.controller import _rtt as rtt_module
 from zephyr_remote_openocd.controller.waiting import WaitResult, WaitSources
 
-from tests.session_support import ObservedStatus
+from tests.session_support import ObservedStatus, ObservedStatusFactory
 
 if TYPE_CHECKING:
     from _typeshed import TraceFunction
@@ -79,10 +79,12 @@ class TrackedChannel(socket.socket):
         self.created.append(self)
 
 
+# The channels fixture: make the RTT client construct this socket type.
+type InstallChannel = Callable[[type[TrackedChannel]], type[TrackedChannel]]
+
+
 @pytest.fixture
-def channels(
-    monkeypatch: pytest.MonkeyPatch,
-) -> Callable[[type[TrackedChannel]], type[TrackedChannel]]:
+def channels(monkeypatch: pytest.MonkeyPatch) -> InstallChannel:
     def install(channel_type: type[TrackedChannel]) -> type[TrackedChannel]:
         channel_type.created = []
         # Replace only the RTT client's socket constructor, not the test server's.
@@ -98,7 +100,7 @@ pytestmark = pytest.mark.usefixtures("requires_loopback_listener")
 
 
 def test_relay_delivers_output_and_returns_the_session_result(
-    observed_session: Callable[[Callable[[], int | None]], ObservedStatus],
+    observed_session: ObservedStatusFactory,
 ) -> None:
     def serve(connection: socket.socket) -> None:
         connection.sendall(b"RTT output")
@@ -112,7 +114,7 @@ def test_relay_delivers_output_and_returns_the_session_result(
 
 
 def test_relay_delivers_output_to_a_pipe_whole_and_in_order(
-    observed_session: Callable[[Callable[[], int | None]], ObservedStatus],
+    observed_session: ObservedStatusFactory,
 ) -> None:
     # Larger than one pipe-atomic write, so delivery spans several writes.
     payload = bytes(range(256)) * 64
@@ -149,7 +151,7 @@ def test_relay_delivers_output_to_a_pipe_whole_and_in_order(
 @pytest.mark.parametrize("consumer_state", ("writable", "stalled"))
 @pytest.mark.parametrize("source", ("initial", "channel"))
 def test_session_result_gives_accepted_output_one_delivery_opportunity(
-    observed_session: Callable[[Callable[[], int | None]], ObservedStatus],
+    observed_session: ObservedStatusFactory,
     source: str,
     consumer_state: str,
 ) -> None:
@@ -200,7 +202,7 @@ def test_session_result_gives_accepted_output_one_delivery_opportunity(
 
 
 def test_session_result_published_before_sleep_ends_an_idle_relay(
-    observed_session: Callable[[Callable[[], int | None]], ObservedStatus],
+    observed_session: ObservedStatusFactory,
 ) -> None:
     finished = threading.Event()
 
@@ -224,7 +226,7 @@ def test_session_result_published_before_sleep_ends_an_idle_relay(
 
 
 def test_receive_tolerates_spurious_readiness(
-    observed_session: Callable[[Callable[[], int | None]], ObservedStatus],
+    observed_session: ObservedStatusFactory,
 ) -> None:
     class SpuriousChannel(socket.socket):
         spurious = True
@@ -247,8 +249,8 @@ def test_receive_tolerates_spurious_readiness(
 
 def test_connect_retries_refusal_until_startup_error(
     monkeypatch: pytest.MonkeyPatch,
-    channels: Callable[[type[TrackedChannel]], type[TrackedChannel]],
-    observed_session: Callable[[Callable[[], int | None]], ObservedStatus],
+    channels: InstallChannel,
+    observed_session: ObservedStatusFactory,
 ) -> None:
     channel_type = channels(TrackedChannel)
     with socket.socket() as reserved:
@@ -289,8 +291,8 @@ def test_connect_retries_refusal_until_startup_error(
 
 
 def test_connection_closes_when_stdin_has_no_descriptor(
-    channels: Callable[[type[TrackedChannel]], type[TrackedChannel]],
-    observed_session: Callable[[Callable[[], int | None]], ObservedStatus],
+    channels: InstallChannel,
+    observed_session: ObservedStatusFactory,
 ) -> None:
     channel_type = channels(TrackedChannel)
     server = RttServer(idle)
@@ -313,8 +315,8 @@ def test_connection_closes_when_stdin_has_no_descriptor(
 @pytest.mark.parametrize("cleanup_fails", (False, True))
 def test_interruption_at_acquisition_boundaries_closes_owned_socket(
     monkeypatch: pytest.MonkeyPatch,
-    channels: Callable[[type[TrackedChannel]], type[TrackedChannel]],
-    observed_session: Callable[[Callable[[], int | None]], ObservedStatus],
+    channels: InstallChannel,
+    observed_session: ObservedStatusFactory,
     phase: str,
     cleanup_fails: bool,
 ) -> None:
@@ -394,7 +396,7 @@ def test_interruption_at_acquisition_boundaries_closes_owned_socket(
 
 
 def test_pending_input_survives_would_block_and_partial_send(
-    observed_session: Callable[[Callable[[], int | None]], ObservedStatus],
+    observed_session: ObservedStatusFactory,
 ) -> None:
     request = b"local input"
     attempts: list[bytes] = []
@@ -435,7 +437,7 @@ def test_pending_input_survives_would_block_and_partial_send(
 
 
 def test_zero_byte_send_reports_channel_failure(
-    observed_session: Callable[[Callable[[], int | None]], ObservedStatus],
+    observed_session: ObservedStatusFactory,
 ) -> None:
     class ClosedChannel(socket.socket):
         @override
@@ -455,7 +457,7 @@ def test_zero_byte_send_reports_channel_failure(
 
 
 def test_established_channel_closure_fails_while_session_is_running(
-    observed_session: Callable[[Callable[[], int | None]], ObservedStatus],
+    observed_session: ObservedStatusFactory,
 ) -> None:
     local, peer = socket.socketpair()
     local.setblocking(False)
@@ -473,8 +475,8 @@ def test_established_channel_closure_fails_while_session_is_running(
 @pytest.mark.parametrize("failure_type", (OSError, KeyboardInterrupt))
 def test_terminal_and_socket_cleanup_preserve_primary_failure(
     monkeypatch: pytest.MonkeyPatch,
-    channels: Callable[[type[TrackedChannel]], type[TrackedChannel]],
-    observed_session: Callable[[Callable[[], int | None]], ObservedStatus],
+    channels: InstallChannel,
+    observed_session: ObservedStatusFactory,
     phase: str,
     failure_type: type[BaseException],
 ) -> None:
@@ -525,8 +527,8 @@ def test_terminal_and_socket_cleanup_preserve_primary_failure(
 @pytest.mark.parametrize("cleanup", ("terminal", "socket"))
 def test_cleanup_failure_is_reported_after_session_exit(
     monkeypatch: pytest.MonkeyPatch,
-    channels: Callable[[type[TrackedChannel]], type[TrackedChannel]],
-    observed_session: Callable[[Callable[[], int | None]], ObservedStatus],
+    channels: InstallChannel,
+    observed_session: ObservedStatusFactory,
     cleanup: str,
 ) -> None:
     failure = OSError("cleanup failure")
@@ -562,8 +564,8 @@ def test_cleanup_failure_is_reported_after_session_exit(
 
 
 def test_failed_attempt_cleanup_is_fatal_with_the_attempt_failure_primary(
-    channels: Callable[[type[TrackedChannel]], type[TrackedChannel]],
-    observed_session: Callable[[Callable[[], int | None]], ObservedStatus],
+    channels: InstallChannel,
+    observed_session: ObservedStatusFactory,
 ) -> None:
     cleanup_error = OSError("RTT attempt socket cleanup failed")
 

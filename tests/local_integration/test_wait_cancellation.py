@@ -25,14 +25,19 @@ import pytest
 from zephyr_remote_openocd.controller import _rtt as rtt_module
 from zephyr_remote_openocd.controller._forwarding import ForwardManager
 from zephyr_remote_openocd.controller._rtt import run_rtt_client
-from zephyr_remote_openocd.controller._ssh import ManagedSshProcess, SshCommand, SshForwardSpec
+from zephyr_remote_openocd.controller._ssh import (
+    ManagedSshProcess,
+    ProcessAcquiredHandler,
+    SshCommand,
+    SshForwardSpec,
+)
 from zephyr_remote_openocd.controller.authority import SessionAuthority
 from zephyr_remote_openocd.controller.cancellation import OperationCancelled, operation_scope
 from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
 
 from tests.forwarding_support import GDB, ControlledSshCommand, ForwardingHarness
 from tests.process_support import cleanup_on_exit
-from tests.session_support import ObservedStatus
+from tests.session_support import ObservedStatusFactory
 
 pytestmark = [pytest.mark.local, pytest.mark.skipif(os.name != "posix", reason="POSIX signals")]
 
@@ -118,7 +123,7 @@ def test_ctrl_c_during_forward_readiness_rolls_back_the_transport(tmp_path: Path
 
 @pytest.mark.timeout(GUARD)
 def test_ctrl_c_during_rtt_relay_closes_the_channel(
-    observed_session: Callable[[Callable[[], int | None]], ObservedStatus],
+    observed_session: ObservedStatusFactory,
 ) -> None:
     accepted = threading.Event()
     closed = threading.Event()
@@ -171,7 +176,7 @@ def test_ctrl_c_latched_during_session_admission_prevents_the_launch(
         remote_command: str,
         *,
         local_forward: SshForwardSpec | None = None,
-        on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+        on_acquired: ProcessAcquiredHandler | None = None,
     ) -> ManagedSshProcess:
         launched.append("forward")
         return popen(
@@ -253,7 +258,7 @@ def test_latched_cancellation_wins_over_an_expired_session_wait(
 
 
 def test_cancellation_during_failed_rtt_attempt_wins_over_expired_startup(
-    observed_session: Callable[[Callable[[], int | None]], ObservedStatus],
+    observed_session: ObservedStatusFactory,
 ) -> None:
     class ClosingChannel(socket.socket):
         @override
@@ -282,7 +287,7 @@ def test_cancellation_during_failed_rtt_attempt_wins_over_expired_startup(
 
 @pytest.mark.timeout(GUARD)
 def test_ctrl_c_while_the_rtt_output_consumer_stalls_closes_the_channel(
-    observed_session: Callable[[Callable[[], int | None]], ObservedStatus],
+    observed_session: ObservedStatusFactory,
 ) -> None:
     read_end, write_end = os.pipe2(os.O_DIRECT)
     # Packet mode gives each relayed write its own pipe buffer, so the pipe is
@@ -349,7 +354,7 @@ def test_ctrl_c_while_the_rtt_output_consumer_stalls_closes_the_channel(
 
 @pytest.mark.timeout(GUARD)
 def test_ctrl_c_while_helper_output_holds_the_rtt_stream_closes_the_channel(
-    observed_session: Callable[[Callable[[], int | None]], ObservedStatus], tmp_path: Path
+    observed_session: ObservedStatusFactory, tmp_path: Path
 ) -> None:
     entered = threading.Event()
     release = threading.Event()

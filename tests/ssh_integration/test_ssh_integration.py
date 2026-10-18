@@ -11,7 +11,6 @@ import socket
 import tempfile
 import uuid
 import zipfile
-from collections.abc import Callable
 from contextlib import ExitStack
 from pathlib import Path, PurePosixPath
 from typing import override
@@ -20,7 +19,12 @@ import pytest
 from zephyr_remote_openocd.config import PathMapping
 from zephyr_remote_openocd.controller._deployment import build_helper_bundle, deploy_helper
 from zephyr_remote_openocd.controller._forwarding import ForwardManager
-from zephyr_remote_openocd.controller._ssh import ManagedSshProcess, SshCommand, SshForwardSpec
+from zephyr_remote_openocd.controller._ssh import (
+    ManagedSshProcess,
+    ProcessAcquiredHandler,
+    SshCommand,
+    SshForwardSpec,
+)
 from zephyr_remote_openocd.controller.api import (
     ForwardSpec,
     SessionController,
@@ -106,7 +110,7 @@ class ObservedSshCommand(SshCommand):
         remote_command: str,
         *,
         local_forward: SshForwardSpec | None = None,
-        on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+        on_acquired: ProcessAcquiredHandler | None = None,
     ) -> ManagedSshProcess:
         process = super().popen(
             host, remote_command, local_forward=local_forward, on_acquired=on_acquired

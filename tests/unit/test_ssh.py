@@ -11,7 +11,7 @@ import signal
 import subprocess
 import sys
 import threading
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import FrameType
@@ -24,7 +24,7 @@ from zephyr_remote_openocd.controller import session as session_module
 from zephyr_remote_openocd.controller._deployment import DeploymentResult
 from zephyr_remote_openocd.controller._forwarding import ForwardManager
 from zephyr_remote_openocd.controller._ssh import (
-    ManagedSshProcess,
+    ProcessAcquiredHandler,
     SshCommand,
     SshForwardSpec,
     SshProcessStartError,
@@ -454,7 +454,7 @@ class _ForwardCommand(_PopenOnlySshCommand):
         remote_command: str,
         *,
         local_forward: SshForwardSpec | None = None,
-        on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+        on_acquired: ProcessAcquiredHandler | None = None,
     ) -> Any:
         self.calls.append((host, remote_command, local_forward))
         acquired_process = next(self.processes)

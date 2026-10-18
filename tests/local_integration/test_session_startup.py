@@ -6,13 +6,17 @@ from __future__ import annotations
 
 import os
 import threading
-from collections.abc import Callable
 from pathlib import Path
 from typing import override
 
 import pytest
 from zephyr_remote_openocd.controller import _forwarding as forwarding_module
-from zephyr_remote_openocd.controller._ssh import ManagedSshProcess, SshCommand, SshForwardSpec
+from zephyr_remote_openocd.controller._ssh import (
+    ManagedSshProcess,
+    ProcessAcquiredHandler,
+    SshCommand,
+    SshForwardSpec,
+)
 from zephyr_remote_openocd.controller.api import (
     ForwardSpec,
     SessionController,
@@ -57,7 +61,7 @@ def test_acquisition_rejects_helper_termination_recorded_during_forwarding(
             remote_command: str,
             *,
             local_forward: SshForwardSpec | None = None,
-            on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+            on_acquired: ProcessAcquiredHandler | None = None,
         ) -> ManagedSshProcess:
             if local_forward is not None:
                 with (tmp_path / "gate").open("wb", buffering=0) as gate:
@@ -177,7 +181,7 @@ def test_recorded_terminal_prevents_new_forward_entry(
             remote_command: str,
             *,
             local_forward: SshForwardSpec | None = None,
-            on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+            on_acquired: ProcessAcquiredHandler | None = None,
         ) -> ManagedSshProcess:
             if local_forward is not None:
                 forward_entries.append(local_forward)
