@@ -35,6 +35,13 @@ and should benefit from it. Do not routinely use `Any`, `cast(Any, ...)`, broad
 `# type: ignore`, or partially initialized objects to make test setup
 type-check. When a typing escape is genuinely required at a dynamic or untyped
 boundary, keep it narrow and local so type checking remains effective elsewhere.
+mypy requires complete annotations on every function, including tests,
+fixtures, harnesses, fakes, and fixture programs. Annotate pytest fixtures with
+their real types, such as `Path`, `pytest.MonkeyPatch`, or
+`pytest.CaptureFixture[str]`, and parametrized arguments with the type of
+their values. A test that deliberately passes an ill-typed value to exercise
+runtime validation keeps the precise parameter type and marks only that call
+with a narrow `# type: ignore[arg-type]`.
 
 * Prefer typed test doubles that conform to the production abstraction. When a
 mock is appropriate, use `autospec`, `create_autospec`, or `spec_set`. When a
