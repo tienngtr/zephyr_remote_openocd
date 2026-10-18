@@ -4,8 +4,8 @@
 
 Arguments ``ENTERED CREATED READ_START`` precede the SSH host and command;
 the flags are ``yes`` or ``no``. The peer ignores SIGINT, optionally writes
-SESSION_CREATED and reads START, opens and closes the ``ENTERED`` FIFO, and
-waits for controller input to hang up. Without reading START it leaves
+SESSION_CREATED and reads START, writes one byte to the ``ENTERED`` FIFO,
+and waits for controller input to hang up. Without reading START it leaves
 controller input unread until EOF, so a large START applies pipe backpressure
 to the coordinator.
 """
@@ -30,7 +30,7 @@ def main() -> None:
         os.write(1, CREATED)
     if read_start == "yes":
         sys.stdin.buffer.readline()
-    Path(entered).open("wb").close()
+    Path(entered).write_bytes(b"x")
     poller = select.poll()
     poller.register(0, select.POLLHUP)
     while not poller.poll():

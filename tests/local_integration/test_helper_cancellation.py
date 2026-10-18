@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import os
+import select
 import signal
 import sys
 import threading
@@ -37,13 +38,21 @@ GUARD = 60
 SILENT_PEER = ROOT / "tests/fixtures/silent_control_peer.py"
 
 
-def interrupt_after(entered: Path) -> threading.Thread:
+def interrupt_after(entered: Path, abandoned: int) -> threading.Thread:
     def interrupt() -> None:
+        # Opening read-write never waits for the peer, so a peer that fails
+        # before reporting entry cannot strand this thread: the caller's
+        # abandonment descriptor ends the wait without an interrupt.
+        descriptor = os.open(entered, os.O_RDWR)
+        try:
+            ready, _, _ = select.select((descriptor, abandoned), (), ())
+        finally:
+            os.close(descriptor)
+        if abandoned in ready:
+            return
         # Native delivery reaches only this thread; the coordinator is never
         # interrupted in a system call and must be woken by its own wait.
         signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGINT})
-        with entered.open("rb") as stream:
-            stream.read()
         os.kill(os.getpid(), signal.SIGINT)
 
     sender = threading.Thread(target=interrupt)
@@ -71,8 +80,9 @@ def run_cancelled(
         authority=notified_authority.authority,
         notifier=notified_authority.notifier,
     )
+    abandoned_read, abandoned_write = os.pipe()
     previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
-    sender = interrupt_after(entered)
+    sender = interrupt_after(entered, abandoned_read)
     # START exceeds the pipe capacity so an unread helper applies backpressure.
     process = ProcessSpec(("child", "x" * 512 * 1024))
     try:
@@ -84,8 +94,13 @@ def run_cancelled(
             finally:
                 helper.close()
     finally:
+        # A peer that failed before entry has left the sender waiting.
+        os.write(abandoned_write, b"x")
         sender.join(GUARD)
         signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+        os.close(abandoned_read)
+        os.close(abandoned_write)
+    assert not sender.is_alive(), "interrupt sender did not stop"
     return helper, notified_authority.authority.snapshot().failure
 
 
