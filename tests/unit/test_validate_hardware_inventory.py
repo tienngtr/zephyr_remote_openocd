@@ -6,6 +6,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 from tests.inventory_samples import inventory_document
@@ -27,7 +28,9 @@ def write_inventory(tmp_path: Path, document: object) -> Path:
     return path
 
 
-def test_valid_inventory_reports_profiles(tmp_path, capsys) -> None:
+def test_valid_inventory_reports_profiles(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     document = inventory_document()
     document["targets"]["summary_target"] = document["targets"].pop("target")
     profiles = document["targets"]["summary_target"]["profiles"]
@@ -42,7 +45,9 @@ def test_valid_inventory_reports_profiles(tmp_path, capsys) -> None:
     assert output.err == ""
 
 
-def test_invalid_inventory_reports_semantic_location(tmp_path, capsys) -> None:
+def test_invalid_inventory_reports_semantic_location(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     document = inventory_document()
     document["targets"]["target"]["host"] = "missing"
     path = write_inventory(tmp_path, document)
@@ -50,7 +55,9 @@ def test_invalid_inventory_reports_semantic_location(tmp_path, capsys) -> None:
     assert "targets.target.host" in capsys.readouterr().err
 
 
-def test_local_checks_report_missing_paths(tmp_path, capsys) -> None:
+def test_local_checks_report_missing_paths(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     path = write_inventory(tmp_path, inventory_document())
     assert validator.main([str(path), "--check-local"]) == 1
     output = capsys.readouterr()
@@ -58,7 +65,9 @@ def test_local_checks_report_missing_paths(tmp_path, capsys) -> None:
     assert "Local paths valid" not in output.out
 
 
-def test_local_checks_accept_complete_local_paths(tmp_path, capsys) -> None:
+def test_local_checks_accept_complete_local_paths(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     executable = tmp_path / "tool"
     executable.write_text("#!/bin/sh\n")
     executable.chmod(executable.stat().st_mode | 0o100)

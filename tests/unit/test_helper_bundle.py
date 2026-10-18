@@ -15,7 +15,7 @@ from zephyr_remote_openocd.controller._deployment import build_helper_bundle
 from zephyr_remote_openocd.protocol.wire import VERSION
 
 
-def test_helper_bundle_is_deterministic_and_runs_without_local_package(tmp_path):
+def test_helper_bundle_is_deterministic_and_runs_without_local_package(tmp_path: Path) -> None:
     content = build_helper_bundle()
     assert content == build_helper_bundle()
     helper = tmp_path / "helper-digest.py"
@@ -48,7 +48,7 @@ def test_helper_bundle_is_deterministic_and_runs_without_local_package(tmp_path)
     assert not Path(created["remote_workspace"]).exists()
 
 
-def test_helper_bundle_covers_canonical_sources_without_controller_dependencies():
+def test_helper_bundle_covers_canonical_sources_without_controller_dependencies() -> None:
     package = files("zephyr_remote_openocd")
     expected = {
         "__main__.py": package.joinpath("helper", "__main__.py"),

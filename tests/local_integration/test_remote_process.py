@@ -20,11 +20,11 @@ import tempfile
 import termios
 import threading
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Buffer, Callable, Iterable, Iterator
 from contextlib import ExitStack, suppress
 from pathlib import Path, PurePosixPath
 from types import FrameType
-from typing import Any, BinaryIO, override
+from typing import IO, TYPE_CHECKING, Any, BinaryIO, override
 from unittest.mock import patch
 
 import pytest
@@ -51,6 +51,7 @@ from zephyr_remote_openocd.controller.api import (
     StagedFile,
     query_remote_openocd_version,
 )
+from zephyr_remote_openocd.controller.authority import SessionSnapshot
 from zephyr_remote_openocd.controller.cancellation import OperationCancelled, operation_scope
 from zephyr_remote_openocd.controller.helper_connection import HelperConnection
 from zephyr_remote_openocd.controller.paths import REMOTE_ADDRESS_PLACEHOLDER, PathPlanner
@@ -67,6 +68,9 @@ from tests.process_support import cleanup_on_exit, local_transport, read_line, r
 from tests.protocol_support import terminal_message, terminal_snapshot
 from tests.session_support import NotifiedAuthority, ObservedStatus
 from tests.support import ROOT
+
+if TYPE_CHECKING:
+    from _typeshed import TraceFunction
 
 SCRIPTED_HELPER = ROOT / "tests/fixtures/scripted_helper.py"
 
@@ -96,7 +100,7 @@ class _BlockedSshCommand(SshCommand):
         remote_command: str,
         *,
         local_forward: SshForwardSpec | None = None,
-        on_acquired=None,
+        on_acquired: Callable[[ManagedSshProcess], None] | None = None,
     ) -> ManagedSshProcess:
         raise AssertionError("popen() is not expected in this test")
 
@@ -113,7 +117,9 @@ class _BlockedSshCommand(SshCommand):
 
 
 @pytest.mark.parametrize("phase", ("before-control", "control-launch", "allocation", "ready"))
-def test_interrupted_helper_acquisition_cleans_owned_control_process(tmp_path, monkeypatch, phase):
+def test_interrupted_helper_acquisition_cleans_owned_control_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
     helper_path = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
     environment = {**os.environ, "XDG_RUNTIME_DIR": str(tmp_path)}
     managed_processes: list[ManagedSshProcess] = []
@@ -124,7 +130,14 @@ def test_interrupted_helper_acquisition_cleans_owned_control_process(tmp_path, m
 
     class LocalCommand(_BlockedSshCommand):
         @override
-        def popen(self, host, remote_command, *, local_forward=None, on_acquired=None):
+        def popen(
+            self,
+            host: str,
+            remote_command: str,
+            *,
+            local_forward: SshForwardSpec | None = None,
+            on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+        ) -> ManagedSshProcess:
             del host, remote_command
             assert local_forward is None
             managed = local_transport(
@@ -137,7 +150,7 @@ def test_interrupted_helper_acquisition_cleans_owned_control_process(tmp_path, m
                 raise interruption
             return managed
 
-    def observe_and_interrupt(snapshot):
+    def observe_and_interrupt(snapshot: SessionSnapshot) -> SessionAllocation | None:
         allocation = original_created(snapshot)
         if allocation is not None:
             workspaces.append(Path(allocation.remote_workspace))
@@ -145,7 +158,7 @@ def test_interrupted_helper_acquisition_cleans_owned_control_process(tmp_path, m
                 raise interruption
         return allocation
 
-    def acquire_and_interrupt(client):
+    def acquire_and_interrupt(client: HelperConnection) -> None:
         if phase == "before-control":
             raise interruption
         original_acquire(client)
@@ -177,7 +190,9 @@ def test_interrupted_helper_acquisition_cleans_owned_control_process(tmp_path, m
             stop_process(managed)
 
 
-def test_interruption_after_reader_start_keeps_one_owned_reader(monkeypatch, notified_authority):
+def test_interruption_after_reader_start_keeps_one_owned_reader(
+    monkeypatch: pytest.MonkeyPatch, notified_authority: NotifiedAuthority
+) -> None:
     created = encode_frame(
         "SESSION_CREATED", helper="test", session_id="session", remote_workspace="/workspace"
     )
@@ -225,8 +240,11 @@ def test_interruption_after_reader_start_keeps_one_owned_reader(monkeypatch, not
     ids=("natural-success", "natural-failure", "transport-timeout"),
 )
 def test_helper_close_allows_recorded_natural_exit_before_termination(
-    monkeypatch, notified_authority, openocd_returncode, transport_timeout
-):
+    monkeypatch: pytest.MonkeyPatch,
+    notified_authority: NotifiedAuthority,
+    openocd_returncode: int,
+    transport_timeout: bool,
+) -> None:
     exit_read, exit_write = os.pipe()
     terminal_read, terminal_write = os.pipe()
     created = encode_frame(
@@ -257,7 +275,7 @@ def test_helper_close_allows_recorded_natural_exit_before_termination(
             remote_command: str,
             *,
             local_forward: SshForwardSpec | None = None,
-            on_acquired=None,
+            on_acquired: Callable[[ManagedSshProcess], None] | None = None,
         ) -> ManagedSshProcess:
             acquired_process = managed
             if on_acquired is not None:
@@ -324,9 +342,9 @@ def test_helper_close_allows_recorded_natural_exit_before_termination(
         else:
             assert managed.returncode == 0
             assert error is initial_failure
-        terminal = authority.snapshot().terminal
-        assert terminal is not None
-        child_result = terminal.outcome.child_result
+        recorded = authority.snapshot().terminal
+        assert recorded is not None
+        child_result = recorded.outcome.child_result
         assert (None if child_result is None else child_result.returncode) == openocd_returncode
         assert managed.stdin is not None and managed.stdin.closed
         assert managed.stdout is not None and managed.stdout.closed
@@ -376,7 +394,7 @@ class _StagingHelper:
         pass
 
 
-def _assert_pidfd_exited(pidfd, timeout=5):
+def _assert_pidfd_exited(pidfd: int, timeout: float = 5) -> None:
     poller = select.poll()
     poller.register(pidfd, select.POLLIN)
     if not poller.poll(timeout * 1000):
@@ -384,18 +402,18 @@ def _assert_pidfd_exited(pidfd, timeout=5):
 
 
 def start_frame(
-    argv,
+    argv: Iterable[str],
     *,
-    environment=None,
-    required_paths=None,
-    listeners=(),
-    required_output_sentinels=(),
-    readiness_timeout=30.0,
-    literal_prefix=0,
-    argv_templates=(),
-    preferred_address=None,
-    completion_policy="live_server",
-):
+    environment: dict[str, str] | None = None,
+    required_paths: list[dict[str, object]] | None = None,
+    listeners: Iterable[dict[str, object]] = (),
+    required_output_sentinels: Iterable[str] = (),
+    readiness_timeout: float = 30.0,
+    literal_prefix: int = 0,
+    argv_templates: Iterable[dict[str, object]] = (),
+    preferred_address: str | None = None,
+    completion_policy: str = "live_server",
+) -> bytes:
     return encode_frame(
         "START",
         completion_policy=completion_policy,
@@ -411,13 +429,14 @@ def start_frame(
     )
 
 
-def archive_bytes(members):
+def archive_bytes(members: Iterable[tuple[str, bytes, str | None]]) -> bytes:
     stream = io.BytesIO()
     with tarfile.open(fileobj=stream, mode="w", format=tarfile.PAX_FORMAT) as archive:
         for name, member_type, linkname in members:
             info = tarfile.TarInfo(name)
             info.type = member_type
             if member_type == tarfile.SYMTYPE:
+                assert linkname is not None
                 info.linkname = linkname
             if member_type == tarfile.REGTYPE:
                 info.size = 1
@@ -431,44 +450,51 @@ class TestForwardingLifecycle:
     class Process:
         pid = os.getpid()
 
-        def __init__(self, returncode=None):
+        def __init__(self, returncode: int | None = None) -> None:
             self.returncode = returncode
             self.terminate_calls = 0
             self.kill_calls = 0
-            self.stdin = None
-            self.stdout = None
+            self.stdin: IO[bytes] | None = None
+            self.stdout: IO[bytes] | None = None
             self.stderr = io.BytesIO(b"bind failed")
 
-        def poll(self):
+        def poll(self) -> int | None:
             return self.returncode
 
-        def terminate(self):
+        def terminate(self) -> None:
             self.terminate_calls += 1
             self.returncode = 0
 
-        def kill(self):
+        def kill(self) -> None:
             self.kill_calls += 1
             self.returncode = -signal.SIGKILL
 
-        def wait(self, timeout=None):
+        def wait(self, timeout: float | None = None) -> int | None:
             return self.returncode
 
-        def stderr_tail(self):
+        def stderr_tail(self) -> bytes:
             return b""
 
-        def close_stderr(self):
+        def close_stderr(self) -> None:
             self.stderr.close()
 
     class Command(_BlockedSshCommand):
         process: Any
         calls: list[tuple[str, str, SshForwardSpec | None]]
 
-        def __init__(self, process):
+        def __init__(self, process: TestForwardingLifecycle.Process | ControlProcess) -> None:
             super().__init__()
             object.__setattr__(self, "process", process)
             object.__setattr__(self, "calls", [])
 
-        def popen(self, host, remote_command, *, local_forward=None, on_acquired=None):
+        def popen(
+            self,
+            host: str,
+            remote_command: str,
+            *,
+            local_forward: SshForwardSpec | None = None,
+            on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+        ) -> ManagedSshProcess:
             self.calls.append((host, remote_command, local_forward))
             acquired_process = self.process
             if on_acquired is not None:
@@ -476,21 +502,21 @@ class TestForwardingLifecycle:
             return acquired_process
 
     @staticmethod
-    def session(command):
+    def session(command: SshCommand) -> SessionController:
         return SessionController(
             SessionPlan("target", command, TEST_PROCESS),
             DeploymentResult("/helper.py", "digest", False),
         )
 
     @staticmethod
-    def port():
+    def port() -> int:
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
             return listener.getsockname()[1]
 
     def test_gdb_listener_readiness_does_not_probe_single_client_socket(
-        self, requires_loopback_listener
-    ):
+        self, requires_loopback_listener: None
+    ) -> None:
         process = self.Process()
         command = self.Command(process)
         session = self.session(command)
@@ -509,7 +535,9 @@ class TestForwardingLifecycle:
         session._forwards.close()
         assert process.terminate_calls == 1
 
-    def test_helper_control_connection_injects_no_optional_ssh_arguments(self, notified_authority):
+    def test_helper_control_connection_injects_no_optional_ssh_arguments(
+        self, notified_authority: NotifiedAuthority
+    ) -> None:
         process = ControlProcess()
         command = self.Command(process)
         helper = _helper_client(
@@ -527,7 +555,7 @@ class TestForwardingLifecycle:
         assert host == "target"
         assert local_forward is None
 
-    def test_helper_startup_error_survives_process_cleanup_failure(self):
+    def test_helper_startup_error_survives_process_cleanup_failure(self) -> None:
         process = ControlProcess(b"invalid helper frame\n")
         command = self.Command(process)
 
@@ -551,7 +579,9 @@ class TestForwardingLifecycle:
         assert isinstance(raised.value.__cause__, ProtocolError)
         assert any("process cleanup failed" in note for note in raised.value.__notes__)
 
-    def test_stale_gdb_forward_cannot_mask_current_forward_failure(self, monkeypatch):
+    def test_stale_gdb_forward_cannot_mask_current_forward_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         class ElapsedClock:
             """Forward startup observes a time whose readiness deadline has passed."""
 
@@ -582,7 +612,9 @@ class TestForwardingLifecycle:
         session._forwards.close()
         assert stale.terminate_calls == 1
 
-    def test_forward_manager_cleanup_attempts_all_forwards_once(self, monkeypatch):
+    def test_forward_manager_cleanup_attempts_all_forwards_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         cleanup_error = RuntimeError("forward cleanup failed")
         terminate_calls = 0
 
@@ -600,7 +632,7 @@ class TestForwardingLifecycle:
                 remote_command: str,
                 *,
                 local_forward: SshForwardSpec | None = None,
-                on_acquired=None,
+                on_acquired: Callable[[ManagedSshProcess], None] | None = None,
             ) -> ManagedSshProcess:
                 del host, remote_command, local_forward
                 acquired_process = self.processes.pop(0)
@@ -656,8 +688,8 @@ class TestForwardingLifecycle:
 )
 @pytest.mark.parametrize("cleanup_fails", (False, True))
 def test_repeated_ctrl_c_during_session_close_skips_no_cleanup(
-    tmp_path, monkeypatch, phase, cleanup_fails
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str, cleanup_fails: bool
+) -> None:
     processes: list[ManagedSshProcess] = []
     control_processes: list[ManagedSshProcess] = []
     helper_path = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
@@ -669,7 +701,14 @@ def test_repeated_ctrl_c_during_session_close_skips_no_cleanup(
 
     class LocalCommand(_BlockedSshCommand):
         @override
-        def popen(self, host, remote_command, *, local_forward=None, on_acquired=None):
+        def popen(
+            self,
+            host: str,
+            remote_command: str,
+            *,
+            local_forward: SshForwardSpec | None = None,
+            on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+        ) -> ManagedSshProcess:
             process = SshCommand.popen(
                 self, host, remote_command, local_forward=local_forward, on_acquired=on_acquired
             )
@@ -678,10 +717,13 @@ def test_repeated_ctrl_c_during_session_close_skips_no_cleanup(
             return process
 
         @override
-        def run_stream(self, host, remote_command, stream, *, timeout=60):
+        def run_stream(
+            self, host: str, remote_command: str, stream: BinaryIO, *, timeout: float = 60
+        ) -> subprocess.CompletedProcess[bytes]:
             return SshCommand.run_stream(self, host, remote_command, stream, timeout=timeout)
 
-    def launch(process, argv, **kwargs):
+    # Popen's keyword arguments pass through unchanged.
+    def launch(process: subprocess.Popen[bytes], argv: list[str], **kwargs: Any) -> None:
         # Replace only SSH execution with local Python; the session, helper,
         # staging, readiness, and all transport cleanup use production code.
         remote_argv = shlex.split(argv[-1])
@@ -706,7 +748,9 @@ def test_repeated_ctrl_c_during_session_close_skips_no_cleanup(
     )
     manager = session._forwards
 
-    def interrupt_at_cleanup_boundary(frame: FrameType, event: str, _arg: object):
+    def interrupt_at_cleanup_boundary(
+        frame: FrameType, event: str, _arg: object
+    ) -> TraceFunction | None:
         nonlocal requested
         # Deliver real SIGINT at an ownership boundary without replacing
         # lifecycle collaborators or depending on thread scheduling/line numbers.
@@ -746,7 +790,7 @@ def test_repeated_ctrl_c_during_session_close_skips_no_cleanup(
                 failing_process = control_processes[0] if phase == "helper-entry" else processes[0]
                 close_stderr = failing_process.close_stderr
 
-                def fail_close_stderr():
+                def fail_close_stderr() -> None:
                     close_stderr()
                     raise cleanup_error
 
@@ -788,7 +832,7 @@ def test_repeated_ctrl_c_during_session_close_skips_no_cleanup(
 
 class TestRttClient:
     @staticmethod
-    def _listener(handler):
+    def _listener(handler: Callable[[socket.socket], None]) -> tuple[int, threading.Thread]:
         listener = socket.socket()
         listener.bind(("127.0.0.1", 0))
         listener.listen()
@@ -796,7 +840,11 @@ class TestRttClient:
         thread.start()
         return listener.getsockname()[1], thread
 
-    def test_bidirectional_non_tty_channel(self, requires_loopback_listener, observed_session):
+    def test_bidirectional_non_tty_channel(
+        self,
+        requires_loopback_listener: None,
+        observed_session: Callable[[Callable[[], int | None]], ObservedStatus],
+    ) -> None:
         expected_input = b"local_input"
         expected_output = b"remote_output"
         input_received = threading.Event()
@@ -813,7 +861,7 @@ class TestRttClient:
             stdin.write(expected_input)
             stdin.seek(0)
 
-            def server():
+            def server() -> None:
                 try:
                     readable, _, _ = select.select((listener, stop_reader), (), ())
                     if stop_reader in readable:
@@ -837,7 +885,7 @@ class TestRttClient:
 
             thread = threading.Thread(target=server)
 
-            def stop_server():
+            def stop_server() -> None:
                 try:
                     stop_writer.shutdown(socket.SHUT_WR)
                 finally:
@@ -847,7 +895,7 @@ class TestRttClient:
                 if server_errors:
                     raise server_errors[0]
 
-            def poll_session():
+            def poll_session() -> int | None:
                 if server_errors:
                     raise server_errors[0]
                 return (
@@ -864,7 +912,9 @@ class TestRttClient:
                 assert input_received.is_set()
                 assert stdout.getvalue() == expected_output
 
-    def test_non_consuming_channel_does_not_block_session_poll(self, observed_session):
+    def test_non_consuming_channel_does_not_block_session_poll(
+        self, observed_session: Callable[[Callable[[], int | None]], ObservedStatus]
+    ) -> None:
         local, peer = socket.socketpair()
         local.setblocking(False)
         # The peer never consumes input, so the channel stays unwritable.
@@ -904,16 +954,18 @@ class TestRttClient:
             session.close()
 
     def test_full_input_queue_pauses_and_resumes_stdin_after_partial_send(
-        self, monkeypatch, observed_session
-    ):
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        observed_session: Callable[[Callable[[], int | None]], ObservedStatus],
+    ) -> None:
         sent: list[bytes] = []
         received = bytearray()
 
         class PartialChannel(socket.socket):
             @override
-            def send(self, data, flags=0):
+            def send(self, data: Buffer, flags: int = 0, /) -> int:
                 sent.append(bytes(data))
-                return super().send(bytes(data[:2]), flags)
+                return super().send(bytes(data)[:2], flags)
 
         monkeypatch.setattr(rtt_module, "_INPUT_CHUNK_SIZE", 4)
         monkeypatch.setattr(rtt_module, "_MAX_PENDING_INPUT", 4)
@@ -925,7 +977,7 @@ class TestRttClient:
         os.close(input_write)
         session = observed_session(lambda: 0 if received == b"abcdefgh" else None)
 
-        def receive():
+        def receive() -> None:
             while len(received) < 8:
                 received.extend(peer.recv(64))
             session.changed()
@@ -943,12 +995,14 @@ class TestRttClient:
         assert sent[:2] == [b"abcd", b"cdef"]
         assert received == b"abcdefgh"
 
-    def test_rtt_eof_accounts_recorded_terminal_status(self, notified_authority):
+    def test_rtt_eof_accounts_recorded_terminal_status(
+        self, notified_authority: NotifiedAuthority
+    ) -> None:
         authority = notified_authority.authority
 
         class TerminalBeforeEof(socket.socket):
             @override
-            def recv(self, bufsize, flags=0):
+            def recv(self, bufsize: int, flags: int = 0, /) -> bytes:
                 authority.record_terminal(terminal_snapshot(Trigger.CHILD_EXIT, returncode=0))
                 return super().recv(bufsize, flags)
 
@@ -967,9 +1021,11 @@ class TestRttClient:
             assert rtt_module.RttRelay(connection, stream.fileno(), stream, Session()).run() == 0
 
     def test_immediate_forwarded_channel_failure_is_authoritative(
-        self, requires_loopback_listener, observed_session
-    ):
-        def server(listener):
+        self,
+        requires_loopback_listener: None,
+        observed_session: Callable[[Callable[[], int | None]], ObservedStatus],
+    ) -> None:
+        def server(listener: socket.socket) -> None:
             with listener, listener.accept()[0]:
                 pass
 
@@ -979,14 +1035,16 @@ class TestRttClient:
         thread.join(2)
 
     def test_tty_preserves_signals_and_restores_complete_state(
-        self, requires_loopback_listener, observed_session
-    ):
+        self,
+        requires_loopback_listener: None,
+        observed_session: Callable[[Callable[[], int | None]], ObservedStatus],
+    ) -> None:
         request = b"tty input"
         received = bytearray()
         input_received = threading.Event()
         input_sent = False
 
-        def server(listener):
+        def server(listener: socket.socket) -> None:
             with listener, listener.accept()[0] as connection:
                 connection.sendall(b"connected")
                 while len(received) < len(request):
@@ -1005,7 +1063,7 @@ class TestRttClient:
                 termios.tcsetattr(stdin.fileno(), termios.TCSANOW, original)
                 port, thread = self._listener(server)
 
-                def poll_session():
+                def poll_session() -> int | None:
                     nonlocal input_sent
                     if not input_sent:
                         configured = termios.tcgetattr(stdin.fileno())
@@ -1046,7 +1104,7 @@ def helper_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterato
 
 
 class TestRealProcessHelper:
-    def test_helper_materializes_only_explicit_runner_owned_arguments(self, tmp_path):
+    def test_helper_materializes_only_explicit_runner_owned_arguments(self, tmp_path: Path) -> None:
         helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         runtime = tmp_path / "runtime {workspace} {address}"
         runtime.mkdir()
@@ -1138,7 +1196,7 @@ class TestRealProcessHelper:
                     process.wait(timeout=10)
 
     @pytest.mark.parametrize("pause", ("upload", "admission", "extraction"))
-    def test_staging_and_cleanup_share_workspace_lifetime(self, tmp_path, pause):
+    def test_staging_and_cleanup_share_workspace_lifetime(self, tmp_path: Path, pause: str) -> None:
         helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         environment = os.environ.copy()
         environment["XDG_RUNTIME_DIR"] = str(tmp_path)
@@ -1214,8 +1272,8 @@ class TestRealProcessHelper:
 
     @pytest.mark.parametrize("file_mode, expected_mode", ((0o7777, 0o700), (0o044, 0o600)))
     def test_helper_normalizes_permissions_for_cleanup(
-        self, helper_workspace, file_mode, expected_mode
-    ):
+        self, helper_workspace: Path, file_mode: int, expected_mode: int
+    ) -> None:
         helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         archive_stream = io.BytesIO()
         with tarfile.open(fileobj=archive_stream, mode="w", format=tarfile.PAX_FORMAT) as archive:
@@ -1244,7 +1302,9 @@ class TestRealProcessHelper:
         assert (staged_directory / "payload").stat().st_mode & 0o7777 == expected_mode
         shutil.rmtree(workspace)
 
-    def test_helper_stages_large_archive_through_spooled_stdin(self, tmp_path, helper_workspace):
+    def test_helper_stages_large_archive_through_spooled_stdin(
+        self, tmp_path: Path, helper_workspace: Path
+    ) -> None:
         helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         payload = bytes(range(256)) * 8192
         source = tmp_path / "firmware.bin"
@@ -1275,7 +1335,7 @@ class TestRealProcessHelper:
         }
         assert (workspace / "staged" / "firmware.bin").read_bytes() == payload
 
-    def test_helper_stages_empty_search_root(self, tmp_path, helper_workspace):
+    def test_helper_stages_empty_search_root(self, tmp_path: Path, helper_workspace: Path) -> None:
         helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         local_root = tmp_path / "empty-search"
         local_root.mkdir()
@@ -1302,7 +1362,9 @@ class TestRealProcessHelper:
         assert response["directories"] == ["trees/search_0"]
         assert (workspace / "staged" / "trees" / "search_0").is_dir()
 
-    def test_helper_stages_empty_and_nested_directories(self, tmp_path, helper_workspace):
+    def test_helper_stages_empty_and_nested_directories(
+        self, tmp_path: Path, helper_workspace: Path
+    ) -> None:
         helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         local_root = tmp_path / "search"
         (local_root / "empty").mkdir(parents=True)
@@ -1349,8 +1411,8 @@ class TestRealProcessHelper:
         assert (staged / "trees/search_0/nested/payload.cfg").read_bytes() == b"payload"
 
     def test_helper_stages_multiple_files_with_interspersed_directories(
-        self, tmp_path, helper_workspace
-    ):
+        self, tmp_path: Path, helper_workspace: Path
+    ) -> None:
         helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         tree = tmp_path / "tree"
         nested = tree / "nested directory"
@@ -1421,7 +1483,9 @@ class TestRealProcessHelper:
             ),
         ),
     )
-    def test_helper_rejects_unsafe_staging_members(self, helper_workspace, members):
+    def test_helper_rejects_unsafe_staging_members(
+        self, helper_workspace: Path, members: tuple[tuple[str, bytes, str | None], ...]
+    ) -> None:
         helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         workspace = helper_workspace
         environment = os.environ.copy()
@@ -1462,9 +1526,13 @@ class TestRealProcessHelper:
         ),
         ids=("wrong-byte-count", "missing-type", "invalid-utf8"),
     )
-    def test_controller_rejects_invalid_staging_confirmation(self, monkeypatch, response):
+    def test_controller_rejects_invalid_staging_confirmation(
+        self, monkeypatch: pytest.MonkeyPatch, response: bytes
+    ) -> None:
         class LocalCommand(_BlockedSshCommand):
-            def run_stream(self, host, command, stream, timeout=60):
+            def run_stream(
+                self, host: str, command: str, stream: BinaryIO, timeout: float = 60
+            ) -> subprocess.CompletedProcess[bytes]:
                 stream.read()
                 return subprocess.CompletedProcess(command, 0, response, b"")
 
@@ -1489,7 +1557,9 @@ class TestRealProcessHelper:
             ):
                 session.acquire()
 
-    def test_controller_rejects_staging_confirmation_with_wrong_digest(self, monkeypatch, tmp_path):
+    def test_controller_rejects_staging_confirmation_with_wrong_digest(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
         different_payload_digest = hashlib.sha256(b"different firmware").hexdigest()
         response = encode_frame(
             "STAGED",
@@ -1500,7 +1570,9 @@ class TestRealProcessHelper:
         )
 
         class LocalCommand(_BlockedSshCommand):
-            def run_stream(self, host, command, stream, timeout=60):
+            def run_stream(
+                self, host: str, command: str, stream: BinaryIO, timeout: float = 60
+            ) -> subprocess.CompletedProcess[bytes]:
                 stream.read()
                 return subprocess.CompletedProcess(command, 0, response, b"")
 
@@ -1522,7 +1594,9 @@ class TestRealProcessHelper:
         with pytest.raises(SessionError), cleanup_on_exit(session.close):
             session.acquire()
 
-    def test_controller_reports_nonzero_staging_command_and_closes_archive(self, monkeypatch):
+    def test_controller_reports_nonzero_staging_command_and_closes_archive(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         diagnostic = "staging destination is unavailable"
         staging_ssh_exit_status = 23
         response = encode_frame("ERROR", code="HELPER_ERROR", message=diagnostic)
@@ -1530,7 +1604,9 @@ class TestRealProcessHelper:
         class LocalCommand(_BlockedSshCommand):
             stream: BinaryIO | None = None
 
-            def run_stream(self, host, command, stream, timeout=60):
+            def run_stream(
+                self, host: str, command: str, stream: BinaryIO, timeout: float = 60
+            ) -> subprocess.CompletedProcess[bytes]:
                 self.stream = stream
                 assert stream.read()
                 return subprocess.CompletedProcess(command, staging_ssh_exit_status, response, b"")
@@ -1561,7 +1637,9 @@ class TestRealProcessHelper:
             assert diagnostic in message
             assert command.stream is not None and command.stream.closed
 
-    def test_controller_wraps_invalid_utf8_version_response(self, monkeypatch):
+    def test_controller_wraps_invalid_utf8_version_response(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         class LocalCommand(_BlockedSshCommand):
             def run(
                 self,
@@ -1583,7 +1661,7 @@ class TestRealProcessHelper:
         with pytest.raises(SessionError, match="invalid remote OpenOCD version response"):
             query_remote_openocd_version(LocalCommand(), "local", ("openocd",))
 
-    def test_helper_applies_requested_environment_before_child_executes(self):
+    def test_helper_applies_requested_environment_before_child_executes(self) -> None:
         helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
@@ -1624,7 +1702,7 @@ class TestRealProcessHelper:
                     if stream is not None and not stream.closed:
                         stream.close()
 
-    def test_helper_preserves_inherited_environment_when_request_omits_name(self):
+    def test_helper_preserves_inherited_environment_when_request_omits_name(self) -> None:
         helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
@@ -1679,7 +1757,7 @@ class TestRealProcessHelper:
             ),
         ),
     )
-    def test_helper_rejects_invalid_command_frame(self, frame, close_input):
+    def test_helper_rejects_invalid_command_frame(self, frame: bytes, close_input: bool) -> None:
         helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
@@ -1711,8 +1789,8 @@ class TestRealProcessHelper:
                         stream.close()
 
     def test_persistent_process_waits_for_sentinels_without_service_probes(
-        self, requires_loopback_listener
-    ):
+        self, requires_loopback_listener: None
+    ) -> None:
         with socket.socket() as probe:
             probe.bind(("127.64.0.1", 0))
             remote_port = probe.getsockname()[1]
@@ -1785,7 +1863,7 @@ class TestRealProcessHelper:
                 if child_pidfd is not None:
                     os.close(child_pidfd)
 
-    def test_helper_version_operation_is_structured(self):
+    def test_helper_version_operation_is_structured(self) -> None:
         helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         result = subprocess.run(
             [sys.executable, str(helper), "openocd-version", sys.executable],
@@ -1799,8 +1877,11 @@ class TestRealProcessHelper:
 
     @pytest.mark.parametrize("failure", ("diagnostic", "tcp-bind"))
     def test_helper_does_not_repeat_spawned_startup_work(
-        self, requires_loopback_listener, isolated_lease_addresses, failure
-    ):
+        self,
+        requires_loopback_listener: None,
+        isolated_lease_addresses: tuple[str, str],
+        failure: str,
+    ) -> None:
         preferred, _ = isolated_lease_addresses
         helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         with tempfile.TemporaryDirectory() as directory:
@@ -1867,7 +1948,7 @@ class TestRealProcessHelper:
                     if stream is not None and not stream.closed:
                         stream.close()
 
-    def test_output_exit_status_and_workspace_cleanup(self):
+    def test_output_exit_status_and_workspace_cleanup(self) -> None:
         helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
@@ -1916,7 +1997,9 @@ class TestRealProcessHelper:
                         stream.close()
 
     @pytest.mark.parametrize("shutdown", ("eof", "signal"))
-    def test_helper_cleans_up_while_protocol_output_pipe_is_full(self, tmp_path, shutdown):
+    def test_helper_cleans_up_while_protocol_output_pipe_is_full(
+        self, tmp_path: Path, shutdown: str
+    ) -> None:
         helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         child_pid_file = tmp_path / "child.pid"
         environment = os.environ.copy()
@@ -1990,7 +2073,7 @@ class TestRealProcessHelper:
                 if stream is not None and not stream.closed:
                     stream.close()
 
-    def test_helper_signal_cleans_child_and_workspace(self):
+    def test_helper_signal_cleans_child_and_workspace(self) -> None:
         helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
@@ -2040,7 +2123,9 @@ class TestRealProcessHelper:
                     os.close(child_pidfd)
 
     @pytest.mark.parametrize("close_input", (True, False), ids=("eof", "unexpected-input"))
-    def test_pending_readiness_shutdown_cleans_child_and_workspace(self, tmp_path, close_input):
+    def test_pending_readiness_shutdown_cleans_child_and_workspace(
+        self, tmp_path: Path, close_input: bool
+    ) -> None:
         helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         environment = os.environ.copy()
         environment["XDG_RUNTIME_DIR"] = str(tmp_path)
@@ -2103,7 +2188,7 @@ class TestRealProcessHelper:
             if child_pidfd is not None:
                 os.close(child_pidfd)
 
-    def test_helper_eof_cleans_child_and_workspace(self):
+    def test_helper_eof_cleans_child_and_workspace(self) -> None:
         helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
@@ -2144,7 +2229,7 @@ class TestRealProcessHelper:
                 if child_pidfd is not None:
                     os.close(child_pidfd)
 
-    def test_partial_openocd_start_cleans_child_and_workspace(self):
+    def test_partial_openocd_start_cleans_child_and_workspace(self) -> None:
         helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
@@ -2189,7 +2274,7 @@ class TestRealProcessHelper:
                     if stream is not None and not stream.closed:
                         stream.close()
 
-    def test_controller_publishes_child_failure_and_relays_output(self):
+    def test_controller_publishes_child_failure_and_relays_output(self) -> None:
         helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
@@ -2198,14 +2283,27 @@ class TestRealProcessHelper:
             class LocalCommand(_BlockedSshCommand):
                 argv_prefix = ("local_test",)
 
-                def popen(inner, host, remote_command, *, local_forward=None, on_acquired=None):  # pylint: disable=no-self-argument
+                def popen(  # pylint: disable=no-self-argument
+                    inner,
+                    host: str,
+                    remote_command: str,
+                    *,
+                    local_forward: SshForwardSpec | None = None,
+                    on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+                ) -> ManagedSshProcess:
                     return local_transport(
                         [sys.executable, str(helper), "control"],
                         environment=environment,
                         on_acquired=on_acquired,
                     )
 
-                def run_stream(inner, host, remote_command, stream, timeout=60):  # pylint: disable=no-self-argument
+                def run_stream(  # pylint: disable=no-self-argument
+                    inner,
+                    host: str,
+                    remote_command: str,
+                    stream: BinaryIO,
+                    timeout: float = 60,
+                ) -> subprocess.CompletedProcess[bytes]:
                     workspace = remote_command.rsplit(" ", 1)[1]
                     return subprocess.run(
                         [sys.executable, str(helper), "stage", workspace],
@@ -2258,7 +2356,7 @@ class TestRealProcessHelper:
             assert session_controller.closed
             assert session_controller.openocd_returncode == sample_openocd_exit_code
 
-    def test_controller_surfaces_helper_descendant_warning(self):
+    def test_controller_surfaces_helper_descendant_warning(self) -> None:
         helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
@@ -2267,14 +2365,27 @@ class TestRealProcessHelper:
             class LocalCommand(_BlockedSshCommand):
                 argv_prefix = ("local_test",)
 
-                def popen(inner, host, remote_command, *, local_forward=None, on_acquired=None):  # pylint: disable=no-self-argument
+                def popen(  # pylint: disable=no-self-argument
+                    inner,
+                    host: str,
+                    remote_command: str,
+                    *,
+                    local_forward: SshForwardSpec | None = None,
+                    on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+                ) -> ManagedSshProcess:
                     return local_transport(
                         [sys.executable, str(helper), "control"],
                         environment=environment,
                         on_acquired=on_acquired,
                     )
 
-                def run_stream(inner, host, remote_command, stream, timeout=60):  # pylint: disable=no-self-argument
+                def run_stream(  # pylint: disable=no-self-argument
+                    inner,
+                    host: str,
+                    remote_command: str,
+                    stream: BinaryIO,
+                    timeout: float = 60,
+                ) -> subprocess.CompletedProcess[bytes]:
                     workspace = remote_command.rsplit(" ", 1)[1]
                     return subprocess.run(
                         [sys.executable, str(helper), "stage", workspace],
@@ -2347,12 +2458,12 @@ class TestRealProcessHelper:
     )
     def test_helper_client_close_validates_helper_shutdown(
         self,
-        notified_authority,
-        event_stream_tail,
-        exit_code,
-        expected,
-        expected_openocd_result,
-    ):
+        notified_authority: NotifiedAuthority,
+        event_stream_tail: str | None,
+        exit_code: int,
+        expected: tuple[str, ...] | None,
+        expected_openocd_result: int | None,
+    ) -> None:
         event_stream_tail = "" if event_stream_tail is None else event_stream_tail + "\n"
         helper_argv = [
             sys.executable,
@@ -2363,7 +2474,14 @@ class TestRealProcessHelper:
         ]
 
         class LocalCommand(_BlockedSshCommand):
-            def popen(inner, host, remote_command, *, local_forward=None, on_acquired=None):  # pylint: disable=no-self-argument
+            def popen(  # pylint: disable=no-self-argument
+                inner,
+                host: str,
+                remote_command: str,
+                *,
+                local_forward: SshForwardSpec | None = None,
+                on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+            ) -> ManagedSshProcess:
                 return local_transport(helper_argv, on_acquired=on_acquired)
 
         authority = notified_authority.authority
@@ -2390,7 +2508,9 @@ class TestRealProcessHelper:
             with suppress(BaseException):
                 helper_client.close()
 
-    def test_helper_client_reports_helper_failure_after_close_event(self, notified_authority):
+    def test_helper_client_reports_helper_failure_after_close_event(
+        self, notified_authority: NotifiedAuthority
+    ) -> None:
         events = (
             encode_frame("ATTEMPT", argv=["test-process"])
             + encode_frame("READY", remote_address="127.64.0.1", child_pid=1)
@@ -2407,7 +2527,14 @@ class TestRealProcessHelper:
         class LocalCommand(_BlockedSshCommand):
             process: Any = None
 
-            def popen(inner, host, remote_command, *, local_forward=None, on_acquired=None):  # pylint: disable=no-self-argument
+            def popen(  # pylint: disable=no-self-argument
+                inner,
+                host: str,
+                remote_command: str,
+                *,
+                local_forward: SshForwardSpec | None = None,
+                on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+            ) -> ManagedSshProcess:
                 process = local_transport(helper_argv, on_acquired=on_acquired)
                 inner.process = process
                 return process
@@ -2422,7 +2549,7 @@ class TestRealProcessHelper:
         helper_exited = threading.Event()
         drain_events = helper_client._drain_events
 
-        def drain_after_exit():
+        def drain_after_exit() -> None:
             assert helper_exited.wait(5)
             drain_events()
 
@@ -2446,7 +2573,9 @@ class TestRealProcessHelper:
             with suppress(BaseException):
                 helper_client.close()
 
-    def test_helper_client_close_waits_for_child_kill_fallback(self, notified_authority):
+    def test_helper_client_close_waits_for_child_kill_fallback(
+        self, notified_authority: NotifiedAuthority
+    ) -> None:
         helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
@@ -2457,7 +2586,14 @@ class TestRealProcessHelper:
                 argv_prefix = ("local_test",)
                 process: Any = None
 
-                def popen(inner, host, remote_command, *, local_forward=None, on_acquired=None):  # pylint: disable=no-self-argument
+                def popen(  # pylint: disable=no-self-argument
+                    inner,
+                    host: str,
+                    remote_command: str,
+                    *,
+                    local_forward: SshForwardSpec | None = None,
+                    on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+                ) -> ManagedSshProcess:
                     process = local_transport(
                         [sys.executable, str(helper), "control"],
                         environment=environment,
@@ -2507,21 +2643,34 @@ class TestRealProcessHelper:
                         signal.pidfd_send_signal(child_pidfd, signal.SIGKILL)
                     os.close(child_pidfd)
 
-    def test_controller_reader_failure_requires_lifecycle_cleanup(self):
+    def test_controller_reader_failure_requires_lifecycle_cleanup(self) -> None:
         helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
             environment["XDG_RUNTIME_DIR"] = directory
 
             class LocalCommand(_BlockedSshCommand):
-                def popen(inner, host, remote_command, *, local_forward=None, on_acquired=None):  # pylint: disable=no-self-argument
+                def popen(  # pylint: disable=no-self-argument
+                    inner,
+                    host: str,
+                    remote_command: str,
+                    *,
+                    local_forward: SshForwardSpec | None = None,
+                    on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+                ) -> ManagedSshProcess:
                     return local_transport(
                         [sys.executable, str(helper), "control"],
                         environment=environment,
                         on_acquired=on_acquired,
                     )
 
-                def run_stream(inner, host, remote_command, stream, timeout=60):  # pylint: disable=no-self-argument
+                def run_stream(  # pylint: disable=no-self-argument
+                    inner,
+                    host: str,
+                    remote_command: str,
+                    stream: BinaryIO,
+                    timeout: float = 60,
+                ) -> subprocess.CompletedProcess[bytes]:
                     workspace = remote_command.rsplit(" ", 1)[1]
                     return subprocess.run(
                         [sys.executable, str(helper), "stage", workspace],
@@ -2543,7 +2692,7 @@ class TestRealProcessHelper:
 
             output_error = RuntimeError()
 
-            def fail_on_output(_stream, _payload, _line_end):
+            def fail_on_output(_stream: str, _payload: str, _line_end: bool) -> None:
                 raise output_error
 
             session_controller = SessionController(
@@ -2565,7 +2714,13 @@ class TestRealProcessHelper:
                     session_controller.close()
 
 
-def _helper_client(request, deployment, output_handler=None, *, wiring: NotifiedAuthority):
+def _helper_client(
+    request: SessionPlan,
+    deployment: DeploymentResult,
+    output_handler: Callable[[str, str, bool], None] | None = None,
+    *,
+    wiring: NotifiedAuthority,
+) -> HelperConnection:
     return HelperConnection(
         request.ssh_command,
         request.host,

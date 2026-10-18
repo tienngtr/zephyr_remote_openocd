@@ -9,7 +9,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import suppress
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO, override
@@ -18,10 +18,16 @@ import pytest
 from zephyr_remote_openocd.config import PathMapping
 from zephyr_remote_openocd.controller import helper_connection as connection_module
 from zephyr_remote_openocd.controller._deployment import DeploymentResult
-from zephyr_remote_openocd.controller._ssh import ManagedSshProcess, SshCommand, SshForwardSpec
+from zephyr_remote_openocd.controller._ssh import (
+    ManagedSshProcess,
+    ProcessControl,
+    SshCommand,
+    SshForwardSpec,
+)
 from zephyr_remote_openocd.controller.authority import SessionAuthority, SessionError
 from zephyr_remote_openocd.controller.helper_connection import HelperConnection
 from zephyr_remote_openocd.controller.paths import PathPlanner
+from zephyr_remote_openocd.controller.waiting import Descriptor, WaitResult, WaitSources
 from zephyr_remote_openocd.openocd.flash import FlashInputs, build_flash_plan
 from zephyr_remote_openocd.protocol.arguments import (
     ArgumentTemplate,
@@ -62,7 +68,7 @@ class _PopenOnlySshCommand(SshCommand):
         *,
         input_data: bytes | None = None,
         timeout: float = 15,
-    ):
+    ) -> subprocess.CompletedProcess[bytes]:
         raise AssertionError("run() is not expected in this test")
 
     @override
@@ -73,8 +79,17 @@ class _PopenOnlySshCommand(SshCommand):
         stream: BinaryIO,
         *,
         timeout: float = 60,
-    ):
+    ) -> subprocess.CompletedProcess[bytes]:
         raise AssertionError("run_stream() is not expected in this test")
+
+
+_NO_WAIT_SOURCES = WaitSources()
+
+
+def _child_returncode(authority: SessionAuthority) -> int:
+    terminal = authority.snapshot().terminal
+    assert terminal is not None and terminal.outcome.child_result is not None
+    return terminal.outcome.child_result.returncode
 
 
 def _open_helper_client(
@@ -161,8 +176,8 @@ def helper_client(
 
 
 def test_helper_client_sends_preference_and_reports_attempt_before_startup_error(
-    notified_authority,
-):
+    notified_authority: NotifiedAuthority,
+) -> None:
     observed: list[tuple[str, ...]] = []
     first = ("openocd", "-c", "bindto 127.64.0.1", "")
     client, helper_process = _open_helper_client_with_events(
@@ -184,7 +199,7 @@ def test_helper_client_sends_preference_and_reports_attempt_before_startup_error
         client.close()
 
 
-def test_explicit_session_values_are_not_recursively_expanded():
+def test_explicit_session_values_are_not_recursively_expanded() -> None:
     process = ProcessSpec(
         ("openocd", "preview"),
         argv_templates=(
@@ -238,13 +253,13 @@ def test_explicit_session_values_are_not_recursively_expanded():
     ),
 )
 def test_flash_paths_are_quoted_after_session_allocation(
-    notified_authority,
+    notified_authority: NotifiedAuthority,
     tmp_path: Path,
     image_type: str,
     workspace: str,
     mapped_root: str | None,
     expected_path_root: str,
-):
+) -> None:
     image = tmp_path / f"firmware.{image_type}"
     if image_type == "elf":
         shutil.copyfile(sys.executable, image)
@@ -333,7 +348,7 @@ def test_flash_paths_are_quoted_after_session_allocation(
     ]
 
 
-def test_open_rejects_initial_frame_without_lf(notified_authority):
+def test_open_rejects_initial_frame_without_lf(notified_authority: NotifiedAuthority) -> None:
     payload = CREATED.rstrip(b"\n")
     process = ControlProcess(payload)
     process.end_events()
@@ -346,8 +361,8 @@ def test_open_rejects_initial_frame_without_lf(notified_authority):
 @pytest.mark.parametrize("policy", tuple(CompletionPolicy))
 @pytest.mark.parametrize("contradiction", ("child", "workspace"))
 def test_contradictory_terminal_is_reader_failure_and_never_published(
-    notified_authority, policy, contradiction
-):
+    notified_authority: NotifiedAuthority, policy: CompletionPolicy, contradiction: str
+) -> None:
     terminal = decode_frame(
         terminal_message(Trigger.CONTROLLER_EOF, child_acquired=contradiction != "child")
     )
@@ -389,8 +404,10 @@ def test_contradictory_terminal_is_reader_failure_and_never_published(
 
 @pytest.mark.timeout(10)
 def test_session_observations_project_exit_while_reader_remains_alive(
-    monkeypatch, open_client, notified_authority
-):
+    monkeypatch: pytest.MonkeyPatch,
+    open_client: Callable[[ControlProcess], HelperConnection],
+    notified_authority: NotifiedAuthority,
+) -> None:
     authority = notified_authority.authority
     reader_blocked = threading.Event()
     release_reader = threading.Event()
@@ -403,13 +420,19 @@ def test_session_observations_project_exit_while_reader_remains_alive(
         later=(),
     )
 
-    def hold_after_terminal(**kwargs):
+    def hold_after_terminal(
+        *,
+        readable: Iterable[Descriptor] = (),
+        writable: Iterable[Descriptor] = (),
+        sources: WaitSources = _NO_WAIT_SOURCES,
+        deadline: float | None = None,
+    ) -> WaitResult:
         # Block the actual production reader at its next OS wait, after its
         # real pipe/frame path has published terminal state to the authority.
-        if kwargs.get("readable") == (process.stdout.fileno(),) and authority.snapshot().terminal:
+        if readable == (process.stdout.fileno(),) and authority.snapshot().terminal:
             reader_blocked.set()
             assert release_reader.wait(5)
-        return wait(**kwargs)
+        return wait(readable=readable, writable=writable, sources=sources, deadline=deadline)
 
     monkeypatch.setattr(connection_module, "wait_for", hold_after_terminal)
     client = open_client(process)
@@ -417,7 +440,7 @@ def test_session_observations_project_exit_while_reader_remains_alive(
         with pytest.raises(SessionError):
             client.start_process(ProcessSpec(("child",)), ())
         assert reader_blocked.wait(5)
-        assert authority.snapshot().terminal.outcome.child_result.returncode == OPENOCD_FAILURE_RC
+        assert _child_returncode(authority) == OPENOCD_FAILURE_RC
         with pytest.raises(SessionError, match="exit status 7"):
             authority.operation_status()
     finally:
@@ -425,7 +448,9 @@ def test_session_observations_project_exit_while_reader_remains_alive(
         client.close()
 
 
-def test_close_reaps_natural_exit_before_transport_cleanup(open_client, notified_authority):
+def test_close_reaps_natural_exit_before_transport_cleanup(
+    open_client: Callable[[ControlProcess], HelperConnection], notified_authority: NotifiedAuthority
+) -> None:
     authority = notified_authority.authority
     natural_exit_reaped = threading.Event()
 
@@ -453,7 +478,7 @@ def test_close_reaps_natural_exit_before_transport_cleanup(open_client, notified
     assert process.stderr.closed
 
 
-def test_large_start_is_rejected_before_helper_write(notified_authority):
+def test_large_start_is_rejected_before_helper_write(notified_authority: NotifiedAuthority) -> None:
     helper_client, process = _open_helper_client_with_events(
         terminal_message(Trigger.CONTROLLER_EOF, returncode=None),
         wiring=notified_authority,
@@ -469,7 +494,7 @@ def test_large_start_is_rejected_before_helper_write(notified_authority):
     assert process.written == b""
 
 
-def test_helper_shutdown_retains_established_failure(notified_authority):
+def test_helper_shutdown_retains_established_failure(notified_authority: NotifiedAuthority) -> None:
     authority = notified_authority.authority
     helper_client, process = _open_helper_client_with_events(
         terminal_message(Trigger.HELPER_FAILURE, code="FAILED", message="startup failed"),
@@ -492,7 +517,9 @@ def test_helper_shutdown_retains_established_failure(notified_authority):
 
 
 @pytest.mark.timeout(10)
-def test_controller_eof_terminal_prevents_dependent_entry(notified_authority):
+def test_controller_eof_terminal_prevents_dependent_entry(
+    notified_authority: NotifiedAuthority,
+) -> None:
     authority = notified_authority.authority
     helper_client, process = _open_helper_client_with_events(
         encode_frame("ATTEMPT", argv=["child"]),
@@ -514,7 +541,9 @@ def test_controller_eof_terminal_prevents_dependent_entry(notified_authority):
 
 
 @pytest.mark.timeout(10)
-def test_helper_shutdown_retains_observed_background_failure(notified_authority):
+def test_helper_shutdown_retains_observed_background_failure(
+    notified_authority: NotifiedAuthority,
+) -> None:
     authority = notified_authority.authority
     helper_client, process = _open_helper_client_with_events(
         encode_frame("ATTEMPT", argv=["child"]),
@@ -548,8 +577,8 @@ def test_helper_shutdown_retains_observed_background_failure(notified_authority)
 @pytest.mark.parametrize("cleanup_fails", (False, True), ids=("clean", "cleanup-failure"))
 @pytest.mark.timeout(10)
 def test_close_records_background_and_cleanup_failures(
-    monkeypatch, notified_authority, cleanup_fails
-):
+    monkeypatch: pytest.MonkeyPatch, notified_authority: NotifiedAuthority, cleanup_fails: bool
+) -> None:
     authority = notified_authority.authority
     helper_client, process = _open_helper_client_with_events(
         encode_frame("ATTEMPT", argv=["child"]),
@@ -570,7 +599,7 @@ def test_close_records_background_and_cleanup_failures(
 
     cleanup_error = RuntimeError("forced cleanup failed")
 
-    def fail_stop(_process, *, close_streams=True):
+    def fail_stop(_process: ProcessControl, *, close_streams: bool = True) -> None:
         del close_streams
         raise cleanup_error
 
@@ -591,13 +620,15 @@ def test_close_records_background_and_cleanup_failures(
     assert commands == ["START"]
 
 
-def test_reader_failure_takes_precedence_over_known_openocd_result(helper_client):
-    helper_client, authority = helper_client
+def test_reader_failure_takes_precedence_over_known_openocd_result(
+    helper_client: tuple[HelperConnection, SessionAuthority],
+) -> None:
+    _client, authority = helper_client
     reader_error = RuntimeError("protocol failed")
     authority.record_reader_failure(reader_error)
     authority.record_terminal(terminal_snapshot(Trigger.CHILD_EXIT, returncode=OPENOCD_FAILURE_RC))
 
-    assert authority.snapshot().terminal.outcome.child_result.returncode == OPENOCD_FAILURE_RC
+    assert _child_returncode(authority) == OPENOCD_FAILURE_RC
     with pytest.raises(SessionError) as raised:
         authority.operation_status()
 
@@ -609,8 +640,8 @@ def test_reader_failure_takes_precedence_over_known_openocd_result(helper_client
 @pytest.mark.parametrize("boundary", ("status", "close"))
 @pytest.mark.parametrize("trailing", ("malformed", "illegal_frame"))
 def test_terminal_failure_stays_primary_after_trailing_protocol_failure(
-    notified_authority, terminal_failure, boundary, trailing
-):
+    notified_authority: NotifiedAuthority, terminal_failure: str, boundary: str, trailing: str
+) -> None:
     terminal = (
         terminal_message(Trigger.STARTUP_FAILURE, code="STARTUP_FAILURE", message="startup failed")
         if terminal_failure == "startup"
@@ -657,8 +688,11 @@ def test_terminal_failure_stays_primary_after_trailing_protocol_failure(
 @pytest.mark.parametrize("terminal_failure", ("startup", "child"))
 @pytest.mark.parametrize("shutdown_failure", ("stdin", "wait"))
 def test_close_preserves_terminal_failure_before_shutdown(
-    open_client, notified_authority, terminal_failure, shutdown_failure
-):
+    open_client: Callable[[ControlProcess], HelperConnection],
+    notified_authority: NotifiedAuthority,
+    terminal_failure: str,
+    shutdown_failure: str,
+) -> None:
     authority = notified_authority.authority
     shutdown_error = OSError(f"helper {shutdown_failure} failed")
     shutdown_error.add_note("shutdown failure detail")
@@ -706,14 +740,14 @@ def test_close_preserves_terminal_failure_before_shutdown(
 
 
 def test_close_keeps_shutdown_failure_primary_when_forced_cleanup_also_fails(
-    open_client, notified_authority
-):
+    open_client: Callable[[ControlProcess], HelperConnection], notified_authority: NotifiedAuthority
+) -> None:
     authority = notified_authority.authority
     graceful_stop_error = RuntimeError("graceful stop failed")
     forced_stop_error = RuntimeError("forced stop failed")
 
     class FailingStdin(io.BytesIO):
-        def close(self):
+        def close(self) -> None:
             super().close()
             raise graceful_stop_error
 
@@ -723,7 +757,7 @@ def test_close_keeps_shutdown_failure_primary_when_forced_cleanup_also_fails(
             self.stdin = FailingStdin()
 
         @override
-        def wait(self, timeout=None):
+        def wait(self, timeout: float | None = None) -> int:
             if timeout == connection_module.HELPER_STOP_TIMEOUT:
                 raise subprocess.TimeoutExpired(self.args, timeout)
             return super().wait(timeout)
@@ -744,8 +778,8 @@ def test_close_keeps_shutdown_failure_primary_when_forced_cleanup_also_fails(
 
 
 def test_close_cleans_up_helper_when_initial_status_observation_fails(
-    open_client, notified_authority
-):
+    open_client: Callable[[ControlProcess], HelperConnection], notified_authority: NotifiedAuthority
+) -> None:
     authority = notified_authority.authority
     observation_error = RuntimeError("helper status failed")
 
@@ -775,25 +809,27 @@ def test_close_cleans_up_helper_when_initial_status_observation_fails(
     assert process.stderr.closed
 
 
-def test_close_cleans_up_helper_when_reader_join_fails(open_client, notified_authority):
+def test_close_cleans_up_helper_when_reader_join_fails(
+    open_client: Callable[[ControlProcess], HelperConnection], notified_authority: NotifiedAuthority
+) -> None:
     authority = notified_authority.authority
     join_error = RuntimeError("helper reader join failed")
 
     class Reader(threading.Thread):
-        def __init__(self, reader: threading.Thread):
+        def __init__(self, reader: threading.Thread) -> None:
             super().__init__()
             self.reader = reader
             self.join_failure_pending = True
 
         @override
-        def join(self, timeout=None):
+        def join(self, timeout: float | None = None) -> None:
             if self.join_failure_pending:
                 self.join_failure_pending = False
                 raise join_error
             self.reader.join(timeout)
 
         @override
-        def is_alive(self):
+        def is_alive(self) -> bool:
             return self.join_failure_pending or self.reader.is_alive()
 
     process = ControlProcess()
@@ -812,8 +848,8 @@ def test_close_cleans_up_helper_when_reader_join_fails(open_client, notified_aut
 
 
 def test_close_preserves_cleanup_error_when_final_status_observation_fails(
-    open_client, notified_authority
-):
+    open_client: Callable[[ControlProcess], HelperConnection], notified_authority: NotifiedAuthority
+) -> None:
     authority = notified_authority.authority
     status_error = RuntimeError("helper final status failed")
     cleanup_error = RuntimeError("helper stderr cleanup failed")
@@ -850,12 +886,12 @@ def test_close_preserves_cleanup_error_when_final_status_observation_fails(
 
 @pytest.mark.parametrize("control_status", (0, 23))
 def test_failed_reader_start_rolls_back_control_acquisition(
-    monkeypatch, notified_authority, control_status
-):
+    monkeypatch: pytest.MonkeyPatch, notified_authority: NotifiedAuthority, control_status: int
+) -> None:
     authority = notified_authority.authority
     reader_start_error = RuntimeError("helper reader did not start")
 
-    def fail_start(_thread):
+    def fail_start(_thread: threading.Thread) -> None:
         raise reader_start_error
 
     process = ControlProcess()
@@ -888,8 +924,12 @@ def test_failed_reader_start_rolls_back_control_acquisition(
 )
 @pytest.mark.parametrize("terminal_fails", (False, True))
 def test_close_forces_cleanup_after_helper_wait_failure(
-    open_client, notified_authority, wait_failure_type, stdin_close_fails, terminal_fails
-):
+    open_client: Callable[[ControlProcess], HelperConnection],
+    notified_authority: NotifiedAuthority,
+    wait_failure_type: type[BaseException],
+    stdin_close_fails: bool,
+    terminal_fails: bool,
+) -> None:
     authority = notified_authority.authority
     close_event = (
         terminal_message(Trigger.STARTUP_FAILURE, code="STARTUP_FAILURE", message="startup failed")
@@ -904,11 +944,11 @@ def test_close_forces_cleanup_after_helper_wait_failure(
     )
 
     class StopInput(io.BytesIO):
-        def __init__(self, helper: ControlProcess):
+        def __init__(self, helper: ControlProcess) -> None:
             super().__init__()
             self.helper = helper
 
-        def close(self):
+        def close(self) -> None:
             if not self.closed and not terminal_fails:
                 # Controller EOF makes the helper report and end its stream.
                 self.helper.emit(close_event)
@@ -955,14 +995,14 @@ def test_close_forces_cleanup_after_helper_wait_failure(
 
 
 def test_helper_close_keeps_reader_owned_stdout_open_until_reader_stops(
-    open_client, notified_authority
-):
+    open_client: Callable[[ControlProcess], HelperConnection], notified_authority: NotifiedAuthority
+) -> None:
     authority = notified_authority.authority
     readers: list[threading.Thread] = []
     closed_after_reader: list[bool] = []
 
     class ReaderOwnedStream(io.BufferedReader):
-        def close(self):
+        def close(self) -> None:
             if not self.closed:
                 closed_after_reader.append(not readers[0].is_alive())
             super().close()
@@ -989,14 +1029,16 @@ def test_helper_close_keeps_reader_owned_stdout_open_until_reader_stops(
     assert process.stderr.closed
 
 
-def test_helper_close_retains_nested_process_cleanup_diagnostics(open_client, notified_authority):
+def test_helper_close_retains_nested_process_cleanup_diagnostics(
+    open_client: Callable[[ControlProcess], HelperConnection], notified_authority: NotifiedAuthority
+) -> None:
     authority = notified_authority.authority
     terminate_error = RuntimeError("helper terminate failed")
     stderr_error = RuntimeError("helper stderr close failed")
 
     class Process(ControlProcess):
         @override
-        def wait(self, timeout=None):
+        def wait(self, timeout: float | None = None) -> int:
             if timeout == connection_module.HELPER_STOP_TIMEOUT:
                 raise SessionError("shutdown wait failed")
             return super().wait(timeout)
@@ -1023,7 +1065,9 @@ def test_helper_close_retains_nested_process_cleanup_diagnostics(open_client, no
 
 
 @pytest.mark.timeout(60)
-def test_helper_startup_timeout_does_not_block_on_partial_output(monkeypatch, notified_authority):
+def test_helper_startup_timeout_does_not_block_on_partial_output(
+    monkeypatch: pytest.MonkeyPatch, notified_authority: NotifiedAuthority
+) -> None:
     class ElapsedStartupClock:
         # Startup began one full timeout ago, so the production deadline has
         # already passed when the coordinator waits.
@@ -1061,7 +1105,9 @@ def test_helper_startup_timeout_does_not_block_on_partial_output(monkeypatch, no
 
 
 @pytest.mark.timeout(10)
-def test_helper_client_output_delivery_does_not_retain_event_history(notified_authority):
+def test_helper_client_output_delivery_does_not_retain_event_history(
+    notified_authority: NotifiedAuthority,
+) -> None:
     authority = notified_authority.authority
     payloads = [f"payload-{index}" for index in range(1024)]
     process = HelperPeerProcess(
@@ -1106,8 +1152,10 @@ def test_helper_client_output_delivery_does_not_retain_event_history(notified_au
 
 @pytest.mark.parametrize("child_first", (True, False), ids=("child-first", "transport-first"))
 def test_child_and_control_status_use_one_persistent_arbitration_path(
-    open_client, notified_authority, child_first
-):
+    open_client: Callable[[ControlProcess], HelperConnection],
+    notified_authority: NotifiedAuthority,
+    child_first: bool,
+) -> None:
     authority = notified_authority.authority
     process = ControlProcess()
     helper_client = open_client(process)
@@ -1134,10 +1182,10 @@ def test_child_and_control_status_use_one_persistent_arbitration_path(
     assert any(
         ("status 1" if child_first else "exit status 7") in note for note in initial.value.__notes__
     )
-    assert authority.snapshot().terminal.outcome.child_result.returncode == 7
+    assert _child_returncode(authority) == 7
     with pytest.raises(SessionError) as gate:
         authority.admit_work((), ())
     assert gate.value is initial.value
     helper_client.close()
     assert authority.snapshot().failure is initial.value
-    assert authority.snapshot().terminal.outcome.child_result.returncode == 7
+    assert _child_returncode(authority) == 7

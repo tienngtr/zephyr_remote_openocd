@@ -34,7 +34,7 @@ class TestFlashPlanning:
         verify_command: str | None,
         flash_address: str | None,
         required: tuple[str, ...],
-    ):
+    ) -> None:
         planner = PathPlanner(())
         inputs = FlashInputs(
             executable="openocd",
@@ -59,7 +59,7 @@ class TestFlashPlanning:
         assert not planner.remote_checks
 
     @pytest.mark.parametrize("kind", ("hex", "bin"))
-    def test_unsupported_erase_fails_before_planning_paths(self, tmp_path: Path, kind: str):
+    def test_unsupported_erase_fails_before_planning_paths(self, tmp_path: Path, kind: str) -> None:
         image = tmp_path / f"firmware.{kind}"
         image.write_bytes(b":00000001FF\n")
         planner = PathPlanner(())
@@ -90,7 +90,7 @@ class TestFlashPlanning:
     @pytest.mark.parametrize(("verify", "verify_only"), ((True, False), (False, True)))
     def test_bin_verification_without_verify_command_fails_before_planning_paths(
         self, tmp_path: Path, verify: bool, verify_only: bool
-    ):
+    ) -> None:
         image = tmp_path / "firmware.bin"
         image.write_bytes(b"\x00")
         planner = PathPlanner(())
@@ -116,7 +116,7 @@ class TestFlashPlanning:
         assert not planner.staged_files
         assert not planner.remote_checks
 
-    def test_plan_directory_rejects_ancestor_symlink_cycle(self, tmp_path: Path):
+    def test_plan_directory_rejects_ancestor_symlink_cycle(self, tmp_path: Path) -> None:
         root = tmp_path / "search"
         ancestor = root / "a"
         ancestor.mkdir(parents=True)
@@ -125,7 +125,7 @@ class TestFlashPlanning:
         with pytest.raises(PathPlanningError):
             PathPlanner(()).plan_directory(root, "search_0")
 
-    def test_hex_plan_preserves_ports_and_rewrites_paths(self):
+    def test_hex_plan_preserves_ports_and_rewrites_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             support = root / "scripts" / "board"
@@ -165,7 +165,7 @@ class TestFlashPlanning:
             assert f"{{workspace}}/staged/{staged_configs[0].destination}" in argv
             assert plan.process.argv[-4:] == ("-c", "reset run", "-c", "shutdown")
 
-    def test_hex_explicit_erase_removes_implicit_load_erase(self, tmp_path: Path):
+    def test_hex_explicit_erase_removes_implicit_load_erase(self, tmp_path: Path) -> None:
         image = tmp_path / "firmware.hex"
         image.write_bytes(b":00000001FF\n")
 
@@ -206,7 +206,7 @@ class TestFlashPlanning:
     @pytest.mark.parametrize("erase_commands", ((), ("target_erase",)))
     def test_verify_only_plan_omits_load_and_erase_and_keeps_verify(
         self, tmp_path: Path, kind: str, erase_commands: tuple[str, ...]
-    ):
+    ) -> None:
         image = tmp_path / f"firmware.{kind}"
         image.write_bytes(
             elf_memory_witness_bytes(entry_point=ELF_ENTRY_POINT)
@@ -247,7 +247,7 @@ class TestFlashPlanning:
     @pytest.mark.parametrize("erase_commands", ((), ("target_erase",)))
     def test_elf_plan_ignores_erase_and_resumes_before_shutdown(
         self, tmp_path: Path, erase_commands: tuple[str, ...]
-    ):
+    ) -> None:
         image = tmp_path / "image.elf"
         image.write_bytes(elf_memory_witness_bytes(entry_point=ELF_ENTRY_POINT))
         plan = build_flash_plan(
@@ -278,7 +278,7 @@ class TestFlashPlanning:
         assert any(command.startswith("load_image ") for command in commands)
         assert "target_erase" not in commands
 
-    def test_longest_mapping_and_remote_check(self):
+    def test_longest_mapping_and_remote_check(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             specific = root / "specific"
@@ -295,7 +295,7 @@ class TestFlashPlanning:
             assert planned.remote == "/specific/image.hex"
             assert planner.remote_checks[0].path == "/specific/image.hex"
 
-    def test_mapping_does_not_match_sibling_with_shared_name_prefix(self, tmp_path: Path):
+    def test_mapping_does_not_match_sibling_with_shared_name_prefix(self, tmp_path: Path) -> None:
         root = tmp_path.resolve()
         (root / "src").mkdir()
         sibling = root / "src2"
@@ -310,7 +310,9 @@ class TestFlashPlanning:
         assert not planner.remote_checks
         assert [entry.source for entry in planner.staged_files] == [image]
 
-    def test_paths_with_spaces_remain_single_argv_and_quoted_tcl_words(self, tmp_path: Path):
+    def test_paths_with_spaces_remain_single_argv_and_quoted_tcl_words(
+        self, tmp_path: Path
+    ) -> None:
         local = tmp_path / "local images"
         local.mkdir()
         image = local / "firmware image.hex"
@@ -339,7 +341,7 @@ class TestFlashPlanning:
         assert 'program "/remote tree/firmware image.hex"' in argv
         assert plan.process.required_paths[-1].path == "/remote tree/firmware image.hex"
 
-    def test_escaping_symlink_is_rejected(self):
+    def test_escaping_symlink_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside:
             root = Path(directory)
             external = Path(outside) / "external.cfg"
@@ -348,7 +350,7 @@ class TestFlashPlanning:
             with pytest.raises(PathPlanningError):
                 PathPlanner(()).plan_directory(root, "search_0")
 
-    def test_bin_plan_preserves_address_erase_and_verify(self):
+    def test_bin_plan_preserves_address_erase_and_verify(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             image = Path(directory) / "image.bin"
             image.write_bytes(b"binary")
@@ -377,7 +379,7 @@ class TestFlashPlanning:
             assert "verify " in joined
             assert "0x8000000" in joined
 
-    def test_serial_is_set_before_board_configuration(self):
+    def test_serial_is_set_before_board_configuration(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config = Path(directory) / "openocd.cfg"
             config.write_text("adapter driver ftdi\n")

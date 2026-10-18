@@ -11,7 +11,7 @@ from zephyr_remote_openocd.helper._child_output import (
 )
 
 
-def test_decoder_emits_short_fragment_before_complete_sentinel():
+def test_decoder_emits_short_fragment_before_complete_sentinel() -> None:
     sentinels = RequiredOutputSentinels(("READY",))
     decoder = OutputDecoder("stdout", sentinels)
     assert decoder.feed(b"READY") == [CapturedFragment("stdout", "READY", False)]
@@ -25,7 +25,7 @@ def test_decoder_emits_short_fragment_before_complete_sentinel():
     (("OPENOCD INIT", "STARTUP COMPLETE"), ("STARTUP COMPLETE", "OPENOCD INIT")),
     ids=("init-first", "startup-first"),
 )
-def test_decoder_waits_for_each_complete_sentinel_across_streams(first: str, second: str):
+def test_decoder_waits_for_each_complete_sentinel_across_streams(first: str, second: str) -> None:
     sentinels = RequiredOutputSentinels(("OPENOCD INIT", "STARTUP COMPLETE"))
     stdout = OutputDecoder("stdout", sentinels)
     stderr = OutputDecoder("stderr", sentinels)
@@ -37,7 +37,9 @@ def test_decoder_waits_for_each_complete_sentinel_across_streams(first: str, sec
 
 
 @pytest.mark.parametrize("payload", (b"abcdefghij\n", b"tail", b"\n\nx\n", b""))
-def test_decoder_metadata_reconstructs_logical_output(monkeypatch, payload: bytes):
+def test_decoder_metadata_reconstructs_logical_output(
+    monkeypatch: pytest.MonkeyPatch, payload: bytes
+) -> None:
     monkeypatch.setattr(helper_streams, "RELAY_CHUNK_SIZE", 4)
     decoder = OutputDecoder("stdout", RequiredOutputSentinels(()))
     fragments = decoder.feed(payload) + decoder.feed(b"")
@@ -49,7 +51,7 @@ def test_decoder_metadata_reconstructs_logical_output(monkeypatch, payload: byte
     assert sum(item.line_end for item in fragments) == payload.count(b"\n")
 
 
-def test_decoder_preserves_split_utf8_and_invalid_bytes(monkeypatch):
+def test_decoder_preserves_split_utf8_and_invalid_bytes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(helper_streams, "RELAY_CHUNK_SIZE", 3)
     decoder = OutputDecoder("stderr", RequiredOutputSentinels(()))
     fragments = []

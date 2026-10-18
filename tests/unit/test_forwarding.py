@@ -10,10 +10,10 @@ import signal
 import subprocess
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Collection, Iterator
 from contextlib import suppress
-from types import FrameType, SimpleNamespace
-from typing import IO, Any, override
+from types import FrameType, SimpleNamespace, TracebackType
+from typing import IO, TYPE_CHECKING, Any, Literal, Self, override
 
 import pytest
 from zephyr_remote_openocd.controller import _forwarding as forwarding_module
@@ -37,6 +37,9 @@ from zephyr_remote_openocd.protocol.process import ProcessSpec
 
 from tests.process_support import local_transport, stop_and_close
 
+if TYPE_CHECKING:
+    from _typeshed import TraceFunction
+
 FORWARD_FAILURE_RC = 13
 SAMPLE_FORWARD_EXIT_CODE = 9
 
@@ -53,7 +56,7 @@ class _ForwardCommand(SshCommand):
     processes: Iterator[Any]
     calls: list[tuple[str, str, SshForwardSpec | None]]
 
-    def __init__(self, *processes):
+    def __init__(self, *processes: _ForwardProcess) -> None:
         super().__init__()
         object.__setattr__(self, "processes", iter(processes))
         object.__setattr__(self, "calls", [])
@@ -65,7 +68,7 @@ class _ForwardCommand(SshCommand):
         remote_command: str,
         *,
         local_forward: SshForwardSpec | None = None,
-        on_acquired=None,
+        on_acquired: Callable[[ManagedSshProcess], None] | None = None,
     ) -> Any:
         self.calls.append((host, remote_command, local_forward))
         acquired_process = next(self.processes)
@@ -75,7 +78,9 @@ class _ForwardCommand(SshCommand):
 
 
 @pytest.mark.parametrize("rollback_fails", (False, True))
-def test_failed_start_exposes_rollback_outcome(monkeypatch, rollback_fails):
+def test_failed_start_exposes_rollback_outcome(
+    monkeypatch: pytest.MonkeyPatch, rollback_fails: bool
+) -> None:
     forward = ForwardSpec("tcl", 32101, 6333)
     cleanup_error = RuntimeError("rollback cleanup failed")
     process = _ForwardProcess(None, close_stderr_error=cleanup_error if rollback_fails else None)
@@ -97,7 +102,9 @@ def test_failed_start_exposes_rollback_outcome(monkeypatch, rollback_fails):
     assert process.close_stderr_calls == 1
 
 
-def test_process_creation_failure_has_service_identity_without_ownership(monkeypatch):
+def test_process_creation_failure_has_service_identity_without_ownership(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     cause = OSError("cannot start configured SSH client")
 
     class Command(_ForwardCommand):
@@ -108,7 +115,7 @@ def test_process_creation_failure_has_service_identity_without_ownership(monkeyp
             remote_command: str,
             *,
             local_forward: SshForwardSpec | None = None,
-            on_acquired=None,
+            on_acquired: Callable[[ManagedSshProcess], None] | None = None,
         ) -> Any:
             raise cause
 
@@ -125,7 +132,7 @@ def test_process_creation_failure_has_service_identity_without_ownership(monkeyp
 
 
 @pytest.mark.timeout(60)
-def test_forward_readiness_timeout_does_not_block_on_partial_output():
+def test_forward_readiness_timeout_does_not_block_on_partial_output() -> None:
     # A live transport that writes a partial marker and then waits on stdin.
     code = (
         "import sys; sys.stdout.buffer.write(b'ZRO_FORWARD_'); sys.stdout.flush(); "
@@ -143,7 +150,7 @@ def test_forward_readiness_timeout_does_not_block_on_partial_output():
         stop_and_close(process)
 
 
-def test_forward_diagnostic_keeps_a_useful_tail_after_nonzero_exit():
+def test_forward_diagnostic_keeps_a_useful_tail_after_nonzero_exit() -> None:
     code = (
         "import sys;"
         "sys.stderr.buffer.write(b'x' * 200000 + b'forward-tail\\n');"
@@ -164,8 +171,8 @@ def test_forward_diagnostic_keeps_a_useful_tail_after_nonzero_exit():
 
 
 def test_initial_start_forward_failure_associates_all_preflight_advisories_with_services(
-    monkeypatch,
-):
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     first_port, second_port = 32133, 32144
     _patch_preflight_socket(monkeypatch, {first_port, second_port})
     first = ForwardSpec("tcl", first_port, 6333)
@@ -185,7 +192,9 @@ def test_initial_start_forward_failure_associates_all_preflight_advisories_with_
             manager.close()
 
 
-def test_dynamic_forward_failure_identifies_service_and_local_port(monkeypatch):
+def test_dynamic_forward_failure_identifies_service_and_local_port(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     port = 32155
     _patch_preflight_socket(monkeypatch, set())
     forward = ForwardSpec("rtt", port, 5555)
@@ -201,7 +210,9 @@ def test_dynamic_forward_failure_identifies_service_and_local_port(monkeypatch):
         manager.close()
 
 
-def test_forward_manager_rejects_a_service_already_forwarded(monkeypatch):
+def test_forward_manager_rejects_a_service_already_forwarded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     forward = ForwardSpec("gdb", 32177, 3333)
     command = _ForwardCommand(_ForwardProcess(None))
     manager = ForwardManager(command, "host")
@@ -217,7 +228,7 @@ def test_forward_manager_rejects_a_service_already_forwarded(monkeypatch):
         manager.close()
 
 
-def test_failed_forward_batch_rolls_back_all_processes(monkeypatch):
+def test_failed_forward_batch_rolls_back_all_processes(monkeypatch: pytest.MonkeyPatch) -> None:
     forwards = (ForwardSpec("gdb", 32188, 3333), ForwardSpec("tcl", 32199, 6333))
     failed_processes = (_ForwardProcess(None), _ForwardProcess(None))
     command = _ForwardCommand(*failed_processes)
@@ -241,7 +252,9 @@ def test_failed_forward_batch_rolls_back_all_processes(monkeypatch):
     assert [process.close_stderr_calls for process in failed_processes] == [1, 1]
 
 
-def test_failed_forward_batch_keeps_startup_error_and_cleanup_diagnostics(monkeypatch):
+def test_failed_forward_batch_keeps_startup_error_and_cleanup_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     forwards = (ForwardSpec("gdb", 32210, 3333), ForwardSpec("tcl", 32221, 6333))
     first_cleanup_error = RuntimeError("first rollback failed")
     first_stream_error = RuntimeError("first stream cleanup failed")
@@ -258,7 +271,7 @@ def test_failed_forward_batch_keeps_startup_error_and_cleanup_diagnostics(monkey
     startup_error = KeyboardInterrupt("startup interrupted")
     readiness_calls = 0
 
-    def await_ready(*_args):
+    def await_ready(*_args: object) -> bool:
         nonlocal readiness_calls
         readiness_calls += 1
         if readiness_calls == 2:
@@ -283,7 +296,9 @@ def test_failed_forward_batch_keeps_startup_error_and_cleanup_diagnostics(monkey
     assert [process.close_stderr_calls for process in processes] == [1, 1]
 
 
-def test_failed_later_forward_batch_preserves_committed_processes(monkeypatch):
+def test_failed_later_forward_batch_preserves_committed_processes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     committed_service = ForwardSpec("gdb", 32232, 3333)
     failed_forwards = (ForwardSpec("tcl", 32243, 6333), ForwardSpec("telnet", 32254, 4444))
     committed_process = _ForwardProcess(None)
@@ -318,7 +333,9 @@ def test_failed_later_forward_batch_preserves_committed_processes(monkeypatch):
 
 
 @pytest.mark.parametrize("phase", ("launch-handoff", "readiness"))
-def test_interruption_during_forward_start_preserves_cleanup_ownership(monkeypatch, phase):
+def test_interruption_during_forward_start_preserves_cleanup_ownership(
+    monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
     forward = ForwardSpec("gdb", 32265, 3333)
     initialize = subprocess.Popen.__init__
     read = os.read
@@ -333,7 +350,7 @@ def test_interruption_during_forward_start_preserves_cleanup_ownership(monkeypat
             remote_command: str,
             *,
             local_forward: SshForwardSpec | None = None,
-            on_acquired=None,
+            on_acquired: Callable[[ManagedSshProcess], None] | None = None,
         ) -> ManagedSshProcess:
             process = super().popen(
                 host, remote_command, local_forward=local_forward, on_acquired=on_acquired
@@ -345,13 +362,14 @@ def test_interruption_during_forward_start_preserves_cleanup_ownership(monkeypat
 
     manager = ForwardManager(InterruptingCommand(), "host")
 
-    def launch(process, argv, **kwargs):
+    # Popen's keyword arguments pass through unchanged.
+    def launch(process: subprocess.Popen[bytes], argv: list[str], **kwargs: Any) -> None:
         # Substitute the executable only; production transport management,
         # readiness observation, and cleanup still operate on a real child.
         code = shlex.split(argv[-1])[2]
         initialize(process, [sys.executable, "-u", "-c", code], **kwargs)
 
-    def read_readiness(descriptor, size):
+    def read_readiness(descriptor: int, size: int) -> bytes:
         if phase == "readiness" and any(
             process.stdout is not None and descriptor == process.stdout.fileno()
             for process in managed_processes
@@ -380,7 +398,9 @@ def test_interruption_during_forward_start_preserves_cleanup_ownership(monkeypat
 
 
 @pytest.mark.parametrize("cleanup_fails", (False, True))
-def test_ctrl_c_between_pending_forward_rollbacks_skips_no_cleanup(monkeypatch, cleanup_fails):
+def test_ctrl_c_between_pending_forward_rollbacks_skips_no_cleanup(
+    monkeypatch: pytest.MonkeyPatch, cleanup_fails: bool
+) -> None:
     initialize = subprocess.Popen.__init__
     previous_trace = sys.gettrace()
     processes: list[ManagedSshProcess] = []
@@ -391,7 +411,14 @@ def test_ctrl_c_between_pending_forward_rollbacks_skips_no_cleanup(monkeypatch, 
 
     class Command(SshCommand):
         @override
-        def popen(self, host, remote_command, *, local_forward=None, on_acquired=None):
+        def popen(
+            self,
+            host: str,
+            remote_command: str,
+            *,
+            local_forward: SshForwardSpec | None = None,
+            on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+        ) -> ManagedSshProcess:
             process = super().popen(
                 host, remote_command, local_forward=local_forward, on_acquired=on_acquired
             )
@@ -399,7 +426,7 @@ def test_ctrl_c_between_pending_forward_rollbacks_skips_no_cleanup(monkeypatch, 
             if cleanup_fails and len(processes) == 1:
                 close_stderr = process.close_stderr
 
-                def fail_close_stderr():
+                def fail_close_stderr() -> None:
                     close_stderr()
                     raise cleanup_error
 
@@ -409,19 +436,20 @@ def test_ctrl_c_between_pending_forward_rollbacks_skips_no_cleanup(monkeypatch, 
     manager = ForwardManager(Command(), "target")
     await_ready = forwarding_module.await_ready
 
-    def launch(process, argv, **kwargs):
+    # Popen's keyword arguments pass through unchanged.
+    def launch(process: subprocess.Popen[bytes], argv: list[str], **kwargs: Any) -> None:
         code = shlex.split(argv[-1])[2]
         initialize(process, [sys.executable, "-u", "-c", code], **kwargs)
         assert process.stderr is not None
         stderr_streams.append(process.stderr)
 
-    def observe_readiness(process, sentinel, deadline):
+    def observe_readiness(process: ManagedSshProcess, sentinel: str, deadline: float) -> bool:
         assert await_ready(process, sentinel, deadline)
         if len(processes) == 2:
             raise startup_error
         return True
 
-    def all_closed():
+    def all_closed() -> bool:
         return all(
             process.returncode is not None
             and process.stdin is not None
@@ -431,7 +459,9 @@ def test_ctrl_c_between_pending_forward_rollbacks_skips_no_cleanup(monkeypatch, 
             for process in processes
         ) and all(stream.closed for stream in stderr_streams)
 
-    def interrupt_between_rollbacks(frame: FrameType, event: str, _arg: object):
+    def interrupt_between_rollbacks(
+        frame: FrameType, event: str, _arg: object
+    ) -> TraceFunction | None:
         nonlocal requested
         if (
             event == "line"
@@ -496,8 +526,8 @@ def test_ctrl_c_between_pending_forward_rollbacks_skips_no_cleanup(monkeypatch, 
 
 @pytest.mark.parametrize("cleanup_fails", (False, True))
 def test_interruption_at_forward_rollback_entry_keeps_both_transports_owned(
-    monkeypatch, cleanup_fails
-):
+    monkeypatch: pytest.MonkeyPatch, cleanup_fails: bool
+) -> None:
     initialize = subprocess.Popen.__init__
     await_ready = forwarding_module.await_ready
     previous_trace = sys.gettrace()
@@ -511,7 +541,14 @@ def test_interruption_at_forward_rollback_entry_keeps_both_transports_owned(
 
     class Command(SshCommand):
         @override
-        def popen(self, host, remote_command, *, local_forward=None, on_acquired=None):
+        def popen(
+            self,
+            host: str,
+            remote_command: str,
+            *,
+            local_forward: SshForwardSpec | None = None,
+            on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+        ) -> ManagedSshProcess:
             process = super().popen(
                 host, remote_command, local_forward=local_forward, on_acquired=on_acquired
             )
@@ -519,7 +556,7 @@ def test_interruption_at_forward_rollback_entry_keeps_both_transports_owned(
             if cleanup_fails and len(processes) == 1:
                 close_stderr = process.close_stderr
 
-                def fail_close_stderr():
+                def fail_close_stderr() -> None:
                     close_stderr()
                     raise cleanup_error
 
@@ -532,19 +569,22 @@ def test_interruption_at_forward_rollback_entry_keeps_both_transports_owned(
     )
     manager = session._forwards
 
-    def launch(process, argv, **kwargs):
+    # Popen's keyword arguments pass through unchanged.
+    def launch(process: subprocess.Popen[bytes], argv: list[str], **kwargs: Any) -> None:
         code = shlex.split(argv[-1])[2]
         initialize(process, [sys.executable, "-u", "-c", code], **kwargs)
         assert process.stderr is not None
         stderr_streams.append(process.stderr)
 
-    def observe_readiness(process, sentinel, deadline):
+    def observe_readiness(process: ManagedSshProcess, sentinel: str, deadline: float) -> bool:
         assert await_ready(process, sentinel, deadline)
         if len(processes) == 2:
             raise startup_error
         return True
 
-    def interrupt_at_rollback_entry(frame: FrameType, event: str, _arg: object):
+    def interrupt_at_rollback_entry(
+        frame: FrameType, event: str, _arg: object
+    ) -> TraceFunction | None:
         nonlocal requested, both_live_at_delivery
         # The exception is bound, but the handler's first instruction has not
         # run. No line number or scheduler timing selects this entry boundary.
@@ -611,11 +651,11 @@ def test_interruption_at_forward_rollback_entry_keeps_both_transports_owned(
 class _ForwardProcess:
     def __init__(
         self,
-        returncode,
+        returncode: int | None,
         *,
         terminate_error: BaseException | None = None,
         close_stderr_error: BaseException | None = None,
-    ):
+    ) -> None:
         self.stdin = io.BytesIO()
         self.stdout = None
         self.stderr = None
@@ -626,47 +666,52 @@ class _ForwardProcess:
         self.terminate_calls = 0
         self.close_stderr_calls = 0
 
-    def poll(self):
+    def poll(self) -> int | None:
         return self.returncode
 
-    def wait(self, timeout=None):
+    def wait(self, timeout: float | None = None) -> int | None:
         return self.returncode
 
-    def terminate(self):
+    def terminate(self) -> None:
         self.terminate_calls += 1
         if self.terminate_error is not None:
             raise self.terminate_error
         self.returncode = 0
 
-    def kill(self):
+    def kill(self) -> None:
         self.returncode = -signal.SIGKILL
 
-    def stderr_tail(self):
+    def stderr_tail(self) -> bytes:
         return b""
 
-    def close_stderr(self):
+    def close_stderr(self) -> None:
         self.close_stderr_calls += 1
         if self.close_stderr_error is not None:
             raise self.close_stderr_error
 
 
 class _PreflightSocket:
-    def __init__(self, occupied):
+    def __init__(self, occupied: Collection[int]) -> None:
         self.occupied = occupied
 
-    def __enter__(self):
+    def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, _exc_type, _exc_value, _traceback):
+    def __exit__(
+        self,
+        _exc_type: type[BaseException] | None,
+        _exc_value: BaseException | None,
+        _traceback: TracebackType | None,
+    ) -> Literal[False]:
         return False
 
-    def bind(self, address):
+    def bind(self, address: tuple[str, int]) -> None:
         assert address[0] == "127.0.0.1"
         if address[1] in self.occupied:
             raise OSError("address already in use")
 
 
-def _patch_preflight_socket(monkeypatch, occupied):
+def _patch_preflight_socket(monkeypatch: pytest.MonkeyPatch, occupied: Collection[int]) -> None:
     monkeypatch.setattr(
         forwarding_module,
         "socket",

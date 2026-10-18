@@ -10,6 +10,7 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -33,7 +34,7 @@ def run_setup(home: Path, cwd: Path | None = None) -> subprocess.CompletedProces
     )
 
 
-def test_creates_template_and_reports_activation(tmp_path: Path):
+def test_creates_template_and_reports_activation(tmp_path: Path) -> None:
     result = run_setup(tmp_path, tmp_path.parent)
     config = tmp_path / ".config" / "zephyr_remote_openocd" / "config.yaml"
     assert result.returncode == 0, result.stderr
@@ -48,7 +49,7 @@ def test_creates_template_and_reports_activation(tmp_path: Path):
     assert stat.S_IMODE(config.stat().st_mode) == 0o600
 
 
-def test_existing_configuration_is_preserved_and_not_chmodded(tmp_path: Path):
+def test_existing_configuration_is_preserved_and_not_chmodded(tmp_path: Path) -> None:
     config_dir = tmp_path / ".config" / "zephyr_remote_openocd"
     config_dir.mkdir(parents=True)
     config_parent = tmp_path / ".config"
@@ -65,7 +66,7 @@ def test_existing_configuration_is_preserved_and_not_chmodded(tmp_path: Path):
     assert stat.S_IMODE(config.stat().st_mode) == 0o644
 
 
-def test_existing_non_file_configuration_fails_actionably(tmp_path: Path):
+def test_existing_non_file_configuration_fails_actionably(tmp_path: Path) -> None:
     config = tmp_path / ".config" / "zephyr_remote_openocd" / "config.yaml"
     config.mkdir(parents=True)
     result = run_setup(tmp_path)
@@ -73,13 +74,17 @@ def test_existing_non_file_configuration_fails_actionably(tmp_path: Path):
     assert "not a regular file" in result.stderr
 
 
-def test_initialize_config_preserves_file_created_after_absence_check(tmp_path, monkeypatch):
+def test_initialize_config_preserves_file_created_after_absence_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     setup = load_setup_module()
     destination = tmp_path / ".config" / "zephyr_remote_openocd" / "config.yaml"
     concurrent_contents = b"created by another setup process\n"
     original_open = os.open
 
-    def create_concurrent_file_then_raise(path, flags, mode=0o777, *, dir_fd=None):
+    def create_concurrent_file_then_raise(
+        path: str | os.PathLike[str], flags: int, mode: int = 0o777, *, dir_fd: int | None = None
+    ) -> int:
         if Path(path) == destination:
             descriptor = original_open(path, flags, mode, dir_fd=dir_fd)
             try:
@@ -97,7 +102,7 @@ def test_initialize_config_preserves_file_created_after_absence_check(tmp_path, 
     assert destination.read_bytes() == concurrent_contents
 
 
-def load_setup_module():
+def load_setup_module() -> ModuleType:
     spec = importlib.util.spec_from_file_location("zro_setup", SETUP)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -105,7 +110,7 @@ def load_setup_module():
     return module
 
 
-def load_config_default_module():
+def load_config_default_module() -> ModuleType:
     spec = importlib.util.spec_from_file_location("zro_config_default", CONFIG_DEFAULT)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -113,7 +118,7 @@ def load_config_default_module():
     return module
 
 
-def test_config_default_finds_module_by_markers(tmp_path):
+def test_config_default_finds_module_by_markers(tmp_path: Path) -> None:
     module = load_config_default_module()
     root = tmp_path / "module"
     nested = root / "changed" / "layout"
@@ -128,7 +133,7 @@ def test_config_default_finds_module_by_markers(tmp_path):
         module.find_module_root(tmp_path / "missing")
 
 
-def test_config_default_reports_invalid_configuration_to_cmake(tmp_path: Path):
+def test_config_default_reports_invalid_configuration_to_cmake(tmp_path: Path) -> None:
     config = tmp_path / "invalid.yaml"
     config.write_text("unknown: true\n", encoding="utf-8")
 
@@ -150,8 +155,8 @@ def test_config_default_reports_invalid_configuration_to_cmake(tmp_path: Path):
     (("elftools", "pyelftools"), ("yaml", "PyYAML"), ("jsonschema", "jsonschema")),
 )
 def test_missing_dependency_warns_without_blocking_initialization(
-    tmp_path, monkeypatch, missing_module, missing_name
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, missing_module: str, missing_name: str
+) -> None:
     setup = load_setup_module()
     destination = tmp_path / ".config" / "zephyr_remote_openocd" / "config.yaml"
     print_dependency_status = setup._print_dependency_status
@@ -178,7 +183,9 @@ def test_missing_dependency_warns_without_blocking_initialization(
     assert "requirements.txt" not in text
 
 
-def test_activation_command_preserves_module_path_with_spaces(tmp_path, monkeypatch):
+def test_activation_command_preserves_module_path_with_spaces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     setup = load_setup_module()
     root = tmp_path / "module root"
     destination = tmp_path / "user home" / ".config/zro/config.yaml"

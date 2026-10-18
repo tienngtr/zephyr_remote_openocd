@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+from collections.abc import Callable
 
 import pytest
 from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
@@ -31,7 +32,7 @@ from zephyr_remote_openocd.protocol.wire import (
 
 class TestProtocol:
     @pytest.mark.parametrize("frame_size", (1_048_576, 1_048_577))
-    def test_start_control_frame_size_includes_lf(self, frame_size):
+    def test_start_control_frame_size_includes_lf(self, frame_size: int) -> None:
         template = io.BytesIO()
         write_start(template, ProcessSpec(("child", "")), ())
         argument = "x" * (frame_size - len(template.getvalue()))
@@ -48,21 +49,21 @@ class TestProtocol:
                 write_start(stream, process, ())
             assert stream.getvalue() == b""
 
-    def test_read_message_consumes_one_frame_at_a_time_and_reports_eof(self):
+    def test_read_message_consumes_one_frame_at_a_time_and_reports_eof(self) -> None:
         stream = io.BytesIO(encode_frame("HELLO", value=3) + encode_frame("HELLO", value=4))
         assert read_message(stream)["value"] == 3
         assert read_message(stream)["value"] == 4
         with pytest.raises(EOFError):
             read_message(stream)
 
-    def test_read_message_rejects_frame_without_lf(self):
+    def test_read_message_rejects_frame_without_lf(self) -> None:
         frame = encode_frame("HELLO", value=3).rstrip(b"\n")
 
         with pytest.raises(ProtocolError):
             read_message(io.BytesIO(frame))
 
     @pytest.mark.parametrize("argv", (None, [], [""], "openocd", ["openocd", None], [1]))
-    def test_attempt_rejects_invalid_argv(self, argv):
+    def test_attempt_rejects_invalid_argv(self, argv: object) -> None:
         with pytest.raises(ProtocolError):
             validate_event(decode_frame(encode_frame("ATTEMPT", argv=argv)))
 
@@ -70,7 +71,9 @@ class TestProtocol:
         "policy, preferred_address",
         ((CompletionPolicy.LIVE_SERVER, None), (CompletionPolicy.PROCESS_EXIT, "127.64.0.7")),
     )
-    def test_start_serializers_use_validated_domain_models(self, policy, preferred_address):
+    def test_start_serializers_use_validated_domain_models(
+        self, policy: CompletionPolicy, preferred_address: str | None
+    ) -> None:
         stream = io.BytesIO()
         path_template = ArgumentTemplate((SessionValue.WORKSPACE, "/staged"))
         process = ProcessSpec(
@@ -114,13 +117,13 @@ class TestProtocol:
     @pytest.mark.parametrize(
         "address", ("127.0.0.1", "127.64.0.0", "127.127.255.255", "::1", "bad")
     )
-    def test_start_rejects_invalid_preference_before_writing(self, address: str):
+    def test_start_rejects_invalid_preference_before_writing(self, address: str) -> None:
         stream = io.BytesIO()
         with pytest.raises(ValueError):
             write_start(stream, ProcessSpec(("child",)), (), preferred_address=address)
         assert not stream.getvalue()
 
-    def test_helper_event_unknown_fields_are_rejected(self):
+    def test_helper_event_unknown_fields_are_rejected(self) -> None:
         with pytest.raises(ProtocolError):
             validate_event(
                 decode_frame(
@@ -177,8 +180,11 @@ class TestProtocol:
         ),
     )
     def test_one_shot_response_validators_require_exact_typed_fields(
-        self, validator, valid, mistyped_field
-    ):
+        self,
+        validator: Callable[[dict[str, object]], None],
+        valid: dict[str, object],
+        mistyped_field: dict[str, object],
+    ) -> None:
         validator(valid)
 
         missing_type = dict(valid)
@@ -193,7 +199,7 @@ class TestProtocol:
                 validator(response)
 
     @pytest.mark.parametrize("payload", ("line\nbreak", "line\n"))
-    def test_child_output_payload_rejects_embedded_line_delimiters(self, payload):
+    def test_child_output_payload_rejects_embedded_line_delimiters(self, payload: str) -> None:
         with pytest.raises(ProtocolError):
             validate_event(
                 decode_frame(
@@ -206,7 +212,7 @@ class TestProtocol:
                 )
             )
 
-    def test_child_output_requires_boundary_metadata(self):
+    def test_child_output_requires_boundary_metadata(self) -> None:
         valid = encode_frame(
             "CHILD_OUTPUT",
             stream="stdout",
@@ -231,7 +237,7 @@ class TestProtocol:
                     )
                 )
 
-    def test_child_output_boundary_states_are_unambiguous(self):
+    def test_child_output_boundary_states_are_unambiguous(self) -> None:
         with pytest.raises(ProtocolError):
             validate_event(
                 decode_frame(

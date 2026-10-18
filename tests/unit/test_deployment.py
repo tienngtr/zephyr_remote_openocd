@@ -8,14 +8,16 @@ import os
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from contextlib import ExitStack
+from io import FileIO
 from pathlib import Path
-from typing import Any, BinaryIO, override
+from typing import BinaryIO, override
 
 import pytest
 from zephyr_remote_openocd.controller import _deployment as deploy_module
 from zephyr_remote_openocd.controller._deployment import build_helper_bundle
-from zephyr_remote_openocd.controller._ssh import SshCommand, SshForwardSpec
+from zephyr_remote_openocd.controller._ssh import ManagedSshProcess, SshCommand, SshForwardSpec
 from zephyr_remote_openocd.protocol.wire import (
     encode_frame,
 )
@@ -26,7 +28,9 @@ from tests.support import ROOT
 FAULTS = ROOT / "tests/fixtures/deployment_faults.py"
 
 
-def test_missing_packaged_helper_is_actionable(monkeypatch, tmp_path):
+def test_missing_packaged_helper_is_actionable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.setattr(deploy_module, "files", lambda _package: tmp_path)
     with pytest.raises(deploy_module.DeploymentError, match="packaged remote helper"):
         build_helper_bundle()
@@ -35,7 +39,7 @@ def test_missing_packaged_helper_is_actionable(monkeypatch, tmp_path):
 class DeploymentReply(SshCommand):
     reply: tuple[int, bytes, bytes]
 
-    def __init__(self, returncode: int, stdout: bytes, stderr: bytes):
+    def __init__(self, returncode: int, stdout: bytes, stderr: bytes) -> None:
         super().__init__()
         object.__setattr__(self, "reply", (returncode, stdout, stderr))
 
@@ -57,8 +61,8 @@ class DeploymentReply(SshCommand):
         remote_command: str,
         *,
         local_forward: SshForwardSpec | None = None,
-        on_acquired=None,
-    ) -> Any:
+        on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+    ) -> ManagedSshProcess:
         raise AssertionError("popen() is not expected in this test")
 
     @override
@@ -73,14 +77,14 @@ class DeploymentReply(SshCommand):
         raise AssertionError("run_stream() is not expected in this test")
 
 
-def test_deployment_wraps_invalid_utf8_response():
+def test_deployment_wraps_invalid_utf8_response() -> None:
     ssh = DeploymentReply(0, b"\xff", b"")
 
     with pytest.raises(deploy_module.DeploymentError, match="invalid deployment response"):
         deploy_module.deploy_helper(ssh, "host", source=b"helper source")
 
 
-def test_deployment_rejects_response_without_lf():
+def test_deployment_rejects_response_without_lf() -> None:
     source = b"helper source"
     response = encode_frame(
         "DEPLOYED",
@@ -93,7 +97,7 @@ def test_deployment_rejects_response_without_lf():
         deploy_module.deploy_helper(DeploymentReply(0, response, b""), "host", source=source)
 
 
-def test_deployment_reports_nonzero_ssh_status_and_diagnostic():
+def test_deployment_reports_nonzero_ssh_status_and_diagnostic() -> None:
     ssh_exit_status = 23
     ssh = DeploymentReply(ssh_exit_status, b"", b"permission denied")
 
@@ -104,7 +108,7 @@ def test_deployment_reports_nonzero_ssh_status_and_diagnostic():
     assert "permission denied" in str(error.value)
 
 
-def test_deployment_rejects_digest_that_differs_from_source():
+def test_deployment_rejects_digest_that_differs_from_source() -> None:
     source = b"helper source"
     different_source_digest = hashlib.sha256(b"different helper source").hexdigest()
     response = encode_frame(
@@ -142,7 +146,7 @@ def _run_bootstrap(
     return json.loads(result.stdout)
 
 
-def test_helper_deployment_is_content_addressed_and_prunes_stale_revisions(tmp_path):
+def test_helper_deployment_is_content_addressed_and_prunes_stale_revisions(tmp_path: Path) -> None:
     first_source = b"first helper revision"
     second_source = b"second helper revision"
     first = _run_bootstrap(tmp_path, first_source)
@@ -181,7 +185,9 @@ def test_helper_deployment_is_content_addressed_and_prunes_stale_revisions(tmp_p
 
 
 @pytest.mark.parametrize("operation", ("stat", "unlink"))
-def test_stale_revision_failure_does_not_block_deployment_or_other_pruning(tmp_path, operation):
+def test_stale_revision_failure_does_not_block_deployment_or_other_pruning(
+    tmp_path: Path, operation: str
+) -> None:
     source = b"selected helper revision"
     helper_directory = tmp_path / ".local/libexec/zephyr_remote_openocd/protocol_v1"
     helper_directory.mkdir(parents=True)
@@ -206,12 +212,12 @@ def test_stale_revision_failure_does_not_block_deployment_or_other_pruning(tmp_p
     assert _run_bootstrap(tmp_path, source)["status"] == "reused"
 
 
-def test_helper_deployment_serializes_refresh_and_pruning(tmp_path):
+def test_helper_deployment_serializes_refresh_and_pruning(tmp_path: Path) -> None:
     source = b"concurrent helper revision"
     environment = {**os.environ, "HOME": str(tmp_path)}
     with ExitStack() as resources:
 
-        def pipe():
+        def pipe() -> tuple[FileIO, FileIO]:
             reader, writer = os.pipe()
             return (
                 resources.enter_context(os.fdopen(reader, "rb", buffering=0)),
@@ -222,7 +228,7 @@ def test_helper_deployment_serializes_refresh_and_pruning(tmp_path):
         first_events, first_event_writer = pipe()
         second_events, second_event_writer = pipe()
 
-        def deploy(role, event_writer):
+        def deploy(role: str, event_writer: FileIO) -> subprocess.Popen[bytes]:
             owner = resources.enter_context(
                 managed_process(
                     [

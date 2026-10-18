@@ -13,7 +13,7 @@ from tests.protocol_support import terminal_snapshot
 
 
 @pytest.mark.parametrize("fact", ("cancel", "reader", "terminal"))
-def test_recorded_fact_prevents_dependent_entry_after_ready(fact):
+def test_recorded_fact_prevents_dependent_entry_after_ready(fact: str) -> None:
     authority = SessionAuthority()
     if fact == "cancel":
         authority.cancel()
@@ -26,7 +26,7 @@ def test_recorded_fact_prevents_dependent_entry_after_ready(fact):
         authority.admit_work((), ())
 
 
-def test_ready_requires_required_forwarding_at_entry():
+def test_ready_requires_required_forwarding_at_entry() -> None:
     authority = SessionAuthority()
     forward = ForwardSpec("gdb", 3333, 3333)
     authority.record_ready()
@@ -36,7 +36,7 @@ def test_ready_requires_required_forwarding_at_entry():
 
 
 @pytest.mark.timeout(10)
-def test_queued_launch_rechecks_fatal_fact_at_execution_entry():
+def test_queued_launch_rechecks_fatal_fact_at_execution_entry() -> None:
     authority = SessionAuthority()
     authority.record_ready()
     scheduled = threading.Event()
@@ -44,7 +44,7 @@ def test_queued_launch_rechecks_fatal_fact_at_execution_entry():
     errors = []
     launched = []
 
-    def queued_launch():
+    def queued_launch() -> None:
         scheduled.set()
         assert execute.wait(5)
         try:
@@ -63,7 +63,7 @@ def test_queued_launch_rechecks_fatal_fact_at_execution_entry():
     assert errors and not launched
 
 
-def test_reported_terminal_failure_is_not_replayed_during_close():
+def test_reported_terminal_failure_is_not_replayed_during_close() -> None:
     authority = SessionAuthority()
     authority.record_terminal(
         terminal_snapshot(
@@ -81,7 +81,7 @@ def test_reported_terminal_failure_is_not_replayed_during_close():
     assert authority.take_unreported_failure() is None
 
 
-def test_failure_inspection_does_not_acknowledge_delivery():
+def test_failure_inspection_does_not_acknowledge_delivery() -> None:
     authority = SessionAuthority()
     authority.record_reader_failure(RuntimeError("reader failed"))
     failure = authority.snapshot().failure
@@ -91,7 +91,7 @@ def test_failure_inspection_does_not_acknowledge_delivery():
     assert authority.take_unreported_failure() is None
 
 
-def test_repeated_reader_failure_retains_first_fact_without_reopening_delivery():
+def test_repeated_reader_failure_retains_first_fact_without_reopening_delivery() -> None:
     authority = SessionAuthority()
     first = RuntimeError("first reader failure")
     authority.record_reader_failure(first)
@@ -106,7 +106,7 @@ def test_repeated_reader_failure_retains_first_fact_without_reopening_delivery()
     assert authority.take_unreported_failure() is None
 
 
-def test_later_reader_detail_reopens_delivery_with_established_terminal_primary():
+def test_later_reader_detail_reopens_delivery_with_established_terminal_primary() -> None:
     authority = SessionAuthority()
     authority.record_terminal(terminal_snapshot(Trigger.STARTUP_FAILURE, code="STARTUP_FAILURE"))
     first = authority.publish_failure()
@@ -122,7 +122,7 @@ def test_later_reader_detail_reopens_delivery_with_established_terminal_primary(
     assert authority.take_unreported_failure() is None
 
 
-def _record_failure(authority, source, error):
+def _record_failure(authority: SessionAuthority, source: str, error: BaseException) -> None:
     if source == "child":
         authority.record_terminal(terminal_snapshot(Trigger.CHILD_EXIT, returncode=7))
     elif source == "terminal":
@@ -145,7 +145,7 @@ def _record_failure(authority, source, error):
         ("operation", "OPERATION_FAILURE"),
     ),
 )
-def test_failure_adapters_record_fatal_facts(source, code):
+def test_failure_adapters_record_fatal_facts(source: str, code: str) -> None:
     authority = SessionAuthority()
     error = RuntimeError("operation failed")
     _record_failure(authority, source, error)
@@ -173,7 +173,7 @@ def test_failure_adapters_record_fatal_facts(source, code):
     "first, second",
     (("child", "operation"), ("operation", "transport"), ("transport", "reader")),
 )
-def test_first_failure_stays_primary_across_publication(first, second):
+def test_first_failure_stays_primary_across_publication(first: str, second: str) -> None:
     """Publish one failure, recognize another, then project status and enter."""
     authority = SessionAuthority()
     authority.record_ready()
@@ -204,7 +204,7 @@ def test_first_failure_stays_primary_across_publication(first, second):
     assert tuple(repeated.value.__notes__) == notes
 
 
-def test_control_observation_defers_successful_result_until_final_accounting():
+def test_control_observation_defers_successful_result_until_final_accounting() -> None:
     authority = SessionAuthority()
     authority.set_policy(CompletionPolicy.PROCESS_EXIT)
     authority.begin_control_exit()
@@ -235,8 +235,8 @@ def _admit(authority: SessionAuthority, entry: str) -> None:
     ),
 )
 def test_refusal_during_final_observation_waits_for_final_accounting(
-    entry, accounting, ending, selected
-):
+    entry: str, accounting: str, ending: str, selected: list[str]
+) -> None:
     authority = SessionAuthority()
     authority.record_ready()
     authority.begin_control_exit()

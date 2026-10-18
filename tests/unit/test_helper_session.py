@@ -10,10 +10,12 @@ import os
 import signal
 import subprocess
 import sys
-from collections.abc import Buffer, Callable
+from collections.abc import Buffer, Callable, Coroutine, Iterable, Iterator, Mapping, Sequence
+from contextvars import Context
+from io import BufferedReader, FileIO
 from pathlib import Path
 from types import FrameType, SimpleNamespace
-from typing import IO, cast
+from typing import IO, TYPE_CHECKING, Any, Literal, cast
 from unittest.mock import create_autospec
 
 import pytest
@@ -22,21 +24,33 @@ from zephyr_remote_openocd.helper import _session as helper_session
 from zephyr_remote_openocd.helper import _streams as helper_streams
 from zephyr_remote_openocd.helper import _workspace as workspace_module
 from zephyr_remote_openocd.helper import control as helper_control
+from zephyr_remote_openocd.helper._process import ChildAcquisition, SupervisedProcess
+from zephyr_remote_openocd.helper._session import HelperSession
 from zephyr_remote_openocd.helper.lifecycle import Closed
 from zephyr_remote_openocd.protocol import commands as protocol_commands
 from zephyr_remote_openocd.protocol.commands import write_start
-from zephyr_remote_openocd.protocol.outcome import CompletionPolicy, Trigger
+from zephyr_remote_openocd.protocol.outcome import (
+    CleanupReport,
+    CompletionPolicy,
+    TerminalSnapshot,
+    Trigger,
+)
 from zephyr_remote_openocd.protocol.process import ProcessSpec, RequiredPathSpec
 from zephyr_remote_openocd.protocol.wire import decode_terminal
 
 from tests.helper_process_support import cleanup_supervised_process
 
+if TYPE_CHECKING:
+    from _typeshed import TraceFunction
+
 SAMPLE_CHILD_EXIT_CODE = 7
+Event = tuple[str, dict[str, object]]
+CoordinatedHelper = tuple[HelperSession, FileIO, list[Event], list[SupervisedProcess]]
 SignalHandler = Callable[[int, FrameType | None], object] | int | None
 
 
 @pytest.fixture
-def control_pipe(monkeypatch):
+def control_pipe(monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[BufferedReader, FileIO]]:
     read_fd, write_fd = os.pipe()
     with os.fdopen(read_fd, "rb") as reader, os.fdopen(write_fd, "wb", buffering=0) as writer:
         monkeypatch.setattr(sys, "stdin", SimpleNamespace(buffer=reader))
@@ -45,8 +59,8 @@ def control_pipe(monkeypatch):
 
 @pytest.mark.parametrize("boundary", ("constructor", "loop"))
 def test_coordinator_adoption_failure_attempts_lock_cleanup_after_workspace_failure(
-    tmp_path, monkeypatch, boundary
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str
+) -> None:
     monkeypatch.setattr(workspace_module, 'workspace_root', lambda: tmp_path)
     allocate = workspace_module.new_workspace
     remove = workspace_module.remove_workspace
@@ -56,12 +70,12 @@ def test_coordinator_adoption_failure_attempts_lock_cleanup_after_workspace_fail
     cleanup_detail = "workspace lease cleanup also failed"
     cleanup_failure.add_note(cleanup_detail)
 
-    def new_workspace():
+    def new_workspace() -> tuple[str, Path, IO[bytes]]:
         resources = allocate()
         acquired.append(resources)
         return resources
 
-    def fail_remove(_workspace):
+    def fail_remove(_workspace: Path) -> None:
         raise cleanup_failure
 
     monkeypatch.setattr(workspace_module, 'new_workspace', new_workspace)
@@ -93,7 +107,7 @@ def test_coordinator_adoption_failure_attempts_lock_cleanup_after_workspace_fail
             remove(acquired[0][1])
 
 
-def _start_session_command(argv, sentinels=()):
+def _start_session_command(argv: list[str], sentinels: Iterable[str] = ()) -> bytes:
     return (
         json.dumps(
             {
@@ -116,17 +130,32 @@ def _start_session_command(argv, sentinels=()):
 
 
 @pytest.fixture
-def coordinated_helper(tmp_path, monkeypatch, control_pipe):
+def coordinated_helper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, control_pipe: tuple[BufferedReader, FileIO]
+) -> Iterator[CoordinatedHelper]:
     """Use real workspace, child owners, pipes, and the lifecycle coordinator."""
     monkeypatch.setattr(workspace_module, 'workspace_root', lambda: tmp_path)
     session = helper_session.HelperSession.create()
     _, writer = control_pipe
-    events = []
-    children = []
+    events: list[Event] = []
+    children: list[SupervisedProcess] = []
     spawn = helper_process.spawn_child
 
-    def acquire(*args, **kwargs):
-        child = spawn(*args, **kwargs)
+    def acquire(
+        argv: Sequence[str],
+        *,
+        cwd: Path | None = None,
+        environment: Mapping[str, str] | None = None,
+        required_output_sentinels: Iterable[str] = (),
+        ownership: ChildAcquisition | None = None,
+    ) -> SupervisedProcess:
+        child = spawn(
+            argv,
+            cwd=cwd,
+            environment=environment,
+            required_output_sentinels=required_output_sentinels,
+            ownership=ownership,
+        )
         children.append(child)
         return child
 
@@ -140,7 +169,7 @@ def coordinated_helper(tmp_path, monkeypatch, control_pipe):
     session.release_workspace()
 
 
-def _terminal_event(events):
+def _terminal_event(events: list[Event]) -> TerminalSnapshot:
     terminals = [fields for kind, fields in events if kind == "SESSION_ENDED"]
     assert len(terminals) == 1
     return decode_terminal(
@@ -148,7 +177,17 @@ def _terminal_event(events):
     )
 
 
-def _run_terminated(session, *, fails):
+def _failure_code(snapshot: TerminalSnapshot) -> str | None:
+    failure = snapshot.outcome.primary_failure
+    return None if failure is None else failure.code
+
+
+def _output_closed(child: SupervisedProcess) -> bool:
+    stdout, stderr = child.process.stdout, child.process.stderr
+    return stdout is not None and stdout.closed and stderr is not None and stderr.closed
+
+
+def _run_terminated(session: HelperSession, *, fails: bool) -> None:
     if fails:
         with pytest.raises(SystemExit) as raised:
             session.run()
@@ -159,7 +198,9 @@ def _run_terminated(session, *, fails):
 
 
 @pytest.mark.parametrize("suffix", (b"\n", b" ", b'{"version":1,"type":"UNEXPECTED"}\n', b"junk"))
-def test_post_start_bytes_are_failure_even_in_same_read(coordinated_helper, suffix):
+def test_post_start_bytes_are_failure_even_in_same_read(
+    coordinated_helper: CoordinatedHelper, suffix: bytes
+) -> None:
     session, writer, events, _children = coordinated_helper
     stream = io.BytesIO()
     write_start(stream, ProcessSpec((sys.executable, "-c", "import signal;signal.pause()")), ())
@@ -173,7 +214,9 @@ def test_post_start_bytes_are_failure_even_in_same_read(coordinated_helper, suff
 
 
 @pytest.mark.parametrize("partial", (False, True))
-def test_controller_eof_before_start_has_explicit_result(coordinated_helper, partial):
+def test_controller_eof_before_start_has_explicit_result(
+    coordinated_helper: CoordinatedHelper, partial: bool
+) -> None:
     session, writer, events, _children = coordinated_helper
     if partial:
         writer.write(b'{"version":1')
@@ -188,7 +231,9 @@ def test_controller_eof_before_start_has_explicit_result(coordinated_helper, par
 
 
 @pytest.mark.parametrize("kind", ("file", "directory"))
-def test_missing_required_path_fails_before_attempt_admission(coordinated_helper, kind):
+def test_missing_required_path_fails_before_attempt_admission(
+    coordinated_helper: CoordinatedHelper, kind: Literal["file", "directory"]
+) -> None:
     session, writer, events, children = coordinated_helper
     missing = session.work / "staged" / "missing"
     write_start(
@@ -205,11 +250,13 @@ def test_missing_required_path_fails_before_attempt_admission(coordinated_helper
 
 
 @pytest.mark.parametrize("policy", tuple(CompletionPolicy))
-def test_completion_policy_controls_readiness(coordinated_helper, monkeypatch, policy):
+def test_completion_policy_controls_readiness(
+    coordinated_helper: CoordinatedHelper, monkeypatch: pytest.MonkeyPatch, policy: CompletionPolicy
+) -> None:
     session, writer, events, children = coordinated_helper
     record = helper_streams.emit
 
-    def emit(kind, **fields):
+    def emit(kind: str, **fields: object) -> None:
         record(kind, **fields)
         if kind == "READY":
             writer.close()
@@ -231,19 +278,19 @@ def test_completion_policy_controls_readiness(coordinated_helper, monkeypatch, p
     assert snapshot.outcome.child_result.termination_requested == (
         policy == CompletionPolicy.LIVE_SERVER
     )
-    assert all(child.process.stdout.closed and child.process.stderr.closed for child in children)
+    assert all(_output_closed(child) for child in children)
     assert not session.work.exists() and session.workspace_lock.closed
 
 
 @pytest.mark.parametrize("admission", ("ATTEMPT", "READY", "SESSION_ENDED"))
 def test_admission_failure_does_not_publish_success_or_repeat_terminal(
-    coordinated_helper, monkeypatch, admission
-):
+    coordinated_helper: CoordinatedHelper, monkeypatch: pytest.MonkeyPatch, admission: str
+) -> None:
     session, writer, events, children = coordinated_helper
     record = helper_streams.emit
     attempts = []
 
-    def emit(kind, **fields):
+    def emit(kind: str, **fields: object) -> None:
         attempts.append(kind)
         if kind == admission:
             if kind == "SESSION_ENDED":
@@ -258,34 +305,48 @@ def test_admission_failure_does_not_publish_success_or_repeat_terminal(
     _run_terminated(session, fails=True)
     assert attempts.count("SESSION_ENDED") == 1
     assert len(children) == (0 if admission == "ATTEMPT" else 1)
-    assert session.lifecycle.state.snapshot.cleanup.confirmed
+    state = session.lifecycle.state
+    assert isinstance(state, Closed) and state.snapshot.cleanup.confirmed
     assert not session.work.exists()
     if admission == "SESSION_ENDED":
         state = session.lifecycle.state
         assert isinstance(state, Closed)
         assert state.local_diagnostics
     else:
-        assert _terminal_event(events).outcome.primary_failure.code == admission + "_ADMISSION"
+        assert _failure_code(_terminal_event(events)) == admission + "_ADMISSION"
 
 
 @pytest.mark.parametrize("boundary", ("before_spawn", "returned", "wrapper_failure"))
 def test_signal_capture_and_spawn_handoff_keep_cleanup_reachable(
-    coordinated_helper, monkeypatch, boundary
-):
+    coordinated_helper: CoordinatedHelper, monkeypatch: pytest.MonkeyPatch, boundary: str
+) -> None:
     session, writer, events, _children = coordinated_helper
     spawn = helper_process.spawn_child
     supervisor = helper_process.SupervisedProcess
 
-    def acquire(*args, **kwargs):
+    def acquire(
+        argv: Sequence[str],
+        *,
+        cwd: Path | None = None,
+        environment: Mapping[str, str] | None = None,
+        required_output_sentinels: Iterable[str] = (),
+        ownership: ChildAcquisition | None = None,
+    ) -> SupervisedProcess:
         if boundary == "before_spawn":
             session.handle_signal(signal.SIGTERM)
-        child = spawn(*args, **kwargs)
+        child = spawn(
+            argv,
+            cwd=cwd,
+            environment=environment,
+            required_output_sentinels=required_output_sentinels,
+            ownership=ownership,
+        )
         if boundary == "returned":
             session.handle_signal(signal.SIGINT)
             raise KeyboardInterrupt("interrupted after return")
         return child
 
-    def construct(*args, **kwargs):
+    def construct(*args: object, **kwargs: object) -> None:
         session.handle_signal(signal.SIGTERM)
         raise RuntimeError("supervisor adoption failed")
 
@@ -303,13 +364,15 @@ def test_signal_capture_and_spawn_handoff_keep_cleanup_reachable(
 
 
 @pytest.mark.parametrize("failure_type", (MemoryError, SystemExit))
-def test_raw_child_return_failure_keeps_disposal_owned(coordinated_helper, failure_type):
+def test_raw_child_return_failure_keeps_disposal_owned(
+    coordinated_helper: CoordinatedHelper, failure_type: type[BaseException]
+) -> None:
     session, writer, events, _children = coordinated_helper
     processes: list[subprocess.Popen[bytes]] = []
     failure = failure_type("raw child registration interrupted")
     previous_trace = sys.gettrace()
 
-    def fail_at_return(frame: FrameType, event: str, _arg: object):
+    def fail_at_return(frame: FrameType, event: str, _arg: object) -> TraceFunction | None:
         if event == "return" and frame.f_code is subprocess.Popen.__init__.__code__:
             child = cast(subprocess.Popen[bytes], frame.f_locals["self"])
             assert child.pid is not None
@@ -363,22 +426,31 @@ def test_raw_child_return_failure_keeps_disposal_owned(coordinated_helper, failu
 )
 @pytest.mark.parametrize("failure_type", (RuntimeError, KeyboardInterrupt))
 def test_cleanup_task_setup_failure_still_disposes_child_and_independent_resources(
-    coordinated_helper, monkeypatch, failed_tasks, failure_type
-):
+    coordinated_helper: CoordinatedHelper,
+    monkeypatch: pytest.MonkeyPatch,
+    failed_tasks: tuple[str, ...],
+    failure_type: type[BaseException],
+) -> None:
     session, writer, events, children = coordinated_helper
     create_task = asyncio.TaskGroup.create_task
     record = helper_streams.emit
-    failures = []
+    failures: list[BaseException] = []
 
-    def create(group, coroutine, *, name=None, **kwargs):
+    def create[T](
+        group: asyncio.TaskGroup,
+        coroutine: Coroutine[Any, Any, T],
+        *,
+        name: str | None = None,
+        context: Context | None = None,
+    ) -> asyncio.Task[T]:
         if name in failed_tasks:
             failure = failure_type(f"cannot create {name}")
             failure.add_note("task acquisition diagnostic")
             failures.append(failure)
             raise failure
-        return create_task(group, coroutine, name=name, **kwargs)
+        return create_task(group, coroutine, name=name, context=context)
 
-    def emit(kind, **fields):
+    def emit(kind: str, **fields: object) -> None:
         record(kind, **fields)
         if kind == "READY":
             writer.close()
@@ -397,7 +469,7 @@ def test_cleanup_task_setup_failure_still_disposes_child_and_independent_resourc
     assert len(children) == 1
     child = children[0]
     assert child.process.returncode is not None and child.group_disposed
-    assert child.process.stdout.closed and child.process.stderr.closed
+    assert _output_closed(child)
     assert all(task.done() for task in child.tasks)
     assert session.workspace_lock.closed and not session.work.exists()
     assert not workspace_module.lease_path(session.work).exists()
@@ -405,7 +477,9 @@ def test_cleanup_task_setup_failure_still_disposes_child_and_independent_resourc
 
 
 @pytest.mark.parametrize("failure", ("stdout", "stderr", "workspace"))
-def test_nested_failure_detail_survives_cleanup_and_wire(coordinated_helper, monkeypatch, failure):
+def test_nested_failure_detail_survives_cleanup_and_wire(
+    coordinated_helper: CoordinatedHelper, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
     session, writer, events, children = coordinated_helper
     nested = RuntimeError("nested cause")
     nested.add_note("nested retained note")
@@ -419,15 +493,15 @@ def test_nested_failure_detail_survives_cleanup_and_wire(coordinated_helper, mon
         read = os.read
         set_blocking = os.set_blocking
 
-        def is_output(descriptor):
+        def is_output(descriptor: int) -> bool:
             return bool(children) and descriptor == getattr(children[0].process, failure).fileno()
 
-        def fail_read(descriptor, size):
+        def fail_read(descriptor: int, size: int) -> bytes:
             if is_output(descriptor):
                 raise grouped
             return read(descriptor, size)
 
-        def fail_restore(descriptor, blocking):
+        def fail_restore(descriptor: int, blocking: bool) -> None:
             set_blocking(descriptor, blocking)
             if blocking and is_output(descriptor):
                 raise restoration
@@ -436,13 +510,13 @@ def test_nested_failure_detail_survives_cleanup_and_wire(coordinated_helper, mon
         monkeypatch.setattr(os, "set_blocking", fail_restore)
     else:
 
-        def fail_removal(_work):
+        def fail_removal(_work: Path) -> None:
             raise grouped
 
         monkeypatch.setattr(workspace_module, 'remove_workspace', fail_removal)
         record = helper_streams.emit
 
-        def emit(kind, **fields):
+        def emit(kind: str, **fields: object) -> None:
             record(kind, **fields)
             if kind == "READY":
                 writer.close()
@@ -461,14 +535,16 @@ def test_nested_failure_detail_survives_cleanup_and_wire(coordinated_helper, mon
         assert "nested restoration diagnostic" in repr(detail)
     assert children[0].process.returncode is not None
     assert children[0].group_disposed
-    assert children[0].process.stdout.closed and children[0].process.stderr.closed
+    assert _output_closed(children[0])
     assert session.workspace_lock.closed
     assert snapshot.cleanup.confirmed == (failure != "workspace")
 
 
 def test_control_protocol_failure_survives_descriptor_restoration_failure(
-    coordinated_helper, control_pipe, monkeypatch
-):
+    coordinated_helper: CoordinatedHelper,
+    control_pipe: tuple[BufferedReader, FileIO],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     session, writer, events, children = coordinated_helper
     reader, _writer = control_pipe
     descriptor = reader.fileno()
@@ -476,7 +552,7 @@ def test_control_protocol_failure_survives_descriptor_restoration_failure(
     restoration.add_note("nested restoration diagnostic")
     set_blocking = os.set_blocking
 
-    def fail_restore(fd, blocking):
+    def fail_restore(fd: int, blocking: bool) -> None:
         set_blocking(fd, blocking)
         if fd == descriptor and blocking:
             raise restoration
@@ -500,8 +576,11 @@ def test_control_protocol_failure_survives_descriptor_restoration_failure(
 
 @pytest.mark.parametrize("settlement", ("eof", "cancellation"))
 def test_observer_settlement_retains_descriptor_restoration_failure(
-    coordinated_helper, control_pipe, monkeypatch, settlement
-):
+    coordinated_helper: CoordinatedHelper,
+    control_pipe: tuple[BufferedReader, FileIO],
+    monkeypatch: pytest.MonkeyPatch,
+    settlement: str,
+) -> None:
     session, writer, events, children = coordinated_helper
     reader, _writer = control_pipe
     descriptor = reader.fileno()
@@ -509,7 +588,7 @@ def test_observer_settlement_retains_descriptor_restoration_failure(
     restoration.add_note("nested restoration diagnostic")
     set_blocking = os.set_blocking
 
-    def fail_restore(fd, blocking):
+    def fail_restore(fd: int, blocking: bool) -> None:
         set_blocking(fd, blocking)
         if fd == descriptor and blocking:
             raise restoration
@@ -520,7 +599,9 @@ def test_observer_settlement_retains_descriptor_restoration_failure(
     else:
         add_reader = asyncio.SelectorEventLoop.add_reader
 
-        def cancel_on_registered_input(loop, fd, callback, *args):
+        def cancel_on_registered_input(
+            loop: asyncio.SelectorEventLoop, fd: int, callback: Callable[..., object], *args: object
+        ) -> None:
             add_reader(loop, fd, callback, *args)
             if fd == descriptor:
                 # The control observer is suspended on its registered reader
@@ -541,32 +622,48 @@ def test_observer_settlement_retains_descriptor_restoration_failure(
 
 @pytest.mark.parametrize("final_observation", ("ready", "exit", "timeout"))
 def test_readiness_deadline_processes_final_visible_observation(
-    tmp_path, monkeypatch, control_pipe, final_observation
-):
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    control_pipe: tuple[BufferedReader, FileIO],
+    final_observation: str,
+) -> None:
     _reader, writer = control_pipe
     workspace = tmp_path / "workspace"
     (workspace / "staged").mkdir(parents=True)
     lock = (workspace / workspace_module.SESSION_LOCK).open("w+b")
     session = helper_session.HelperSession("session", workspace, lock)
-    children = []
-    events = []
+    children: list[SupervisedProcess] = []
+    events: list[Event] = []
     original_spawn = helper_process.spawn_child
     original_read = os.read
     original_sleep = asyncio.sleep
     output_blocked = True
 
-    def spawn(*args, **kwargs):
-        child = original_spawn(*args, **kwargs)
+    def spawn(
+        argv: Sequence[str],
+        *,
+        cwd: Path | None = None,
+        environment: Mapping[str, str] | None = None,
+        required_output_sentinels: Iterable[str] = (),
+        ownership: ChildAcquisition | None = None,
+    ) -> SupervisedProcess:
+        child = original_spawn(
+            argv,
+            cwd=cwd,
+            environment=environment,
+            required_output_sentinels=required_output_sentinels,
+            ownership=ownership,
+        )
         children.append(child)
         return child
 
-    def controlled_read(descriptor, size):
+    def controlled_read(descriptor: int, size: int) -> bytes:
         stream = children[0].process.stdout if children else None
         if output_blocked and stream is not None and descriptor == stream.fileno():
             raise BlockingIOError
         return original_read(descriptor, size)
 
-    async def controlled_sleep(delay):
+    async def controlled_sleep(delay: float) -> None:
         nonlocal output_blocked
         if delay == 30:
             # Observe readiness through a duplicate fd without reading any bytes.
@@ -590,7 +687,7 @@ def test_readiness_deadline_processes_final_visible_observation(
         else:
             await original_sleep(delay)
 
-    def emit(kind, **values):
+    def emit(kind: str, **values: object) -> None:
         events.append((kind, values))
         if kind == "READY":
             writer.close()
@@ -618,9 +715,10 @@ def test_readiness_deadline_processes_final_visible_observation(
     assert [kind for kind, _ in events].count("READY") == (1 if final_observation == "ready" else 0)
     assert snapshot.cleanup.confirmed
     if final_observation == "exit":
+        assert snapshot.outcome.child_result is not None
         assert snapshot.outcome.child_result.returncode == SAMPLE_CHILD_EXIT_CODE
     elif final_observation == "timeout":
-        assert snapshot.outcome.primary_failure.code == "READINESS_TIMEOUT"
+        assert _failure_code(snapshot) == "READINESS_TIMEOUT"
     assert children[0].process.returncode is not None
     assert not workspace.exists()
     assert lock.closed
@@ -821,23 +919,23 @@ def test_protocol_writer_and_close_failures_preserve_primary_exception(
 
 @pytest.mark.parametrize("cleanup_failure", ("group", "lease"))
 def test_unconfirmed_disposal_retains_inputs_but_settles_independent_owners(
-    coordinated_helper, monkeypatch, cleanup_failure
-):
+    coordinated_helper: CoordinatedHelper, monkeypatch: pytest.MonkeyPatch, cleanup_failure: str
+) -> None:
     session, writer, events, children = coordinated_helper
     record = helper_streams.emit
     terminate = helper_process.SupervisedProcess.terminate
     lease = None
 
-    async def uncertain(child):
+    async def uncertain(child: SupervisedProcess) -> None:
         await terminate(child)
         child.group_disposed = False
         raise OSError("group disposal could not be established")
 
     class UnconfirmedLease:
-        def close(self):
+        def close(self) -> None:
             raise OSError("address lease close failed")
 
-    def emit(kind, **fields):
+    def emit(kind: str, **fields: object) -> None:
         nonlocal lease
         record(kind, **fields)
         if kind == "READY":
@@ -863,20 +961,22 @@ def test_unconfirmed_disposal_retains_inputs_but_settles_independent_owners(
         assert (session.work / workspace_module.UNCONFIRMED_CHILD).is_file()
         assert session.workspace_lock.closed
         assert children[0].process.returncode is not None
-        assert children[0].process.stdout.closed and children[0].process.stderr.closed
+        assert _output_closed(children[0])
     finally:
         if lease is not None:
             lease.close()
 
 
 @pytest.mark.parametrize("boundary", ("ready", "freeze"))
-def test_latched_signal_before_commit_is_accounted(coordinated_helper, monkeypatch, boundary):
+def test_latched_signal_before_commit_is_accounted(
+    coordinated_helper: CoordinatedHelper, monkeypatch: pytest.MonkeyPatch, boundary: str
+) -> None:
     session, writer, events, children = coordinated_helper
     if boundary == "ready":
         poll = helper_process.SupervisedProcess.poll
         injected = False
 
-        def poll_then_signal(child):
+        def poll_then_signal(child: SupervisedProcess) -> int | None:
             nonlocal injected
             result = poll(child)
             if not injected:
@@ -889,7 +989,7 @@ def test_latched_signal_before_commit_is_accounted(coordinated_helper, monkeypat
     else:
         cleanup_report = session._cleanup_report
 
-        def report_then_signal():
+        def report_then_signal() -> CleanupReport:
             report = cleanup_report()
             session.handle_signal(signal.SIGTERM)
             return report
@@ -899,7 +999,7 @@ def test_latched_signal_before_commit_is_accounted(coordinated_helper, monkeypat
     _run_terminated(session, fails=True)
     snapshot = _terminal_event(events)
     assert snapshot.outcome.primary_failure is not None
-    assert snapshot.outcome.primary_failure.code == "REMOTE_SIGNAL"
+    assert _failure_code(snapshot) == "REMOTE_SIGNAL"
     assert not any(kind == "READY" for kind, _ in events)
     assert snapshot.cleanup.confirmed
     assert all(child.process.returncode is not None for child in children)
@@ -907,14 +1007,14 @@ def test_latched_signal_before_commit_is_accounted(coordinated_helper, monkeypat
 
 @pytest.mark.parametrize("boundary", ("ready", "freeze"))
 def test_native_signal_delivery_linearizes_after_blocked_commit(
-    coordinated_helper, monkeypatch, boundary
-):
+    coordinated_helper: CoordinatedHelper, monkeypatch: pytest.MonkeyPatch, boundary: str
+) -> None:
     session, writer, events, _children = coordinated_helper
     previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, ())
     if boundary == "ready":
         emit = helper_streams.emit
 
-        def signal_then_emit(kind, **fields):
+        def signal_then_emit(kind: str, **fields: object) -> None:
             if kind == "READY":
                 signal.raise_signal(signal.SIGTERM)
                 assert session._signal_scope.pending_signum is None
@@ -925,7 +1025,7 @@ def test_native_signal_delivery_linearizes_after_blocked_commit(
     else:
         freeze = session.lifecycle.freeze
 
-        def signal_then_freeze(cleanup):
+        def signal_then_freeze(cleanup: CleanupReport) -> TerminalSnapshot:
             signal.raise_signal(signal.SIGTERM)
             assert session._signal_scope.pending_signum is None
             return freeze(cleanup)
@@ -938,7 +1038,7 @@ def test_native_signal_delivery_linearizes_after_blocked_commit(
     assert session._signal_scope.pending_signum == signal.SIGTERM
     if boundary == "ready":
         assert any(kind == "READY" for kind, _ in events)
-        assert snapshot.outcome.primary_failure.code == "REMOTE_SIGNAL"
+        assert _failure_code(snapshot) == "REMOTE_SIGNAL"
     else:
         assert snapshot.outcome.primary_failure is None
         state = session.lifecycle.state
@@ -948,8 +1048,8 @@ def test_native_signal_delivery_linearizes_after_blocked_commit(
 
 
 def test_native_signal_after_frozen_result_fails_without_second_terminal(
-    tmp_path, monkeypatch, control_pipe
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, control_pipe: tuple[BufferedReader, FileIO]
+) -> None:
     monkeypatch.setattr(workspace_module, 'workspace_root', lambda: tmp_path)
     _, writer = control_pipe
     writer.close()
@@ -957,12 +1057,12 @@ def test_native_signal_after_frozen_result_fails_without_second_terminal(
     emit = helper_streams.emit
     events = []
 
-    def run_then_signal(session):
+    def run_then_signal(session: HelperSession) -> None:
         run(session)
         # The allocation wrapper still owns the native handlers at this point.
         signal.raise_signal(signal.SIGTERM)
 
-    def record(kind, **fields):
+    def record(kind: str, **fields: object) -> None:
         events.append((kind, fields))
         emit(kind, **fields)
 
@@ -979,8 +1079,8 @@ def test_native_signal_after_frozen_result_fails_without_second_terminal(
 
 
 def test_terminal_partial_write_failure_does_not_replay_frozen_snapshot(
-    tmp_path, monkeypatch, control_pipe
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, control_pipe: tuple[BufferedReader, FileIO]
+) -> None:
     monkeypatch.setattr(workspace_module, 'workspace_root', lambda: tmp_path)
     session = helper_session.HelperSession.create()
     _, writer = control_pipe
@@ -991,17 +1091,17 @@ def test_terminal_partial_write_failure_does_not_replay_frozen_snapshot(
     terminals = []
     partial = False
 
-    def fail_after_prefix(descriptor, payload):
+    def fail_after_prefix(descriptor: int, payload: Buffer) -> int:
         nonlocal partial
         if descriptor == write_fd:
             if partial:
                 raise BrokenPipeError("terminal prefix already delivered")
             if bytes(payload).startswith(b'{"child_result"'):
                 partial = True
-                return write(descriptor, payload[:5])
+                return write(descriptor, bytes(payload)[:5])
         return write(descriptor, payload)
 
-    def record(kind, **fields):
+    def record(kind: str, **fields: object) -> None:
         if kind == "SESSION_ENDED":
             terminals.append(fields)
         emit(kind, **fields)
@@ -1021,15 +1121,15 @@ def test_terminal_partial_write_failure_does_not_replay_frozen_snapshot(
 
 
 def test_workspace_cleanup_timeout_closes_admission_without_removing_live_stage(
-    tmp_path, monkeypatch
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(workspace_module, 'workspace_root', lambda: tmp_path)
     session_id, workspace, owner_lock = workspace_module.new_workspace()
     session = helper_session.HelperSession(session_id, workspace, owner_lock)
     clock = 0.0
     original_flock = workspace_module.fcntl.flock
 
-    def observe_lease_contention(stream, operation):
+    def observe_lease_contention(stream: IO[bytes], operation: int) -> None:
         nonlocal clock
         try:
             return original_flock(stream, operation)
@@ -1056,8 +1156,12 @@ def test_workspace_cleanup_timeout_closes_admission_without_removing_live_stage(
 
 @pytest.mark.parametrize("failed_suffixes", (("lease",), ("closed",), ("lease", "closed")))
 def test_metadata_removal_failure_fails_session_and_is_reclaimed_later(
-    tmp_path, monkeypatch, control_pipe, capsys, failed_suffixes
-):
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    control_pipe: tuple[BufferedReader, FileIO],
+    capsys: pytest.CaptureFixture[str],
+    failed_suffixes: tuple[str, ...],
+) -> None:
     monkeypatch.setattr(workspace_module, 'workspace_root', lambda: tmp_path)
     session_id, workspace, owner_lock = workspace_module.new_workspace()
     session = helper_session.HelperSession(session_id, workspace, owner_lock)
@@ -1065,10 +1169,10 @@ def test_metadata_removal_failure_fails_session_and_is_reclaimed_later(
     path_type = type(tmp_path)
     original_unlink = path_type.unlink
 
-    def fail_metadata_removal(path, *args, **kwargs):
+    def fail_metadata_removal(path: Path, missing_ok: bool = False) -> None:
         if path in metadata:
             raise PermissionError(f"cannot remove {path.name}")
-        return original_unlink(path, *args, **kwargs)
+        original_unlink(path, missing_ok)
 
     _reader, writer = control_pipe
     writer.close()
@@ -1093,7 +1197,9 @@ def test_metadata_removal_failure_fails_session_and_is_reclaimed_later(
     assert tuple(tmp_path.iterdir()) == ()
 
 
-def test_cleanup_closes_admission_without_waiting_for_global_gate(tmp_path, monkeypatch):
+def test_cleanup_closes_admission_without_waiting_for_global_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(workspace_module, 'workspace_root', lambda: tmp_path)
     first_id, first, first_owner = workspace_module.new_workspace()
     second_id, second, second_owner = workspace_module.new_workspace()
@@ -1102,7 +1208,7 @@ def test_cleanup_closes_admission_without_waiting_for_global_gate(tmp_path, monk
     clock = 0.0
     original_flock = workspace_module.fcntl.flock
 
-    def bounded_flock(stream, operation):
+    def bounded_flock(stream: IO[bytes], operation: int) -> None:
         nonlocal clock
         # Fail a blocking acquisition at the OS boundary instead of deadlocking
         # unrelated allocation must proceed while this owner is stopped.
@@ -1131,16 +1237,18 @@ def test_cleanup_closes_admission_without_waiting_for_global_gate(tmp_path, monk
     workspace_module.remove_workspace(first)
 
 
-def test_address_lease_cleanup_failure_preserves_startup_failure(coordinated_helper, monkeypatch):
+def test_address_lease_cleanup_failure_preserves_startup_failure(
+    coordinated_helper: CoordinatedHelper, monkeypatch: pytest.MonkeyPatch
+) -> None:
     session, writer, events, children = coordinated_helper
     record = helper_streams.emit
     lease = None
 
     class FailedLease:
-        def close(self):
+        def close(self) -> None:
             raise OSError("address lease remains owned")
 
-    def emit(kind, **fields):
+    def emit(kind: str, **fields: object) -> None:
         nonlocal lease
         record(kind, **fields)
         if kind == "ATTEMPT":
@@ -1166,7 +1274,7 @@ def test_address_lease_cleanup_failure_preserves_startup_failure(coordinated_hel
         assert len(children) == 1
         assert sum(kind == "ATTEMPT" for kind, _fields in events) == 1
         assert snapshot.outcome.primary_failure is not None
-        assert snapshot.outcome.primary_failure.code == "STARTUP_EXIT"
+        assert _failure_code(snapshot) == "STARTUP_EXIT"
         assert "address_lease" in snapshot.cleanup.residual_resources
         assert session.work.is_dir() and session.workspace_lock.closed
     finally:

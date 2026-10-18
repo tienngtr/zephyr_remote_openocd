@@ -35,6 +35,7 @@ from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.protocol.responses import validate_openocd_version_response
 from zephyr_remote_openocd.protocol.wire import decode_frame
 
+from tests.inventory import InventoryHost
 from tests.process_support import cleanup_on_exit, read_line, stop_and_close
 from tests.support import ROOT
 
@@ -54,7 +55,7 @@ def session_echo_process() -> ProcessSpec:
     )
 
 
-def assert_remote_marker(ssh: SshCommand, host: str):
+def assert_remote_marker(ssh: SshCommand, host: str) -> None:
     result = ssh.run(host, "printf zro_ssh_marker", timeout=20)
     assert result.returncode == 0, result.stderr.decode(errors="replace")
     assert result.stdout == b"zro_ssh_marker"
@@ -119,17 +120,17 @@ class ObservedSshCommand(SshCommand):
 
 class TestConfiguredSshIntegration:
     @pytest.fixture(autouse=True)
-    def inventory_setup(self, ssh_host, ssh_settings):
+    def inventory_setup(self, ssh_host: str, ssh_settings: InventoryHost) -> None:
         self.host = ssh_host
         self.ssh = SshCommand(ssh_settings.ssh_command)
 
-    def test_configured_ssh_and_fixed_arguments(self):
+    def test_configured_ssh_and_fixed_arguments(self) -> None:
         assert_remote_marker(self.ssh, self.host)
         assert_remote_marker(
             SshCommand((*self.ssh.argv_prefix, "-o", "ConnectTimeout=10")), self.host
         )
 
-    def test_explicit_path_with_nonstandard_executable_name(self, tmp_path):
+    def test_explicit_path_with_nonstandard_executable_name(self, tmp_path: Path) -> None:
         configured = self.ssh.argv_prefix[0]
         source = shutil.which(configured) if "/" not in configured else configured
         assert source is not None, f"configured SSH executable not found: {configured}"
@@ -142,13 +143,15 @@ class TestConfiguredSshIntegration:
 
 class TestSshTransportIntegration:
     @pytest.fixture(autouse=True)
-    def inventory_setup(self, ssh_host, ssh_settings):
+    def inventory_setup(self, ssh_host: str, ssh_settings: InventoryHost) -> None:
         self.host = ssh_host
         self.ssh_settings = ssh_settings
         self.ssh = SshCommand(ssh_settings.ssh_command)
 
     @pytest.mark.parametrize("occupied", (False, True), ids=("available", "occupied"))
-    def test_forwarding_conflicts_cannot_report_an_unbound_forward_ready(self, occupied):
+    def test_forwarding_conflicts_cannot_report_an_unbound_forward_ready(
+        self, occupied: bool
+    ) -> None:
         conflicts = ("-o", "ExitOnForwardFailure=no", "-o", "ClearAllForwardings=yes")
         ssh = SshCommand((*self.ssh.argv_prefix, *conflicts))
         if occupied:
@@ -179,7 +182,7 @@ class TestSshTransportIntegration:
             if not occupied:
                 assert_no_loopback_listener(port)
 
-    def test_streaming_preserves_content_and_reports_remote_failure(self):
+    def test_streaming_preserves_content_and_reports_remote_failure(self) -> None:
         payloads = (
             b"",
             bytes(range(256)) * 4096,
@@ -210,7 +213,7 @@ class TestSshTransportIntegration:
         )
         assert failed.returncode == REMOTE_FAILURE_EXIT_CODE
 
-    def test_protocol_v1_helper_vertical_slice(self):
+    def test_protocol_v1_helper_vertical_slice(self) -> None:
         """Exercise the production transport path with an explicit test process."""
         first = deploy_helper(self.ssh, self.host)
         second = deploy_helper(self.ssh, self.host)
@@ -265,7 +268,7 @@ class TestSshTransportIntegration:
             )
             assert gone.returncode == 0, gone.stderr.decode(errors="replace")
 
-    def test_concurrent_sessions_isolate_identical_remote_ports(self):
+    def test_concurrent_sessions_isolate_identical_remote_ports(self) -> None:
         """Regression coverage for independent-session service-port isolation."""
         first_port = free_loopback_port()
         second_port = free_loopback_port()
@@ -309,7 +312,7 @@ class TestSshTransportIntegration:
             )
             assert result.returncode == 0, result.stderr.decode(errors="replace")
 
-    def test_post_spawn_bind_collision_fails_without_repeating_startup(self):
+    def test_post_spawn_bind_collision_fails_without_repeating_startup(self) -> None:
         """Real EADDRINUSE cannot authorize replay through the deployed helper."""
         process = ProcessSpec(
             (
@@ -348,7 +351,7 @@ class TestSshTransportIntegration:
         with socket.socket() as local_listener:
             local_listener.bind(("127.0.0.1", forward.local_port))
 
-    def test_helper_revision_repair_preserves_active_session(self):
+    def test_helper_revision_repair_preserves_active_session(self) -> None:
         """Deploy and repair a distinct bundle while the current revision is live."""
         request = SessionPlan(
             self.host,
@@ -413,7 +416,9 @@ class TestSshTransportIntegration:
             assert event["type"] == "OPENOCD_VERSION"
             assert_echo(request.forwards[0].local_port, b"active_revision_survived")
 
-    def test_preferred_address_reuses_forward_retained_by_external_master(self, tmp_path):
+    def test_preferred_address_reuses_forward_retained_by_external_master(
+        self, tmp_path: Path
+    ) -> None:
         """The test owns the master; production sessions own only their slaves."""
         ssh = SshCommand(
             (
@@ -458,7 +463,7 @@ class TestSshTransportIntegration:
                 master.stdin.close()
         assert_no_loopback_listener(local_port)
 
-    def test_helper_ssh_loss_cleans_session(self):
+    def test_helper_ssh_loss_cleans_session(self) -> None:
         """Losing the helper SSH process cleans the session."""
 
         local_port = free_loopback_port()
@@ -491,7 +496,7 @@ class TestSshTransportIntegration:
         )
         assert result.returncode == 0, result.stderr.decode(errors="replace")
 
-    def test_owned_forward_loss_is_reported_and_session_cleans_up(self):
+    def test_owned_forward_loss_is_reported_and_session_cleans_up(self) -> None:
         """An established session reports loss of its own SSH forward."""
 
         local_port = free_loopback_port()
@@ -530,7 +535,7 @@ class TestSshTransportIntegration:
         assert result.returncode == 0, result.stderr.decode(errors="replace")
 
     @pytest.mark.parametrize("mapped", (False, True), ids=("staged", "mapped"))
-    def test_remote_openocd_config_consumes_forwarded_environment(self, mapped):
+    def test_remote_openocd_config_consumes_forwarded_environment(self, mapped: bool) -> None:
         """Verify allow-listed environment reaches remote OpenOCD Tcl config."""
         openocd_command = self.ssh_settings.openocd_command
         executable = openocd_command[0]

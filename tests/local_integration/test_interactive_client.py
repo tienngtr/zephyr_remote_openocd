@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import time
+from io import FileIO
 from pathlib import Path
 
 import pytest
@@ -60,7 +61,7 @@ class Terminal:
         os.write(self.master, keys)
 
 
-def run_scenario(mode: str, client: list[str]):
+def run_scenario(mode: str, client: list[str]) -> tuple[subprocess.Popen[bytes], Terminal, FileIO]:
     environment = os.environ.copy()
     production = str(Path(cancellation.__file__).resolve().parents[2])
     repository = str(Path(__file__).resolve().parents[2])
@@ -91,7 +92,9 @@ def run_scenario(mode: str, client: list[str]):
     return process, Terminal(master), os.fdopen(marker_read, "rb", buffering=0)
 
 
-def finish(process: subprocess.Popen, terminal: Terminal, markers, *, completed: bool) -> None:
+def finish(
+    process: subprocess.Popen[bytes], terminal: Terminal, markers: FileIO, *, completed: bool
+) -> None:
     try:
         if completed:
             assert process.wait(GUARD) == 0

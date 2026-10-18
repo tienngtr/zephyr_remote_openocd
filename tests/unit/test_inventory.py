@@ -55,7 +55,7 @@ def test_inventory_host_is_renderable_as_product_config(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("name", ("lab", "on", "off", "true", "null"))
-def test_rendered_inventory_round_trips_through_product_schema(tmp_path, name):
+def test_rendered_inventory_round_trips_through_product_schema(tmp_path: Path, name: str) -> None:
     document = inventory_document()
     document["hosts"][name] = document["hosts"].pop("host")
     document["targets"]["target"]["host"] = name
@@ -190,7 +190,9 @@ def test_rendered_inventory_round_trips_through_product_schema(tmp_path, name):
         ),
     ),
 )
-def test_schema_rejects_invalid_structure(tmp_path, path, value, diagnostic) -> None:
+def test_schema_rejects_invalid_structure(
+    tmp_path: Path, path: tuple[str, ...], value: object, diagnostic: str
+) -> None:
     document = change(inventory_document(), path, value)
     with pytest.raises(InventoryError, match=diagnostic):
         load_inventory(write_inventory(tmp_path, document))
@@ -303,7 +305,9 @@ def test_schema_rejects_invalid_structure(tmp_path, path, value, diagnostic) -> 
         ),
     ),
 )
-def test_semantic_references_are_validated(tmp_path, path, value, diagnostic) -> None:
+def test_semantic_references_are_validated(
+    tmp_path: Path, path: tuple[str, ...], value: object, diagnostic: str
+) -> None:
     document = change(inventory_document(), path, value)
     with pytest.raises(InventoryError, match=diagnostic):
         load_inventory(write_inventory(tmp_path, document))

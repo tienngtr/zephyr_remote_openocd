@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import Any, Literal
 
 import pytest
 from zephyr_remote_openocd.protocol.outcome import (
@@ -24,12 +25,15 @@ from zephyr_remote_openocd.protocol.wire import (
     terminal_fields,
 )
 
+ChildDisposal = Literal["not_acquired", "confirmed", "unconfirmed"]
+WorkspaceDisposal = Literal["not_created", "confirmed", "unconfirmed"]
 
-def _event(kind, **fields):
+
+def _event(kind: str, **fields: object) -> dict[str, Any]:
     return decode_frame(encode_frame(kind, **fields))
 
 
-def _terminal():
+def _terminal() -> TerminalSnapshot:
     return TerminalSnapshot(
         Outcome(Trigger.CHILD_EXIT, child_result=ChildResult(0, False)),
         CleanupReport("confirmed", "confirmed"),
@@ -53,19 +57,19 @@ def _terminal():
         b'{"version":1.0,"type":"START"}\n',
     ),
 )
-def test_protocol_rejects_invalid_framing_and_json(frame):
+def test_protocol_rejects_invalid_framing_and_json(frame: bytes) -> None:
     with pytest.raises(ProtocolError):
         decode_frame(frame)
 
 
-def test_protocol_size_limit_applies_to_both_encoding_and_decoding():
+def test_protocol_size_limit_applies_to_both_encoding_and_decoding() -> None:
     with pytest.raises(ProtocolError):
         encode_frame("TEST", payload="x" * MAX_FRAME_SIZE)
     with pytest.raises(ProtocolError):
         decode_frame(b" " * MAX_FRAME_SIZE + b"\n")
 
 
-def test_terminal_round_trip_retains_group_causes_notes_and_provenance():
+def test_terminal_round_trip_retains_group_causes_notes_and_provenance() -> None:
     cause = OSError("cleanup failed")
     cause.add_note("nested cleanup detail")
     group = ExceptionGroup(
@@ -104,7 +108,7 @@ def test_terminal_round_trip_retains_group_causes_notes_and_provenance():
         ("version", True),
     ),
 )
-def test_terminal_rejects_inconsistent_outcomes_and_cleanup(field, value):
+def test_terminal_rejects_inconsistent_outcomes_and_cleanup(field: str, value: object) -> None:
     message = _event("SESSION_ENDED", **terminal_fields(_terminal()))
     message[field] = value
     with pytest.raises(ProtocolError):
@@ -123,7 +127,7 @@ def test_terminal_rejects_inconsistent_outcomes_and_cleanup(field, value):
         "unadmitted-result",
     ),
 )
-def test_order_rejects_invalid_attempt_and_ready_histories(violation):
+def test_order_rejects_invalid_attempt_and_ready_histories(violation: str) -> None:
     order = EventOrder(
         CompletionPolicy.PROCESS_EXIT
         if violation == "ready-process-exit"
@@ -163,8 +167,11 @@ def test_order_rejects_invalid_attempt_and_ready_histories(violation):
     ),
 )
 def test_terminal_disposal_must_agree_with_observed_history(
-    history, child_disposal, workspace_disposal, policy
-):
+    history: tuple[str, ...],
+    child_disposal: ChildDisposal,
+    workspace_disposal: WorkspaceDisposal,
+    policy: CompletionPolicy,
+) -> None:
     order = EventOrder(policy)
     events = {
         "SESSION_CREATED": _event(
@@ -205,8 +212,11 @@ def test_terminal_disposal_must_agree_with_observed_history(
 )
 @pytest.mark.parametrize("policy", tuple(CompletionPolicy))
 def test_terminal_history_preserves_partial_startup_and_output_paths(
-    history, child_disposal, workspace_disposal, policy
-):
+    history: tuple[str, ...],
+    child_disposal: ChildDisposal,
+    workspace_disposal: WorkspaceDisposal,
+    policy: CompletionPolicy,
+) -> None:
     order = EventOrder(policy)
     events = {
         "SESSION_CREATED": _event(
@@ -225,7 +235,7 @@ def test_terminal_history_preserves_partial_startup_and_output_paths(
     assert order.ended
 
 
-def test_frame_round_trip_accepts_json_whitespace_and_reserves_envelope_fields():
+def test_frame_round_trip_accepts_json_whitespace_and_reserves_envelope_fields() -> None:
     frame = encode_frame("HELLO", value=3)
     assert decode_frame(b" \t" + frame[:-1] + b" \t\r\n") == {
         "version": 1,
@@ -237,7 +247,7 @@ def test_frame_round_trip_accepts_json_whitespace_and_reserves_envelope_fields()
 
 
 @pytest.mark.parametrize("trigger", (Trigger.CHILD_EXIT, Trigger.HELPER_FAILURE))
-def test_terminal_ends_event_history(trigger):
+def test_terminal_ends_event_history(trigger: Trigger) -> None:
     order = EventOrder()
     order.accept(
         _event("SESSION_CREATED", helper="helper", session_id="session", remote_workspace="/work")

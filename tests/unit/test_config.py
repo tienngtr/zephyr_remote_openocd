@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from zephyr_remote_openocd.config import (
     ConfigError,
+    RemoteOpenOcdConfig,
     default_config_path,
     load_config,
     resolve_remote,
@@ -14,20 +15,20 @@ from zephyr_remote_openocd.controller._ssh import SshCommand
 from tests.support import ROOT
 
 
-def load_text(tmp_path: Path, text: str):
+def load_text(tmp_path: Path, text: str) -> RemoteOpenOcdConfig:
     path = tmp_path / "config.yaml"
     path.write_text(text)
     return load_config(path)
 
 
-def test_defaults_when_file_is_absent(tmp_path: Path):
+def test_defaults_when_file_is_absent(tmp_path: Path) -> None:
     config = load_config(tmp_path / "missing.yaml")
     assert config.default_runner == "openocd"
     assert config.presets == {}
     assert config.remotes == {}
 
 
-def test_invalid_utf8_configuration_is_actionable(tmp_path: Path):
+def test_invalid_utf8_configuration_is_actionable(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_bytes(b"default_runner: \xff\n")
 
@@ -40,7 +41,7 @@ def test_invalid_utf8_configuration_is_actionable(tmp_path: Path):
     assert isinstance(error.value.__cause__, UnicodeDecodeError)
 
 
-def test_dangling_configuration_symlink_is_actionable(tmp_path: Path):
+def test_dangling_configuration_symlink_is_actionable(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.symlink_to(tmp_path / "missing.yaml")
     with pytest.raises(
@@ -50,7 +51,7 @@ def test_dangling_configuration_symlink_is_actionable(tmp_path: Path):
         load_config(config_path)
 
 
-def test_configuration_symlink_to_file_is_supported(tmp_path: Path):
+def test_configuration_symlink_to_file_is_supported(tmp_path: Path) -> None:
     target = tmp_path / "actual.yaml"
     target.write_text("default_runner: remote_openocd\n")
     config_path = tmp_path / "config.yaml"
@@ -58,7 +59,9 @@ def test_configuration_symlink_to_file_is_supported(tmp_path: Path):
     assert load_config(config_path).default_runner == "remote_openocd"
 
 
-def test_default_path_uses_yaml_and_override(monkeypatch, tmp_path: Path):
+def test_default_path_uses_yaml_and_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.delenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", raising=False)
     assert default_config_path().name == "config.yaml"
     monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", "~/custom.conf")
@@ -66,7 +69,7 @@ def test_default_path_uses_yaml_and_override(monkeypatch, tmp_path: Path):
 
 
 @pytest.mark.parametrize("text", ("", "\n# no settings\n", "---\n", "---\n...\n", "--- # empty\n"))
-def test_empty_document_is_empty_mapping(tmp_path: Path, text: str):
+def test_empty_document_is_empty_mapping(tmp_path: Path, text: str) -> None:
     config = load_text(tmp_path, text)
     assert config.default_runner == "openocd"
     assert config.default_remote is None
@@ -75,12 +78,12 @@ def test_empty_document_is_empty_mapping(tmp_path: Path, text: str):
 
 
 @pytest.mark.parametrize("text", ("null\n", "~\n", "--- null\n", '!!null ""\n'))
-def test_explicit_root_null_is_rejected(tmp_path: Path, text: str):
+def test_explicit_root_null_is_rejected(tmp_path: Path, text: str) -> None:
     with pytest.raises(ConfigError):
         load_text(tmp_path, text)
 
 
-def test_canonical_template_loads():
+def test_canonical_template_loads() -> None:
     config = load_config(ROOT / "resources" / "config.example.yaml")
     assert config.default_runner == "openocd"
     assert config.default_remote is None
@@ -94,7 +97,7 @@ def test_canonical_template_loads():
 
 
 @pytest.mark.parametrize("runner", ("openocd", "remote_openocd"))
-def test_supported_default_runner_values(tmp_path: Path, runner: str):
+def test_supported_default_runner_values(tmp_path: Path, runner: str) -> None:
     config = load_text(tmp_path, f"default_runner: {runner}\n")
     assert config.default_runner == runner
 
@@ -109,17 +112,17 @@ def test_supported_default_runner_values(tmp_path: Path, runner: str):
         "presets:\n  p: null\n",
     ),
 )
-def test_unknown_and_invalid_values_are_rejected(tmp_path: Path, text: str):
+def test_unknown_and_invalid_values_are_rejected(tmp_path: Path, text: str) -> None:
     with pytest.raises(ConfigError, match="invalid configuration"):
         load_text(tmp_path, text)
 
 
-def test_duplicate_yaml_keys_are_rejected(tmp_path: Path):
+def test_duplicate_yaml_keys_are_rejected(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="duplicate"):
         load_text(tmp_path, "default_runner: openocd\ndefault_runner: openocd\n")
 
 
-def test_multiple_documents_are_rejected(tmp_path: Path):
+def test_multiple_documents_are_rejected(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="one document"):
         load_text(tmp_path, "default_runner: openocd\n---\ndefault_runner: openocd\n")
 
@@ -134,12 +137,12 @@ def test_multiple_documents_are_rejected(tmp_path: Path):
         "remotes:\n  r:\n    forward_env: [A, A]\n",
     ),
 )
-def test_null_and_wrong_types_are_rejected(tmp_path: Path, text: str):
+def test_null_and_wrong_types_are_rejected(tmp_path: Path, text: str) -> None:
     with pytest.raises(ConfigError):
         load_text(tmp_path, text)
 
 
-def test_ssh_host_with_nul_is_rejected_at_schema_boundary(tmp_path: Path):
+def test_ssh_host_with_nul_is_rejected_at_schema_boundary(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match=r"at remotes\.lab\.ssh_host"):
         load_text(tmp_path, 'remotes:\n  lab:\n    ssh_host: "host\\0suffix"\n')
 
@@ -159,7 +162,7 @@ def test_ssh_host_with_nul_is_rejected_at_schema_boundary(tmp_path: Path):
 )
 def test_command_lexical_errors_are_rejected_at_schema_boundary(
     tmp_path: Path, command: str, location: str
-):
+) -> None:
     with pytest.raises(ConfigError, match=rf"at {location}"):
         load_text(tmp_path, f"remotes:\n  lab:\n    openocd_command: {command}\n")
 
@@ -179,7 +182,7 @@ def test_command_lexical_errors_are_rejected_at_schema_boundary(
 )
 def test_remote_path_lexical_errors_are_rejected_at_schema_boundary(
     tmp_path: Path, remote_path: str
-):
+) -> None:
     with pytest.raises(ConfigError, match=r"at remotes\.lab\.path_mappings\./tmp"):
         load_text(
             tmp_path,
@@ -187,12 +190,12 @@ def test_remote_path_lexical_errors_are_rejected_at_schema_boundary(
         )
 
 
-def test_local_path_lexical_errors_are_rejected_at_schema_boundary(tmp_path: Path):
+def test_local_path_lexical_errors_are_rejected_at_schema_boundary(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match=r"at remotes\.lab\.path_mappings"):
         load_text(tmp_path, "remotes:\n  lab:\n    path_mappings:\n      relative: /remote\n")
 
 
-def test_command_arguments_and_preset_resolution(tmp_path: Path):
+def test_command_arguments_and_preset_resolution(tmp_path: Path) -> None:
     config = load_text(
         tmp_path,
         """default_remote: lab
@@ -215,7 +218,7 @@ remotes:
     assert str(selected.path_mappings[0].remote) == "~/remote"
 
 
-def test_schema_valid_empty_ssh_argument_reaches_final_argv(tmp_path: Path):
+def test_schema_valid_empty_ssh_argument_reaches_final_argv(tmp_path: Path) -> None:
     config = load_text(
         tmp_path,
         """remotes:
@@ -235,7 +238,9 @@ def test_schema_valid_empty_ssh_argument_reaches_final_argv(tmp_path: Path):
     ]
 
 
-def test_ssh_executable_under_current_home_is_expanded(monkeypatch, tmp_path: Path):
+def test_ssh_executable_under_current_home_is_expanded(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     home = tmp_path / "local home"
     monkeypatch.setenv("HOME", str(home))
     config = load_text(
@@ -256,7 +261,7 @@ def test_ssh_executable_under_current_home_is_expanded(monkeypatch, tmp_path: Pa
     )
 
 
-def test_local_and_remote_mapping_paths_preserve_spaces(tmp_path: Path):
+def test_local_and_remote_mapping_paths_preserve_spaces(tmp_path: Path) -> None:
     local = tmp_path / "local tree"
     config = load_text(
         tmp_path,
@@ -271,7 +276,7 @@ def test_local_and_remote_mapping_paths_preserve_spaces(tmp_path: Path):
     assert str(mapping.remote) == "/remote tree"
 
 
-def test_remote_overrides_replace_whole_settings(tmp_path: Path):
+def test_remote_overrides_replace_whole_settings(tmp_path: Path) -> None:
     config = load_text(
         tmp_path,
         """default_remote: r
@@ -291,7 +296,7 @@ remotes:
     assert selected.forward_env == ()
 
 
-def test_selected_remote_and_preset_errors_are_deferred(tmp_path: Path):
+def test_selected_remote_and_preset_errors_are_deferred(tmp_path: Path) -> None:
     config = load_text(tmp_path, "remotes:\n  r:\n    preset: missing\n")
     with pytest.raises(ConfigError, match="missing preset"):
         resolve_remote(config, "r")
@@ -299,7 +304,9 @@ def test_selected_remote_and_preset_errors_are_deferred(tmp_path: Path):
         resolve_remote(config, "nope")
 
 
-def test_selection_precedence_and_empty_environment(tmp_path: Path, monkeypatch):
+def test_selection_precedence_and_empty_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     config = load_text(
         tmp_path,
         """default_remote: default
@@ -318,13 +325,13 @@ remotes:
     assert resolve_remote(config).name == "default"
 
 
-def test_no_remote_is_actionable(tmp_path: Path):
+def test_no_remote_is_actionable(tmp_path: Path) -> None:
     config = load_text(tmp_path, "default_runner: openocd\n")
     with pytest.raises(ConfigError, match="no remote selected"):
         resolve_remote(config)
 
 
-def test_local_mapping_duplicates_are_rejected(tmp_path: Path):
+def test_local_mapping_duplicates_are_rejected(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="mappings"):
         load_text(
             tmp_path,
@@ -337,7 +344,7 @@ def test_local_mapping_duplicates_are_rejected(tmp_path: Path):
         )
 
 
-def test_local_dot_components_are_normalized(tmp_path: Path):
+def test_local_dot_components_are_normalized(tmp_path: Path) -> None:
     config = load_text(
         tmp_path,
         "remotes:\n  r:\n    path_mappings:\n      /tmp/parent/../mapped: /remote\n",

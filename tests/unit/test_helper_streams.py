@@ -14,8 +14,8 @@ from zephyr_remote_openocd.helper import _streams as helper_streams
 @pytest.mark.parametrize("boundary", ("reader", "writer"))
 @pytest.mark.parametrize("rollback_fails", (False, True))
 def test_nonblocking_acquisition_rolls_back_effect_before_failed_adoption(
-    monkeypatch, boundary, rollback_fails
-):
+    monkeypatch: pytest.MonkeyPatch, boundary: str, rollback_fails: bool
+) -> None:
     read_fd, write_fd = os.pipe()
     original_set_blocking = os.set_blocking
     primary = KeyboardInterrupt("descriptor adoption interrupted")
@@ -25,7 +25,7 @@ def test_nonblocking_acquisition_rolls_back_effect_before_failed_adoption(
     with os.fdopen(read_fd, "rb"), os.fdopen(write_fd, "w", encoding="utf-8") as stdout:
         descriptor = read_fd if boundary == "reader" else write_fd
 
-        def set_blocking(target, blocking):
+        def set_blocking(target: int, blocking: bool) -> None:
             original_set_blocking(target, blocking)
             if target == descriptor:
                 if not blocking:
@@ -47,7 +47,9 @@ def test_nonblocking_acquisition_rolls_back_effect_before_failed_adoption(
             assert any(secondary.__notes__[0] in note for note in primary.__notes__)
 
 
-def test_protocol_writer_close_releases_pending_buffer_after_interruption(monkeypatch):
+def test_protocol_writer_close_releases_pending_buffer_after_interruption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     read_fd, write_fd = os.pipe()
     original_set_blocking = os.set_blocking
     failure = KeyboardInterrupt("writer mode restoration interrupted")
@@ -56,7 +58,7 @@ def test_protocol_writer_close_releases_pending_buffer_after_interruption(monkey
         output = helper_streams.ProtocolOutput()
         output.enqueue(b"queued frame\n")
 
-        def set_blocking(descriptor, blocking):
+        def set_blocking(descriptor: int, blocking: bool) -> None:
             original_set_blocking(descriptor, blocking)
             if descriptor == write_fd and blocking:
                 raise failure
@@ -71,12 +73,14 @@ def test_protocol_writer_close_releases_pending_buffer_after_interruption(monkey
 
 
 @pytest.mark.parametrize("source", ("available-prefix", "continuous"))
-def test_final_reader_scan_consumes_available_prefix_with_finite_budget(monkeypatch, source):
+def test_final_reader_scan_consumes_available_prefix_with_finite_budget(
+    monkeypatch: pytest.MonkeyPatch, source: str
+) -> None:
     read_fd, write_fd = os.pipe()
     original_read = os.read
     prefix = b"prefix before READY"
 
-    def read(descriptor, size):
+    def read(descriptor: int, size: int) -> bytes:
         if descriptor != read_fd:
             return original_read(descriptor, size)
         if source == "continuous":
@@ -85,7 +89,7 @@ def test_final_reader_scan_consumes_available_prefix_with_finite_budget(monkeypa
 
     monkeypatch.setattr(os, "read", read)
 
-    async def run():
+    async def run() -> None:
         reader = helper_streams.AsyncInput(read_fd)
         next_read = None
         try:

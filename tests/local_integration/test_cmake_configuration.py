@@ -94,7 +94,9 @@ def _build_module(build: Path, *, home: Path, override: str) -> subprocess.Compl
     ),
     ids=("default-location", "tilde-expansion", "literal-home"),
 )
-def test_cmake_configuration_path_resolution(tmp_path: Path, override, home_name, relative_path):
+def test_cmake_configuration_path_resolution(
+    tmp_path: Path, override: str, home_name: str, relative_path: str
+) -> None:
     selected = tmp_path / home_name / relative_path
     selected.parent.mkdir(parents=True)
     selected.write_text("default_runner: remote_openocd\n")
@@ -113,7 +115,7 @@ def test_cmake_configuration_path_resolution(tmp_path: Path, override, home_name
 )
 def test_cmake_config_presence_changes_regenerate_default_runner(
     tmp_path: Path, generator: str, override_name: str | None
-):
+) -> None:
     home = tmp_path / "home"
     if override_name is None:
         config = home / ".config" / "zephyr_remote_openocd" / "config.yaml"
@@ -142,7 +144,9 @@ def test_cmake_config_presence_changes_regenerate_default_runner(
 
 
 @pytest.mark.parametrize("generator", ("Ninja", "Unix Makefiles"))
-def test_relative_config_identity_survives_incremental_regeneration(tmp_path: Path, generator: str):
+def test_relative_config_identity_survives_incremental_regeneration(
+    tmp_path: Path, generator: str
+) -> None:
     invocation = tmp_path / "invocation"
     invocation.mkdir()
     config = invocation / "selected[*?].yaml"

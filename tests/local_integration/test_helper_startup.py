@@ -31,7 +31,9 @@ from tests.support import ROOT
         if (boundary, action) != ("allocated", "exception")
     ],
 )
-def test_helper_startup_retains_workspace_cleanup_ownership(tmp_path, boundary, action):
+def test_helper_startup_retains_workspace_cleanup_ownership(
+    tmp_path: Path, boundary: str, action: signal.Signals | str
+) -> None:
     gate_read, gate_write = os.pipe()
     try:
         with managed_process(
@@ -52,7 +54,7 @@ def test_helper_startup_retains_workspace_cleanup_ownership(tmp_path, boundary, 
             assert process.stderr is not None
             checkpoint = json.loads(read_line(process.stderr))
             workspace = Path(checkpoint["workspace"])
-            if action != "exception":
+            if isinstance(action, signal.Signals):
                 assert workspace.is_dir()
                 process.send_signal(action)
                 # Release only after the actual installed handler observes
@@ -73,7 +75,7 @@ def test_helper_startup_retains_workspace_cleanup_ownership(tmp_path, boundary, 
         os.close(gate_write)
 
 
-def test_empty_materialized_executable_fails_without_invalid_start_event(tmp_path):
+def test_empty_materialized_executable_fails_without_invalid_start_event(tmp_path: Path) -> None:
     request = ProcessSpec(
         (sys.executable,),
         literal_prefix=0,

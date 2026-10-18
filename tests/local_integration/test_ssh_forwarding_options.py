@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -24,7 +25,9 @@ pytestmark = pytest.mark.local
         ("-o", "ExitOnForwardFailure no", "-o", "ClearAllForwardings yes"),
     ),
 )
-def test_forward_manager_preserves_effective_forwarding_requirements(tmp_path, fixed_args):
+def test_forward_manager_preserves_effective_forwarding_requirements(
+    tmp_path: Path, fixed_args: tuple[str, ...]
+) -> None:
     executable = shutil.which("ssh")
     if executable is None:
         pytest.skip("OpenSSH client is not installed")

@@ -8,7 +8,9 @@ import shutil
 import stat
 import subprocess
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -43,7 +45,7 @@ class TestZephyrIntegration:
     app_out_tree: Path
 
     @classmethod
-    def setup_class(cls):
+    def setup_class(cls) -> None:
         zephyr_base = env_path("ZEPHYR_BASE")
         cls.openocd_board = OPENOCD_BOARD
         cls.no_openocd_board = NON_OPENOCD_BOARD
@@ -95,13 +97,13 @@ class TestZephyrIntegration:
         )
 
     @classmethod
-    def teardown_class(cls):
+    def teardown_class(cls) -> None:
         scratch = getattr(cls, "_scratch", None)
         if scratch is not None:
             scratch.cleanup()
 
     @classmethod
-    def _write_config(cls, default_runner: str, *, path: Path | None = None):
+    def _write_config(cls, default_runner: str, *, path: Path | None = None) -> None:
         content = (
             f"default_runner: {default_runner}\n"
             "default_remote: record_only\n"
@@ -116,7 +118,9 @@ class TestZephyrIntegration:
         (path or cls.config).write_text(content)
 
     @classmethod
-    def _west(cls, *args: str, check: bool = True, extra_env=None):
+    def _west(
+        cls, *args: str, check: bool = True, extra_env: Mapping[str, str] | None = None
+    ) -> subprocess.CompletedProcess[str]:
         env = os.environ.copy()
         env.pop("ZEPHYR_REMOTE_OPENOCD_REMOTE", None)
         env.pop("ZRO_RECORD_OPENOCD_VERSION", None)
@@ -145,18 +149,20 @@ class TestZephyrIntegration:
         return result
 
     @staticmethod
-    def _runner_state(build: Path):
+    def _runner_state(build: Path) -> dict[str, Any]:
         return yaml.safe_load((build / "zephyr" / "runners.yaml").read_text())
 
     @classmethod
-    def _create_recording_flash_artifact(cls, build: Path):
+    def _create_recording_flash_artifact(cls, build: Path) -> None:
         runner_config = cls._runner_state(build)["config"]
         artifact = build / "zephyr" / runner_config["hex_file"]
         artifact.parent.mkdir(parents=True, exist_ok=True)
         artifact.touch()
 
     @classmethod
-    def _configure_recording_build(cls, application: Path, build: Path, *, extra_env=None):
+    def _configure_recording_build(
+        cls, application: Path, build: Path, *, extra_env: Mapping[str, str] | None = None
+    ) -> None:
         """Configure real runner metadata and supply the no-build flash artifact."""
         cls._west(
             "build",
@@ -174,13 +180,13 @@ class TestZephyrIntegration:
         cls._create_recording_flash_artifact(build)
 
     @staticmethod
-    def _recording(output: str):
+    def _recording(output: str) -> dict[str, Any]:
         start = output.find("{\n")
         if start < 0:
             raise AssertionError(f"recording JSON absent:\n{output}")
         return json.loads(output[start:])
 
-    def test_runner_registration_is_conditional_and_non_destructive(self):
+    def test_runner_registration_is_conditional_and_non_destructive(self) -> None:
         state = self._runner_state(self.build_in_tree)
         assert state["args"]["remote_openocd"] == state["args"]["openocd"]
         enabled = state["runners"]
@@ -202,7 +208,7 @@ class TestZephyrIntegration:
         "application, command",
         (("in-tree", "flash"), ("in-tree", "debug"), ("out-of-tree", "flash")),
     )
-    def test_discovered_module_reaches_adapter(self, application, command):
+    def test_discovered_module_reaches_adapter(self, application: str, command: str) -> None:
         build = self.build_in_tree if application == "in-tree" else self.build_out_tree
         assert str(ROOT) in (build / "zephyr_modules.txt").read_text()
         result = self._west(
@@ -220,7 +226,7 @@ class TestZephyrIntegration:
         for field in ("board_dir", "elf_file", "gdb", "openocd"):
             assert config[field], field
 
-    def test_config_change_regenerates_default_runner(self):
+    def test_config_change_regenerates_default_runner(self) -> None:
         state = self._runner_state(self.build_in_tree)
         assert state["flash-runner"] == "openocd"
         self._write_config("remote_openocd")
@@ -237,7 +243,7 @@ class TestZephyrIntegration:
         with pytest.raises(AssertionError, match="recording JSON absent"):
             self._recording(result.stdout)
 
-    def test_created_config_regenerates_default_runner(self):
+    def test_created_config_regenerates_default_runner(self) -> None:
         with tempfile.TemporaryDirectory(
             prefix="zro_created_config_", dir=ROOT / ".scratch"
         ) as directory:
@@ -269,7 +275,7 @@ class TestZephyrIntegration:
             assert self._runner_state(build)["flash-runner"] == "remote_openocd"
             assert self._recording(result.stdout)["command"] == "flash"
 
-    def test_clean_install_acceptance_from_git_free_distribution(self):
+    def test_clean_install_acceptance_from_git_free_distribution(self) -> None:
         """A copied module works through EXTRA_ZEPHYR_MODULES alone."""
         with tempfile.TemporaryDirectory(prefix="zro_clean_install_") as directory:
             root = Path(directory)

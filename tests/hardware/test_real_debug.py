@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
+from pathlib import Path
+
 import pytest
 
 from tests.acceptance.debug import DebugAcceptance
@@ -20,10 +22,10 @@ class TestRealOpenOcdDebug:
     def test_attach(self, attach_fixture: AttachFixture) -> None:
         DebugAcceptance().attach(attach_fixture)
 
-    def test_debugserver(self, debugserver_fixture: DebugServerFixture, tmp_path) -> None:
+    def test_debugserver(self, debugserver_fixture: DebugServerFixture, tmp_path: Path) -> None:
         DebugAcceptance().debugserver(debugserver_fixture, tmp_path / "debugserver.log")
 
     def test_thread_info_on_capable_fixture(
-        self, thread_info_fixture: ThreadInfoFixture, tmp_path
+        self, thread_info_fixture: ThreadInfoFixture, tmp_path: Path
     ) -> None:
         DebugAcceptance().thread_info(thread_info_fixture, tmp_path / "threads.log")

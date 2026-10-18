@@ -77,7 +77,7 @@ def _preparation_with_unavailable_recipe(
 
 
 @pytest.mark.parametrize("operation", ("flash", "debug", "attach", "debugserver"))
-def test_preparation_builds_only_requested_recipes(tmp_path, operation):
+def test_preparation_builds_only_requested_recipes(tmp_path: Path, operation: str) -> None:
     preparation, _inventory, build_root = _preparation_with_unavailable_recipe(tmp_path)
     with patch("tests.hardware_support.subprocess.run", autospec=True) as run:
         run.return_value = subprocess.CompletedProcess([], 0, "")
@@ -127,7 +127,9 @@ def test_preparation_preserves_typed_user_cache_dir(tmp_path: Path) -> None:
     assert definitions == [typed_cache]
 
 
-def test_preparation_retries_failed_build_and_caches_success(tmp_path, monkeypatch):
+def test_preparation_retries_failed_build_and_caches_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     preparation, inventory, build_root = _preparation_with_unavailable_recipe(tmp_path)
     monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_REMOTE", "developer_remote")
     monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", "/developer/config.yaml")

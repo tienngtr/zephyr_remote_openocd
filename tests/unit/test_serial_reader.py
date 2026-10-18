@@ -7,7 +7,7 @@ import shlex
 from tests.serial_reader import remote_serial_reader_command
 
 
-def test_reader_command_carries_structured_framing_and_expectation():
+def test_reader_command_carries_structured_framing_and_expectation() -> None:
     command = remote_serial_reader_command(
         "/dev/tty example",
         921600,

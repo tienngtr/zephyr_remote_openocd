@@ -14,12 +14,14 @@ from zephyr_remote_openocd.controller._ssh import SshCommand, stop_process
 from tests.process_support import cleanup_on_exit, read_line, stop_and_close
 
 
-def test_harness_cleanup_attempts_data_pipes_after_stderr_failure(monkeypatch):
+def test_harness_cleanup_attempts_data_pipes_after_stderr_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     process = SshCommand((sys.executable, "-c", "pass")).popen("controlled-host", "unused")
     failure = OSError("stderr cleanup failed")
     close_stderr = process.close_stderr
 
-    def close_then_fail():
+    def close_then_fail() -> None:
         close_stderr()
         raise failure
 
@@ -36,7 +38,7 @@ def test_harness_cleanup_attempts_data_pipes_after_stderr_failure(monkeypatch):
         stop_process(process)
 
 
-def test_harness_cleanup_escalation_uses_finite_waits(monkeypatch):
+def test_harness_cleanup_escalation_uses_finite_waits(monkeypatch: pytest.MonkeyPatch) -> None:
     code = (
         "import signal;signal.signal(signal.SIGTERM,signal.SIG_IGN);"
         "print('ready',flush=True);signal.pause()"
@@ -46,12 +48,12 @@ def test_harness_cleanup_escalation_uses_finite_waits(monkeypatch):
     kill = process.kill
     killed = False
 
-    def kill_process():
+    def kill_process() -> None:
         nonlocal killed
         kill()
         killed = True
 
-    def wait_process(timeout: float | None = None):
+    def wait_process(timeout: float | None = None) -> int:
         assert timeout is not None and math.isfinite(timeout) and timeout > 0
         if not killed:
             # Model expiry at the subprocess wait boundary without real delay.
@@ -76,7 +78,9 @@ def test_harness_cleanup_escalation_uses_finite_waits(monkeypatch):
 
 
 @pytest.mark.parametrize("failed_pipe", ("stdin", "stderr"))
-def test_process_cleanup_scope_preserves_assertion_and_closes_pipes(monkeypatch, failed_pipe):
+def test_process_cleanup_scope_preserves_assertion_and_closes_pipes(
+    monkeypatch: pytest.MonkeyPatch, failed_pipe: str
+) -> None:
     process = SshCommand((sys.executable, "-c", "pass")).popen("controlled-host", "unused")
     primary = AssertionError("observation failed")
     failure = OSError(f"{failed_pipe} cleanup failed")
@@ -84,7 +88,7 @@ def test_process_cleanup_scope_preserves_assertion_and_closes_pipes(monkeypatch,
     assert process.stdin is not None
     close_pipe = process.stdin.close if failed_pipe == "stdin" else process.close_stderr
 
-    def close_then_fail():
+    def close_then_fail() -> None:
         close_pipe()
         raise failure
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
 from zephyr_remote_openocd.controller import preferred_address_cache
@@ -19,7 +20,7 @@ def cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return root
 
 
-def test_preferred_address_persists_per_ssh_remote_and_can_be_lost(cache: Path):
+def test_preferred_address_persists_per_ssh_remote_and_can_be_lost(cache: Path) -> None:
     command = SshCommand(("ssh", "-F", "test-config"))
     assert preferred_address_cache.load_preferred_address("target", command) is None
     preferred_address_cache.remember_preferred_address("target", command, "127.64.0.7")
@@ -41,24 +42,26 @@ def test_preferred_address_persists_per_ssh_remote_and_can_be_lost(cache: Path):
 
 
 @pytest.mark.parametrize("content", (b"garbage", b"127.0.0.1", b"\xff", b"127.64.0.0"))
-def test_invalid_preferred_address_cache_data_is_ignored(cache: Path, content: bytes):
+def test_invalid_preferred_address_cache_data_is_ignored(cache: Path, content: bytes) -> None:
     command = SshCommand()
     preferred_address_cache.remember_preferred_address("target", command, "127.64.0.7")
     next(cache.iterdir()).write_bytes(content)
     assert preferred_address_cache.load_preferred_address("target", command) is None
 
 
-def test_unusable_preferred_address_cache_path_does_not_fail_operations(cache: Path):
+def test_unusable_preferred_address_cache_path_does_not_fail_operations(cache: Path) -> None:
     cache.write_text("not a directory")
     preferred_address_cache.remember_preferred_address("target", SshCommand(), "127.64.0.7")
     assert preferred_address_cache.load_preferred_address("target", SshCommand()) is None
 
 
-def test_failed_atomic_update_preserves_previous_preferred_address(cache: Path, monkeypatch):
+def test_failed_atomic_update_preserves_previous_preferred_address(
+    cache: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     command = SshCommand()
     preferred_address_cache.remember_preferred_address("target", command, "127.64.0.7")
 
-    def fail_replace(_source, _destination):
+    def fail_replace(_source: Path, _destination: Path) -> NoReturn:
         raise OSError("cache filesystem unavailable")
 
     monkeypatch.setattr(os, "replace", fail_replace)

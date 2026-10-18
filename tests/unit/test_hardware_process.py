@@ -11,9 +11,11 @@ import signal
 import subprocess
 import sys
 import threading
+from collections.abc import Sequence
 from contextlib import suppress
 from pathlib import Path
 from queue import Queue
+from typing import Any, NoReturn
 
 import pytest
 
@@ -47,7 +49,9 @@ def _ignored_signals(pid: int) -> set[int]:
 
 @pytest.mark.parametrize("operation", ("semihosting", "rtt-abort", "blocking-flash"))
 @pytest.mark.timeout(TEST_BACKSTOP_TIMEOUT)
-def test_hardware_cleanup_stops_descendant_after_leader_exit(tmp_path, monkeypatch, operation):
+def test_hardware_cleanup_stops_descendant_after_leader_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
     target = PreparedTarget(
         "target:profile",
         "target",
@@ -65,12 +69,13 @@ def test_hardware_cleanup_stops_descendant_after_leader_exit(tmp_path, monkeypat
     assert libc.prctl(PR_GET_CHILD_SUBREAPER, ctypes.byref(previous), 0, 0, 0) == 0
     assert libc.prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) == 0
     original_popen = subprocess.Popen
-    processes = []
+    processes: list[subprocess.Popen[bytes]] = []
     child_pid = None
     child_pidfd = None
     timeout = subprocess.TimeoutExpired("hardware-command", SYNC_TIMEOUT)
 
-    def popen(*args, **kwargs):
+    # Popen's keyword arguments pass through; the command is replaced.
+    def popen(*args: object, **kwargs: Any) -> subprocess.Popen[bytes]:
         nonlocal child_pid, child_pidfd
         assert kwargs.get("start_new_session") is True
         process = original_popen([sys.executable, str(_CHILD_TREE)], **kwargs)
@@ -84,7 +89,7 @@ def test_hardware_cleanup_stops_descendant_after_leader_exit(tmp_path, monkeypat
         signal.pidfd_send_signal(child_pidfd, signal.SIGTERM)
         assert process.wait(timeout=SYNC_TIMEOUT) == 0
 
-        def communicate(*args, **kwargs):
+        def communicate(*args: object, **kwargs: object) -> NoReturn:
             raise timeout
 
         if operation != "rtt-abort":
@@ -141,14 +146,14 @@ def test_hardware_cleanup_stops_descendant_after_leader_exit(tmp_path, monkeypat
 @pytest.mark.parametrize("operation_fails", (False, True))
 @pytest.mark.timeout(TEST_BACKSTOP_TIMEOUT)
 def test_process_scope_preserves_failure_and_finishes_cleanup(
-    tmp_path, monkeypatch, operation_fails
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation_fails: bool
+) -> None:
     cleanup_error = OSError("injected group signaling failure")
     primary = ValueError("operation failed")
     original_killpg = os.killpg
     groups = []
 
-    def kill_then_fail(pid, signum):
+    def kill_then_fail(pid: int, signum: int) -> None:
         groups.append(pid)
         with suppress(ProcessLookupError):
             original_killpg(pid, signum)
@@ -190,12 +195,14 @@ def test_process_scope_preserves_failure_and_finishes_cleanup(
 
 
 @pytest.mark.timeout(TEST_BACKSTOP_TIMEOUT)
-def test_owned_output_reader_defers_sigint_to_process_owner(monkeypatch):
+def test_owned_output_reader_defers_sigint_to_process_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     masks: Queue[set[int | signal.Signals]] = Queue()
     original_read = os.read
     original_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
 
-    def read(descriptor, count):
+    def read(descriptor: int, count: int) -> bytes:
         if threading.current_thread() is not threading.main_thread():
             masks.put(signal.pthread_sigmask(signal.SIG_BLOCK, set()))
         return original_read(descriptor, count)
@@ -217,12 +224,13 @@ def test_owned_output_reader_defers_sigint_to_process_owner(monkeypatch):
 
 @pytest.mark.usefixtures("defer_cyclic_gc")
 @pytest.mark.timeout(TEST_BACKSTOP_TIMEOUT)
-def test_process_acquisition_interrupt_reaps_created_group(monkeypatch):
+def test_process_acquisition_interrupt_reaps_created_group(monkeypatch: pytest.MonkeyPatch) -> None:
     original_popen = subprocess.Popen
-    processes = []
+    processes: list[subprocess.Popen[bytes]] = []
 
-    def launch(*args, **kwargs):
-        process = original_popen(*args, **kwargs)
+    # Popen's keyword arguments pass through unchanged.
+    def launch(args: Sequence[str], **kwargs: Any) -> subprocess.Popen[bytes]:
+        process = original_popen(args, **kwargs)
         processes.append(process)
         assert process.stdout is not None
         assert read_line(process.stdout, timeout=SYNC_TIMEOUT) == b"ready\n"

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import tempfile
+from dataclasses import replace
 from pathlib import Path, PurePosixPath
+from typing import Any
 
 import pytest
 from zephyr_remote_openocd.config import PathMapping
@@ -24,10 +26,11 @@ from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
 
 
 class TestDebugPlanning:
-    def inputs(self, root, command="debug", **changes):
+    # Tests override arbitrary fields, some named by parametrization.
+    def inputs(self, root: Path, command: str = "debug", /, **changes: Any) -> DebugInputs:
         config = root / "openocd.cfg"
         config.write_text("# config\n")
-        values = dict(
+        defaults = DebugInputs(
             command=command,
             executable="/remote/openocd",
             gdb="/local/gdb",
@@ -37,8 +40,7 @@ class TestDebugPlanning:
             openocd_init_sentinel="ZRO_OPENOCD_INIT_test",
             startup_complete_sentinel="ZRO_STARTUP_COMPLETE_test",
         )
-        values.update(changes)
-        return DebugInputs(**values)
+        return replace(defaults, **changes)
 
     @pytest.mark.parametrize(
         ("missing", "message"),
@@ -46,7 +48,7 @@ class TestDebugPlanning:
     )
     def test_missing_client_metadata_fails_during_planning(
         self, tmp_path: Path, missing: str, message: str
-    ):
+    ) -> None:
         changes = {missing: None}
         planner = PathPlanner(())
 
@@ -60,7 +62,7 @@ class TestDebugPlanning:
         assert not planner.staged_files
         assert not planner.remote_checks
 
-    def test_command_semantics_and_client_ordering(self):
+    def test_command_semantics_and_client_ordering(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             debug = build_debug_plan(
@@ -120,7 +122,7 @@ class TestDebugPlanning:
     )
     def test_openocd_readiness_setup_precedes_configs_and_requires_both_sentinels(
         self, tmp_path: Path, no_init: bool
-    ):
+    ) -> None:
         inputs = self.inputs(
             tmp_path,
             no_init=no_init,
@@ -154,7 +156,7 @@ class TestDebugPlanning:
             "ZRO_STARTUP_COMPLETE_test",
         )
 
-    def test_local_and_remote_paths_with_spaces_remain_argv_elements(self, tmp_path: Path):
+    def test_local_and_remote_paths_with_spaces_remain_argv_elements(self, tmp_path: Path) -> None:
         local = tmp_path / "debug support"
         local.mkdir()
         config = local / "board config.cfg"
@@ -182,7 +184,9 @@ class TestDebugPlanning:
         assert str(elf) in plan.gdb_argv
 
     @pytest.mark.parametrize("command", ("debug", "attach", "rtt", "debugserver"))
-    def test_distinct_gdb_ports_preserve_target_selection(self, tmp_path: Path, command: str):
+    def test_distinct_gdb_ports_preserve_target_selection(
+        self, tmp_path: Path, command: str
+    ) -> None:
         plan = build_debug_plan(
             self.inputs(
                 tmp_path,
@@ -212,7 +216,9 @@ class TestDebugPlanning:
                 assert plan.rtt_forward.listener in plan.reserved_listeners
 
     @pytest.mark.parametrize("client_port", ("disabled", "invalid", 4444))
-    def test_debugserver_ignores_unused_gdb_client_port(self, tmp_path: Path, client_port):
+    def test_debugserver_ignores_unused_gdb_client_port(
+        self, tmp_path: Path, client_port: str | int
+    ) -> None:
         plan = build_debug_plan(
             self.inputs(tmp_path, command="debugserver", gdb_client_port=client_port),
             PathPlanner(()),
@@ -222,7 +228,7 @@ class TestDebugPlanning:
         )
         assert plan.gdb_argv is None
 
-    def test_disabled_gdb_server_fails_during_planning(self, tmp_path: Path):
+    def test_disabled_gdb_server_fails_during_planning(self, tmp_path: Path) -> None:
         with pytest.raises(DebugPlanError):
             build_debug_plan(self.inputs(tmp_path, gdb_port="disabled"), PathPlanner(()))
 
@@ -236,12 +242,14 @@ class TestDebugPlanning:
     )
     def test_ordinary_service_port_collisions_fail_during_planning(
         self, tmp_path: Path, changes: dict[str, int]
-    ):
+    ) -> None:
         with pytest.raises(DebugPlanError):
             build_debug_plan(self.inputs(tmp_path, **changes), PathPlanner(()))
 
     @pytest.mark.parametrize("rtt_port", (3333, 3334))
-    def test_rtt_cannot_conflict_with_base_or_selected_gdb_listener(self, tmp_path, rtt_port):
+    def test_rtt_cannot_conflict_with_base_or_selected_gdb_listener(
+        self, tmp_path: Path, rtt_port: int
+    ) -> None:
         with pytest.raises(DebugPlanError):
             build_debug_plan(
                 self.inputs(
@@ -254,7 +262,7 @@ class TestDebugPlanning:
                 PathPlanner(()),
             )
 
-    def test_version_parsing_and_thread_info_decision(self):
+    def test_version_parsing_and_thread_info_decision(self) -> None:
         old = parse_openocd_version("Open On-Chip Debugger 0.11.0")
         development = parse_openocd_version("Open On-Chip Debugger 0.11.0+dev")
         current = parse_openocd_version("Open On-Chip Debugger 0.12.0-01050")
@@ -267,7 +275,7 @@ class TestDebugPlanning:
         with pytest.raises(DebugPlanError):
             thread_info_enabled(True, None)
 
-    def test_rtos_command_is_conditional_and_after_pre_init(self):
+    def test_rtos_command_is_conditional_and_after_pre_init(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             version = parse_openocd_version("Open On-Chip Debugger 0.12.0")
             plan = build_debug_plan(
@@ -285,7 +293,7 @@ class TestDebugPlanning:
             )
             assert plan.rtos_awareness
 
-    def test_standalone_rtt_uses_batch_gdb_and_deferred_service(self):
+    def test_standalone_rtt_uses_batch_gdb_and_deferred_service(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             plan = build_debug_plan(
                 self.inputs(
@@ -321,7 +329,7 @@ class TestDebugPlanning:
             assert "monitor rtt server start 5566 0" in plan.gdb_argv
             assert "rtt server start 5566 0" not in plan.process.argv
 
-    def test_rtt_server_is_ready_with_openocd_and_never_launches_client(self):
+    def test_rtt_server_is_ready_with_openocd_and_never_launches_client(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             for command in ("debug", "debugserver"):
                 plan = build_debug_plan(
@@ -344,7 +352,7 @@ class TestDebugPlanning:
                 assert plan.rtt_setup == "openocd_startup"
                 assert not plan.launches_rtt_client
 
-    def test_rtt_requires_control_block_and_enabled_port(self):
+    def test_rtt_requires_control_block_and_enabled_port(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             with pytest.raises(DebugPlanError):

@@ -8,7 +8,9 @@ import os
 import signal
 import socket
 import subprocess
+from collections.abc import Mapping
 from contextlib import ExitStack
+from io import BufferedReader
 from pathlib import Path
 from unittest.mock import create_autospec
 
@@ -24,7 +26,9 @@ TEST_CLIENT_PID = 900002
 
 
 @pytest.mark.timeout(60)
-def test_simultaneous_gdb_rtt_acceptance_does_not_require_runner_prose(tmp_path, monkeypatch):
+def test_simultaneous_gdb_rtt_acceptance_does_not_require_runner_prose(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     gdb_port, rtt_port = 12345, 12346
     target = PreparedTarget(
         "target:rtt",
@@ -42,7 +46,7 @@ def test_simultaneous_gdb_rtt_acceptance_does_not_require_runner_prose(tmp_path,
 
     with ExitStack() as resources:
 
-        def output_pipe(payload):
+        def output_pipe(payload: bytes) -> BufferedReader:
             read_fd, write_fd = os.pipe()
             stream = resources.enter_context(os.fdopen(read_fd, "rb"))
             with os.fdopen(write_fd, "wb") as writer:
@@ -66,15 +70,17 @@ def test_simultaneous_gdb_rtt_acceptance_does_not_require_runner_prose(tmp_path,
         client.communicate.return_value = (b"", None)
         client.returncode = 0
         processes = iter((server, client))
-        launch_environments = []
+        launch_environments: list[Mapping[str, str]] = []
 
-        def launch(*args, **kwargs):
-            launch_environments.append(kwargs.get("env", {}))
+        def launch(
+            *args: object, env: Mapping[str, str], **kwargs: object
+        ) -> subprocess.Popen[bytes]:
+            launch_environments.append(env)
             return next(processes)
 
         monkeypatch.setattr(subprocess, "Popen", launch)
 
-        def killpg(pid, signum):
+        def killpg(pid: int, signum: int) -> None:
             assert pid in (server.pid, client.pid)
             assert signum == signal.SIGKILL
 
@@ -87,7 +93,7 @@ def test_simultaneous_gdb_rtt_acceptance_does_not_require_runner_prose(tmp_path,
         rtt_peer.sendall(b"pong")
         rtt_peer.settimeout(30)
 
-        def connect(address, *, timeout):
+        def connect(address: tuple[str, int], *, timeout: float) -> socket.socket:
             assert address[0] == "127.0.0.1"
             if address[1] == gdb_port:
                 return gdb_connection

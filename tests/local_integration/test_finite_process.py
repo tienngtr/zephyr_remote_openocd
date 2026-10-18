@@ -12,13 +12,16 @@ import tempfile
 import threading
 from pathlib import Path
 from types import FrameType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from zephyr_remote_openocd.controller import _processes as processes
 from zephyr_remote_openocd.controller._ssh import SshCommand
 from zephyr_remote_openocd.controller.cancellation import OperationCancelled, operation_scope
 from zephyr_remote_openocd.controller.waiting import WaitResult
+
+if TYPE_CHECKING:
+    from _typeshed import TraceFunction
 
 pytestmark = [pytest.mark.local, pytest.mark.skipif(os.name != "posix", reason="POSIX pipes")]
 
@@ -195,7 +198,9 @@ def test_output_eof_is_awaited_after_process_exit(tmp_path: Path) -> None:
     assert result.stdout == b"early\nlate output"
 
 
-def test_interrupted_wait_settles_the_command(monkeypatch, tmp_path: Path) -> None:
+def test_interrupted_wait_settles_the_command(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     marker = tmp_path / "pids"
     code = (
         "import os, sys\n"
@@ -222,12 +227,14 @@ def test_interrupted_wait_settles_the_command(monkeypatch, tmp_path: Path) -> No
 
 
 @pytest.mark.parametrize("failure_type", (MemoryError, SystemExit))
-def test_failure_at_popen_return_reaps_the_finite_command(failure_type) -> None:
+def test_failure_at_popen_return_reaps_the_finite_command(
+    failure_type: type[BaseException],
+) -> None:
     processes: list[subprocess.Popen[bytes]] = []
     failure = failure_type("finite command constructor return failed")
     previous_trace = sys.gettrace()
 
-    def fail_at_return(frame: FrameType, event: str, _arg: object) -> Any:
+    def fail_at_return(frame: FrameType, event: str, _arg: object) -> TraceFunction | None:
         # Arbitrary BaseException after CPython published the child, before the
         # caller's assignment from the constructor could adopt it.
         if event == "return" and frame.f_code is subprocess.Popen.__init__.__code__:

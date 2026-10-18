@@ -12,18 +12,22 @@ import sys
 import threading
 from pathlib import Path
 from types import FrameType
-from typing import BinaryIO, cast
+from typing import TYPE_CHECKING, BinaryIO, cast
 
 import pytest
 from zephyr_remote_openocd.controller._deployment import DeploymentResult
 from zephyr_remote_openocd.controller._forwarding import ForwardManager
-from zephyr_remote_openocd.controller._ssh import SshCommand, stop_process
+from zephyr_remote_openocd.controller._ssh import ManagedSshProcess, SshCommand, stop_process
 from zephyr_remote_openocd.controller.cancellation import OperationCancelled, operation_scope
 from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
 from zephyr_remote_openocd.controller.helper_connection import HelperConnection
 from zephyr_remote_openocd.controller.waiting import wait_for
 
 from tests.process_support import read_line
+from tests.session_support import NotifiedAuthority
+
+if TYPE_CHECKING:
+    from _typeshed import TraceFunction
 
 pytestmark = pytest.mark.local
 
@@ -31,8 +35,12 @@ pytestmark = pytest.mark.local
 @pytest.mark.parametrize("caller", ("helper", "forwarding"))
 @pytest.mark.parametrize("failure_type", (MemoryError, SystemExit))
 def test_transport_return_failure_cleans_callers_registered_process(
-    tmp_path, monkeypatch, notified_authority, caller, failure_type
-):
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    notified_authority: NotifiedAuthority,
+    caller: str,
+    failure_type: type[BaseException],
+) -> None:
     launcher = tmp_path / "configured-ssh"
     launcher.write_text(
         f"#!{sys.executable}\n"
@@ -56,20 +64,20 @@ def test_transport_return_failure_cleans_callers_registered_process(
     )
     forwards = ForwardManager(command, "unused-host")
     failure = failure_type("transport caller handoff failed")
-    processes = []
+    processes: list[subprocess.Popen[bytes]] = []
     pipes: list[BinaryIO | None] = []
     completion_descriptors: list[int] = []
-    managed = []
+    managed: list[ManagedSshProcess] = []
     previous_trace = sys.gettrace()
     previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
 
-    def interrupt_at_return(frame, event, arg):
+    def interrupt_at_return(frame: FrameType, event: str, arg: object) -> TraceFunction | None:
         if event == "return" and frame.f_code is subprocess.Popen.__init__.__code__:
             process = frame.f_locals["self"]
             processes.append(process)
             pipes.extend((process.stdin, process.stdout, process.stderr))
         if event == "return" and frame.f_code is SshCommand.popen.__code__:
-            managed.append(arg)
+            managed.append(cast(ManagedSshProcess, arg))
             if caller == "helper" and helper._completion.descriptor is not None:
                 completion_descriptors.append(helper._completion.descriptor)
             raise failure
@@ -115,8 +123,8 @@ def test_transport_return_failure_cleans_callers_registered_process(
 @pytest.mark.parametrize("search_path", (False, True), ids=("absolute", "search-path"))
 @pytest.mark.parametrize("setup_failure", (False, True), ids=("latched", "primary-error"))
 def test_native_sigint_before_pid_publication_is_latched_without_breaking_ownership(
-    tmp_path, monkeypatch, search_path, setup_failure
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, search_path: bool, setup_failure: bool
+) -> None:
     processes: list[subprocess.Popen[bytes]] = []
     child_pid = None
     requested = threading.Event()
@@ -139,14 +147,16 @@ def test_native_sigint_before_pid_publication_is_latched_without_breaking_owners
     }
     assert all(pid_stores.values()), "runtime PID publication boundary was not found"
 
-    def send_interrupt():
+    def send_interrupt() -> None:
         # This thread predates launch and has SIGINT unblocked, so native
         # delivery is not deferred by the launch thread's inherited mask.
         if requested.wait(30) and not stopping.is_set():
             os.kill(os.getpid(), signal.SIGINT)
         delivered.set()
 
-    def interrupt_at_publication(frame, event, _arg):
+    def interrupt_at_publication(
+        frame: FrameType, event: str, _arg: object
+    ) -> TraceFunction | None:
         nonlocal child_pid
         if frame.f_code in pid_stores:
             frame.f_trace_opcodes = True
@@ -238,12 +248,12 @@ def test_native_sigint_before_pid_publication_is_latched_without_breaking_owners
 
 
 @pytest.mark.parametrize("failure_type", (MemoryError, SystemExit))
-def test_popen_return_interruption_reaps_transport(failure_type):
+def test_popen_return_interruption_reaps_transport(failure_type: type[BaseException]) -> None:
     processes: list[subprocess.Popen[bytes]] = []
     previous_trace = sys.gettrace()
     failure = failure_type("Popen return interrupted")
 
-    def interrupt_at_return(frame: FrameType, event: str, _arg: object):
+    def interrupt_at_return(frame: FrameType, event: str, _arg: object) -> TraceFunction | None:
         if event == "return" and frame.f_code is subprocess.Popen.__init__.__code__:
             process = cast(subprocess.Popen[bytes], frame.f_locals["self"])
             processes.append(process)
@@ -285,7 +295,7 @@ def test_popen_return_interruption_reaps_transport(failure_type):
 
 
 @pytest.mark.timeout(120)
-def test_stderr_reader_start_return_failure_keeps_bounded_drain_shutdown(tmp_path) -> None:
+def test_stderr_reader_start_return_failure_keeps_bounded_drain_shutdown(tmp_path: Path) -> None:
     descendant_ready = tmp_path / "descendant-ready"
     os.mkfifo(descendant_ready)
     # A descendant inherits stderr, so the drain cannot reach EOF on its own.
@@ -304,7 +314,7 @@ def test_stderr_reader_start_return_failure_keeps_bounded_drain_shutdown(tmp_pat
     descendants: list[int] = []
     previous_trace = sys.gettrace()
 
-    def fail_after_start(frame: FrameType, event: str, _arg: object):
+    def fail_after_start(frame: FrameType, event: str, _arg: object) -> TraceFunction | None:
         thread = frame.f_locals.get("self")
         if (
             event == "return"

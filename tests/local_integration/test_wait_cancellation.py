@@ -15,23 +15,24 @@ import subprocess
 import sys
 import tempfile
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Buffer, Callable, Iterable, Iterator
 from contextlib import contextmanager, suppress
 from pathlib import Path
 from types import SimpleNamespace
-from typing import override
+from typing import Any, override
 
 import pytest
 from zephyr_remote_openocd.controller import _rtt as rtt_module
 from zephyr_remote_openocd.controller._forwarding import ForwardManager
 from zephyr_remote_openocd.controller._rtt import run_rtt_client
-from zephyr_remote_openocd.controller._ssh import SshCommand
+from zephyr_remote_openocd.controller._ssh import ManagedSshProcess, SshCommand, SshForwardSpec
 from zephyr_remote_openocd.controller.authority import SessionAuthority
 from zephyr_remote_openocd.controller.cancellation import OperationCancelled, operation_scope
 from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
 
 from tests.forwarding_support import GDB, ControlledSshCommand, ForwardingHarness
 from tests.process_support import cleanup_on_exit
+from tests.session_support import ObservedStatus
 
 pytestmark = [pytest.mark.local, pytest.mark.skipif(os.name != "posix", reason="POSIX signals")]
 
@@ -82,7 +83,7 @@ def release_fifo(path: Path) -> Callable[[], None]:
 
 
 @pytest.mark.timeout(GUARD)
-def test_ctrl_c_during_forward_readiness_rolls_back_the_transport(tmp_path) -> None:
+def test_ctrl_c_during_forward_readiness_rolls_back_the_transport(tmp_path: Path) -> None:
     entered = tmp_path / "entered"
     os.mkfifo(entered)
     pids = tmp_path / "pids"
@@ -116,7 +117,9 @@ def test_ctrl_c_during_forward_readiness_rolls_back_the_transport(tmp_path) -> N
 
 
 @pytest.mark.timeout(GUARD)
-def test_ctrl_c_during_rtt_relay_closes_the_channel(observed_session) -> None:
+def test_ctrl_c_during_rtt_relay_closes_the_channel(
+    observed_session: Callable[[Callable[[], int | None]], ObservedStatus],
+) -> None:
     accepted = threading.Event()
     closed = threading.Event()
 
@@ -154,21 +157,37 @@ def test_ctrl_c_during_rtt_relay_closes_the_channel(observed_session) -> None:
 
 
 @pytest.mark.parametrize("work", ("forward", "local-client"))
-def test_ctrl_c_latched_during_session_admission_prevents_the_launch(monkeypatch, work) -> None:
+def test_ctrl_c_latched_during_session_admission_prevents_the_launch(
+    monkeypatch: pytest.MonkeyPatch, work: str
+) -> None:
     harness = ForwardingHarness(monkeypatch)
     launched: list[str] = []
     admit_work = SessionAuthority.admit_work
     popen = ControlledSshCommand.popen
 
-    def record_popen(self, host, remote_command, **kwargs):
+    def record_popen(
+        self: ControlledSshCommand,
+        host: str,
+        remote_command: str,
+        *,
+        local_forward: SshForwardSpec | None = None,
+        on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+    ) -> ManagedSshProcess:
         launched.append("forward")
-        return popen(self, host, remote_command, **kwargs)
+        return popen(
+            self, host, remote_command, local_forward=local_forward, on_acquired=on_acquired
+        )
 
-    def admit_after_ctrl_c(self, *args, **kwargs):
+    def admit_after_ctrl_c(
+        self: SessionAuthority,
+        required: Iterable[ForwardSpec],
+        forwarded: Iterable[ForwardSpec],
+        **kwargs: Callable[[], None],
+    ) -> None:
         # Ctrl-C latches after any earlier cancellation observation, while the
         # session's own admission conditions are being evaluated.
         signal.raise_signal(signal.SIGINT)
-        return admit_work(self, *args, **kwargs)
+        admit_work(self, required, forwarded, **kwargs)
 
     monkeypatch.setattr(ControlledSshCommand, "popen", record_popen)
     harness.ssh.process(GDB)
@@ -187,14 +206,17 @@ def test_ctrl_c_latched_during_session_admission_prevents_the_launch(monkeypatch
 
 
 @pytest.mark.timeout(GUARD)
-def test_ctrl_c_after_launch_admission_leaves_the_transport_owned(tmp_path, monkeypatch) -> None:
+def test_ctrl_c_after_launch_admission_leaves_the_transport_owned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     launcher = tmp_path / "configured-ssh"
     launcher.write_text(f"#!{sys.executable}\nimport sys\nsys.stdin.buffer.read()\n")
     launcher.chmod(0o755)
     initialize = subprocess.Popen.__init__
     pids: list[int] = []
 
-    def launch_after_admission(process, *args, **kwargs):
+    # Popen's arguments pass through unchanged.
+    def launch_after_admission(process: subprocess.Popen[bytes], *args: Any, **kwargs: Any) -> None:
         # Ctrl-C latches after the launch was admitted, during acquisition.
         signal.raise_signal(signal.SIGINT)
         initialize(process, *args, **kwargs)
@@ -216,7 +238,9 @@ def test_ctrl_c_after_launch_admission_leaves_the_transport_owned(tmp_path, monk
     assert not manager.has_forwards
 
 
-def test_latched_cancellation_wins_over_an_expired_session_wait(monkeypatch) -> None:
+def test_latched_cancellation_wins_over_an_expired_session_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     harness = ForwardingHarness(monkeypatch)
     harness.helper.on_wait = lambda: None
     with pytest.raises(OperationCancelled), operation_scope():
@@ -229,7 +253,7 @@ def test_latched_cancellation_wins_over_an_expired_session_wait(monkeypatch) -> 
 
 
 def test_cancellation_during_failed_rtt_attempt_wins_over_expired_startup(
-    observed_session,
+    observed_session: Callable[[Callable[[], int | None]], ObservedStatus],
 ) -> None:
     class ClosingChannel(socket.socket):
         @override
@@ -257,7 +281,9 @@ def test_cancellation_during_failed_rtt_attempt_wins_over_expired_startup(
 
 
 @pytest.mark.timeout(GUARD)
-def test_ctrl_c_while_the_rtt_output_consumer_stalls_closes_the_channel(observed_session) -> None:
+def test_ctrl_c_while_the_rtt_output_consumer_stalls_closes_the_channel(
+    observed_session: Callable[[Callable[[], int | None]], ObservedStatus],
+) -> None:
     read_end, write_end = os.pipe2(os.O_DIRECT)
     # Packet mode gives each relayed write its own pipe buffer, so the pipe is
     # full exactly when it stops reporting writable.
@@ -274,8 +300,8 @@ def test_ctrl_c_while_the_rtt_output_consumer_stalls_closes_the_channel(observed
 
     class ObservedChannel(socket.socket):
         @override
-        def recv(self, size: int, *args) -> bytes:
-            data = super().recv(size, *args)
+        def recv(self, size: int, flags: int = 0, /) -> bytes:
+            data = super().recv(size, flags)
             if data and not consumer_writable():
                 # The client now holds output the stalled consumer cannot take.
                 undeliverable.set()
@@ -323,7 +349,7 @@ def test_ctrl_c_while_the_rtt_output_consumer_stalls_closes_the_channel(observed
 
 @pytest.mark.timeout(GUARD)
 def test_ctrl_c_while_helper_output_holds_the_rtt_stream_closes_the_channel(
-    observed_session, tmp_path
+    observed_session: Callable[[Callable[[], int | None]], ObservedStatus], tmp_path: Path
 ) -> None:
     entered = threading.Event()
     release = threading.Event()
@@ -331,7 +357,7 @@ def test_ctrl_c_while_helper_output_holds_the_rtt_stream_closes_the_channel(
 
     class StalledOutput(io.FileIO):
         @override
-        def write(self, data, /) -> int:
+        def write(self, data: Buffer, /) -> int:
             # Helper output delivery is blocked mid-write, holding the shared
             # buffered stream that RTT output also uses.
             entered.set()

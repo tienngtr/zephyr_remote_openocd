@@ -10,11 +10,11 @@ from pathlib import Path, PurePosixPath
 import pytest
 from zephyr_remote_openocd.controller import staging as staging_module
 from zephyr_remote_openocd.controller.staging import StagingError, build_archive
-from zephyr_remote_openocd.controller.staging_spec import StagedDirectory, StagedFile
+from zephyr_remote_openocd.controller.staging_spec import StagedDirectory, StagedEntry, StagedFile
 
 
 class TestStaging:
-    def test_build_archive_preserves_binary_and_empty_files(self):
+    def test_build_archive_preserves_binary_and_empty_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "empty").write_bytes(b"")
@@ -52,12 +52,16 @@ class TestStaging:
         ),
         ids=("file-ancestor", "file-directory-duplicate"),
     )
-    def test_build_archive_rejects_manifest_conflicts_before_reading_sources(self, entries):
+    def test_build_archive_rejects_manifest_conflicts_before_reading_sources(
+        self, entries: tuple[StagedEntry, ...]
+    ) -> None:
         with pytest.raises(StagingError):
             build_archive(entries)
 
 
-def test_archive_build_failure_preserves_secondary_close_detail(tmp_path, monkeypatch):
+def test_archive_build_failure_preserves_secondary_close_detail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     with (
         tempfile.SpooledTemporaryFile(max_size=1, mode="w+b") as stream,
         monkeypatch.context() as patch,
@@ -66,7 +70,7 @@ def test_archive_build_failure_preserves_secondary_close_detail(tmp_path, monkey
         cleanup = OSError("archive close failed")
         cleanup.add_note("retained close diagnostic")
 
-        def fail_close():
+        def fail_close() -> None:
             close()
             raise cleanup
 

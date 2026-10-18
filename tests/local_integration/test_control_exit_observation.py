@@ -92,7 +92,7 @@ class ExitPeer:
             @override
             def run_stream(
                 self, host: str, remote_command: str, stream: BinaryIO, *, timeout: float = 60
-            ):
+            ) -> subprocess.CompletedProcess[bytes]:
                 assert (owner.root / "after_start").exists(), "dead transport authorized staging"
                 return super().run_stream(host, remote_command, stream, timeout=timeout)
 
@@ -103,7 +103,7 @@ class ExitPeer:
                 remote_command: str,
                 *,
                 local_forward: SshForwardSpec | None = None,
-                on_acquired=None,
+                on_acquired: Callable[[ManagedSshProcess], None] | None = None,
             ) -> ManagedSshProcess:
                 if local_forward is not None:
                     owner.forward_entries.append(local_forward)
@@ -505,8 +505,8 @@ def test_foreground_wait_uses_reader_notification_when_ordinary_output_blocks(
 
 @pytest.mark.parametrize("pidfd_available", (True, False), ids=("pidfd", "waitid-fallback"))
 def test_control_exit_survives_reaping_during_wait_registration(
-    peer: ExitPeer, monkeypatch, pidfd_available
-):
+    peer: ExitPeer, monkeypatch: pytest.MonkeyPatch, pidfd_available: bool
+) -> None:
     snapshot_taken = threading.Event()
     reaped = threading.Event()
     terminal = terminal_message(Trigger.CONTROLLER_EOF, child_acquired=False)
@@ -517,7 +517,7 @@ def test_control_exit_survives_reaping_during_wait_registration(
     waitid = os.waitid
     completion_descriptors: list[int] = []
 
-    def snapshot_returncode(process):
+    def snapshot_returncode(process: ManagedSshProcess) -> int | None:
         status = returncode(process)
         if (
             process is peer.transport
@@ -533,7 +533,7 @@ def test_control_exit_survives_reaping_during_wait_registration(
         (sys.executable, "-c", "import sys; sys.stdin.read()"), stdin=subprocess.PIPE
     ) as replacement:
 
-        def reused_pidfd(pid, flags=0):
+        def reused_pidfd(pid: int, flags: int = 0) -> int:
             if not pidfd_available:
                 raise OSError("pidfd unavailable")
             if peer.transport is not None and pid == peer.transport.pid and reaped.is_set():
@@ -543,13 +543,17 @@ def test_control_exit_survives_reaping_during_wait_registration(
                 return open_pidfd(replacement.pid, flags)
             return open_pidfd(pid, flags)
 
-        def reused_waitid(idtype, pid, options):
+        def reused_waitid(idtype: int, pid: int, options: int) -> os.waitid_result | None:
             if peer.transport is not None and pid == peer.transport.pid and reaped.is_set():
                 return waitid(idtype, replacement.pid, options)
             return waitid(idtype, pid, options)
 
         def observe_wait(
-            *, readable=(), writable=(), sources=_NO_WAIT_SOURCES, deadline=None
+            *,
+            readable: Iterable[Descriptor] = (),
+            writable: Iterable[Descriptor] = (),
+            sources: WaitSources = _NO_WAIT_SOURCES,
+            deadline: float | None = None,
         ) -> WaitResult:
             # Track only the project's owned completion descriptor, not the
             # temporary pidfds that subprocess.wait() also opens on Python 3.15+.

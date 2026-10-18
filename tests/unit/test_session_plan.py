@@ -13,7 +13,7 @@ TEST_PROCESS = ProcessSpec(("test-process",))
 
 
 class TestSessionSpecifications:
-    def test_reserved_listener_has_no_local_forward_requirement(self):
+    def test_reserved_listener_has_no_local_forward_requirement(self) -> None:
         forward = ForwardSpec("gdb", 12345, 3333)
         reserved = ListenerSpec("rtt", 12345)
         plan = SessionPlan(
@@ -27,7 +27,9 @@ class TestSessionSpecifications:
         assert plan.listeners == (forward.listener, reserved)
 
     @pytest.mark.parametrize("reserved", (ListenerSpec("gdb", 5555), ListenerSpec("rtt", 3333)))
-    def test_reserved_listener_cannot_conflict_with_forwarded_listener(self, reserved):
+    def test_reserved_listener_cannot_conflict_with_forwarded_listener(
+        self, reserved: ListenerSpec
+    ) -> None:
         with pytest.raises(ValueError):
             SessionPlan(
                 "host",
@@ -46,7 +48,9 @@ class TestSessionSpecifications:
         ),
         ids=("unknown", "different-port", "duplicate"),
     )
-    def test_request_auxiliary_services_require_initial_membership(self, auxiliary):
+    def test_request_auxiliary_services_require_initial_membership(
+        self, auxiliary: tuple[ForwardSpec, ...]
+    ) -> None:
         with pytest.raises(ValueError):
             SessionPlan(
                 "host",
@@ -56,7 +60,7 @@ class TestSessionSpecifications:
                 auxiliary_forwards=auxiliary,
             )
 
-    def test_request_defaults_to_required_services(self):
+    def test_request_defaults_to_required_services(self) -> None:
         forward = ForwardSpec("tcl", 6333, 6333)
         assert (
             SessionPlan("host", SshCommand(), TEST_PROCESS, forwards=(forward,)).auxiliary_forwards
@@ -68,9 +72,12 @@ class TestSessionSpecifications:
         ("READY", b"READY"),
         ids=("string", "bytes"),
     )
-    def test_remote_process_rejects_scalar_output_sentinel_container(self, sentinels):
+    def test_remote_process_rejects_scalar_output_sentinel_container(
+        self, sentinels: str | bytes
+    ) -> None:
         with pytest.raises(ValueError):
-            ProcessSpec(("openocd",), required_output_sentinels=sentinels)
+            # A deliberately ill-typed value reaches the runtime validation.
+            ProcessSpec(("openocd",), required_output_sentinels=sentinels)  # type: ignore[arg-type]
 
     @pytest.mark.parametrize(
         "changes",
@@ -93,10 +100,11 @@ class TestSessionSpecifications:
             pytest.param({"literal_prefix": 2}, id="prefix-outside-argv"),
         ),
     )
-    def test_remote_process_rejects_invalid_domain_values(self, changes):
+    def test_remote_process_rejects_invalid_domain_values(self, changes: dict[str, object]) -> None:
         fields = {"argv": ("openocd",), **changes}
         with pytest.raises(ValueError):
-            ProcessSpec(**fields)
+            # Some values are deliberately ill-typed for runtime validation.
+            ProcessSpec(**fields)  # type: ignore[arg-type]
 
     @pytest.mark.parametrize(
         ("path", "kind"),
@@ -106,9 +114,10 @@ class TestSessionSpecifications:
             pytest.param("path", "socket", id="invalid-kind"),
         ),
     )
-    def test_remote_path_check_rejects_invalid_values(self, path, kind):
+    def test_remote_path_check_rejects_invalid_values(self, path: str, kind: str) -> None:
         with pytest.raises(ValueError):
-            RequiredPathSpec(path, kind)
+            # An unsupported kind is deliberately outside the declared Literal.
+            RequiredPathSpec(path, kind)  # type: ignore[arg-type]
 
     @pytest.mark.parametrize(
         "arguments",
@@ -120,6 +129,7 @@ class TestSessionSpecifications:
             pytest.param(("gdb", 1234, 65536), id="out-of-range-port"),
         ),
     )
-    def test_service_rejects_invalid_values(self, arguments):
+    def test_service_rejects_invalid_values(self, arguments: tuple[str | int, int, int]) -> None:
         with pytest.raises(ValueError):
-            ForwardSpec(*arguments)
+            # The integer name is deliberately ill-typed for runtime validation.
+            ForwardSpec(*arguments)  # type: ignore[arg-type]

@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
 
@@ -33,7 +35,9 @@ from tests.support import ROOT
 
 
 @pytest.mark.parametrize("operation", ("flash", "debug", "rtt", "rtt-flash", "semihosting"))
-def test_hardware_launch_uses_selected_environment(tmp_path: Path, monkeypatch, operation):
+def test_hardware_launch_uses_selected_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
     selected_base = tmp_path / "selected-zephyr"
     config = tmp_path / "generated-config.yaml"
     target = PreparedTarget(
@@ -83,13 +87,13 @@ def test_hardware_launch_uses_selected_environment(tmp_path: Path, monkeypatch, 
     }
     for name, value in authentication.items():
         monkeypatch.setenv(name, value)
-    captured = {}
+    captured: dict[str, str] = {}
 
     class LaunchReached(Exception):
         pass
 
-    def launch(*args, **kwargs):
-        captured.update(kwargs["env"])
+    def launch(*args: object, env: Mapping[str, str], **kwargs: object) -> NoReturn:
+        captured.update(env)
         raise LaunchReached
 
     monkeypatch.setattr(subprocess, "run", launch)

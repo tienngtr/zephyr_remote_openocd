@@ -11,11 +11,12 @@ import signal
 import subprocess
 import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from types import FrameType
 from typing import Any, BinaryIO, cast, override
-from unittest.mock import create_autospec, patch
+from unittest.mock import Mock, create_autospec, patch
 
 import pytest
 from zephyr_remote_openocd.controller import _ssh as ssh_module
@@ -23,6 +24,7 @@ from zephyr_remote_openocd.controller import session as session_module
 from zephyr_remote_openocd.controller._deployment import DeploymentResult
 from zephyr_remote_openocd.controller._forwarding import ForwardManager
 from zephyr_remote_openocd.controller._ssh import (
+    ManagedSshProcess,
     SshCommand,
     SshForwardSpec,
     SshProcessStartError,
@@ -78,7 +80,7 @@ def _pipe_stream(payload: bytes) -> BinaryIO:
     return os.fdopen(read_fd, "rb", buffering=0)
 
 
-def test_fixed_arguments_are_preserved_without_a_shell():
+def test_fixed_arguments_are_preserved_without_a_shell() -> None:
     ssh = SshCommand(("custom-ssh", "-F", "/a file", "-o", "BatchMode=yes"))
     assert ssh.argv("board-lab", "printf marker") == [
         "custom-ssh",
@@ -92,7 +94,7 @@ def test_fixed_arguments_are_preserved_without_a_shell():
 
 
 @patch("subprocess.Popen.__init__", autospec=True, side_effect=OSError("capture argv"))
-def test_long_lived_process_preserves_explicit_path_and_fixed_arguments(popen):
+def test_long_lived_process_preserves_explicit_path_and_fixed_arguments(popen: Mock) -> None:
     with pytest.raises(OSError):
         SshCommand(("/opt/client/custom-ssh", "-F", "/a file")).popen("host", "serve")
     popen.assert_called_once_with(
@@ -104,7 +106,9 @@ def test_long_lived_process_preserves_explicit_path_and_fixed_arguments(popen):
     )
 
 
-def test_bare_alternate_executable_is_resolved_through_path(tmp_path, monkeypatch):
+def test_bare_alternate_executable_is_resolved_through_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     executable = tmp_path / "custom-ssh"
     executable.write_text(
         f"#!{sys.executable}\nimport json, sys\nprint(json.dumps(sys.argv[1:]))\n"
@@ -124,14 +128,14 @@ def test_bare_alternate_executable_is_resolved_through_path(tmp_path, monkeypatc
     ids=("success", "missing-executable", "missing-executable-search-path"),
 )
 def test_long_lived_launch_restores_calling_thread_signal_mask(
-    tmp_path, monkeypatch, start_failure, search_path
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, start_failure: bool, search_path: bool
+) -> None:
     if search_path:
         # A bare executable uses the real fork/exec search path even on newer
         # runtimes whose absolute-path launches can use posix_spawn.
         monkeypatch.setenv("PATH", str(tmp_path))
 
-    def launch():
+    def launch() -> None:
         original = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGUSR1})
         expected = signal.pthread_sigmask(signal.SIG_BLOCK, set())
         try:
@@ -186,8 +190,10 @@ def _assert_transport_disposed(processes: list[subprocess.Popen[bytes]]) -> None
 
 @pytest.mark.parametrize("failure_type", (MemoryError, KeyboardInterrupt, OSError))
 def test_stderr_owner_construction_failure_disposes_raw_transport(
-    monkeypatch, acquired_transports, failure_type
-):
+    monkeypatch: pytest.MonkeyPatch,
+    acquired_transports: list[subprocess.Popen[bytes]],
+    failure_type: type[BaseException],
+) -> None:
     failure = failure_type("stderr owner construction failed")
     monkeypatch.setattr(
         ssh_module.threading, "Thread", create_autospec(threading.Thread, side_effect=failure)
@@ -207,16 +213,16 @@ def test_stderr_owner_construction_failure_disposes_raw_transport(
 
 
 def test_failed_stderr_construction_retains_primary_when_mask_restoration_fails(
-    monkeypatch, acquired_transports
-):
+    monkeypatch: pytest.MonkeyPatch, acquired_transports: list[subprocess.Popen[bytes]]
+) -> None:
     failure = MemoryError("stderr owner construction failed")
     restoration_failure = OSError("launch signal-mask restoration failed")
     pthread_sigmask = signal.pthread_sigmask
 
-    def fail_constructor(*_args, **_kwargs):
+    def fail_constructor(*_args: object, **_kwargs: object) -> None:
         raise failure
 
-    def fail_restoration(how, mask):
+    def fail_restoration(how: int, mask: Iterable[int]) -> set[int | signal.Signals]:
         previous = pthread_sigmask(how, mask)
         if how == signal.SIG_SETMASK:
             raise restoration_failure
@@ -236,7 +242,7 @@ def test_failed_stderr_construction_retains_primary_when_mask_restoration_fails(
     _assert_transport_disposed(acquired_transports)
 
 
-def test_run_stream_passes_file_as_stdin_and_captures_output(tmp_path):
+def test_run_stream_passes_file_as_stdin_and_captures_output(tmp_path: Path) -> None:
     code = (
         "import sys;"
         "sys.stdout.buffer.write(sys.stdin.buffer.read());"
@@ -255,15 +261,19 @@ def test_run_stream_passes_file_as_stdin_and_captures_output(tmp_path):
 
 
 @pytest.mark.timeout(10)
-def test_stderr_tail_is_best_effort_when_drain_has_not_reached_eof(monkeypatch):
+def test_stderr_tail_is_best_effort_when_drain_has_not_reached_eof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     first_chunk_read = threading.Event()
     release_eof = threading.Event()
 
-    class Stream:
-        def __init__(self):
+    class Stream(io.BytesIO):
+        def __init__(self) -> None:
+            super().__init__()
             self.reads = 0
 
-        def read(self, _size=-1):
+        @override
+        def read(self, _size: int | None = -1, /) -> bytes:
             self.reads += 1
             if self.reads == 1:
                 return b"prefix"
@@ -272,10 +282,11 @@ def test_stderr_tail_is_best_effort_when_drain_has_not_reached_eof(monkeypatch):
             assert release_eof.wait(5)
             return b""
 
-        def close(self):
+        @override
+        def close(self) -> None:
             release_eof.set()
 
-    drain = ssh_module.StderrDrain(cast(BinaryIO, Stream()))
+    drain = ssh_module.StderrDrain(Stream())
     original_wait = drain._finished.wait
     monkeypatch.setattr(drain._finished, "wait", lambda _timeout=None: False)
     drain.start()
@@ -292,16 +303,20 @@ def test_stderr_tail_is_best_effort_when_drain_has_not_reached_eof(monkeypatch):
 
 
 @pytest.mark.timeout(10)
-def test_stderr_tail_waits_for_delayed_eof_with_a_bounded_timeout(monkeypatch):
+def test_stderr_tail_waits_for_delayed_eof_with_a_bounded_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     first_chunk_read = threading.Event()
     release_suffix = threading.Event()
     suffix_read = threading.Event()
 
-    class Stream:
-        def __init__(self):
+    class Stream(io.BytesIO):
+        def __init__(self) -> None:
+            super().__init__()
             self.reads = 0
 
-        def read(self, _size=-1):
+        @override
+        def read(self, _size: int | None = -1, /) -> bytes:
             self.reads += 1
             if self.reads == 1:
                 first_chunk_read.set()
@@ -312,14 +327,15 @@ def test_stderr_tail_waits_for_delayed_eof_with_a_bounded_timeout(monkeypatch):
                 return b"suffix"
             return b""
 
-        def close(self):
+        @override
+        def close(self) -> None:
             release_suffix.set()
 
-    drain = ssh_module.StderrDrain(cast(BinaryIO, Stream()))
-    wait_timeouts = []
+    drain = ssh_module.StderrDrain(Stream())
+    wait_timeouts: list[float | None] = []
     original_wait = drain._finished.wait
 
-    def wait(timeout=None):
+    def wait(timeout: float | None = None) -> bool:
         wait_timeouts.append(timeout)
         release_suffix.set()
         return original_wait(timeout)
@@ -343,37 +359,38 @@ def test_stderr_tail_waits_for_delayed_eof_with_a_bounded_timeout(monkeypatch):
         assert not drain._thread.is_alive()
 
 
-def test_process_cleanup_kills_after_graceful_termination_times_out():
+def test_process_cleanup_kills_after_graceful_termination_times_out() -> None:
     class Process:
-        def __init__(self):
+        def __init__(self) -> None:
             self.stdin = io.BytesIO()
             self.stdout = io.BytesIO()
-            self.returncode = None
+            self.returncode: int | None = None
             self.terminated = False
             self.killed = False
             self.graceful_wait_timed_out = False
             self.kill_wait_completed = False
             self.stderr_closed = False
 
-        def poll(self):
+        def poll(self) -> int | None:
             return self.returncode
 
-        def terminate(self):
+        def terminate(self) -> None:
             self.terminated = True
 
-        def wait(self, timeout=None):
+        def wait(self, timeout: float | None = None) -> int:
             assert timeout is not None and math.isfinite(timeout) and timeout > 0
             if not self.killed:
                 self.graceful_wait_timed_out = True
                 raise subprocess.TimeoutExpired("fake-ssh", timeout)
             self.kill_wait_completed = True
-            self.returncode = -signal.SIGKILL
-            return self.returncode
+            returncode = -signal.SIGKILL
+            self.returncode = returncode
+            return returncode
 
-        def kill(self):
+        def kill(self) -> None:
             self.killed = True
 
-        def close_stderr(self):
+        def close_stderr(self) -> None:
             self.stderr_closed = True
 
     process = Process()
@@ -390,7 +407,7 @@ def test_process_cleanup_kills_after_graceful_termination_times_out():
     assert process.stdout.closed
 
 
-def test_process_cleanup_retains_graceful_timeout_after_kill_failure():
+def test_process_cleanup_retains_graceful_timeout_after_kill_failure() -> None:
     kill_error = RuntimeError("kill failed")
     timeout_error = subprocess.TimeoutExpired("fake-ssh", 5)
 
@@ -398,20 +415,20 @@ def test_process_cleanup_retains_graceful_timeout_after_kill_failure():
         stdin = None
         stdout = None
 
-        def poll(self):
+        def poll(self) -> int | None:
             return None
 
-        def terminate(self):
+        def terminate(self) -> None:
             pass
 
-        def wait(self, timeout=None):
+        def wait(self, timeout: float | None = None) -> int:
             assert timeout is not None and math.isfinite(timeout) and timeout > 0
             raise timeout_error
 
-        def kill(self):
+        def kill(self) -> None:
             raise kill_error
 
-        def close_stderr(self):
+        def close_stderr(self) -> None:
             pass
 
     with pytest.raises(RuntimeError) as raised:
@@ -425,7 +442,7 @@ class _ForwardCommand(_PopenOnlySshCommand):
     processes: Iterator[Any]
     calls: list[tuple[str, str, SshForwardSpec | None]]
 
-    def __init__(self, *processes):
+    def __init__(self, *processes: HelperPeerProcess) -> None:
         super().__init__()
         object.__setattr__(self, "processes", iter(processes))
         object.__setattr__(self, "calls", [])
@@ -437,7 +454,7 @@ class _ForwardCommand(_PopenOnlySshCommand):
         remote_command: str,
         *,
         local_forward: SshForwardSpec | None = None,
-        on_acquired=None,
+        on_acquired: Callable[[ManagedSshProcess], None] | None = None,
     ) -> Any:
         self.calls.append((host, remote_command, local_forward))
         acquired_process = next(self.processes)
@@ -447,7 +464,9 @@ class _ForwardCommand(_PopenOnlySshCommand):
 
 
 @pytest.mark.timeout(10)
-def test_initial_forward_failure_consumes_session_close_event(monkeypatch):
+def test_initial_forward_failure_consumes_session_close_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     close_seen = threading.Event()
     forward_error = SessionError("initial forwarding failed")
     helper = HelperPeerProcess(
@@ -467,12 +486,19 @@ def test_initial_forward_failure_consumes_session_close_event(monkeypatch):
     deployment = DeploymentResult("/helper.py", "digest", False)
     dispatch = HelperConnection._dispatch
 
-    def deploy(_ssh_command, _host):
+    def deploy(_ssh_command: SshCommand, _host: str) -> DeploymentResult:
         return deployment
 
     monkeypatch.setattr(session_module, "deploy_helper", deploy)
 
-    def stage(_command, _host, remote_command, stream, *, timeout=60):
+    def stage(
+        _command: SshCommand,
+        _host: str,
+        remote_command: str,
+        stream: BinaryIO,
+        *,
+        timeout: float = 60,
+    ) -> subprocess.CompletedProcess[bytes]:
         assert stream.read()
         return subprocess.CompletedProcess(
             remote_command,
@@ -489,12 +515,14 @@ def test_initial_forward_failure_consumes_session_close_event(monkeypatch):
 
     monkeypatch.setattr(_ForwardCommand, "run_stream", stage)
 
-    def observe_close(helper_client, event):
+    def observe_close(helper_client: HelperConnection, event: dict[str, object]) -> None:
         dispatch(helper_client, event)
         if event["type"] == "SESSION_ENDED":
             close_seen.set()
 
-    def fail_forwards(_manager, _forwards, _address):
+    def fail_forwards(
+        _manager: ForwardManager, _forwards: Iterable[ForwardSpec], _address: str
+    ) -> None:
         # The helper reports child exit while required forwarding is starting.
         helper.release_later()
         assert close_seen.wait(5)
@@ -513,7 +541,7 @@ def test_initial_forward_failure_consumes_session_close_event(monkeypatch):
     assert close_seen.is_set()
 
 
-def test_acquisition_rollback_uses_bounded_process_waits(monkeypatch):
+def test_acquisition_rollback_uses_bounded_process_waits(monkeypatch: pytest.MonkeyPatch) -> None:
     startup_error = OSError("stderr drain startup failed")
     waits: list[float | None] = []
     wait_errors: list[subprocess.TimeoutExpired] = []
@@ -524,24 +552,25 @@ def test_acquisition_rollback_uses_bounded_process_waits(monkeypatch):
         stdout = io.BytesIO()
         stderr = io.BytesIO()
 
-        def poll(self):
+        def poll(self) -> int | None:
             return None
 
-        def terminate(self):
+        def terminate(self) -> None:
             pass
 
-        def kill(self):
+        def kill(self) -> None:
             pass
 
-        def wait(self, timeout=None):
+        def wait(self, timeout: float | None = None) -> int:
             waits.append(timeout)
+            assert timeout is not None
             error = subprocess.TimeoutExpired("configured-ssh", timeout)
             wait_errors.append(error)
             raise error
 
     process = Process()
 
-    def fail_start(_drain):
+    def fail_start(_drain: ssh_module.StderrDrain) -> None:
         raise startup_error
 
     monkeypatch.setattr(ssh_module, "_OwnedSshPopen", lambda *_args: process)
@@ -560,8 +589,8 @@ def test_acquisition_rollback_uses_bounded_process_waits(monkeypatch):
     (("drain-construction", OSError), ("drain-start", OSError), ("drain-start", RuntimeError)),
 )
 def test_acquisition_rollback_attempts_every_stream_and_retains_all_failures(
-    monkeypatch, failure_phase, failure_type
-):
+    monkeypatch: pytest.MonkeyPatch, failure_phase: str, failure_type: type[BaseException]
+) -> None:
     startup_error = failure_type("stderr drain startup failed")
     terminate_error = OSError("process terminate failed")
     kill_error = OSError("process kill failed")
@@ -573,39 +602,39 @@ def test_acquisition_rollback_attempts_every_stream_and_retains_all_failures(
         error.add_note(f"retained detail for {error}")
 
     class FailingStream(io.BytesIO):
-        def __init__(self, error):
+        def __init__(self, error: BaseException) -> None:
             super().__init__()
             self.error = error
             self.close_attempts = 0
 
         @override
-        def close(self):
+        def close(self) -> None:
             self.close_attempts += 1
             super().close()
             raise self.error
 
     class Process:
         pid = 1
-        returncode = None
+        returncode: int | None = None
         stdin = FailingStream(stdin_error)
         stdout = FailingStream(stdout_error)
         stderr = FailingStream(stderr_error)
 
-        def poll(self):
+        def poll(self) -> int | None:
             return None
 
-        def terminate(self):
+        def terminate(self) -> None:
             raise terminate_error
 
-        def kill(self):
+        def kill(self) -> None:
             raise kill_error
 
-        def wait(self, timeout=None):
+        def wait(self, timeout: float | None = None) -> int:
             raise AssertionError("wait is not expected after failed process signals")
 
     process = Process()
 
-    def fail_start(_drain):
+    def fail_start(_drain: ssh_module.StderrDrain) -> None:
         raise startup_error
 
     monkeypatch.setattr(ssh_module, "_OwnedSshPopen", lambda *_args: process)

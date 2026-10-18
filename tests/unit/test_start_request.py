@@ -6,10 +6,11 @@ import json
 
 import pytest
 from zephyr_remote_openocd.protocol import commands as protocol_commands
+from zephyr_remote_openocd.protocol.commands import StartRequest
 
 
 @pytest.fixture
-def start_command():
+def start_command() -> dict[str, object]:
     return {
         "version": 1,
         "type": "START",
@@ -29,11 +30,11 @@ def start_command():
     }
 
 
-def _decode(command):
+def _decode(command: dict[str, object]) -> StartRequest:
     return protocol_commands.decode_command(json.dumps(command).encode() + b"\n")
 
 
-def testdecode_command_requires_address_preference_field(start_command):
+def testdecode_command_requires_address_preference_field(start_command: dict[str, object]) -> None:
     del start_command["preferred_address"]
     with pytest.raises(ValueError):
         _decode(start_command)
@@ -42,7 +43,9 @@ def testdecode_command_requires_address_preference_field(start_command):
 @pytest.mark.parametrize(
     "address", (False, 1, [], "", "127.0.0.1", "127.64.0.0", "127.127.255.255", "::1")
 )
-def testdecode_command_rejects_invalid_address_preference(start_command, address):
+def testdecode_command_rejects_invalid_address_preference(
+    start_command: dict[str, object], address: object
+) -> None:
     start_command["preferred_address"] = address
     with pytest.raises(ValueError):
         _decode(start_command)
@@ -61,13 +64,17 @@ def testdecode_command_rejects_invalid_address_preference(start_command, address
         ),
     ),
 )
-def test_decode_command_rejects_malformed_required_path_before_launch(start_command, path):
+def test_decode_command_rejects_malformed_required_path_before_launch(
+    start_command: dict[str, object], path: dict[str, object]
+) -> None:
     start_command["required_paths"] = [path]
     with pytest.raises(ValueError):
         _decode(start_command)
 
 
-def test_decode_command_requires_explicit_argument_templates(start_command):
+def test_decode_command_requires_explicit_argument_templates(
+    start_command: dict[str, object],
+) -> None:
     del start_command["argv_templates"]
     with pytest.raises(ValueError):
         _decode(start_command)
@@ -92,13 +99,17 @@ def test_decode_command_requires_explicit_argument_templates(start_command):
         [{"index": 1, "parts": ["first"]}, {"index": 1, "parts": ["duplicate"]}],
     ),
 )
-def test_decode_command_rejects_malformed_owned_substitutions(start_command, templates):
+def test_decode_command_rejects_malformed_owned_substitutions(
+    start_command: dict[str, object], templates: object
+) -> None:
     start_command["argv_templates"] = templates
     with pytest.raises(ValueError):
         _decode(start_command)
 
 
-def test_decode_command_rejects_tcl_quoting_in_a_filesystem_path(start_command):
+def test_decode_command_rejects_tcl_quoting_in_a_filesystem_path(
+    start_command: dict[str, object],
+) -> None:
     start_command["required_paths"] = [
         {"kind": "file", "path": {"parts": [{"tcl_word": ["not a path template"]}]}}
     ]
@@ -138,7 +149,9 @@ def test_decode_command_rejects_tcl_quoting_in_a_filesystem_path(start_command):
         pytest.param("literal_prefix", True, id="boolean-prefix"),
     ),
 )
-def test_decode_command_rejects_invalid_start_values(start_command, field, value):
+def test_decode_command_rejects_invalid_start_values(
+    start_command: dict[str, object], field: str, value: object
+) -> None:
     start_command[field] = value
     with pytest.raises(ValueError):
         _decode(start_command)
@@ -163,13 +176,17 @@ def test_decode_command_rejects_invalid_start_values(start_command, field, value
         ),
     ),
 )
-def test_decode_command_rejects_duplicate_listeners(start_command, listeners):
+def test_decode_command_rejects_duplicate_listeners(
+    start_command: dict[str, object], listeners: list[dict[str, object]]
+) -> None:
     start_command["services"] = listeners
     with pytest.raises(ValueError):
         _decode(start_command)
 
 
-def test_decode_command_rejects_unknown_start_fields_and_unsupported_commands(start_command):
+def test_decode_command_rejects_unknown_start_fields_and_unsupported_commands(
+    start_command: dict[str, object],
+) -> None:
     start_command["future"] = True
     with pytest.raises(ValueError):
         _decode(start_command)

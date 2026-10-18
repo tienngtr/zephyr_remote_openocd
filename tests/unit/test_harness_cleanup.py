@@ -21,7 +21,9 @@ from tests.process_support import cleanup_on_exit
         ("interrupt", ("first", "second")),
     ),
 )
-def test_cleanup_scopes_attempt_all_owners_and_preserve_primary(failure, failed_cleanups):
+def test_cleanup_scopes_attempt_all_owners_and_preserve_primary(
+    failure: str | None, failed_cleanups: tuple[str, ...]
+) -> None:
     attempted: list[str] = []
     errors = {name: RuntimeError(f"{name} cleanup failed") for name in failed_cleanups}
     for error in errors.values():

@@ -7,6 +7,7 @@ import signal
 import socket
 import subprocess
 import sys
+from pathlib import Path
 from unittest.mock import create_autospec
 
 import pytest
@@ -17,19 +18,21 @@ from tests.support import ROOT
 
 
 @pytest.mark.parametrize("failure_type", (OSError, KeyboardInterrupt))
-def test_address_probe_finalizer_failure_rolls_back_every_socket(monkeypatch, failure_type):
+def test_address_probe_finalizer_failure_rolls_back_every_socket(
+    monkeypatch: pytest.MonkeyPatch, failure_type: type[BaseException]
+) -> None:
     original_socket = socket.socket
     sockets = []
     failure = failure_type("address probe close interrupted adoption")
 
-    def acquire(*args, **kwargs):
-        owned = original_socket(*args, **kwargs)
+    def acquire(*args: int) -> socket.socket:
+        owned = original_socket(*args)
         sockets.append(owned)
         controlled = create_autospec(original_socket, instance=True, spec_set=True)
         controlled.bind.side_effect = owned.bind
         if len(sockets) == 2:
 
-            def close_then_fail():
+            def close_then_fail() -> None:
                 owned.close()
                 raise failure
 
@@ -51,11 +54,11 @@ def test_address_probe_finalizer_failure_rolls_back_every_socket(monkeypatch, fa
 
 
 def test_preferred_address_is_leased_before_random_allocation(
-    monkeypatch, isolated_lease_addresses
-):
+    monkeypatch: pytest.MonkeyPatch, isolated_lease_addresses: tuple[str, str]
+) -> None:
     preferred, _ = isolated_lease_addresses
 
-    def unexpected_random():
+    def unexpected_random() -> None:
         raise AssertionError("a free preferred address should be reused")
 
     monkeypatch.setattr(helper_addresses, 'random_address', unexpected_random)
@@ -67,8 +70,8 @@ def test_preferred_address_is_leased_before_random_allocation(
 
 
 def test_preferred_address_held_by_another_session_falls_back(
-    monkeypatch, isolated_lease_addresses
-):
+    monkeypatch: pytest.MonkeyPatch, isolated_lease_addresses: tuple[str, str]
+) -> None:
     preferred, fallback = isolated_lease_addresses
     first = helper_addresses.allocate_listener_address((), preferred_address=preferred)
     monkeypatch.setattr(helper_addresses, 'random_address', lambda: fallback)
@@ -83,8 +86,8 @@ def test_preferred_address_held_by_another_session_falls_back(
 
 
 def test_preferred_address_with_occupied_service_port_falls_back(
-    monkeypatch, isolated_lease_addresses
-):
+    monkeypatch: pytest.MonkeyPatch, isolated_lease_addresses: tuple[str, str]
+) -> None:
     preferred, fallback = isolated_lease_addresses
     monkeypatch.setattr(helper_addresses, 'random_address', lambda: fallback)
     with socket.socket() as listener:
@@ -102,8 +105,11 @@ def test_preferred_address_with_occupied_service_port_falls_back(
 
 @pytest.mark.parametrize("termination", ("exit", "kill"))
 def test_address_lease_coordinates_helpers_and_releases_on_exit(
-    tmp_path, monkeypatch, isolated_lease_addresses, termination
-):
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_lease_addresses: tuple[str, str],
+    termination: str,
+) -> None:
     address, other_address = isolated_lease_addresses
     monkeypatch.setattr(workspace_module, 'workspace_root', lambda: tmp_path / "local-user")
     candidates = iter((address, other_address, address))

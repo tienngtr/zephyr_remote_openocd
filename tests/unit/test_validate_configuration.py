@@ -28,7 +28,7 @@ SPEC.loader.exec_module(validator)
 
 
 def test_explicit_remote_summary_includes_effective_non_secret_settings(
-    tmp_path: Path, capsys
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     path = tmp_path / "config.yaml"
     path.write_text(
@@ -68,7 +68,7 @@ def test_explicit_remote_summary_includes_effective_non_secret_settings(
 
 
 def test_default_remote_is_resolved_without_environment_override(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = tmp_path / "config.yaml"
     path.write_text(
@@ -87,7 +87,9 @@ def test_default_remote_is_resolved_without_environment_override(
     assert remotes[0].openocd_command == ("openocd",)
 
 
-def test_no_selected_remote_reports_structural_success(tmp_path: Path, monkeypatch) -> None:
+def test_no_selected_remote_reports_structural_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     path = tmp_path / "config.yaml"
     path.write_text("remotes:\n  incomplete: {}\n")
     monkeypatch.setattr(
@@ -99,7 +101,7 @@ def test_no_selected_remote_reports_structural_success(tmp_path: Path, monkeypat
 
 
 def test_summary_allows_independent_configuration_and_home_environment_reads(
-    tmp_path: Path, monkeypatch, capsys
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     path = tmp_path / "custom.yaml"
     path.write_text(
@@ -118,7 +120,9 @@ def test_summary_allows_independent_configuration_and_home_environment_reads(
     assert "~/custom.yaml" not in output.out
 
 
-def test_missing_file_fails_with_setup_guidance(tmp_path: Path, capsys) -> None:
+def test_missing_file_fails_with_setup_guidance(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     path = tmp_path / "missing.yaml"
     assert validator.main([str(path)]) == 1
     output = capsys.readouterr()
@@ -128,13 +132,15 @@ def test_missing_file_fails_with_setup_guidance(tmp_path: Path, capsys) -> None:
     assert "provide CONFIG" in output.err
 
 
-def test_inspection_failure_is_not_reported_as_missing(tmp_path: Path, monkeypatch, capsys) -> None:
+def test_inspection_failure_is_not_reported_as_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     path = tmp_path / "config.yaml"
 
     def inspection_failure(_path: Path) -> None:
         raise PermissionError("permission denied")
 
-    def load_failure(config_path: Path):
+    def load_failure(config_path: Path) -> None:
         raise validator.ConfigError(f"cannot read configuration {config_path}: permission denied")
 
     monkeypatch.setattr(validator.Path, "lstat", inspection_failure)
@@ -147,7 +153,9 @@ def test_inspection_failure_is_not_reported_as_missing(tmp_path: Path, monkeypat
     assert "scripts/user/setup.py" not in output.err
 
 
-def test_configuration_and_resolution_errors_are_actionable(tmp_path: Path, capsys) -> None:
+def test_configuration_and_resolution_errors_are_actionable(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     invalid = tmp_path / "invalid.yaml"
     invalid.write_text("unknown: true\n")
     assert validator.main([str(invalid)]) == 1
@@ -161,7 +169,7 @@ def test_configuration_and_resolution_errors_are_actionable(tmp_path: Path, caps
 
 
 def test_summary_does_not_collect_or_print_forwarded_environment_values(
-    tmp_path: Path, monkeypatch, capsys
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     path = tmp_path / "config.yaml"
     path.write_text(
@@ -183,7 +191,9 @@ def test_summary_does_not_collect_or_print_forwarded_environment_values(
     assert "do-not-print-this" not in output
 
 
-def test_validation_performs_no_external_io(tmp_path: Path, monkeypatch) -> None:
+def test_validation_performs_no_external_io(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     path = tmp_path / "config.yaml"
     path.write_text(
         "default_remote: lab\nremotes:\n  lab:\n    openocd_command: [openocd]\n",

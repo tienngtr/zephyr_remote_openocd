@@ -12,8 +12,9 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from types import FrameType
 
 import pytest
 from zephyr_remote_openocd.controller.cancellation import (
@@ -22,6 +23,8 @@ from zephyr_remote_openocd.controller.cancellation import (
     operation_scope,
 )
 from zephyr_remote_openocd.controller.waiting import Notifier, WaitSources, wait_for
+
+SignalHandler = Callable[[int, FrameType | None], object] | int | None
 
 pytestmark = [pytest.mark.local, pytest.mark.skipif(os.name != "posix", reason="POSIX signals")]
 
@@ -76,7 +79,7 @@ def test_wait_dispatches_a_signal_delivered_before_registration() -> None:
 class _PollHook:
     """Run an action after wait registration, immediately before sleeping."""
 
-    def __init__(self, action) -> None:
+    def __init__(self, action: Callable[[], None]) -> None:
         self.poller = _REAL_POLL()
         self.action = action
 
@@ -92,7 +95,7 @@ _REAL_POLL = select.poll
 
 
 @pytest.mark.timeout(DEADLOCK_GUARD)
-def test_signal_between_snapshot_and_sleep_wakes_the_wait(monkeypatch) -> None:
+def test_signal_between_snapshot_and_sleep_wakes_the_wait(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(OperationCancelled), operation_scope(), idle_pipe() as idle:
         # Registration and the entry dispatch check are already complete.
         monkeypatch.setattr(select, "poll", lambda: _PollHook(_raise_sigint))
@@ -101,7 +104,9 @@ def test_signal_between_snapshot_and_sleep_wakes_the_wait(monkeypatch) -> None:
 
 
 @pytest.mark.timeout(DEADLOCK_GUARD)
-def test_native_delivery_to_a_worker_thread_wakes_the_main_thread_wait(monkeypatch) -> None:
+def test_native_delivery_to_a_worker_thread_wakes_the_main_thread_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     sleeping = threading.Event()
 
     def deliver_to_this_thread() -> None:
@@ -201,7 +206,7 @@ def test_notification_from_a_worker_wakes_a_blocked_wait() -> None:
 
 @pytest.mark.parametrize("pidfd_available", (True, False), ids=("pidfd", "waitid-fallback"))
 def test_process_exit_before_registration_is_observed_without_reaping(
-    monkeypatch, pidfd_available
+    monkeypatch: pytest.MonkeyPatch, pidfd_available: bool
 ) -> None:
     process = subprocess.Popen((sys.executable, "-c", "pass"))
     try:
@@ -222,7 +227,9 @@ def test_process_exit_before_registration_is_observed_without_reaping(
 
 
 @pytest.mark.parametrize("pidfd_available", (True, False), ids=("pidfd", "waitid-fallback"))
-def test_process_exit_during_wait_is_observed(monkeypatch, pidfd_available) -> None:
+def test_process_exit_during_wait_is_observed(
+    monkeypatch: pytest.MonkeyPatch, pidfd_available: bool
+) -> None:
     if not pidfd_available:
 
         def unavailable(_pid: int, _flags: int = 0) -> int:
@@ -302,7 +309,9 @@ def test_capture_is_installed_only_on_the_main_thread() -> None:
 @pytest.mark.parametrize(
     "disposition", (signal.SIG_IGN, signal.SIG_DFL), ids=("ignored", "default")
 )
-def test_native_sigint_dispositions_are_preserved_without_capture(disposition) -> None:
+def test_native_sigint_dispositions_are_preserved_without_capture(
+    disposition: signal.Handlers,
+) -> None:
     previous = signal.signal(signal.SIGINT, disposition)
     try:
         with operation_scope() as operation:
@@ -312,7 +321,9 @@ def test_native_sigint_dispositions_are_preserved_without_capture(disposition) -
         signal.signal(signal.SIGINT, previous)
 
 
-def test_failed_wakeup_restoration_keeps_the_descriptor_open(monkeypatch) -> None:
+def test_failed_wakeup_restoration_keeps_the_descriptor_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     previous_handler = signal.getsignal(signal.SIGINT)
     restore = signal.set_wakeup_fd
     failure = OSError("wakeup restoration failed")
@@ -414,7 +425,7 @@ def test_operation_cancellation_has_one_identity() -> None:
 
 @pytest.mark.parametrize("boundary", ("handler", "wakeup"))
 def test_interruption_during_capture_installation_leaves_no_stale_owner(
-    monkeypatch, boundary
+    monkeypatch: pytest.MonkeyPatch, boundary: str
 ) -> None:
     prior_read, prior_write = os.pipe2(os.O_NONBLOCK)
     previous_handler = signal.getsignal(signal.SIGINT)
@@ -422,16 +433,16 @@ def test_interruption_during_capture_installation_leaves_no_stale_owner(
     install_signal = signal.signal
     install_wakeup = signal.set_wakeup_fd
 
-    def interrupt_after_handler(signum, handler):
+    def interrupt_after_handler(signum: int, handler: SignalHandler) -> SignalHandler:
         # The disposition changed; Python is interrupted before continuing.
         previous = install_signal(signum, handler)
         if handler not in (previous_handler, signal.SIG_IGN, signal.SIG_DFL):
             raise interruption
         return previous
 
-    def interrupt_after_wakeup(descriptor, **kwargs):
+    def interrupt_after_wakeup(descriptor: int, *, warn_on_full_buffer: bool = True) -> int:
         # The slot changed and its previous value is lost to the interruption.
-        previous = install_wakeup(descriptor, **kwargs)
+        previous = install_wakeup(descriptor, warn_on_full_buffer=warn_on_full_buffer)
         if descriptor not in (-1, prior_write):
             raise interruption
         return previous
@@ -463,7 +474,9 @@ def test_interruption_during_capture_installation_leaves_no_stale_owner(
         os.close(prior_write)
 
 
-def test_notifier_close_retires_both_descriptors_after_a_close_failure(monkeypatch) -> None:
+def test_notifier_close_retires_both_descriptors_after_a_close_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     notifier = Notifier()
     notifier.open()
     read_fd = notifier.fileno()

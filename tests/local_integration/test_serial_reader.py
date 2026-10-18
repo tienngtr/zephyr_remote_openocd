@@ -9,9 +9,11 @@ import os
 import shlex
 import sys
 import termios
+from collections.abc import Iterator
 from contextlib import contextmanager
 
 import pytest
+from zephyr_remote_openocd.controller._ssh import ManagedSshProcess
 
 from tests import serial_reader
 from tests.process_support import cleanup_on_exit, local_transport
@@ -20,7 +22,9 @@ from tests.support import ROOT
 
 
 @contextmanager
-def reader_session(*, timeout=30, flow_control="none"):
+def reader_session(
+    *, timeout: float = 30, flow_control: str = "none"
+) -> Iterator[tuple[ManagedSshProcess, int, int]]:
     master, slave = os.openpty()
     try:
         attrs = termios.tcgetattr(slave)
@@ -38,13 +42,14 @@ def reader_session(*, timeout=30, flow_control="none"):
         os.close(slave)
 
 
-def arm(process):
+def arm(process: ManagedSshProcess) -> None:
+    assert process.stdin is not None
     process.stdin.write(b"ARM\n")
     process.stdin.flush()
     assert read_event(process, 5)["type"] == "ARMED"
 
 
-def test_serial_reader_matches_fragmented_output_after_arm(monkeypatch):
+def test_serial_reader_matches_fragmented_output_after_arm(monkeypatch: pytest.MonkeyPatch) -> None:
     # Observe real descriptor reads without replacing the reader's accumulation
     # or matching logic. The acknowledgement precedes return from os.read;
     # subsequent reads still follow accumulation in this single-threaded child.
@@ -76,7 +81,7 @@ def test_serial_reader_matches_fragmented_output_after_arm(monkeypatch):
         assert process.wait(timeout=5) == 0
 
 
-def test_serial_reader_discards_pre_arm_output():
+def test_serial_reader_discards_pre_arm_output() -> None:
     with reader_session() as (process, master, _):
         os.write(master, b"stale marker\n")
         arm(process)
@@ -91,8 +96,9 @@ def test_serial_reader_discards_pre_arm_output():
         assert process.wait(timeout=5) == 0
 
 
-def test_serial_reader_reports_invalid_arm():
+def test_serial_reader_reports_invalid_arm() -> None:
     with reader_session() as (process, _, _):
+        assert process.stdin is not None
         process.stdin.write(b"INVALID\n")
         process.stdin.flush()
         assert read_event(process, 5)["type"] == "ERROR"
@@ -100,7 +106,7 @@ def test_serial_reader_reports_invalid_arm():
 
 
 @pytest.mark.parametrize("flow", ("none", "software", "hardware"))
-def test_serial_reader_replaces_inherited_flow_control(flow):
+def test_serial_reader_replaces_inherited_flow_control(flow: str) -> None:
     with reader_session(flow_control=flow) as (_, _, slave):
         attrs = termios.tcgetattr(slave)
         assert bool(attrs[2] & termios.CRTSCTS) is (flow == "hardware")

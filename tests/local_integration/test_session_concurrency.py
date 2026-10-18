@@ -7,11 +7,12 @@ from __future__ import annotations
 import os
 import select
 import sys
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from threading import Event
 from types import FrameType
-from typing import override
+from typing import TYPE_CHECKING, override
 
 import pytest
 from zephyr_remote_openocd.controller._ssh import ManagedSshProcess, SshCommand, SshForwardSpec
@@ -27,11 +28,16 @@ from tests.concurrency_support import ConcurrentSessions
 from tests.process_support import cleanup_on_exit
 from tests.support import ROOT
 
+if TYPE_CHECKING:
+    from _typeshed import TraceFunction
+
 pytestmark = pytest.mark.local
 
 
 @pytest.mark.parametrize("phase", ("acquire-return", "caller-resumption"))
-def test_interruption_after_session_acquisition_cleans_helper_and_child(tmp_path: Path, phase: str):
+def test_interruption_after_session_acquisition_cleans_helper_and_child(
+    tmp_path: Path, phase: str
+) -> None:
     (tmp_path / "home").mkdir()
     (tmp_path / "runtime").mkdir()
     child_pid_path = tmp_path / "child.pid"
@@ -45,7 +51,7 @@ def test_interruption_after_session_acquisition_cleans_helper_and_child(tmp_path
             remote_command: str,
             *,
             local_forward: SshForwardSpec | None = None,
-            on_acquired=None,
+            on_acquired: Callable[[ManagedSshProcess], None] | None = None,
         ) -> ManagedSshProcess:
             process = super().popen(
                 host, remote_command, local_forward=local_forward, on_acquired=on_acquired
@@ -77,12 +83,12 @@ def test_interruption_after_session_acquisition_cleans_helper_and_child(tmp_path
     workspace: Path | None = None
     interrupted = False
 
-    def acquire_owned_session():
+    def acquire_owned_session() -> None:
         with cleanup_on_exit(session.close):
             session.acquire()
             pytest.fail("interruption boundary was not reached")
 
-    def interrupt_at_boundary(frame: FrameType, event: str, _arg: object):
+    def interrupt_at_boundary(frame: FrameType, event: str, _arg: object) -> TraceFunction | None:
         nonlocal child_pidfd, workspace, interrupted
         acquire_return = event == "return" and frame.f_code is SessionController.acquire.__code__
         caller_resumption = (

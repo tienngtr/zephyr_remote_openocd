@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import pytest
@@ -29,7 +30,7 @@ def fake_ssh_command(tmp_path: Path) -> SshCommand:
     return SshCommand((str(fixture_command(tmp_path, "noisy_ssh.py")),))
 
 
-def request(command: SshCommand, *, forwards=()):
+def request(command: SshCommand, *, forwards: Iterable[ForwardSpec] = ()) -> SessionPlan:
     return SessionPlan(
         "fake-host",
         command,
@@ -42,7 +43,9 @@ def deployment() -> DeploymentResult:
     return DeploymentResult("/helper.py", "digest", False)
 
 
-def test_control_progresses_when_configured_ssh_stderr_exceeds_pipe_capacity(tmp_path, monkeypatch):
+def test_control_progresses_when_configured_ssh_stderr_exceeds_pipe_capacity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     transports: list[ManagedSshProcess] = []
     popen = SshCommand.popen
 
@@ -52,7 +55,7 @@ def test_control_progresses_when_configured_ssh_stderr_exceeds_pipe_capacity(tmp
         remote_command: str,
         *,
         local_forward: SshForwardSpec | None = None,
-        on_acquired=None,
+        on_acquired: Callable[[ManagedSshProcess], None] | None = None,
     ) -> ManagedSshProcess:
         transport = popen(
             command, host, remote_command, local_forward=local_forward, on_acquired=on_acquired
@@ -77,7 +80,9 @@ def test_control_progresses_when_configured_ssh_stderr_exceeds_pipe_capacity(tmp
     assert tail.endswith(b"control-tail\n")
 
 
-def test_forward_progresses_when_configured_ssh_stderr_exceeds_pipe_capacity(tmp_path):
+def test_forward_progresses_when_configured_ssh_stderr_exceeds_pipe_capacity(
+    tmp_path: Path,
+) -> None:
     # The fake SSH endpoint exercises forwarding readiness and stderr draining;
     # the readiness sentinel does not require an actual forwarded listener.
     local_port = 45678

@@ -8,7 +8,7 @@ import pytest
 from zephyr_remote_openocd.protocol import wire as protocol_wire
 
 
-def test_control_frames_retain_partial_bytes_without_waiting_for_lf():
+def test_control_frames_retain_partial_bytes_without_waiting_for_lf() -> None:
     frames = protocol_wire.ControlFrameBuffer()
     frames.feed(b'{"value":"\xc3')
     assert frames.pop_frame() is None
@@ -22,7 +22,9 @@ def test_control_frames_retain_partial_bytes_without_waiting_for_lf():
 
 
 @pytest.mark.parametrize("payload", (b"x" * 32, b"x" * 32 + b"\n"))
-def test_control_frames_reject_oversized_input(monkeypatch, payload):
+def test_control_frames_reject_oversized_input(
+    monkeypatch: pytest.MonkeyPatch, payload: bytes
+) -> None:
     monkeypatch.setattr(protocol_wire, 'MAX_FRAME_SIZE', 32)
     frames = protocol_wire.ControlFrameBuffer()
     frames.feed(payload)

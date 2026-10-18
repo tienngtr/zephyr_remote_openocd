@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import override
 
@@ -32,7 +33,7 @@ from tests.support import fixture_command
 @pytest.mark.parametrize("auxiliary", (False, True), ids=("required-forward", "auxiliary-forward"))
 def test_acquisition_rejects_helper_termination_recorded_during_forwarding(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, terminal: str, auxiliary: bool
-):
+) -> None:
     peer = fixture_command(tmp_path, "terminal_during_forward_peer.py", str(tmp_path))
     (tmp_path / "terminal").write_text(terminal)
     os.mkfifo(tmp_path / "gate")
@@ -56,7 +57,7 @@ def test_acquisition_rejects_helper_termination_recorded_during_forwarding(
             remote_command: str,
             *,
             local_forward: SshForwardSpec | None = None,
-            on_acquired=None,
+            on_acquired: Callable[[ManagedSshProcess], None] | None = None,
         ) -> ManagedSshProcess:
             if local_forward is not None:
                 with (tmp_path / "gate").open("wb", buffering=0) as gate:
@@ -93,7 +94,7 @@ def test_acquisition_rejects_helper_termination_recorded_during_forwarding(
 @pytest.mark.parametrize("required", (True, False), ids=("required", "best-effort"))
 def test_failure_recorded_during_forward_readiness_remains_primary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, terminal: str, required: bool
-):
+) -> None:
     peer = fixture_command(tmp_path, "terminal_during_forward_peer.py", str(tmp_path))
     (tmp_path / "terminal").write_text(terminal)
     os.mkfifo(tmp_path / "gate")
@@ -152,7 +153,7 @@ def test_failure_recorded_during_forward_readiness_remains_primary(
 @pytest.mark.parametrize("required", (True, False), ids=("required", "best-effort"))
 def test_recorded_terminal_prevents_new_forward_entry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, terminal: str, required: bool
-):
+) -> None:
     peer = fixture_command(tmp_path, "terminal_during_forward_peer.py", str(tmp_path))
     (tmp_path / "terminal").write_text(terminal)
     os.mkfifo(tmp_path / "gate")
@@ -176,7 +177,7 @@ def test_recorded_terminal_prevents_new_forward_entry(
             remote_command: str,
             *,
             local_forward: SshForwardSpec | None = None,
-            on_acquired=None,
+            on_acquired: Callable[[ManagedSshProcess], None] | None = None,
         ) -> ManagedSshProcess:
             if local_forward is not None:
                 forward_entries.append(local_forward)

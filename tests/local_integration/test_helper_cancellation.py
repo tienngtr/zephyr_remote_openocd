@@ -7,15 +7,18 @@ from __future__ import annotations
 import os
 import select
 import signal
+import subprocess
 import sys
 import threading
+from collections.abc import Callable, Iterable
 from pathlib import Path, PurePosixPath
-from typing import override
+from typing import BinaryIO, cast, override
 
 import pytest
 from zephyr_remote_openocd.controller import helper_connection as connection_module
 from zephyr_remote_openocd.controller import session as session_module
 from zephyr_remote_openocd.controller._deployment import DeploymentResult
+from zephyr_remote_openocd.controller._ssh import ManagedSshProcess, SshForwardSpec
 from zephyr_remote_openocd.controller.api import (
     SessionController,
     SessionPlan,
@@ -24,6 +27,8 @@ from zephyr_remote_openocd.controller.api import (
 )
 from zephyr_remote_openocd.controller.cancellation import OperationCancelled, operation_scope
 from zephyr_remote_openocd.controller.helper_connection import HelperConnection
+from zephyr_remote_openocd.controller.staging import ArchiveInfo
+from zephyr_remote_openocd.controller.staging_spec import StagedEntry
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 
@@ -111,7 +116,7 @@ def run_cancelled(
     ids=("session-created", "start-backpressure", "ready"),
 )
 def test_ctrl_c_interrupts_helper_waits_and_settles_control(
-    tmp_path, notified_authority, created, read_start
+    tmp_path: Path, notified_authority: NotifiedAuthority, created: bool, read_start: bool
 ) -> None:
     helper, failure = run_cancelled(
         tmp_path, notified_authority, created=created, read_start=read_start
@@ -126,7 +131,7 @@ def test_ctrl_c_interrupts_helper_waits_and_settles_control(
 
 @pytest.mark.timeout(GUARD)
 def test_ctrl_c_during_local_archive_work_is_acted_on_at_the_next_boundary(
-    tmp_path, monkeypatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     for directory in ("home", "runtime"):
         (tmp_path / directory).mkdir()
@@ -153,7 +158,7 @@ def test_ctrl_c_during_local_archive_work_is_acted_on_at_the_next_boundary(
     )
     real_build = session_module.build_archive
 
-    def build_during_ctrl_c(files):
+    def build_during_ctrl_c(files: Iterable[StagedEntry]) -> ArchiveInfo:
         # Local CPU/filesystem work is not interrupted; the fact is retained.
         archive = real_build(files)
         signal.raise_signal(signal.SIGINT)
@@ -175,7 +180,9 @@ def test_ctrl_c_during_local_archive_work_is_acted_on_at_the_next_boundary(
 
 
 @pytest.mark.parametrize("primary", ("cancellation", "command-failure", "none"))
-def test_staging_archive_close_failure_preserves_operation_outcome(tmp_path, monkeypatch, primary):
+def test_staging_archive_close_failure_preserves_operation_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, primary: str
+) -> None:
     for directory in ("home", "runtime"):
         (tmp_path / directory).mkdir()
     command_failure = OSError("staging command failed")
@@ -184,12 +191,12 @@ def test_staging_archive_close_failure_preserves_operation_outcome(tmp_path, mon
     real_build = session_module.build_archive
     archives = []
 
-    def build_with_close_failure(files):
+    def build_with_close_failure(files: Iterable[StagedEntry]) -> ArchiveInfo:
         archive = real_build(files)
         archives.append(archive)
         close = archive.stream.close
 
-        def fail_close():
+        def fail_close() -> None:
             close()
             raise cleanup
 
@@ -198,7 +205,9 @@ def test_staging_archive_close_failure_preserves_operation_outcome(tmp_path, mon
 
     class Command(SshCommand):
         @override
-        def run_stream(self, host, remote_command, stream, *, timeout=60):
+        def run_stream(
+            self, host: str, remote_command: str, stream: BinaryIO, *, timeout: float = 60
+        ) -> subprocess.CompletedProcess[bytes]:
             if primary == "cancellation":
                 signal.raise_signal(signal.SIGINT)
             elif primary == "command-failure":
@@ -239,16 +248,27 @@ def test_staging_archive_close_failure_preserves_operation_outcome(tmp_path, mon
     assert sessions.is_dir() and not tuple(sessions.iterdir())
 
 
-def test_latched_cancellation_wins_over_an_expired_helper_startup(monkeypatch) -> None:
+def test_latched_cancellation_wins_over_an_expired_helper_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     process = ControlProcess(b'{"version":1,"type":"SESSION_CREATED"')
 
     class Command(SshCommand):
         @override
-        def popen(self, host, remote_command, *, local_forward=None, on_acquired=None):
+        def popen(
+            self,
+            host: str,
+            remote_command: str,
+            *,
+            local_forward: SshForwardSpec | None = None,
+            on_acquired: Callable[[ManagedSshProcess], None] | None = None,
+        ) -> ManagedSshProcess:
             del host, remote_command, local_forward
+            # The process-control typing escape in tests/unit/test_helper_connection.py.
+            acquired = cast(ManagedSshProcess, process)
             if on_acquired is not None:
-                on_acquired(process)
-            return process
+                on_acquired(acquired)
+            return acquired
 
     wiring = NotifiedAuthority()
     helper = HelperConnection(
