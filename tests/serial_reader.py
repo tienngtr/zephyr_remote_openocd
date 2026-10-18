@@ -7,65 +7,17 @@ from __future__ import annotations
 import base64
 import json
 import shlex
+from pathlib import Path
 
 from zephyr_remote_openocd.controller._ssh import ManagedSshProcess, stop_process
 
 from tests.inventory import SerialEndpoint
 from tests.process_support import read_line
 
-SERIAL_READER_SOURCE = r'''import base64,json,os,re,select,sys,termios,time
-MATCH_EXIT_CODE=0
-TIMEOUT_EXIT_CODE=2
-ERROR_EXIT_CODE=3
-device,baud_text,data_bits_text,parity,stop_bits_text,flow,pattern_text,timeout_text=sys.argv[1:]
-baud=int(baud_text); data_bits=int(data_bits_text); stop_bits=int(stop_bits_text)
-timeout=float(timeout_text)
-def emit(kind,**fields):
- print(json.dumps({'type':kind,**fields},separators=(',',':')),flush=True)
-fd=None
-try:
- fd=os.open(device,os.O_RDONLY|os.O_NOCTTY|os.O_NONBLOCK)
- attrs=termios.tcgetattr(fd)
- speed=getattr(termios,'B'+str(baud),None)
- if speed is None: raise ValueError('unsupported baud rate '+str(baud))
- attrs[0]=0; attrs[1]=0; attrs[3]=0
- attrs[2]=(attrs[2]&~(termios.PARENB|termios.PARODD|termios.CSTOPB|termios.CSIZE|getattr(termios,'CRTSCTS',0))|termios.CLOCAL|termios.CREAD)
- attrs[2]|={5:termios.CS5,6:termios.CS6,7:termios.CS7,8:termios.CS8}[data_bits]
- if parity=='even': attrs[2]|=termios.PARENB
- elif parity=='odd': attrs[2]|=termios.PARENB|termios.PARODD
- if stop_bits==2: attrs[2]|=termios.CSTOPB
- if flow=='hardware': attrs[2]|=getattr(termios,'CRTSCTS',0)
- if flow=='software': attrs[0]|=termios.IXON|termios.IXOFF
- attrs[4]=speed;attrs[5]=speed
- attrs[6][termios.VMIN]=0;attrs[6][termios.VTIME]=1
- termios.tcsetattr(fd,termios.TCSANOW,attrs); termios.tcflush(fd,termios.TCIFLUSH)
- emit('READY')
- while True:
-  ready,_,_=select.select([fd,sys.stdin.buffer],[],[])
-  if fd in ready:
-   try: os.read(fd,65536)
-   except BlockingIOError: pass
-  if sys.stdin.buffer in ready:
-   if sys.stdin.buffer.readline().strip()!=b'ARM': raise RuntimeError('reader was not armed')
-   termios.tcflush(fd,termios.TCIFLUSH)
-   break
- deadline=time.monotonic()+timeout; data=bytearray(); pattern=re.compile(pattern_text)
- emit('ARMED')
- while True:
-  remaining=max(0,deadline-time.monotonic())
-  ready,_,_=select.select([fd],[],[],min(0.2,remaining))
-  if fd in ready:
-   try: data.extend(os.read(fd,65536))
-   except BlockingIOError: pass
-   if pattern.search(data.decode('utf-8','replace')):
-    emit('MATCH',data=base64.b64encode(data).decode('ascii'));sys.exit(MATCH_EXIT_CODE)
-  if time.monotonic()>=deadline: break
- emit('TIMEOUT',data=base64.b64encode(data).decode('ascii'));sys.exit(TIMEOUT_EXIT_CODE)
-except Exception as exc:
- emit('ERROR',message=str(exc));sys.exit(ERROR_EXIT_CODE)
-finally:
- if fd is not None: os.close(fd)
-'''
+# Sent as remote ``python3 -c`` source text; see that module for its events.
+SERIAL_READER_SOURCE = (Path(__file__).parent / "fixtures/remote_serial_reader.py").read_text(
+    encoding="utf-8"
+)
 
 
 def read_event(process: ManagedSshProcess, timeout: float) -> dict[str, object]:

@@ -119,13 +119,13 @@ def test_deployment_rejects_digest_that_differs_from_source():
 def _run_bootstrap(
     home: Path,
     source: bytes,
-    program: str = deploy_module.BOOTSTRAP,
+    program: str | None = None,
     args: tuple[str, ...] = (),
 ) -> dict[str, object]:
     environment = os.environ.copy()
     environment["HOME"] = str(home)
     result = subprocess.run(
-        [sys.executable, "-c", program, *args],
+        [sys.executable, "-c", program or deploy_module.bootstrap_program(), *args],
         input=source,
         capture_output=True,
         check=False,
@@ -198,7 +198,7 @@ def fail_first_stale_revision(path, *args, **kwargs):
     return original(path, *args, **kwargs)
 
 setattr(pathlib.Path, operation, fail_first_stale_revision)
-exec({deploy_module.BOOTSTRAP!r}, {{"__name__": "__main__"}})
+exec({deploy_module.bootstrap_program()!r}, {{"__name__": "__main__"}})
 """
 
     deployed = _run_bootstrap(
@@ -245,7 +245,7 @@ def refresh(path,*args,**kwargs):
 
 fcntl.flock=acquire
 os.utime=refresh
-exec({deploy_module.BOOTSTRAP!r}, {{"__name__":"__main__"}})
+exec({deploy_module.bootstrap_program()!r}, {{"__name__":"__main__"}})
 """
     with ExitStack() as resources:
 

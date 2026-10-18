@@ -15,47 +15,6 @@ from zephyr_remote_openocd.controller._ssh import SshCommand
 from zephyr_remote_openocd.protocol.responses import validate_deployment_response
 from zephyr_remote_openocd.protocol.wire import ProtocolError, decode_frame
 
-BOOTSTRAP = r'''import fcntl,hashlib,json,os,pathlib,sys,tempfile,time
-STALE_HELPER_AGE_SECONDS=24*60*60
-data=sys.stdin.buffer.read()
-digest=hashlib.sha256(data).hexdigest()
-base=pathlib.Path.home()/'.local/libexec/zephyr_remote_openocd/protocol_v1'
-base.mkdir(mode=0o700,parents=True,exist_ok=True)
-os.chmod(base,0o700)
-with (base/'.deploy.lock').open('a+b') as lock:
-    os.fchmod(lock.fileno(),0o600)
-    fcntl.flock(lock,fcntl.LOCK_EX)
-    target=base/('helper-'+digest+'.py')
-    reused=False
-    try:
-        reused=target.is_file() and hashlib.sha256(target.read_bytes()).hexdigest()==digest
-    except OSError:
-        reused=False
-    if not reused:
-        fd,tmp=tempfile.mkstemp(prefix='.helper_',dir=base)
-        try:
-            os.fchmod(fd,0o600)
-            with os.fdopen(fd,'wb') as out:
-                out.write(data);out.flush();os.fsync(out.fileno())
-            os.replace(tmp,target)
-        finally:
-            try: os.unlink(tmp)
-            except FileNotFoundError: pass
-    os.chmod(target,0o600)
-    os.utime(target,None)
-    cutoff=time.time()-STALE_HELPER_AGE_SECONDS
-    for candidate in base.glob('helper-*.py'):
-        if candidate==target:
-            continue
-        try:
-            if candidate.stat().st_mtime < cutoff:
-                candidate.unlink()
-        except OSError:
-            pass
-print(json.dumps({'version':1,'type':'DEPLOYED','status':'reused' if reused else 'deployed',
-                  'path':str(target.resolve()),'sha256':digest}))
-'''
-
 
 class DeploymentError(RuntimeError):
     pass
@@ -66,6 +25,18 @@ class DeploymentResult:
     path: str
     sha256: str
     reused: bool
+
+
+def bootstrap_program() -> str:
+    """Return the packaged installation program sent to ``python3 -c``."""
+    try:
+        return (
+            files("zephyr_remote_openocd")
+            .joinpath("controller", "_deployment_bootstrap.py")
+            .read_text(encoding="utf-8")
+        )
+    except OSError as error:
+        raise DeploymentError(f"cannot read packaged helper bootstrap: {error}") from error
 
 
 def build_helper_bundle() -> bytes:
@@ -97,7 +68,8 @@ def build_helper_bundle() -> bytes:
 
 def deploy_helper(ssh: SshCommand, host: str, *, source: bytes | None = None) -> DeploymentResult:
     content = build_helper_bundle() if source is None else source
-    result = ssh.run(host, "python3 -c " + shlex.quote(BOOTSTRAP), input_data=content, timeout=30)
+    program = bootstrap_program()
+    result = ssh.run(host, "python3 -c " + shlex.quote(program), input_data=content, timeout=30)
     if result.returncode:
         diagnostic = result.stderr.decode("utf-8", "replace").strip()
         raise DeploymentError(f"helper deployment failed ({result.returncode}): {diagnostic}")
