@@ -3,11 +3,13 @@
 """Import-boundary probes for a fresh isolated interpreter.
 
 Run with ``python -I`` so neither the caller's environment nor this file's
-directory affects imports. Arguments are ``PROBE PYTHON_ROOT``. The
-``initializers`` probe imports every package initializer and requires that no
-implementation module loads. The ``controller-facade`` probe imports the
-controller API while rejecting non-session dependencies and import-time
-process, socket, or shell effects.
+directory affects imports. Arguments are ``PROBE PYTHON_ROOT`` followed by
+probe arguments. The ``initializers`` probe imports every package initializer
+and requires that no implementation module loads. The ``controller-facade``
+probe imports the controller API while rejecting non-session dependencies and
+import-time process, socket, or shell effects. ``config-without-dependency
+MODULE CONFIG`` makes ``MODULE`` unimportable, then requires configuration
+loading to import and report the missing dependency as ``ConfigError``.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ from __future__ import annotations
 import importlib
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 from types import ModuleType
 
 PACKAGES = ("controller", "openocd", "protocol", "helper", "zephyr44")
@@ -51,6 +54,22 @@ class ForbiddenImports:
             raise AssertionError(f"unexpected dependency: {fullname}")
 
 
+class MissingModule:
+    """Make one top-level package unimportable, as if it were not installed."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def find_spec(
+        self,
+        fullname: str,
+        path: Sequence[str] | None = None,
+        target: ModuleType | None = None,
+    ) -> None:
+        if fullname.split(".")[0] == self.name:
+            raise ModuleNotFoundError(f"No module named {fullname!r}", name=fullname)
+
+
 def reject_effect(event: str, _args: tuple[object, ...]) -> None:
     # Session imports may define effectful operations but must not execute them.
     if event in FORBIDDEN_EVENTS:
@@ -64,14 +83,31 @@ def controller_facade() -> None:
     assert api.SessionController is not None
 
 
+def config_without_dependency(missing: str, config_path: str) -> None:
+    sys.meta_path.insert(0, MissingModule(missing))
+    config = importlib.import_module("zephyr_remote_openocd.config")
+    try:
+        config.load_config(Path(config_path))
+    except config.ConfigError as error:
+        assert isinstance(error.__cause__, ImportError), repr(error.__cause__)
+        assert error.__cause__.name is not None
+        assert error.__cause__.name.split(".")[0] == missing, error.__cause__.name
+        assert "PyYAML" in str(error) and "jsonschema" in str(error), str(error)
+    else:
+        raise AssertionError(f"configuration loaded without {missing}")
+
+
 def main() -> None:
-    probe, python_root = sys.argv[1:]
+    probe, python_root, *arguments = sys.argv[1:]
     sys.path.insert(0, python_root)
     if probe == "initializers":
         initializers()
-    else:
-        assert probe == "controller-facade"
+    elif probe == "controller-facade":
         controller_facade()
+    else:
+        assert probe == "config-without-dependency"
+        missing, config_path = arguments
+        config_without_dependency(missing, config_path)
 
 
 if __name__ == "__main__":

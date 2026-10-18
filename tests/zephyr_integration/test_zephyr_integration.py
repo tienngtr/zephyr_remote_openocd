@@ -19,7 +19,9 @@ pytestmark = pytest.mark.zephyr
 try:
     import yaml
 except ImportError:  # pragma: no cover - handled as an integration prerequisite
-    yaml = None
+    HAVE_YAML = False
+else:
+    HAVE_YAML = True
 
 OPENOCD_BOARD = "rpi_pico"
 NON_OPENOCD_BOARD = "native_sim/native/64"
@@ -52,7 +54,7 @@ class TestZephyrIntegration:
             missing.append("ZEPHYR_BASE")
         if west is None or not west.is_file():
             missing.append("WEST or west on PATH")
-        if yaml is None:
+        if not HAVE_YAML:
             missing.append("PyYAML")
         if missing:
             pytest.skip("Zephyr integration prerequisites missing: " + ", ".join(missing))

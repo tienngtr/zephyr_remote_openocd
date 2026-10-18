@@ -7,20 +7,19 @@ from __future__ import annotations
 import json
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Hashable, Mapping
 from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Literal, overload
+from typing import Any, Literal, overload
 
 _IMPORT_ERROR: ImportError | None
 try:
     import yaml
     from jsonschema import Draft202012Validator
 except ImportError as error:  # pragma: no cover - setup diagnostics
-    yaml = None
-    Draft202012Validator = None
+    # Importing stays possible without them; loading reports this error.
     _IMPORT_ERROR = error
 else:
     _IMPORT_ERROR = None
@@ -108,33 +107,35 @@ def _require_dependencies(config_path: Path) -> None:
         ) from _IMPORT_ERROR
 
 
-class _StrictLoader(yaml.SafeLoader if yaml is not None else object):  # type: ignore[misc]
-    """SafeLoader that rejects duplicate and non-string mapping keys."""
+if _IMPORT_ERROR is None:
 
-    def construct_mapping(self, node: yaml.Node, deep: bool = False) -> dict[str, object]:
-        if not isinstance(node, yaml.MappingNode):
-            raise yaml.constructor.ConstructorError(
-                None, None, "expected a mapping", node.start_mark
-            )
-        result: dict[str, object] = {}
-        for key_node, value_node in node.value:
-            key = self.construct_object(key_node, deep=deep)
-            if not isinstance(key, str):
+    class _StrictLoader(yaml.SafeLoader):
+        """SafeLoader that rejects duplicate and non-string mapping keys."""
+
+        def construct_mapping(self, node: yaml.Node, deep: bool = False) -> dict[Hashable, Any]:
+            if not isinstance(node, yaml.MappingNode):
                 raise yaml.constructor.ConstructorError(
-                    "while constructing a mapping",
-                    node.start_mark,
-                    "mapping keys must be strings",
-                    key_node.start_mark,
+                    None, None, "expected a mapping", node.start_mark
                 )
-            if key in result:
-                raise yaml.constructor.ConstructorError(
-                    "while constructing a mapping",
-                    node.start_mark,
-                    f"found duplicate key {key!r}",
-                    key_node.start_mark,
-                )
-            result[key] = self.construct_object(value_node, deep=deep)
-        return result
+            result: dict[Hashable, Any] = {}
+            for key_node, value_node in node.value:
+                key = self.construct_object(key_node, deep=deep)
+                if not isinstance(key, str):
+                    raise yaml.constructor.ConstructorError(
+                        "while constructing a mapping",
+                        node.start_mark,
+                        "mapping keys must be strings",
+                        key_node.start_mark,
+                    )
+                if key in result:
+                    raise yaml.constructor.ConstructorError(
+                        "while constructing a mapping",
+                        node.start_mark,
+                        f"found duplicate key {key!r}",
+                        key_node.start_mark,
+                    )
+                result[key] = self.construct_object(value_node, deep=deep)
+            return result
 
 
 def default_config_path() -> Path:
@@ -148,7 +149,6 @@ def default_config_path() -> Path:
 
 def _load_yaml(config_path: Path) -> dict[str, object]:
     _require_dependencies(config_path)
-    assert yaml is not None
     text = _read_config_text(config_path)
     return _parse_yaml_document(text, config_path)
 
@@ -178,7 +178,6 @@ def _read_config_text(config_path: Path) -> str:
 
 
 def _parse_yaml_document(text: str, config_path: Path) -> dict[str, object]:
-    assert yaml is not None
     try:
         nodes = list(yaml.compose_all(text, Loader=_StrictLoader))
         documents = list(yaml.load_all(text, Loader=_StrictLoader))
@@ -204,7 +203,6 @@ def _parse_yaml_document(text: str, config_path: Path) -> dict[str, object]:
 
 
 def _validate_schema(document: dict[str, object], config_path: Path) -> None:
-    assert Draft202012Validator is not None
     try:
         schema_text = (
             files("zephyr_remote_openocd")

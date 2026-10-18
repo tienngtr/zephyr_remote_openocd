@@ -16,6 +16,8 @@ PyYAML>=6.0
 ruff==0.14.2
 rumdl
 shellcheck-py>=0.11.0.1
+types-jsonschema
+types-PyYAML
 # 1.9.0 misclassifies unpacked iterables in comprehensions as PEP 798.
 vermin==1.8.0
 west==1.4.0

@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Hashable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -22,12 +22,12 @@ class InventoryError(ValueError):
 class _StrictLoader(yaml.SafeLoader):
     """Safe YAML loader that rejects duplicate and non-string mapping keys."""
 
-    def construct_mapping(self, node, deep: bool = False):
+    def construct_mapping(self, node: yaml.Node, deep: bool = False) -> dict[Hashable, Any]:
         if not isinstance(node, yaml.MappingNode):
             raise yaml.constructor.ConstructorError(
                 None, None, "expected a mapping", node.start_mark
             )
-        result: dict[str, object] = {}
+        result: dict[Hashable, Any] = {}
         for key_node, value_node in node.value:
             key = self.construct_object(key_node, deep=deep)
             if not isinstance(key, str):
