@@ -9,9 +9,11 @@ import signal
 import socket
 import subprocess
 import time
+from contextlib import AbstractContextManager
+from pathlib import Path
 
 from tests.hardware_support import RttFixture, free_loopback_ports, hardware_operation_environment
-from tests.process_support import managed_process, run_process
+from tests.process_support import ProcessScope, managed_process, run_process
 
 WEST_SHUTDOWN_TIMEOUT = 20
 GDB_CLIENT_TIMEOUT = 30
@@ -41,8 +43,8 @@ class RttAcceptance:
         fixture: RttFixture,
         command: str,
         *runner_args: str,
-        stdout=subprocess.PIPE,
-    ):
+        stdout: int = subprocess.PIPE,
+    ) -> AbstractContextManager[ProcessScope]:
         return managed_process(
             self._west_command(fixture, command, *runner_args),
             cwd=fixture.target.workspace,
@@ -74,7 +76,6 @@ class RttAcceptance:
             self._west_command(fixture, "flash"),
             cwd=fixture.target.workspace,
             env=hardware_operation_environment(fixture.target),
-            text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             check=False,
@@ -119,7 +120,7 @@ class RttAcceptance:
             process.send_signal(signal.SIGINT)
             process.wait(timeout=WEST_SHUTDOWN_TIMEOUT)
 
-    def gdb_server(self, rtt_fixture: RttFixture, tmp_path, command: str) -> None:
+    def gdb_server(self, rtt_fixture: RttFixture, tmp_path: Path, command: str) -> None:
         fixture = rtt_fixture
         if command == "attach":
             self.program(fixture)
@@ -147,7 +148,7 @@ class RttAcceptance:
             process.wait(timeout=WEST_SHUTDOWN_TIMEOUT)
         assert process.returncode == 0, output.text
 
-    def debugserver(self, rtt_fixture: RttFixture, tmp_path) -> None:
+    def debugserver(self, rtt_fixture: RttFixture, tmp_path: Path) -> None:
         fixture = rtt_fixture
         port = fixture.operation.port
         gdb_port = free_loopback_ports(1)[0]

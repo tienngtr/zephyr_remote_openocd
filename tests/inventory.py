@@ -523,7 +523,14 @@ def _target(
     )
 
 
-def _target_references(raw, location, hosts, build_environments, toolchains, path):
+def _target_references(
+    raw: dict[str, Any],
+    location: str,
+    hosts: Mapping[str, InventoryHost],
+    build_environments: Mapping[str, BuildEnvironment],
+    toolchains: Mapping[str, Toolchain],
+    path: Path,
+) -> tuple[str, str, str | None]:
     host_name = raw["host"]
     if host_name not in hosts:
         raise _error(path, f"{location}.host", f"references unknown host {host_name!r}")
@@ -542,7 +549,9 @@ def _target_references(raw, location, hosts, build_environments, toolchains, pat
     return host_name, environment_name, toolchain_name
 
 
-def _target_builds(raw_builds, target_board, location, path):
+def _target_builds(
+    raw_builds: dict[str, Any], target_board: str | None, location: str, path: Path
+) -> dict[str, BuildRecipe]:
     builds = {}
     for build_name, build_raw in raw_builds.items():
         application = build_raw["application"]
@@ -569,14 +578,20 @@ def _target_builds(raw_builds, target_board, location, path):
     return builds
 
 
-def _target_serial(raw_serial):
+def _target_serial(raw_serial: dict[str, Any]) -> dict[str, SerialEndpoint]:
     return {
         endpoint_name: _serial(endpoint_name, endpoint_raw)
         for endpoint_name, endpoint_raw in raw_serial.items()
     }
 
 
-def _target_profiles(raw_profiles, host, builds, serial, path):
+def _target_profiles(
+    raw_profiles: dict[str, Any],
+    host: InventoryHost,
+    builds: Mapping[str, BuildRecipe],
+    serial: Mapping[str, SerialEndpoint],
+    path: Path,
+) -> tuple[OperationProfile, ...]:
     return tuple(
         _profile(profile_name, profile_raw, host, builds, serial, path)
         for profile_name, profile_raw in raw_profiles.items()

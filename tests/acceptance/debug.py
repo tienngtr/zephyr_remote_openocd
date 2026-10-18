@@ -7,6 +7,7 @@ import signal
 import socket
 import subprocess
 import time
+from collections.abc import Iterable
 from pathlib import Path
 
 import pytest
@@ -59,8 +60,8 @@ class DebugAcceptance:
         self,
         fixture: DebugHardwareFixture,
         command: str,
-        build_dir=None,
-        extra_args=(),
+        build_dir: Path | None = None,
+        extra_args: Iterable[str] = (),
     ) -> list[str]:
         target = fixture.target
         result = [
@@ -102,7 +103,6 @@ class DebugAcceptance:
             command,
             cwd=fixture.target.workspace,
             env=hardware_operation_environment(fixture.target),
-            text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             check=False,
@@ -140,7 +140,6 @@ class DebugAcceptance:
             command,
             cwd=fixture.target.workspace,
             env=hardware_operation_environment(fixture.target),
-            text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             check=False,
@@ -269,7 +268,6 @@ class DebugAcceptance:
         return run_process(
             arguments,
             env=hardware_operation_environment(fixture.target),
-            text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             check=False,
@@ -287,7 +285,6 @@ class DebugAcceptance:
             prepare,
             cwd=fixture.target.workspace,
             env=hardware_operation_environment(fixture.target),
-            text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             check=False,
@@ -315,7 +312,6 @@ class DebugAcceptance:
             command,
             cwd=fixture.target.workspace,
             env=hardware_operation_environment(fixture.target),
-            text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             check=False,

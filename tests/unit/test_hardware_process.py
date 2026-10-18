@@ -75,6 +75,7 @@ def test_hardware_cleanup_stops_descendant_after_leader_exit(tmp_path, monkeypat
         assert kwargs.get("start_new_session") is True
         process = original_popen([sys.executable, str(_CHILD_TREE)], **kwargs)
         processes.append(process)
+        assert process.stdout is not None
         child_pid = int(read_line(process.stdout, timeout=SYNC_TIMEOUT))
         child_pidfd = os.pidfd_open(child_pid)
         # The descendant installs its dispositions before the leader reports its
@@ -166,6 +167,7 @@ def test_process_scope_preserves_failure_and_finishes_cleanup(
             ) as owner,
         ):
             process = owner.process
+            assert process.stdout is not None
             assert read_line(process.stdout, timeout=SYNC_TIMEOUT) == b"ready\n"
             if operation_fails:
                 raise primary
@@ -222,6 +224,7 @@ def test_process_acquisition_interrupt_reaps_created_group(monkeypatch):
     def launch(*args, **kwargs):
         process = original_popen(*args, **kwargs)
         processes.append(process)
+        assert process.stdout is not None
         assert read_line(process.stdout, timeout=SYNC_TIMEOUT) == b"ready\n"
         signal.raise_signal(signal.SIGINT)
         return process

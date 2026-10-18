@@ -8,9 +8,10 @@ import errno
 import gc
 import secrets
 import socket
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
 from pathlib import Path
 
+import pluggy
 import pytest
 
 from tests.hardware_support import (
@@ -20,7 +21,7 @@ from tests.hardware_support import (
     hardware_cache_root,
     hardware_shared_cache_root,
 )
-from tests.inventory import Inventory, InventoryError, load_inventory
+from tests.inventory import Inventory, InventoryError, InventoryHost, load_inventory
 from tests.session_support import NotifiedAuthority, ObservedStatus, pipe_control_wait
 
 __all__ = ["pipe_control_wait"]
@@ -115,7 +116,7 @@ def requires_loopback_listener() -> None:
 
 
 @pytest.fixture(autouse=True)
-def isolated_product_environment(monkeypatch):
+def isolated_product_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tests opt into product settings, never inherit the developer's selection."""
     for name in (
         "ZEPHYR_REMOTE_OPENOCD_CONFIG",
@@ -220,7 +221,9 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
 
 
 @pytest.hookimpl(hookwrapper=True)
-def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[object]):
+def pytest_runtest_makereport(
+    item: pytest.Item, call: pytest.CallInfo[object]
+) -> Generator[None, pluggy.Result[pytest.TestReport], None]:
     del call
     outcome = yield
     report = outcome.get_result()
@@ -308,7 +311,7 @@ def ssh_host(hardware_inventory: Inventory) -> str:
 
 
 @pytest.fixture
-def ssh_settings(hardware_inventory: Inventory):
+def ssh_settings(hardware_inventory: Inventory) -> InventoryHost:
     """Return the first host's transport settings for SSH integration tests."""
     return hardware_inventory.hosts[0]
 

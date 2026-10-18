@@ -31,5 +31,21 @@ def terminal_snapshot(
     )
 
 
-def terminal_message(*args, **kwargs) -> bytes:
-    return encode_frame("SESSION_ENDED", **terminal_fields(terminal_snapshot(*args, **kwargs)))
+def terminal_message(
+    trigger: Trigger = Trigger.CONTROLLER_EOF,
+    *,
+    returncode: int | None = None,
+    termination_requested: bool = False,
+    child_acquired: bool = False,
+    code: str | None = None,
+    message: str = "controlled failure",
+) -> bytes:
+    snapshot = terminal_snapshot(
+        trigger,
+        returncode=returncode,
+        termination_requested=termination_requested,
+        child_acquired=child_acquired,
+        code=code,
+        message=message,
+    )
+    return encode_frame("SESSION_ENDED", **terminal_fields(snapshot))

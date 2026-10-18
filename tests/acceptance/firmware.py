@@ -32,7 +32,6 @@ def west_flash(target: PreparedTarget, build_dir: Path) -> subprocess.CompletedP
         command,
         cwd=target.workspace,
         env=hardware_operation_environment(target),
-        text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         check=False,

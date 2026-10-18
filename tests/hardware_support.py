@@ -380,7 +380,7 @@ class HardwarePreparation:
         config_root: Path,
         *,
         cache_root: Path | Callable[[BuildEnvironment], Path] | None = None,
-    ):
+    ) -> None:
         self.inventory = inventory
         self.build_root = build_root
         self.config_root = config_root

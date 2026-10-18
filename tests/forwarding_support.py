@@ -25,7 +25,7 @@ from zephyr_remote_openocd.controller.api import (
     SessionPlan,
 )
 from zephyr_remote_openocd.controller.authority import SessionAuthority
-from zephyr_remote_openocd.controller.waiting import WaitResult, WaitSources, wait_for
+from zephyr_remote_openocd.controller.waiting import Notifier, WaitResult, WaitSources, wait_for
 from zephyr_remote_openocd.protocol.arguments import materialize_argv
 from zephyr_remote_openocd.protocol.commands import decode_command, write_start
 from zephyr_remote_openocd.protocol.listeners import ListenerSpec
@@ -151,7 +151,7 @@ class ControlledSshCommand(SshCommand):
         remote_command: str,
         *,
         local_forward: SshForwardSpec | None = None,
-        on_acquired=None,
+        on_acquired: Callable[[ManagedSshProcess], None] | None = None,
     ) -> ManagedSshProcess:
         del host, remote_command
         assert local_forward is not None
@@ -185,7 +185,14 @@ class ControlledSshCommand(SshCommand):
         )
 
     @override
-    def run(self, host: str, remote_command: str, *, input_data=None, timeout=15):
+    def run(
+        self,
+        host: str,
+        remote_command: str,
+        *,
+        input_data: bytes | None = None,
+        timeout: float = 15,
+    ) -> subprocess.CompletedProcess[bytes]:
         raise AssertionError("run() is not expected")
 
 
@@ -211,8 +218,17 @@ class ForwardingHarness:
         return wait_for(sources=sources, deadline=deadline)
 
     def make_helper(
-        self, *_args, authority: SessionAuthority, process_start_handler=None, **_kwargs
-    ):
+        self,
+        ssh_command: SshCommand,
+        host: str,
+        deployment: DeploymentResult,
+        output_handler: Callable[[str, str, bool], None] | None = None,
+        *,
+        process_start_handler: Callable[[tuple[str, ...]], None] | None = None,
+        authority: SessionAuthority,
+        notifier: Notifier,
+    ) -> ControlledHelper:
+        del ssh_command, host, deployment, output_handler, notifier
         self.helper.authority = authority
         self.helper.process_start_handler = process_start_handler
         return self.helper

@@ -11,9 +11,10 @@ import signal
 import subprocess
 import threading
 import time
-from collections.abc import Callable, Generator, Iterable, Mapping
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from typing import IO
+from types import FrameType
+from typing import IO, Any
 from unittest.mock import patch
 
 from zephyr_remote_openocd.controller._cleanup import add_failure_note
@@ -32,7 +33,8 @@ def local_transport(
     """Exercise SSH acquisition with a local command at the Popen boundary."""
     initialize = subprocess.Popen.__init__
 
-    def launch(process: subprocess.Popen[bytes], args: list[str], **kwargs) -> None:
+    # Popen's keyword arguments pass through unchanged.
+    def launch(process: subprocess.Popen[bytes], args: list[str], **kwargs: Any) -> None:
         # Strip only the synthetic host/remote-command arguments. Production
         # supplies pipe capture and owns acquisition, masking, and rollback.
         initialize(process, args[:-2], env=environment, pass_fds=pass_fds, **kwargs)
@@ -44,7 +46,7 @@ def local_transport(
 class ProcessOutputMonitor:
     """Continuously capture a process pipe and signal observable output."""
 
-    def __init__(self, stream: IO[bytes] | IO[str]):
+    def __init__(self, stream: IO[bytes] | IO[str]) -> None:
         self._stream = stream
         self._fd = stream.fileno()
         self._output = bytearray()
@@ -115,7 +117,7 @@ def _raise_process_cleanup_errors(errors: list[BaseException]) -> None:
 class ProcessScope:
     """Own an isolated command group, its pipes, and an optional output reader."""
 
-    def __init__(self, process: subprocess.Popen):
+    def __init__(self, process: subprocess.Popen) -> None:
         self.process = process
         self._output: ProcessOutputMonitor | None = None
         self._stopped = False
@@ -184,7 +186,7 @@ class ProcessScope:
 
 
 @contextmanager
-def managed_process(args, **kwargs) -> Generator[ProcessScope, None, None]:
+def managed_process(args: Sequence[str], **kwargs: Any) -> Generator[ProcessScope, None, None]:
     """Acquire and clean up a command without replacing an existing failure."""
     owner = None
     primary = None
@@ -193,7 +195,7 @@ def managed_process(args, **kwargs) -> Generator[ProcessScope, None, None]:
         # handlers, while an inherited blocked SIGINT would prevent graceful stop.
         interrupted = False
 
-        def defer_interrupt(signum, frame):
+        def defer_interrupt(signum: int, frame: FrameType | None) -> None:
             nonlocal interrupted
             interrupted = True
 
@@ -237,9 +239,11 @@ def managed_process(args, **kwargs) -> Generator[ProcessScope, None, None]:
                 _raise_process_cleanup_errors(cleanup_errors)
 
 
-def run_process(args, *, timeout: float, check: bool = False, **kwargs):
-    """Blocking hardware command with bounded group and pipe cleanup."""
-    with managed_process(args, **kwargs) as owner:
+def run_process(
+    args: Sequence[str], *, timeout: float, check: bool = False, **kwargs: Any
+) -> subprocess.CompletedProcess[str]:
+    """Blocking text-mode hardware command with bounded group and pipe cleanup."""
+    with managed_process(args, text=True, **kwargs) as owner:
         stdout, stderr = owner.process.communicate(timeout=timeout)
         result = subprocess.CompletedProcess(args, owner.process.returncode, stdout, stderr)
         if check:
@@ -277,7 +281,7 @@ def stop_and_close(process: ManagedSshProcess | None) -> None:
         stop_process(process)
 
 
-def read_line(stream, timeout=30):
+def read_line(stream: IO[bytes], timeout: float = 30) -> bytes:
     """Read one binary line without prefetching bytes needed by communicate()."""
     deadline = time.monotonic() + timeout
     data = bytearray()
@@ -293,15 +297,18 @@ def read_line(stream, timeout=30):
                 return bytes(data)
 
 
-def read_lines(stream, timeout=30):
+def read_lines(stream: IO[bytes], timeout: float = 30) -> Iterator[bytes]:
     """Read through EOF under one deadline, including continuously chatty children."""
     deadline = time.monotonic() + timeout
     while line := read_line(stream, deadline - time.monotonic()):
         yield line
 
 
-def read_until(process, pattern, timeout, output):
+def read_until(
+    process: subprocess.Popen[bytes], pattern: str, timeout: float, output: bytearray
+) -> None:
     """Match accumulated output before waiting for additional pipe data."""
+    assert process.stdout is not None
     deadline = time.monotonic() + timeout
     with selectors.DefaultSelector() as selector:
         selector.register(process.stdout, selectors.EVENT_READ)

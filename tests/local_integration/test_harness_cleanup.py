@@ -59,6 +59,7 @@ def test_harness_cleanup_escalation_uses_finite_waits(monkeypatch):
         return wait(timeout=timeout)
 
     try:
+        assert process.stdout is not None
         assert read_line(process.stdout) == b"ready\n"
         with monkeypatch.context() as effects:
             effects.setattr(process, "wait", wait_process)

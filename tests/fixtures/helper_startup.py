@@ -9,13 +9,17 @@ import json
 import os
 import signal
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from types import FrameType
 from typing import IO
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python"))
 from zephyr_remote_openocd.helper import _workspace as workspace_module
 from zephyr_remote_openocd.helper import control as helper_control
+
+SignalHandler = Callable[[int, FrameType | None], object] | int | None
 
 
 def report(record: dict[str, object]) -> None:
@@ -47,27 +51,27 @@ def main() -> None:
             raise RuntimeError("coordinator setup failed")
         os.read(int(gate), 1)
 
-    def allocate():
+    def allocate() -> tuple[str, Path, IO[bytes]]:
         resources = original_new()
         acquired.append(resources)
         if boundary == "allocated":
             pause()
         return resources
 
-    def queue(*args, **kwargs):
+    def queue[T](maxsize: int = 0) -> asyncio.Queue[T]:
         if boundary == "constructor":
             pause()
-        return original_queue(*args, **kwargs)
+        return original_queue(maxsize)
 
-    def loop():
+    def loop() -> asyncio.AbstractEventLoop:
         if boundary == "loop":
             pause()
         return original_loop()
 
-    def install(signum, handler):
+    def install(signum: int, handler: SignalHandler) -> SignalHandler:
         if not acquired and callable(handler):
 
-            def observed(number, frame):
+            def observed(number: int, frame: FrameType | None) -> None:
                 handler(number, frame)
                 report({"signal": number})
 
