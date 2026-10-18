@@ -39,6 +39,7 @@ from zephyr_remote_openocd.protocol.process import ProcessSpec, RequiredPathSpec
 from zephyr_remote_openocd.protocol.wire import decode_terminal
 
 from tests.helper_process_support import cleanup_supervised_process
+from tests.support import ROOT
 
 if TYPE_CHECKING:
     from _typeshed import TraceFunction
@@ -187,6 +188,10 @@ def _output_closed(child: SupervisedProcess) -> bool:
     return stdout is not None and stdout.closed and stderr is not None and stderr.closed
 
 
+def _idle_child(*lines: str) -> tuple[str, ...]:
+    return (sys.executable, str(ROOT / "tests/fixtures/idle_child.py"), *lines)
+
+
 def _run_terminated(session: HelperSession, *, fails: bool) -> None:
     if fails:
         with pytest.raises(SystemExit) as raised:
@@ -227,6 +232,29 @@ def test_controller_eof_before_start_has_explicit_result(
         Trigger.PROTOCOL_FAILURE if partial else Trigger.CONTROLLER_EOF
     )
     assert snapshot.outcome.child_result is None
+    assert snapshot.cleanup.child_disposal == "not_acquired"
+    assert snapshot.cleanup.confirmed
+
+
+@pytest.mark.timeout(60)
+def test_post_start_input_in_a_later_read_is_protocol_failure(
+    coordinated_helper: CoordinatedHelper, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session, writer, events, _children = coordinated_helper
+    record = helper_streams.emit
+
+    def emit(kind: str, **fields: object) -> None:
+        record(kind, **fields)
+        if kind == "ATTEMPT":
+            # START has been consumed; an incomplete trailing frame must not
+            # wait for more input before failing.
+            writer.write(b"junk")
+
+    monkeypatch.setattr(helper_streams, 'emit', emit)
+    write_start(writer, ProcessSpec(_idle_child()), ())
+    _run_terminated(session, fails=True)
+    snapshot = _terminal_event(events)
+    assert snapshot.outcome.trigger == Trigger.PROTOCOL_FAILURE
     assert snapshot.cleanup.confirmed
 
 
@@ -314,6 +342,69 @@ def test_admission_failure_does_not_publish_success_or_repeat_terminal(
         assert state.local_diagnostics
     else:
         assert _failure_code(_terminal_event(events)) == admission + "_ADMISSION"
+
+
+@pytest.mark.timeout(60)
+def test_output_admission_failure_terminates_live_session_without_controller_eof(
+    coordinated_helper: CoordinatedHelper, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session, writer, events, children = coordinated_helper
+    record = helper_streams.emit
+
+    def emit(kind: str, **fields: object) -> None:
+        if kind == "CHILD_OUTPUT":
+            raise BrokenPipeError("output admission failed")
+        record(kind, **fields)
+
+    monkeypatch.setattr(helper_streams, 'emit', emit)
+    # The controller keeps its lease open: only the failed output admission
+    # can end this live session.
+    write_start(writer, ProcessSpec(_idle_child("first", "second")), ())
+    _run_terminated(session, fails=True)
+    snapshot = _terminal_event(events)
+    assert snapshot.outcome.trigger == Trigger.OUTPUT_FAILURE
+    assert _failure_code(snapshot) == "CHILD_OUTPUT_ADMISSION"
+    # Relay stops after the first failed admission instead of failing per fragment.
+    assert not any(
+        detail.code == "CHILD_OUTPUT_ADMISSION" for detail in snapshot.outcome.diagnostics
+    )
+    assert snapshot.cleanup.confirmed
+    assert snapshot.outcome.child_result is not None
+    assert snapshot.outcome.child_result.termination_requested
+    assert len(children) == 1 and _output_closed(children[0])
+    assert not session.work.exists()
+
+
+def test_staging_admission_closes_before_child_disposal_signal(
+    coordinated_helper: CoordinatedHelper, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    session, writer, events, _children = coordinated_helper
+    record = helper_streams.emit
+    witness = tmp_path / "closure-at-sigterm"
+
+    def emit(kind: str, **fields: object) -> None:
+        record(kind, **fields)
+        if kind == "READY":
+            writer.close()
+
+    monkeypatch.setattr(helper_streams, 'emit', emit)
+    write_start(
+        writer,
+        ProcessSpec(
+            (
+                sys.executable,
+                str(ROOT / "tests/fixtures/closure_witness_child.py"),
+                str(workspace_module.closure_path(session.work)),
+                str(witness),
+            ),
+            required_output_sentinels=("ZRO_ARMED",),
+        ),
+        (),
+    )
+    _run_terminated(session, fails=False)
+    assert _terminal_event(events).cleanup.confirmed
+    # Termination closes new staging before child disposal begins.
+    assert witness.read_text() == "closed"
 
 
 @pytest.mark.parametrize("boundary", ("before_spawn", "returned", "wrapper_failure"))
@@ -917,7 +1008,40 @@ def test_protocol_writer_and_close_failures_preserve_primary_exception(
         session.release_workspace()
 
 
-@pytest.mark.parametrize("cleanup_failure", ("group", "lease"))
+@pytest.mark.timeout(60)
+def test_coordinator_failure_with_live_child_still_disposes_it(
+    coordinated_helper: CoordinatedHelper, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session, writer, events, children = coordinated_helper
+    poll = helper_process.SupervisedProcess.poll
+    failure = OSError("leader observation failed")
+
+    def poll_after_marker(child: SupervisedProcess) -> int | None:
+        # Fail the final live-child check once readiness evidence is complete:
+        # the coordinator itself raises while it owns a live child.
+        if not child.required_output_sentinels.unseen:
+            raise failure
+        return poll(child)
+
+    monkeypatch.setattr(helper_process.SupervisedProcess, "poll", poll_after_marker)
+    write_start(
+        writer,
+        ProcessSpec(
+            _idle_child("ZRO_ARMED"),
+            required_output_sentinels=("ZRO_ARMED",),
+        ),
+        (),
+    )
+    _run_terminated(session, fails=True)
+    snapshot = _terminal_event(events)
+    assert snapshot.outcome.trigger == Trigger.HELPER_FAILURE
+    assert "READY" not in [kind for kind, _ in events]
+    assert snapshot.cleanup.confirmed
+    assert children[0].process.returncode is not None
+    assert not session.work.exists()
+
+
+@pytest.mark.parametrize("cleanup_failure", ("group", "lease", "relays"))
 def test_unconfirmed_disposal_retains_inputs_but_settles_independent_owners(
     coordinated_helper: CoordinatedHelper, monkeypatch: pytest.MonkeyPatch, cleanup_failure: str
 ) -> None:
@@ -935,6 +1059,9 @@ def test_unconfirmed_disposal_retains_inputs_but_settles_independent_owners(
         def close(self) -> None:
             raise OSError("address lease close failed")
 
+    def retain_streams(_child: SupervisedProcess) -> None:
+        raise OSError("child pipe close failed")
+
     def emit(kind: str, **fields: object) -> None:
         nonlocal lease
         record(kind, **fields)
@@ -947,24 +1074,31 @@ def test_unconfirmed_disposal_retains_inputs_but_settles_independent_owners(
     monkeypatch.setattr(helper_streams, 'emit', emit)
     if cleanup_failure == "group":
         monkeypatch.setattr(helper_process.SupervisedProcess, "terminate", uncertain)
+    elif cleanup_failure == "relays":
+        monkeypatch.setattr(helper_process.SupervisedProcess, "close_streams", retain_streams)
     write_start(writer, ProcessSpec((sys.executable, "-c", "import signal;signal.pause()")), ())
     try:
         _run_terminated(session, fails=True)
         snapshot = _terminal_event(events)
         assert not snapshot.cleanup.confirmed
-        assert (
-            "child_group" if cleanup_failure == "group" else "address_lease"
-        ) in snapshot.cleanup.residual_resources
+        assert snapshot.cleanup.child_disposal == "unconfirmed"
+        residual = {"group": "child_group", "lease": "address_lease", "relays": "child_relays"}
+        assert residual[cleanup_failure] in snapshot.cleanup.residual_resources
         assert "workspace" in snapshot.cleanup.residual_resources
-        assert "child_relays" not in snapshot.cleanup.residual_resources
+        assert ("child_relays" in snapshot.cleanup.residual_resources) == (
+            cleanup_failure == "relays"
+        )
         assert session.work.is_dir()
         assert (session.work / workspace_module.UNCONFIRMED_CHILD).is_file()
         assert session.workspace_lock.closed
         assert children[0].process.returncode is not None
-        assert _output_closed(children[0])
+        assert _output_closed(children[0]) == (cleanup_failure != "relays")
     finally:
         if lease is not None:
             lease.close()
+        for stream in (children[0].process.stdout, children[0].process.stderr):
+            if stream is not None:
+                stream.close()
 
 
 @pytest.mark.parametrize("boundary", ("ready", "freeze"))
@@ -1000,6 +1134,8 @@ def test_latched_signal_before_commit_is_accounted(
     snapshot = _terminal_event(events)
     assert snapshot.outcome.primary_failure is not None
     assert _failure_code(snapshot) == "REMOTE_SIGNAL"
+    # One delivered signal is one failure, however often failures are accounted.
+    assert not any(detail.code == "REMOTE_SIGNAL" for detail in snapshot.outcome.diagnostics)
     assert not any(kind == "READY" for kind, _ in events)
     assert snapshot.cleanup.confirmed
     assert all(child.process.returncode is not None for child in children)
