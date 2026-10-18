@@ -1679,7 +1679,9 @@ is published immediately. Otherwise pending control final observation pauses
 delivery on authority notification and cancellation alone, without watching
 stdin writability. After final accounting, a terminal or control-end fact stops
 START with a session-ended error even when the remote outcome was successful.
-This preserves detailed final-failure precedence and prevents session end from
+A write into helper input that has already closed is likewise not itself the
+START failure: delivery stops and waits on authority notification until final
+accounting selects the failure. This preserves detailed final-failure precedence and prevents session end from
 leaving START blocked on unread stdin. Failure composition and cleanup retain
 their existing authority and owners.
 If acquisition

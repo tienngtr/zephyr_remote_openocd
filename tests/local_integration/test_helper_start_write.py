@@ -273,3 +273,72 @@ def test_start_waits_for_pending_control_final_observation(
     assert process.stdin is not None and process.stdin.closed
     assert process.stdout is not None and process.stdout.closed
     assert client._join_reader(0)
+
+
+@pytest.mark.timeout(60)
+def test_start_into_exited_helper_keeps_final_terminal_detail_primary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    notified_authority: NotifiedAuthority,
+) -> None:
+    gate = tmp_path / "exit-gate"
+    os.mkfifo(gate)
+    terminal = terminal_message(
+        Trigger.HELPER_FAILURE, code="DETAIL", message="final helper failure"
+    )
+    # The helper reports its terminal and exits, closing its control input,
+    # before the coordinator writes START.
+    code = (
+        "import os\n"
+        f"os.write(1, {CREATED!r})\n"
+        f"with open({str(gate)!r}, 'rb', buffering=0) as gate:\n"
+        "    assert gate.read(1) == b'x'\n"
+        f"os.write(1, {terminal!r})\n"
+    )
+    client = HelperConnection(
+        SshCommand((sys.executable, "-c", code)),
+        "host",
+        DeploymentResult("/helper.py", "digest", False),
+        authority=notified_authority.authority,
+        notifier=notified_authority.notifier,
+    )
+    reader_held = threading.Event()
+    start_requested = threading.Event()
+    release_reader = threading.Event()
+
+    def hold_exit_recognition(
+        *,
+        readable: Iterable[Descriptor] = (),
+        writable: Iterable[Descriptor] = (),
+        sources: WaitSources = _NO_WAIT_SOURCES,
+        deadline: float | None = None,
+    ) -> WaitResult:
+        if sources.processes and notified_authority.authority.snapshot().allocation is not None:
+            # The exit has occurred but the reader has not yet recognized it.
+            reader_held.set()
+            assert release_reader.wait(30), "coordinator did not wait for final accounting"
+        elif start_requested.is_set() and not sources.processes and not writable:
+            # Only a START owner that defers to final accounting waits here.
+            release_reader.set()
+        return wait_for(readable=readable, writable=writable, sources=sources, deadline=deadline)
+
+    monkeypatch.setattr(connection_module, "wait_for", hold_exit_recognition)
+    try:
+        client.acquire()
+        process = client._process
+        assert process is not None
+        assert reader_held.wait(30), "reader did not reach its exit wait"
+        with gate.open("wb", buffering=0) as writer:
+            writer.write(b"x")
+        os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOWAIT)
+        start_requested.set()
+        with pytest.raises(SessionError) as raised:
+            client.start_process(ProcessSpec(("child",)), ())
+        snapshot = notified_authority.authority.snapshot()
+        assert snapshot.failure is raised.value
+        assert snapshot.diagnostics[0].code == "TERMINAL_FAILURE"
+        assert "final helper failure" in str(raised.value)
+    finally:
+        release_reader.set()
+        client.close()
+    assert client._join_reader(0)

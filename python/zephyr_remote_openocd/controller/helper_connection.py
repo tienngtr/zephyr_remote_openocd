@@ -137,15 +137,20 @@ class HelperConnection:
         os.set_blocking(descriptor, False)
         view = memoryview(data)
         offset = 0
+        input_closed = False
         while offset < len(view):
             self.observe_status()
-            if not self._authority.admit_start_write():
+            if not self._authority.admit_start_write() or input_closed:
                 wait_for(sources=WaitSources(notifiers=(self._notifier,)))
                 continue
             try:
                 offset += os.write(descriptor, view[offset:])
             except BlockingIOError:
                 wait_for(writable=(descriptor,), sources=WaitSources(notifiers=(self._notifier,)))
+            except BrokenPipeError:
+                # The helper's input is gone; its final protocol accounting,
+                # not this generic transport error, decides the START failure.
+                input_closed = True
 
     @staticmethod
     def _created(snapshot: SessionSnapshot) -> SessionAllocation | None:
