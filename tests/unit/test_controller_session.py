@@ -10,9 +10,15 @@ from dataclasses import replace
 from typing import BinaryIO, override
 
 import pytest
+from zephyr_remote_openocd.controller import _forwarding as forwarding_module
 from zephyr_remote_openocd.controller import session as session_module
 from zephyr_remote_openocd.controller._deployment import DeploymentResult
 from zephyr_remote_openocd.controller._forwarding import ForwardFailure
+from zephyr_remote_openocd.controller._ssh import (
+    ManagedSshProcess,
+    ProcessAcquiredHandler,
+    SshForwardSpec,
+)
 from zephyr_remote_openocd.controller.api import (
     ForwardSpec,
     SessionAllocation,
@@ -37,8 +43,8 @@ from zephyr_remote_openocd.protocol.outcome import Trigger
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.protocol.wire import ProtocolError, encode_frame
 
-from tests.forwarding_support import ControlledHelper, ForwardingHarness
-from tests.process_support import cleanup_on_exit
+from tests.forwarding_support import GDB, ControlledHelper, ControlledSshCommand, ForwardingHarness
+from tests.process_support import cleanup_on_exit, local_transport
 from tests.protocol_support import terminal_snapshot
 
 OPENOCD_FAILURE_RC = 7
@@ -406,45 +412,47 @@ def test_close_raises_helper_cleanup_only_error_after_closing_session(
 
 @pytest.mark.timeout(60)
 def test_wait_for_openocd_exit_wakes_on_forward_exit(monkeypatch: pytest.MonkeyPatch) -> None:
-    forward_process = subprocess.Popen(
-        (sys.executable, "-c", "import sys; sys.stdin.read()"), stdin=subprocess.PIPE
-    )
+    harness = ForwardingHarness(monkeypatch)
+    monkeypatch.setattr(session_module, "wait_for", wait_for)
+    monkeypatch.setattr(forwarding_module, "await_ready", lambda *_args: True)
+    transports: list[ManagedSshProcess] = []
 
+    def acquire_transport(
+        command: ControlledSshCommand,
+        host: str,
+        remote_command: str,
+        *,
+        local_forward: SshForwardSpec | None = None,
+        on_acquired: ProcessAcquiredHandler | None = None,
+    ) -> ManagedSshProcess:
+        del command, host, remote_command, local_forward
+        # A real transport, so the foreground wait observes its actual exit.
+        transport = local_transport(
+            (sys.executable, "-c", f"import sys; sys.stdin.read(); sys.exit({FORWARD_FAILURE_RC})"),
+            on_acquired=on_acquired,
+        )
+        transports.append(transport)
+        return transport
+
+    monkeypatch.setattr(ControlledSshCommand, "popen", acquire_transport)
     active = False
-    forwarding_error = SessionError(f"SSH forwarding exited with status {FORWARD_FAILURE_RC}")
 
     class Helper(_BlockedHelper):
         @override
         def observe_status(self) -> None:
             # The forward exits only after the first health observation, so the
             # wait can end only through its process-completion source.
-            assert forward_process.stdin is not None
-            if active:
-                forward_process.stdin.close()
+            if active and transports[0].stdin is not None:
+                transports[0].stdin.close()
 
-        @override
-        def live_processes(self) -> tuple[ProcessHandle, ...]:
-            return ()
-
-    class Forwards(_BlockedForwards):
-        @override
-        def live_processes(self) -> tuple[ProcessHandle, ...]:
-            return () if forward_process.returncode is not None else (forward_process,)
-
-        @override
-        def check_health(self, report: Callable[[ForwardFailure], None]) -> None:
-            if forward_process.poll() is not None:
-                raise forwarding_error
-
-    session = _make_session(monkeypatch, Helper(), Forwards())
-    active = True
-    try:
+    harness.helper = Helper()
+    session = harness.prepare((GDB,), ())
+    with cleanup_on_exit(session.close):
+        session.acquire()
+        active = True
         with pytest.raises(SessionError, match=f"status {FORWARD_FAILURE_RC}"):
             session.wait_for_openocd_exit()
         assert not session.closed
-    finally:
-        forward_process.wait(30)
-        session.close()
 
 
 def test_wait_for_openocd_exit_raises_helper_timeout_at_deadline(

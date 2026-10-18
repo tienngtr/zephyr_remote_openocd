@@ -645,6 +645,49 @@ def test_reader_failure_takes_precedence_over_known_openocd_result(
     assert any("remote OpenOCD failed" in note for note in raised.value.__notes__)
 
 
+@pytest.mark.parametrize(
+    ("policy", "returncode", "succeeds"),
+    (
+        (CompletionPolicy.PROCESS_EXIT, 0, False),
+        (CompletionPolicy.PROCESS_EXIT, None, False),
+        (CompletionPolicy.LIVE_SERVER, 0, True),
+    ),
+)
+def test_one_shot_result_requires_genuine_child_completion(
+    notified_authority: NotifiedAuthority,
+    policy: CompletionPolicy,
+    returncode: int | None,
+    succeeds: bool,
+) -> None:
+    authority = notified_authority.authority
+    events: tuple[bytes, ...] = (encode_frame("ATTEMPT", argv=["child"]),)
+    if policy == CompletionPolicy.LIVE_SERVER:
+        events += (encode_frame("READY", remote_address="127.64.0.1", child_pid=1),)
+    terminal = terminal_message(
+        Trigger.CONTROLLER_EOF,
+        returncode=returncode,
+        termination_requested=True,
+        child_acquired=True,
+    )
+    client, process = _open_helper_client_with_events(
+        *events, wiring=notified_authority, later=(terminal,)
+    )
+    try:
+        client.start_process(ProcessSpec(("child",), completion_policy=policy), ())
+        # Orderly local closure disposes of the child; only live-server work
+        # may treat that requested termination as a normal end.
+        authority.cancel()
+        process.release_later()
+        assert client._join_reader(5)
+        if succeeds:
+            assert authority.operation_status() == returncode
+        else:
+            with pytest.raises(SessionError):
+                authority.operation_status()
+    finally:
+        client.close()
+
+
 @pytest.mark.parametrize("terminal_failure", ("startup", "child"))
 @pytest.mark.parametrize("boundary", ("status", "close"))
 @pytest.mark.parametrize("trailing", ("malformed", "illegal_frame"))

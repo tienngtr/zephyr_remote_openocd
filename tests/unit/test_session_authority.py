@@ -26,9 +26,11 @@ def test_recorded_fact_prevents_dependent_entry_after_ready(fact: str) -> None:
         authority.admit_work((), ())
 
 
-def test_ready_requires_required_forwarding_at_entry() -> None:
+def test_entry_requires_ready_and_required_forwarding() -> None:
     authority = SessionAuthority()
     forward = ForwardSpec("gdb", 3333, 3333)
+    with pytest.raises(SessionError):
+        authority.admit_work((forward,), (forward,))
     authority.record_ready()
     with pytest.raises(SessionError):
         authority.admit_work((forward,), ())
