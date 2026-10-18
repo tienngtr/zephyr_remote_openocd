@@ -307,15 +307,15 @@ class SessionAuthority:
             if not self._gate.enter(ticket):
                 raise SessionError("dependent launch requires READY and required forwarding")
 
-    def admit_process_start(self, final_admission: Callable[[], None]) -> None:
-        """Commit START after accounting facts the helper reader already recorded."""
+    def admit_helper_effect(self, effect: str, final_admission: Callable[[], None]) -> None:
+        """Commit staging or START after accounting facts the reader already recorded."""
         with self._changed:
             error = self.publish_failure()
             if error is not None:
                 raise error
-            self._refuse_pending_observation("helper session ended before START")
+            self._refuse_pending_observation(f"helper session ended before {effect}")
             if self._terminal is not None or self._control_ended:
-                raise SessionError("helper session ended before START")
+                raise SessionError(f"helper session ended before {effect}")
             final_admission()
 
     def admit_start_write(self) -> bool:

@@ -2421,14 +2421,17 @@ facts into the authority; the coordinator re-reads it after each wake.
 the read of the operation's cancellation fact by `admit_effect()`, evaluated as
 the effect's last refusal condition. Process launches (`SshCommand.popen()` and
 finite commands) perform it immediately before creating their resource-free
-owner. Session-dependent work (forwarding transactions and local clients) and
-START pass `admit_effect` to `SessionAuthority.admit_work()` or
-`admit_process_start()`, which call it while holding the authority lock, after
-the recorded-failure, closure, terminal, readiness, and forwarding conditions,
-and immediately before the admission gate commits entry. Session facts are
-recorded only under that lock, so they cannot change between those checks and
-the read; the read is therefore the single linearization point for both kinds
-of fact. A Ctrl-C latched before it refuses the effect. One latched after it
+owner. Session-dependent work (forwarding transactions and local clients) passes
+`admit_effect` to `SessionAuthority.admit_work()`, which calls it while holding
+the authority lock, after the recorded-failure, closure, terminal, readiness,
+and forwarding conditions, and immediately before the admission gate commits
+entry. Staging and START precede readiness and occur only during acquisition,
+before local closure can begin; they pass `admit_effect` to
+`admit_helper_effect()`, which calls it under the same lock after only the
+recorded-failure, pending control-observation, terminal, and control-end
+conditions, without the admission gate. Session facts are recorded only under
+that lock, so they cannot change between those checks and the read; the read
+is therefore the single linearization point for both kinds of fact. A Ctrl-C latched before it refuses the effect. One latched after it
 lets the admitted effect complete into its established owner, and the next
 wait or admission dispatches it; a session fact recorded after it likewise
 does not revoke the admitted transaction. Each transport launched by an

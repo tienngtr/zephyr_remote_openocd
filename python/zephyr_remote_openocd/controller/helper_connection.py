@@ -126,7 +126,7 @@ class HelperConnection:
         frame = encode_start(process_spec, listener_specs, preferred_address=preferred_address)
         # START authorizes remote child creation; recorded helper facts and the
         # operation's cancellation are accounted at one admission point.
-        self._authority.admit_process_start(admit_effect)
+        self._authority.admit_helper_effect("START", admit_effect)
         self._write_control(helper.stdin.fileno(), frame)
         if process_spec.completion_policy != CompletionPolicy.LIVE_SERVER:
             return None

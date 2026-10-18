@@ -223,7 +223,7 @@ def _admit(authority: SessionAuthority, entry: str) -> None:
     if entry == "work":
         authority.admit_work((), ())
     else:
-        authority.admit_process_start(lambda: None)
+        authority.admit_helper_effect("START", lambda: None)
 
 
 @pytest.mark.parametrize("entry", ("work", "start"))

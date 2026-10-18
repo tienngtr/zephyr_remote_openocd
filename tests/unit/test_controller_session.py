@@ -7,7 +7,7 @@ import subprocess
 import sys
 from collections.abc import Callable, Iterable
 from dataclasses import replace
-from typing import BinaryIO, override
+from typing import BinaryIO, cast, override
 
 import pytest
 from zephyr_remote_openocd.controller import _forwarding as forwarding_module
@@ -30,7 +30,13 @@ from zephyr_remote_openocd.controller.api import (
     query_remote_openocd_version,
 )
 from zephyr_remote_openocd.controller.authority import SessionAuthority
-from zephyr_remote_openocd.controller.helper_connection import OutputHandler, ProcessStartHandler
+from zephyr_remote_openocd.controller.helper_connection import (
+    HelperConnection,
+    OutputHandler,
+    ProcessStartHandler,
+)
+from zephyr_remote_openocd.controller.staging import ArchiveInfo, build_archive
+from zephyr_remote_openocd.controller.staging_spec import StagedEntry
 from zephyr_remote_openocd.controller.waiting import (
     Notifier,
     ProcessHandle,
@@ -43,9 +49,10 @@ from zephyr_remote_openocd.protocol.outcome import Trigger
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.protocol.wire import ProtocolError, encode_frame
 
+from tests.control_support import HelperPeerProcess
 from tests.forwarding_support import GDB, ControlledHelper, ControlledSshCommand, ForwardingHarness
 from tests.process_support import cleanup_on_exit, local_transport
-from tests.protocol_support import terminal_snapshot
+from tests.protocol_support import terminal_message, terminal_snapshot
 
 OPENOCD_FAILURE_RC = 7
 FORWARD_FAILURE_RC = 13
@@ -333,6 +340,62 @@ def test_check_openocd_exit_propagates_forward_failure_after_successful_openocd_
 
     assert raised.value is forwarding_error
     session.close()
+
+
+@pytest.mark.timeout(30)
+def test_fatal_fact_recorded_before_staging_prevents_staging(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = ForwardingHarness(monkeypatch)
+    peer = HelperPeerProcess()
+    staged: list[str] = []
+    session = harness.prepare((GDB,), ())
+
+    def acquire_control(
+        command: ControlledSshCommand,
+        host: str,
+        remote_command: str,
+        *,
+        local_forward: SshForwardSpec | None = None,
+        on_acquired: ProcessAcquiredHandler | None = None,
+    ) -> ManagedSshProcess:
+        del command, host, remote_command
+        assert local_forward is None, "forwarding is not expected in this test"
+        # A pipe-backed peer supplies remote facts to the real helper reader.
+        acquired = cast(ManagedSshProcess, peer)
+        if on_acquired is not None:
+            on_acquired(acquired)
+        return acquired
+
+    def build_after_helper_failure(files: Iterable[StagedEntry]) -> ArchiveInfo:
+        archive = build_archive(files)
+        # The helper ends while local archive construction runs; its reader
+        # records the failure before staging would begin.
+        peer.emit(terminal_message(Trigger.HELPER_FAILURE, code="FAILED", message="helper ended"))
+        while session._authority.snapshot().failure is None:
+            wait_for(sources=WaitSources(notifiers=(session._notifier,)))
+        return archive
+
+    def record_staging(
+        command: ControlledSshCommand,
+        host: str,
+        remote_command: str,
+        input_stream: BinaryIO,
+        *,
+        timeout: float = 60,
+    ) -> subprocess.CompletedProcess[bytes]:
+        del command, host, input_stream, timeout
+        staged.append(remote_command)
+        raise AssertionError("staging entered after a recorded fatal fact")
+
+    monkeypatch.setattr(session_module, "HelperConnection", HelperConnection)
+    monkeypatch.setattr(ControlledSshCommand, "popen", acquire_control)
+    monkeypatch.setattr(ControlledSshCommand, "run_stream", record_staging)
+    monkeypatch.setattr(session_module, "build_archive", build_after_helper_failure)
+    with cleanup_on_exit(session.close), pytest.raises(SessionError, match="helper ended"):
+        session.acquire()
+    assert not staged
+    assert peer.stdin.closed
 
 
 @pytest.mark.parametrize("state", ("acquired", "closed"))

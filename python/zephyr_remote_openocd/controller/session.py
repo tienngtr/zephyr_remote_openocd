@@ -231,6 +231,9 @@ class SessionController:
                 f"python3 {shlex.quote(self.deployment.path)} stage "
                 f"{shlex.quote(connection.allocation.remote_workspace)}"
             )
+            # Staging writes into the helper's workspace: account facts the
+            # reader recorded while the archive was built.
+            self._authority.admit_helper_effect("staging", admit_effect)
             result = self.plan.ssh_command.run_stream(
                 self.plan.host, command, archive.stream, timeout=60
             )
