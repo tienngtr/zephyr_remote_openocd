@@ -12,7 +12,12 @@ from zephyr_remote_openocd.controller._cleanup import add_failure_note
 from zephyr_remote_openocd.controller.admission import AdmissionGate
 from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
 from zephyr_remote_openocd.controller.plan import SessionAllocation
-from zephyr_remote_openocd.protocol.outcome import CompletionPolicy, Diagnostic, TerminalSnapshot
+from zephyr_remote_openocd.protocol.outcome import (
+    CompletionPolicy,
+    Diagnostic,
+    TerminalSnapshot,
+    Trigger,
+)
 
 
 class SessionError(RuntimeError):
@@ -147,6 +152,18 @@ class SessionAuthority:
     def record_terminal(self, snapshot: TerminalSnapshot) -> None:
         with self._changed:
             self._terminal = snapshot
+            if snapshot.outcome.trigger == Trigger.CONTROLLER_EOF and not self._closing:
+                # Input EOF ends the controller lease only after local closure
+                # begins; earlier, the remote saw the control channel fail. The
+                # EOF initiated remote termination, so it precedes any terminal
+                # failure recorded below.
+                self.record_failure(
+                    "UNEXPECTED_CONTROLLER_EOF",
+                    SessionError(
+                        "remote helper observed controller-input EOF before local closure"
+                    ),
+                    key="controller_eof",
+                )
             if snapshot.operation_failed(self._policy):
                 outcome = snapshot.outcome
                 details = tuple(

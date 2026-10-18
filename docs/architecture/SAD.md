@@ -2301,7 +2301,15 @@ The local owner records remote disposal confirmation, child result, and local
 helper/SSH status independently. Missing terminal information, including with
 zero SSH status, is infrastructure uncertainty and cannot establish remote
 cleanup success. A nonzero helper status after a valid remote snapshot remains
-an infrastructure failure without changing its child result. Local timeout may
+an infrastructure failure without changing its child result. The remote
+`controller_eof` trigger reports only that the helper observed input EOF. The
+local authority applies local context: after local closure has begun it is the
+orderly end of the controller lease; before that, the local operation still
+owned the lease, so it is a control-channel failure even with a zero or
+termination-requested child result. That failure is accounted independently of
+terminal failure: because the EOF initiated remote termination, it is
+established first, and a terminal failure or genuine nonzero child result in
+the same snapshot is retained behind it. Local timeout may
 leave remote cleanup unconfirmed even after local SSH is reaped. External
 sharing masters are never terminated by session closure.
 

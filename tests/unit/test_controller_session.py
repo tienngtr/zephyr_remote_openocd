@@ -335,6 +335,73 @@ def test_check_openocd_exit_propagates_forward_failure_after_successful_openocd_
     session.close()
 
 
+@pytest.mark.parametrize(
+    "established",
+    (
+        "unexpected",
+        "after-local-closure",
+        "after-failure",
+        "with-terminal-failure",
+        "with-child-failure",
+    ),
+)
+def test_controller_eof_fails_live_operation_only_before_local_closure(
+    monkeypatch: pytest.MonkeyPatch, established: str
+) -> None:
+    harness = ForwardingHarness(monkeypatch)
+    if established == "with-terminal-failure":
+        # The helper failed while terminating because of the EOF.
+        eof = terminal_snapshot(
+            Trigger.CONTROLLER_EOF,
+            returncode=0,
+            termination_requested=True,
+            code="OUTPUT_FAILURE",
+            message="relay failed during termination",
+        )
+    elif established == "with-child-failure":
+        # The child failed on its own before termination was requested.
+        eof = terminal_snapshot(Trigger.CONTROLLER_EOF, returncode=3)
+    else:
+        eof = terminal_snapshot(Trigger.CONTROLLER_EOF, returncode=0, termination_requested=True)
+    reader_error = RuntimeError("earlier reader failure")
+
+    class Helper(ControlledHelper):
+        @override
+        def close(self) -> None:
+            super().close()
+            if established == "after-local-closure":
+                # The helper reports EOF only after closure closed its input.
+                self.authority.record_terminal(eof)
+
+    def report_eof() -> None:
+        if established == "after-failure":
+            harness.helper.authority.record_reader_failure(reader_error)
+        harness.helper.authority.record_terminal(eof)
+
+    harness.helper = Helper()
+    harness.helper.on_wait = report_eof
+    session = harness.prepare((GDB,), ())
+    session.acquire()
+    if established == "after-local-closure":
+        session.finish()
+        assert session.openocd_returncode == 0
+        return
+    with pytest.raises(SessionError) as raised:
+        session.wait_for_openocd_exit()
+    if established == "after-failure":
+        assert raised.value.__cause__ is reader_error
+        assert any("before local closure" in note for note in raised.value.__notes__)
+    else:
+        assert "before local closure" in str(raised.value)
+    if established == "with-terminal-failure":
+        assert any("relay failed during termination" in note for note in raised.value.__notes__)
+    elif established == "with-child-failure":
+        assert any("exit status 3" in note for note in raised.value.__notes__)
+    with pytest.raises(SessionError) as finished:
+        session.finish()
+    assert finished.value is raised.value
+
+
 @pytest.mark.parametrize("failure_phase", ("health", "disposal"))
 def test_close_attempts_all_cleanup_once_and_preserves_first_failure(
     monkeypatch: pytest.MonkeyPatch, failure_phase: str

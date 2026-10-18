@@ -217,7 +217,7 @@ def peer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[ExitPeer]:
 @pytest.mark.parametrize(
     "initial",
     (b"", CREATED, CREATED + terminal_message(Trigger.CONTROLLER_EOF, child_acquired=False)),
-    ids=("before-created", "buffered-created", "created-and-orderly-terminal"),
+    ids=("before-created", "buffered-created", "created-and-unexpected-eof-terminal"),
 )
 def test_control_exit_prevents_session_acquisition(peer: ExitPeer, initial: bytes) -> None:
     session = peer.create(initial)
@@ -227,7 +227,9 @@ def test_control_exit_prevents_session_acquisition(peer: ExitPeer, initial: byte
     assert snapshot.control_ended
     assert (snapshot.allocation is not None) == bool(initial)
     assert (snapshot.terminal is not None) == (b"SESSION_ENDED" in initial)
-    assert "control transport ended" in str(raised.value)
+    # The helper reported input EOF the controller never sent.
+    expected = "before local closure" if b"SESSION_ENDED" in initial else "control transport ended"
+    assert expected in str(raised.value)
     assert not isinstance(raised.value.__cause__, TimeoutError)
     assert peer.transport is not None
     # The wait-boundary handshake above verified non-reaping observation.
@@ -238,7 +240,7 @@ def test_control_exit_prevents_session_acquisition(peer: ExitPeer, initial: byte
 
 @pytest.mark.parametrize(
     "ready",
-    (b"", READY, READY + terminal_message(Trigger.CONTROLLER_EOF)),
+    (b"", READY, READY + terminal_message(Trigger.CHILD_EXIT, returncode=0)),
     ids=("before-ready", "buffered-ready", "ready-and-orderly-terminal"),
 )
 def test_control_exit_prevents_forwarding_and_client_launch(peer: ExitPeer, ready: bytes) -> None:
@@ -588,8 +590,12 @@ def test_control_exit_survives_reaping_during_wait_registration(
         monkeypatch.setattr(os, "waitid", reused_waitid)
         monkeypatch.setattr(connection_module, "wait_for", observe_wait)
         try:
-            with pytest.raises(SessionError):
+            with pytest.raises(SessionError, match="before local closure"):
                 session.acquire()
+            # The unexpected EOF fails acquisition as soon as the reader
+            # records it, possibly before final control accounting finishes.
+            while session._authority.snapshot().control_observation_pending:
+                wait_for(sources=WaitSources(notifiers=(session._notifier,)))
             snapshot = session._authority.snapshot()
             assert snapshot_taken.is_set() and reaped.is_set()
             assert snapshot.control_ended and not snapshot.control_observation_pending

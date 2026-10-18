@@ -820,7 +820,7 @@ def test_close_keeps_shutdown_failure_primary_when_forced_cleanup_also_fails(
 
     helper_client = open_client(Process())
 
-    authority.record_terminal(terminal_snapshot(Trigger.CONTROLLER_EOF))
+    authority.record_terminal(terminal_snapshot(Trigger.CHILD_EXIT, returncode=0))
     helper_client.close()
     error = authority.snapshot().failure
 
@@ -850,7 +850,7 @@ def test_close_cleans_up_helper_when_initial_status_observation_fails(
     process = Process()
     helper_client = open_client(process)
 
-    authority.record_terminal(terminal_snapshot(Trigger.CONTROLLER_EOF))
+    authority.record_terminal(terminal_snapshot(Trigger.CHILD_EXIT, returncode=0))
     helper_client.close()
     error = authority.snapshot().failure
 
@@ -1105,7 +1105,7 @@ def test_helper_close_retains_nested_process_cleanup_diagnostics(
             raise stderr_error
 
     helper = open_client(Process())
-    authority.record_terminal(terminal_snapshot(Trigger.CONTROLLER_EOF, returncode=None))
+    authority.record_terminal(terminal_snapshot(Trigger.CHILD_EXIT, returncode=0))
 
     helper.close()
     error = authority.snapshot().failure

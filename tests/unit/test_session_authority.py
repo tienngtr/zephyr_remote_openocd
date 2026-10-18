@@ -251,7 +251,7 @@ def test_refusal_during_final_observation_waits_for_final_accounting(
                 terminal_snapshot(Trigger.HELPER_FAILURE, code="DETAIL", message="final detail")
             )
         elif ending == "orderly-terminal":
-            authority.record_terminal(terminal_snapshot(Trigger.CONTROLLER_EOF))
+            authority.record_terminal(terminal_snapshot(Trigger.CHILD_EXIT, returncode=0))
         authority.finish_control_exit()
 
     if accounting == "before-resolution":
