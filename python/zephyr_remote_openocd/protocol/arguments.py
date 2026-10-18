@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -66,7 +66,9 @@ class ArgumentTemplate:
         return [encode(part) for part in self.parts]
 
 
-def _render_parts(parts, replacements):
+def _render_parts(
+    parts: Iterable[str | SessionValue | TclWord], replacements: Mapping[str, str]
+) -> str:
     result = []
     for part in parts:
         if isinstance(part, str):
@@ -78,7 +80,7 @@ def _render_parts(parts, replacements):
     return "".join(result)
 
 
-def materialize_path(value, *, workspace, address):
+def materialize_path(value: str | ArgumentTemplate, *, workspace: str, address: str) -> str:
     if isinstance(value, str):
         return value
     return _render_parts(value.parts, {"workspace": workspace, "address": address})

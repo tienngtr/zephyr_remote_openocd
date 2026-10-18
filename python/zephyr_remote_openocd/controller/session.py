@@ -218,7 +218,7 @@ class SessionController:
             primary = self._authority.resolve_effect_failure(error)
             raise primary from primary.__cause__
 
-    def _stage(self, files: Iterable[StagedEntry]):
+    def _stage(self, files: Iterable[StagedEntry]) -> None:
         connection = self._connection_or_error()
         archive = build_archive(files)
         primary: BaseException | None = None
@@ -256,7 +256,6 @@ class SessionController:
                 raise ValueError("remote staged-file byte count differs from manifest")
             if message["sha256"] != archive.sha256:
                 raise ValueError("remote staged-file digest differs from manifest")
-            return message
         except (ProtocolError, ValueError) as error:
             raise SessionError(f"invalid remote staging response: {result.stdout!r}") from error
 

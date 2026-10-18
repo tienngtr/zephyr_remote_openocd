@@ -111,7 +111,7 @@ def _require_dependencies(config_path: Path) -> None:
 class _StrictLoader(yaml.SafeLoader if yaml is not None else object):  # type: ignore[misc]
     """SafeLoader that rejects duplicate and non-string mapping keys."""
 
-    def construct_mapping(self, node, deep: bool = False):
+    def construct_mapping(self, node: yaml.Node, deep: bool = False) -> dict[str, object]:
         if not isinstance(node, yaml.MappingNode):
             raise yaml.constructor.ConstructorError(
                 None, None, "expected a mapping", node.start_mark

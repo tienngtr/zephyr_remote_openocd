@@ -16,7 +16,7 @@ _OPENOCD_VERSION_FIELDS = frozenset(("output",))
 _DEPLOYMENT_FIELDS = frozenset(("status", "path", "sha256"))
 
 
-def _non_empty_string(value: Any) -> bool:
+def _non_empty_string(value: object) -> bool:
     return isinstance(value, str) and bool(value)
 
 
@@ -57,7 +57,7 @@ def validate_staged_response(message: dict[str, Any]) -> None:
         raise ProtocolError("invalid STAGED response")
 
 
-def _valid_manifest_path(value: Any) -> bool:
+def _valid_manifest_path(value: object) -> bool:
     if not isinstance(value, str) or not value or "\0" in value:
         return False
     path = PurePosixPath(value)
@@ -84,7 +84,7 @@ def validate_openocd_version_response(message: dict[str, Any]) -> None:
         raise ProtocolError("invalid OPENOCD_VERSION response")
 
 
-def _sha256(value: Any) -> bool:
+def _sha256(value: object) -> bool:
     return (
         isinstance(value, str)
         and len(value) == SHA256_HEX_DIGEST_LENGTH

@@ -36,11 +36,11 @@ class _SentinelMatcher:
         self.required_output_sentinels = required_output_sentinels
         self._reset_line()
 
-    def _reset_line(self):
+    def _reset_line(self) -> None:
         self._candidates = {sentinel: 0 for sentinel in self.required_output_sentinels.unseen}
         self._started = False
 
-    def feed(self, character):
+    def feed(self, character: str) -> None:
         if self.required_output_sentinels.ready or not self._candidates:
             return
         if not self._started and character.isspace():
@@ -54,7 +54,7 @@ class _SentinelMatcher:
             else:
                 del self._candidates[sentinel]
 
-    def finish_line(self):
+    def finish_line(self) -> None:
         for sentinel, index in self._candidates.items():
             if self._started and index == len(sentinel):
                 self.required_output_sentinels.observe(sentinel)
@@ -81,9 +81,9 @@ class OutputDecoder:
         self.pending: list[str] = []
 
     def feed(self, chunk: bytes) -> list[CapturedFragment]:
-        fragments = []
+        fragments: list[CapturedFragment] = []
 
-        def fragment(line_end=False):
+        def fragment(line_end: bool = False) -> None:
             fragments.append(CapturedFragment(self.stream_name, "".join(self.pending), line_end))
             self.pending.clear()
 

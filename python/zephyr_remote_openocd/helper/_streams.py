@@ -23,7 +23,7 @@ protocol_output: contextvars.ContextVar[ProtocolOutput | None] = contextvars.Con
 )
 
 
-def emit(kind, **values):
+def emit(kind: str, **values: object) -> None:
     frame = encode_frame(kind, **values)
     output = protocol_output.get()
     if output is None:
@@ -33,7 +33,7 @@ def emit(kind, **values):
         output.enqueue(frame)
 
 
-def error(message, code="HELPER_ERROR"):
+def error(message: object, code: str = "HELPER_ERROR") -> None:
     diagnostic = "\n".join((str(message), *getattr(message, "__notes__", ())))
     emit("ERROR", code=code, message=diagnostic)
 
@@ -43,7 +43,7 @@ async def readable(descriptor: int) -> None:
     loop = asyncio.get_running_loop()
     ready = loop.create_future()
 
-    def observed():
+    def observed() -> None:
         if not ready.done():
             ready.set_result(None)
 
@@ -73,7 +73,7 @@ def _acquire_nonblocking(descriptor: int) -> bool:
 class ProtocolOutput:
     """Session-owned nonblocking JSON output with bounded buffering and cleanup."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.stream = sys.stdout
         try:
             self.descriptor: int | None = self.stream.fileno()
@@ -110,7 +110,7 @@ class ProtocolOutput:
         loop = asyncio.get_running_loop()
         ready = loop.create_future()
 
-        def observed():
+        def observed() -> None:
             if not ready.done():
                 ready.set_result(None)
 
@@ -167,7 +167,7 @@ class ProtocolOutput:
 class AsyncInput:
     """One cancellable raw observation path for an owned input descriptor."""
 
-    def __init__(self, descriptor: int):
+    def __init__(self, descriptor: int) -> None:
         self.descriptor = descriptor
         self._wake: asyncio.Future[None] | None = None
         self._checkpoint: asyncio.Future[None] | None = None

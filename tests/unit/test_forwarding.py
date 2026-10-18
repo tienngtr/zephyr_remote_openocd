@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import os
+import select
 import shlex
 import signal
 import subprocess
@@ -12,7 +13,7 @@ import time
 from collections.abc import Iterator
 from contextlib import suppress
 from types import FrameType, SimpleNamespace
-from typing import IO, Any, cast, override
+from typing import IO, Any, override
 
 import pytest
 from zephyr_remote_openocd.controller import _forwarding as forwarding_module
@@ -34,15 +35,18 @@ from zephyr_remote_openocd.controller.api import (
 from zephyr_remote_openocd.controller.cancellation import operation_scope
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 
+from tests.process_support import local_transport, stop_and_close
+
 FORWARD_FAILURE_RC = 13
 SAMPLE_FORWARD_EXIT_CODE = 9
 
-# The Any/cast uses in this module are confined to the subprocess boundary.
+# The Any uses in this module are confined to the subprocess boundary.
 # ForwardManager owns the full ManagedSshProcess lifecycle, so introducing a
 # narrower production protocol would only accommodate tests.  These doubles
-# provide deterministic poll results, diagnostics, and partial readiness input;
-# normal stderr-drain behavior uses a real SshCommand process below, and full
-# cleanup ownership is covered with real managed processes in local integration.
+# provide deterministic poll results and diagnostics; normal stderr-drain
+# behavior and partial readiness input use real SshCommand processes below, and
+# full cleanup ownership is covered with real managed processes in local
+# integration.
 
 
 class _ForwardCommand(SshCommand):
@@ -122,26 +126,21 @@ def test_process_creation_failure_has_service_identity_without_ownership(monkeyp
 
 @pytest.mark.timeout(60)
 def test_forward_readiness_timeout_does_not_block_on_partial_output():
-    read_fd, write_fd = os.pipe()
-
-    class Process:
-        # A transport that has not exited: its pidfd never becomes readable.
-        pid = os.getpid()
-        returncode = None
-
-        def __init__(self):
-            self.stdout = os.fdopen(read_fd, "rb", buffering=0)
-
-    process = Process()
+    # A live transport that writes a partial marker and then waits on stdin.
+    code = (
+        "import sys; sys.stdout.buffer.write(b'ZRO_FORWARD_'); sys.stdout.flush(); "
+        "sys.stdin.buffer.read()"
+    )
+    process = local_transport((sys.executable, "-c", code))
     try:
-        os.write(write_fd, b"ZRO_FORWARD_")
+        assert process.stdout is not None
+        readable, _, _ = select.select((process.stdout,), (), (), 30)
+        assert readable
         # The readiness deadline has already passed when the marker is partial.
-        assert not forwarding_module.await_ready(
-            cast(Any, process), "ZRO_FORWARD_ready", time.monotonic()
-        )
+        assert not forwarding_module.await_ready(process, "ZRO_FORWARD_ready", time.monotonic())
+        assert process.poll() is None
     finally:
-        process.stdout.close()
-        os.close(write_fd)
+        stop_and_close(process)
 
 
 def test_forward_diagnostic_keeps_a_useful_tail_after_nonzero_exit():

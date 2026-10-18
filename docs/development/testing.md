@@ -220,6 +220,16 @@ concurrency policy is reviewed design evidence. These checks use no SSH server,
 OpenOCD, or hardware. The Zephyr compatibility import boundary is enforced by
 `scripts/contributor/static_check.py`.
 
+Ordinary static checks see Zephyr's `runners` package as untyped, so the
+adapter's upstream base class and runner attributes are unchecked there. The
+Zephyr integration CI job also type-checks the repository against the selected
+checkout's runners; run the same check locally with:
+
+```sh
+git ls-files '*.py' | MYPYPATH=/path/to/zephyr/scripts/west_commands \
+xargs .venv/bin/python -m mypy --config-file=mypy.ini --follow-imports=silent
+```
+
 Native SSH tests require an `ssh` executable on `PATH` and a reachable host
 from the inventory. Zephyr integration additionally requires a Zephyr checkout,
 the `west` executable used by that checkout, and a supported Zephyr

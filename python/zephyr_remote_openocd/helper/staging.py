@@ -17,7 +17,7 @@ from zephyr_remote_openocd.helper import _streams as streams
 from zephyr_remote_openocd.helper import _workspace as workspace
 
 
-def valid_member(member, seen):
+def valid_member(member: tarfile.TarInfo, seen: set[PurePosixPath]) -> PurePosixPath:
     name = member.name
     if member.isdir() and name.endswith("/"):
         name = name[:-1]

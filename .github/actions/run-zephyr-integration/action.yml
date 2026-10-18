@@ -42,6 +42,15 @@ runs:
         west update --narrow -o=--depth=1
         python -m pip install -r "$ZEPHYR_BASE/scripts/requirements-base.txt"
         printf 'WEST=%s\n' "$(command -v west)" >> "$GITHUB_ENV"
+    # Ordinary static checks cannot resolve Zephyr's runners package, so the
+    # adapter's upstream base class is checked only here.
+    - name: Type-check against the selected Zephyr runners
+      env:
+        MYPYPATH: ${{ runner.temp }}/zephyr-workspace/zephyr/scripts/west_commands
+      shell: bash
+      run: |
+        git ls-files -z '*.py' |
+          xargs -0 python -m mypy --config-file=mypy.ini --follow-imports=silent
     - name: Determine version of Zephyr SDK to use
       id: sdk
       shell: bash

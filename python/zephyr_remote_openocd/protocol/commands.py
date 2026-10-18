@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable
-from typing import BinaryIO, NamedTuple
+from typing import Any, BinaryIO, NamedTuple
 
 from zephyr_remote_openocd.protocol.addresses import validate_preferred_address
 from zephyr_remote_openocd.protocol.arguments import ArgumentTemplate, SessionValue, TclWord
@@ -24,7 +24,7 @@ from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.protocol.wire import decode_frame, encode_frame
 
 
-def _parse_listeners(listeners):
+def _parse_listeners(listeners: object) -> tuple[ListenerSpec, ...]:
     if not isinstance(listeners, list) or not all(
         isinstance(item, dict) and set(item) == {"name", "remote_port"} for item in listeners
     ):
@@ -42,7 +42,7 @@ def validate_argv(argv: object) -> None:
         raise ValueError("START requires a non-empty string argv")
 
 
-def _validate_environment(environment):
+def _validate_environment(environment: object) -> None:
     if not isinstance(environment, dict):
         raise ValueError("START environment must contain valid string values")
     for key, value in environment.items():
@@ -57,7 +57,7 @@ def _validate_environment(environment):
             raise ValueError("START environment must contain valid string values")
 
 
-def _validate_required_output_sentinels(sentinels):
+def _validate_required_output_sentinels(sentinels: object) -> None:
     if not isinstance(sentinels, list) or not all(
         isinstance(sentinel, str)
         and sentinel
@@ -72,7 +72,7 @@ def _validate_required_output_sentinels(sentinels):
         raise ValueError("START required output markers must be unique")
 
 
-def _validate_timeout(timeout):
+def _validate_timeout(timeout: object) -> None:
     if (
         not isinstance(timeout, (int, float))
         or isinstance(timeout, bool)
@@ -82,7 +82,7 @@ def _validate_timeout(timeout):
         raise ValueError("START readiness options are invalid")
 
 
-def _validate_literal_prefix(literal_prefix, argv_length):
+def _validate_literal_prefix(literal_prefix: object, argv_length: int) -> None:
     if (
         isinstance(literal_prefix, bool)
         or not isinstance(literal_prefix, int)
@@ -91,31 +91,44 @@ def _validate_literal_prefix(literal_prefix, argv_length):
         raise ValueError("START readiness options are invalid")
 
 
-def _validate_options(sentinels, timeout, literal_prefix, argv_length):
+def _validate_options(
+    sentinels: object, timeout: object, literal_prefix: object, argv_length: int
+) -> None:
     _validate_required_output_sentinels(sentinels)
     _validate_timeout(timeout)
     _validate_literal_prefix(literal_prefix, argv_length)
 
 
-def _parse_template_parts(values, *, allow_tcl=True):
+def _parse_plain_part(value: object) -> str | SessionValue:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict) and set(value) == {"session"}:
+        return SessionValue(value["session"])
+    raise ValueError("invalid argument template part")
+
+
+def _parse_plain_parts(values: object) -> tuple[str | SessionValue, ...]:
+    if not isinstance(values, list) or not values:
+        raise ValueError("invalid argument template parts")
+    return tuple(_parse_plain_part(value) for value in values)
+
+
+def _parse_argv_parts(values: object) -> tuple[str | SessionValue | TclWord, ...]:
     # Tcl words are argv-only and contain no nested words. Enforcing that here
     # keeps paths free of Tcl quoting and bounds recursion on hostile input.
     if not isinstance(values, list) or not values:
         raise ValueError("invalid argument template parts")
-    parts: list[str | SessionValue | TclWord] = []
-    for value in values:
-        if isinstance(value, str):
-            parts.append(value)
-        elif isinstance(value, dict) and set(value) == {"session"}:
-            parts.append(SessionValue(value["session"]))
-        elif allow_tcl and isinstance(value, dict) and set(value) == {"tcl_word"}:
-            parts.append(TclWord(_parse_template_parts(value["tcl_word"], allow_tcl=False)))
-        else:
-            raise ValueError("invalid argument template part")
-    return tuple(parts)
+    return tuple(
+        TclWord(_parse_plain_parts(value["tcl_word"]))
+        if isinstance(value, dict) and set(value) == {"tcl_word"}
+        else _parse_plain_part(value)
+        for value in values
+    )
 
 
-def _parse_argv_templates(values, argv_length, literal_prefix):
+def _parse_argv_templates(
+    values: object, argv_length: int, literal_prefix: int
+) -> tuple[tuple[int, ArgumentTemplate], ...]:
     if not isinstance(values, list):
         raise ValueError("invalid argv templates")
     templates = []
@@ -132,7 +145,7 @@ def _parse_argv_templates(values, argv_length, literal_prefix):
         ):
             raise ValueError("invalid argv template index")
         seen.add(index)
-        templates.append((index, ArgumentTemplate(_parse_template_parts(value["parts"]))))
+        templates.append((index, ArgumentTemplate(_parse_argv_parts(value["parts"]))))
     return tuple(templates)
 
 
@@ -154,13 +167,13 @@ class StartRequest(NamedTuple):
     preferred_address: str | None
 
 
-def _parse_required_paths(values):
+def _parse_required_paths(values: object) -> tuple[RequiredPath, ...]:
     if not isinstance(values, list):
         raise ValueError("invalid required-path assertion")
     return tuple(_parse_required_path(item) for item in values)
 
 
-def _parse_required_path(item):
+def _parse_required_path(item: object) -> RequiredPath:
     if (
         not isinstance(item, dict)
         or set(item) != {"kind", "path"}
@@ -172,13 +185,13 @@ def _parse_required_path(item):
         if not path or "\0" in path:
             raise ValueError("invalid required-path assertion")
     elif isinstance(path, dict) and set(path) == {"parts"}:
-        path = ArgumentTemplate(_parse_template_parts(path["parts"], allow_tcl=False))
+        path = ArgumentTemplate(_parse_plain_parts(path["parts"]))
     else:
         raise ValueError("invalid required-path assertion")
     return RequiredPath(item["kind"], path)
 
 
-def _decode_start(message):
+def _decode_start(message: dict[str, Any]) -> StartRequest:
     fields = {
         "version",
         "type",

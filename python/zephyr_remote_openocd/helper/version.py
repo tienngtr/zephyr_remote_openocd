@@ -9,7 +9,7 @@ import subprocess
 from zephyr_remote_openocd.helper import _streams as streams
 
 
-def openocd_version(argv):
+def openocd_version(argv: list[str]) -> None:
     if (
         not argv
         or not isinstance(argv[0], str)

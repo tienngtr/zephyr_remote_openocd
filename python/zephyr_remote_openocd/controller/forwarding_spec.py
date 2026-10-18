@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Hashable, Iterable
 from dataclasses import dataclass
 
 from zephyr_remote_openocd.protocol.listeners import DuplicateEndpointError, ListenerSpec
@@ -28,7 +28,7 @@ class ForwardSpec:
         return ListenerSpec(self.name, self.remote_port)
 
 
-def _ensure_unique(values, label: str) -> None:
+def _ensure_unique(values: Iterable[Hashable], label: str) -> None:
     values = tuple(values)
     if len(values) != len(set(values)):
         raise DuplicateEndpointError(label)

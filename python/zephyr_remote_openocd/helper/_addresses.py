@@ -8,7 +8,9 @@ import errno
 import ipaddress
 import secrets
 import socket
+from collections.abc import Sequence
 from itertools import chain
+from typing import Self
 
 from zephyr_remote_openocd.helper._cleanup import raise_cleanup_errors
 from zephyr_remote_openocd.protocol.addresses import LOOPBACK_RANGE
@@ -16,7 +18,7 @@ from zephyr_remote_openocd.protocol.addresses import LOOPBACK_RANGE
 MAX_ADDRESS_ALLOCATION_ATTEMPTS = 32
 
 
-def random_address():
+def random_address() -> str:
     # Exclude network/broadcast endpoints without material bias.
     return str(
         ipaddress.IPv4Address(
@@ -32,13 +34,15 @@ class AllocatedAddress(str):
 
     lease: socket.socket
 
-    def __new__(cls, address, lease):
+    def __new__(cls, address: str, lease: socket.socket) -> Self:
         value = super().__new__(cls, address)
         value.lease = lease
         return value
 
 
-def allocate_listener_address(ports, preferred_address=None):
+def allocate_listener_address(
+    ports: Sequence[int], preferred_address: str | None = None
+) -> AllocatedAddress:
     preferred = () if preferred_address is None else (preferred_address,)
     candidates = chain(
         preferred, (random_address() for _ in range(MAX_ADDRESS_ALLOCATION_ATTEMPTS))

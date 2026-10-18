@@ -259,7 +259,7 @@ class HelperSession:
         )
         validate_argv(list(argv))
         process.check_required_paths(
-            request.required_paths, {"workspace": str(self.work), "address": self.address}
+            request.required_paths, workspace=str(self.work), address=self.address
         )
         self.account_recorded_failures()
         if not isinstance(self.lifecycle.state, Starting):
@@ -316,7 +316,7 @@ class HelperSession:
             if name in observed or name in child.output_finished:
                 continue
             try:
-                stream = getattr(child.process, name)
+                stream = child.process.stdout if name == "stdout" else child.process.stderr
                 if stream is None:
                     raise RuntimeError("child output was not captured")
                 if stream.closed:

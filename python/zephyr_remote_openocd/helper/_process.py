@@ -20,6 +20,7 @@ from zephyr_remote_openocd.helper._child_output import OutputDecoder, RequiredOu
 from zephyr_remote_openocd.helper._cleanup import raise_cleanup_errors
 from zephyr_remote_openocd.helper._streams import AsyncInput, readable
 from zephyr_remote_openocd.protocol.arguments import materialize_path
+from zephyr_remote_openocd.protocol.commands import RequiredPath, StartRequest
 
 if TYPE_CHECKING:
     from zephyr_remote_openocd.helper._observations import ObservationFailed
@@ -196,9 +197,9 @@ class SupervisedProcess:
             return False
         return True
 
-    def _remaining_group_members(self):
+    def _remaining_group_members(self) -> tuple[int, ...]:
         """Return observable non-leader members of the owned process group."""
-        members = []
+        members: list[int] = []
         try:
             entries = Path("/proc").iterdir()
         except OSError:
@@ -214,7 +215,7 @@ class SupervisedProcess:
                 continue
         return tuple(members)
 
-    def _warn_remaining_group_members(self):
+    def _warn_remaining_group_members(self) -> None:
         members = self._remaining_group_members()
         if members:
             message = (
@@ -309,8 +310,10 @@ class SupervisedProcess:
         raise_cleanup_errors(errors)
 
 
-def rollback_spawned_process(process, ownership: ChildAcquisition | None = None):
-    errors = []
+def rollback_spawned_process(
+    process: ChildProcessHandle, ownership: ChildAcquisition | None = None
+) -> None:
+    errors: list[BaseException] = []
     try:
         observed = _poll_unreaped_process(process)
     except BaseException as error:
@@ -345,11 +348,11 @@ def rollback_spawned_process(process, ownership: ChildAcquisition | None = None)
 
 
 def spawn_child(
-    argv,
+    argv: Sequence[str],
     *,
-    cwd=None,
-    environment=None,
-    required_output_sentinels=(),
+    cwd: Path | None = None,
+    environment: Mapping[str, str] | None = None,
+    required_output_sentinels: Iterable[str] = (),
     ownership: ChildAcquisition | None = None,
 ) -> SupervisedProcess:
     owner = ownership if ownership is not None else ChildAcquisition()
@@ -381,9 +384,9 @@ def spawn_child(
         owner.producer_quiescent = True
 
 
-def check_required_paths(checks, replacements):
+def check_required_paths(checks: Iterable[RequiredPath], *, workspace: str, address: str) -> None:
     for check in checks:
-        path = materialize_path(check.path, **replacements)
+        path = materialize_path(check.path, workspace=workspace, address=address)
         if not path:
             raise ValueError("required remote path must not be empty")
         candidate = Path(path)
@@ -392,7 +395,7 @@ def check_required_paths(checks, replacements):
             raise ValueError(f"required remote {check.kind} is missing: {candidate}")
 
 
-def child_environment(request):
+def child_environment(request: StartRequest) -> dict[str, str]:
     environment = os.environ.copy()
     environment.update(dict(request.environment))
     return environment

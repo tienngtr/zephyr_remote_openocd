@@ -8,13 +8,16 @@ import signal
 import subprocess
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import BinaryIO, Protocol, cast
+from typing import IO, TYPE_CHECKING, BinaryIO, Protocol
 
 from zephyr_remote_openocd.controller._cleanup import add_failure_note, raise_cleanup_errors
 from zephyr_remote_openocd.controller._processes import run_finite, terminate_process
 from zephyr_remote_openocd.controller.cancellation import admit_effect
+
+if TYPE_CHECKING:
+    from _typeshed import StrOrBytesPath
 
 # SSH diagnostics must never be allowed to fill the OS pipe, but retaining a
 # small tail keeps connection and forwarding failures actionable.  This limit
@@ -39,7 +42,7 @@ class SshProcessStartError(RuntimeError):
 class StderrDrain:
     """Consume a process stderr pipe while retaining a bounded byte tail."""
 
-    def __init__(self, stream: BinaryIO):
+    def __init__(self, stream: IO[bytes]) -> None:
         self._stream = stream
         self._tail = bytearray()
         self._lock = threading.Lock()
@@ -125,7 +128,7 @@ class ManagedSshProcess:
         assert self._process is None
         self._process = _OwnedSshPopen(self, argv)
         assert self._process.stderr is not None
-        self._drain = StderrDrain(cast(BinaryIO, self._process.stderr))
+        self._drain = StderrDrain(self._process.stderr)
         self._drain.start()
         self._process.stderr = None
 
@@ -159,7 +162,7 @@ class ManagedSshProcess:
         return self._process
 
     @property
-    def args(self):
+    def args(self) -> StrOrBytesPath | Sequence[StrOrBytesPath]:
         return self._process_or_error().args
 
     @property
@@ -167,27 +170,27 @@ class ManagedSshProcess:
         return self._process_or_error().pid
 
     @property
-    def stdin(self):
+    def stdin(self) -> IO[bytes] | None:
         return None if self._process is None else self._process.stdin
 
     @property
-    def stdout(self):
+    def stdout(self) -> IO[bytes] | None:
         return None if self._process is None else self._process.stdout
 
     @property
-    def returncode(self):
+    def returncode(self) -> int | None:
         return None if self._process is None else self._process.returncode
 
-    def poll(self):
+    def poll(self) -> int | None:
         return self._process_or_error().poll()
 
-    def wait(self, timeout=None):
+    def wait(self, timeout: float | None = None) -> int:
         return self._process_or_error().wait(timeout=timeout)
 
-    def terminate(self):
+    def terminate(self) -> None:
         self._process_or_error().terminate()
 
-    def kill(self):
+    def kill(self) -> None:
         self._process_or_error().kill()
 
     def stderr_tail(self) -> bytes:
@@ -220,10 +223,10 @@ class ProcessControl(Protocol):
     """Process operations and resources needed during SSH cleanup."""
 
     @property
-    def stdin(self) -> BinaryIO | None: ...
+    def stdin(self) -> IO[bytes] | None: ...
 
     @property
-    def stdout(self) -> BinaryIO | None: ...
+    def stdout(self) -> IO[bytes] | None: ...
 
     def poll(self) -> int | None: ...
 

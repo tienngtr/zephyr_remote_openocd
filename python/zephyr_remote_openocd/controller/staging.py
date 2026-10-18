@@ -31,7 +31,7 @@ class ArchiveInfo:
 class _DigestingReader:
     """Hash file bytes as tarfile consumes them without buffering the file."""
 
-    def __init__(self, source: BinaryIO, digest) -> None:
+    def __init__(self, source: BinaryIO, digest: hashlib._Hash) -> None:
         self.source = source
         self.digest = digest
         self.byte_count = 0

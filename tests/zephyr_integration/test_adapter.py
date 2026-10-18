@@ -581,6 +581,7 @@ def test_operation_build_queries_version_without_session(
     monkeypatch.setattr(SessionController, "prepare", forbid_prepare)
     resolved, request, plan = runner_module.build_operation(runner, "debug", selected)
     assert resolved == selected
+    assert plan is not None
     assert plan.thread_info_requested
     assert plan.openocd_version == OpenOcdVersion(0, 12, 0, "Open On-Chip Debugger 0.12.0")
     assert plan.rtos_awareness
@@ -802,7 +803,8 @@ def test_interruption_during_session_acquisition_closes_owned_resources(
         for forward in forwards if phase == "ready" else ():
             process = harness.ssh.process(forward)
             assert process.returncode is not None
-            assert process.managed.stdin.closed
+            stdin = process.managed.stdin
+            assert stdin is not None and stdin.closed
     finally:
         if acquired is not None:
             acquired.close()
@@ -1716,7 +1718,8 @@ def test_active_operation_interrupt_closes_session_and_forwards(
     for forward in (*plan.forwards, *((plan.rtt_forward,) if phase == "rtt" else ())):
         process = harness.ssh.process(forward)
         assert process.returncode is not None
-        assert process.managed.stdin.closed
+        stdin = process.managed.stdin
+        assert stdin is not None and stdin.closed
 
 
 def test_ctrl_c_during_live_preparation_projects_keyboard_interrupt(runner_api, monkeypatch):

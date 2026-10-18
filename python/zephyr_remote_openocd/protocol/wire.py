@@ -12,7 +12,7 @@ import ipaddress
 import json
 import math
 from dataclasses import asdict
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, TypeGuard
 
 from zephyr_remote_openocd.protocol.addresses import LOOPBACK_RANGE
 from zephyr_remote_openocd.protocol.outcome import (
@@ -89,7 +89,7 @@ def decode_frame(frame: bytes | str) -> dict[str, Any]:
     return value
 
 
-def _check_render_values(value: Any) -> None:
+def _check_render_values(value: object) -> None:
     """Bound each JSON encoder fragment before rendering a large string."""
     if isinstance(value, str):
         if len(value) > MAX_FRAME_SIZE:
@@ -122,7 +122,7 @@ def encode_frame(kind: str, **fields: Any) -> bytes:
     return bytes(data)
 
 
-def integer(value: Any, *, low: int | None = None, high: int | None = None) -> bool:
+def integer(value: object, *, low: int | None = None, high: int | None = None) -> bool:
     return (
         isinstance(value, int)
         and not isinstance(value, bool)
@@ -131,7 +131,7 @@ def integer(value: Any, *, low: int | None = None, high: int | None = None) -> b
     )
 
 
-def string(value: Any, *, nonempty: bool = False, no_nul: bool = False) -> bool:
+def string(value: object, *, nonempty: bool = False, no_nul: bool = False) -> bool:
     return (
         isinstance(value, str)
         and (not nonempty or bool(value))
@@ -139,11 +139,11 @@ def string(value: Any, *, nonempty: bool = False, no_nul: bool = False) -> bool:
     )
 
 
-def _exact(value: Any, fields: set[str]) -> bool:
+def _exact(value: object, fields: set[str]) -> TypeGuard[dict[str, Any]]:
     return isinstance(value, dict) and set(value) == fields
 
 
-def _diagnostic(value: Any) -> Diagnostic:
+def _diagnostic(value: object) -> Diagnostic:
     if (
         not _exact(value, {"code", "message", "diagnostics"})
         or not string(value["code"], nonempty=True)
@@ -156,7 +156,7 @@ def _diagnostic(value: Any) -> Diagnostic:
     )
 
 
-def _child_result(value: Any) -> ChildResult | None:
+def _child_result(value: object) -> ChildResult | None:
     if value is None:
         return None
     if (
@@ -168,7 +168,7 @@ def _child_result(value: Any) -> ChildResult | None:
     return ChildResult(**value)
 
 
-def _cleanup(value: Any) -> CleanupReport:
+def _cleanup(value: object) -> CleanupReport:
     if (
         not _exact(value, {"child_disposal", "workspace_disposal", "residual_resources"})
         or not isinstance(value["child_disposal"], str)
@@ -225,7 +225,7 @@ def terminal_fields(snapshot: TerminalSnapshot) -> dict[str, Any]:
     return fields
 
 
-def _valid_address(value: Any) -> bool:
+def _valid_address(value: object) -> bool:
     if not isinstance(value, str):
         return False
     try:
@@ -332,7 +332,7 @@ class EventOrder:
             self.ended = True
 
 
-def is_protocol_version(value: Any) -> bool:
+def is_protocol_version(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value == VERSION
 
 

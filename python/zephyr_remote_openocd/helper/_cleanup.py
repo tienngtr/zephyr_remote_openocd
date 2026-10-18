@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 
-def raise_cleanup_errors(errors):
+def raise_cleanup_errors(errors: list[BaseException]) -> None:
     """Raise the first cleanup error after retaining subsequent diagnostics."""
     if not errors:
         return

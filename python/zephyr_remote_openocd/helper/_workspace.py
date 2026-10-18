@@ -10,9 +10,11 @@ import secrets
 import shutil
 import stat
 import time
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager, suppress
+from functools import partial
 from pathlib import Path
+from typing import IO
 
 from zephyr_remote_openocd.helper._cleanup import raise_cleanup_errors
 
@@ -26,7 +28,7 @@ MAX_SESSION_ID_ATTEMPTS = 32
 SESSION_ID_RANDOM_BYTES = 18
 
 
-def workspace_root():
+def workspace_root() -> Path:
     runtime = os.environ.get("XDG_RUNTIME_DIR")
     if runtime and Path(runtime).is_dir():
         return Path(runtime) / f"zephyr_remote_openocd-sessions-v{WORKSPACE_STORAGE_VERSION}"
@@ -103,7 +105,7 @@ def _reclaim_unmarked_workspace(work: Path) -> None:
         remove_workspace(work)
 
 
-def reclaim_stale_workspaces(root, now=None):
+def reclaim_stale_workspaces(root: Path, now: float | None = None) -> None:
     """Reclaim only entries with established inactive ownership and disposal."""
     cutoff = (time.time() if now is None else now) - STALE_SESSION_AGE
     try:
@@ -153,7 +155,7 @@ def reclaim_stale_workspaces(root, now=None):
             lock.close()
 
 
-def new_workspace():
+def new_workspace() -> tuple[str, Path, IO[bytes]]:
     root = workspace_root()
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(root, 0o700)
@@ -174,7 +176,7 @@ def new_workspace():
                 pass
             return session_id, path, lock
         except BaseException as failure:
-            cleanups = [lambda work=path: remove_workspace(work)]
+            cleanups: list[Callable[[], object]] = [partial(remove_workspace, path)]
             if lock is not None:
                 cleanups.append(lock.close)
             for cleanup in cleanups:

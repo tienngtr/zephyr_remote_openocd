@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import secrets
@@ -12,11 +13,12 @@ import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
+from typing import Self
 
-from runners.core import FileType  # pylint: disable=no-name-in-module
+from runners.core import FileType, RunnerConfig  # pylint: disable=no-name-in-module
 from runners.openocd import OpenOcdBinaryRunner  # pylint: disable=no-name-in-module
 
-from zephyr_remote_openocd.config import ConfigError, load_config, resolve_remote
+from zephyr_remote_openocd.config import ConfigError, ResolvedRemote, load_config, resolve_remote
 from zephyr_remote_openocd.controller._processes import run_finite
 from zephyr_remote_openocd.controller._rtt import run_rtt_client
 from zephyr_remote_openocd.controller.api import (
@@ -30,7 +32,9 @@ from zephyr_remote_openocd.controller.cancellation import OperationCancelled, op
 from zephyr_remote_openocd.controller.paths import PathPlanner, PathPlanningError
 from zephyr_remote_openocd.openocd.debug import (
     DebugInputs,
+    DebugPlan,
     DebugPlanError,
+    OpenOcdVersion,
     build_debug_plan,
     parse_openocd_version,
 )
@@ -45,7 +49,7 @@ from zephyr_remote_openocd.openocd.flash import (
 class RemoteOpenOcdBinaryRunner(OpenOcdBinaryRunner):
     """OpenOCD-compatible runner with a version-isolated flash integration."""
 
-    def __init__(self, cfg, parsed_args):
+    def __init__(self, cfg: RunnerConfig, parsed_args: argparse.Namespace) -> None:
         # Reuse OpenOCD's public initializer and state construction, but never
         # call its local process-launching implementation.
         image_type = cfg.file_type
@@ -98,19 +102,19 @@ class RemoteOpenOcdBinaryRunner(OpenOcdBinaryRunner):
         self.parsed_args = parsed_args
 
     @classmethod
-    def name(cls):
+    def name(cls) -> str:
         return "remote_openocd"
 
     @classmethod
-    def do_create(cls, cfg, args):
+    def do_create(cls, cfg: RunnerConfig, args: argparse.Namespace) -> Self:
         return cls(cfg, args)
 
     @classmethod
-    def do_add_parser(cls, parser):
+    def do_add_parser(cls, parser: argparse.ArgumentParser) -> None:
         super().do_add_parser(parser)
         parser.add_argument("--remote", help="select a configured remote by name")
 
-    def do_run(self, command, **kwargs):
+    def do_run(self, command: str, **kwargs: object) -> None:
         recording = os.environ.get("ZRO_RECORD") == "1"
         selected = _select_remote(self, recording)
         if recording:
@@ -119,7 +123,9 @@ class RemoteOpenOcdBinaryRunner(OpenOcdBinaryRunner):
         run_live_operation(self, command, selected)
 
 
-def run_live_operation(runner, command, selected):
+def run_live_operation(
+    runner: RemoteOpenOcdBinaryRunner, command: str, selected: ResolvedRemote
+) -> None:
     """Own runner Ctrl-C for live preparation and the session, then project it."""
     try:
         with operation_scope():
@@ -138,7 +144,9 @@ def run_live_operation(runner, command, selected):
         raise _interrupted(runner, cancelled) from None
 
 
-def _interrupted(runner, cancelled):
+def _interrupted(
+    runner: RemoteOpenOcdBinaryRunner, cancelled: OperationCancelled
+) -> KeyboardInterrupt:
     """Project primary cancellation to stock KeyboardInterrupt behavior.
 
     West reports KeyboardInterrupt only through its exit status, so retained
@@ -149,7 +157,7 @@ def _interrupted(runner, cancelled):
     return KeyboardInterrupt()
 
 
-def _select_remote(runner, recording):
+def _select_remote(runner: RemoteOpenOcdBinaryRunner, recording: bool) -> ResolvedRemote:
     try:
         document = load_config()
         return resolve_remote(
@@ -161,7 +169,9 @@ def _select_remote(runner, recording):
         raise RuntimeError(str(error)) from error
 
 
-def build_operation(runner, command, selected):
+def build_operation(
+    runner: RemoteOpenOcdBinaryRunner, command: str, selected: ResolvedRemote
+) -> tuple[ResolvedRemote, SessionPlan, DebugPlan | None]:
     if command == "flash":
         # Locally unperformable requests fail before remote-home resolution.
         validate_flash_inputs(_flash_inputs(runner, selected))
@@ -183,7 +193,9 @@ def build_operation(runner, command, selected):
     return selected, debug_request(runner, selected, plan), plan
 
 
-def execute_operation(runner, command, request, plan):
+def execute_operation(
+    runner: RemoteOpenOcdBinaryRunner, command: str, request: SessionPlan, plan: DebugPlan | None
+) -> None:
     session = SessionController.prepare(
         request,
         advisory_handler=lambda advisory: _report_forward_advisory(runner, advisory),
@@ -213,12 +225,17 @@ def execute_operation(runner, command, request, plan):
         finalize_operation(session)
 
 
-def finalize_operation(session):
+def finalize_operation(session: SessionController) -> None:
     """Publish the result selected by the session's single failure authority."""
     session.finish()
 
 
-def execute_started_operation(runner, command, plan, session):
+def execute_started_operation(
+    runner: RemoteOpenOcdBinaryRunner,
+    command: str,
+    plan: DebugPlan | None,
+    session: SessionController,
+) -> int | None:
     if command == "rtt":
         return execute_rtt(runner, plan, session)
     _report_rtt_forward(runner, plan, session)
@@ -227,38 +244,45 @@ def execute_started_operation(runner, command, plan, session):
     return execute_server(runner, command, plan, session)
 
 
-def execute_gdb_client(runner, plan, session):
+def execute_gdb_client(
+    runner: RemoteOpenOcdBinaryRunner, plan: DebugPlan | None, session: SessionController
+) -> int | None:
     assert plan is not None and plan.gdb_argv is not None
-    runner.require(plan.gdb_argv[0])
+    gdb_argv = plan.gdb_argv
+    runner.require(gdb_argv[0])
     returncode = session.poll_operation()
     if returncode is not None:
         raise RuntimeError(f"remote OpenOCD exited before GDB startup with status {returncode}")
     # The configured client, including any wrapper, owns terminal Ctrl-C.
-    session.run_interactive_client(lambda: runner.run_client(list(plan.gdb_argv)))
+    session.run_interactive_client(lambda: runner.run_client(list(gdb_argv)))
     return session.poll_operation()
 
 
-def execute_rtt(runner, plan, session):
+def execute_rtt(
+    runner: RemoteOpenOcdBinaryRunner, plan: DebugPlan | None, session: SessionController
+) -> int | None:
     assert plan is not None and plan.gdb_argv is not None
     assert plan.rtt_forward is not None
-    runner.require(plan.gdb_argv[0])
+    gdb_argv = plan.gdb_argv
+    rtt_forward = plan.rtt_forward
+    runner.require(gdb_argv[0])
     returncode = session.poll_operation()
     if returncode is not None:
         raise RuntimeError(f"remote OpenOCD exited before GDB startup with status {returncode}")
-    session.run_local_client(lambda: _run_batch_client(runner, list(plan.gdb_argv)))
+    session.run_local_client(lambda: _run_batch_client(runner, list(gdb_argv)))
     session.make_forwards_optional(
         tuple(forward for forward in plan.forwards if forward.name == "gdb")
     )
-    session.forward((plan.rtt_forward,), required=True)
+    session.forward((rtt_forward,), required=True)
     _report_rtt_forward(runner, plan, session)
 
     returncode = session.poll_operation()
     if returncode is not None:
         raise RuntimeError(f"remote OpenOCD exited before RTT startup with status {returncode}")
-    return session.run_local_client(lambda: run_rtt_client(plan.rtt_forward.local_port, session))
+    return session.run_local_client(lambda: run_rtt_client(rtt_forward.local_port, session))
 
 
-def _run_batch_client(runner, argv):
+def _run_batch_client(runner: RemoteOpenOcdBinaryRunner, argv: list[str]) -> None:
     """Run batch GDB setup as cancellable work with check_call() result semantics."""
     runner.logger.debug(shlex.join(argv))
     result = run_finite(argv, capture_output=False)
@@ -266,7 +290,12 @@ def _run_batch_client(runner, argv):
         raise subprocess.CalledProcessError(result.returncode, argv)
 
 
-def execute_server(runner, command, plan, session):
+def execute_server(
+    runner: RemoteOpenOcdBinaryRunner,
+    command: str,
+    plan: DebugPlan | None,
+    session: SessionController,
+) -> int:
     if command == "debugserver":
         assert plan is not None
         gdb = next(item for item in plan.forwards if item.name == "gdb")
@@ -277,7 +306,9 @@ def execute_server(runner, command, plan, session):
     return session.wait_for_openocd_exit()
 
 
-def _report_rtt_forward(runner, plan, session):
+def _report_rtt_forward(
+    runner: RemoteOpenOcdBinaryRunner, plan: DebugPlan | None, session: SessionController
+) -> None:
     if plan is not None and plan.rtt_forward in session.forwarded_specs:
         runner.logger.info(
             "Remote OpenOCD RTT forwarding established at 127.0.0.1:%s",
@@ -285,7 +316,7 @@ def _report_rtt_forward(runner, plan, session):
         )
 
 
-def _report_forward_advisory(runner, advisory: ForwardAdvisory) -> None:
+def _report_forward_advisory(runner: RemoteOpenOcdBinaryRunner, advisory: ForwardAdvisory) -> None:
     runner.logger.warning(
         "Best-effort %s forwarding %s failure on 127.0.0.1:%s: %s",
         advisory.forward.name,
@@ -299,7 +330,9 @@ def _report_forward_advisory(runner, advisory: ForwardAdvisory) -> None:
         )
 
 
-def _record_runner(runner, command, selected):
+def _record_runner(
+    runner: RemoteOpenOcdBinaryRunner, command: str, selected: ResolvedRemote
+) -> None:
     request, local_gdb, thread_info, rtt = record_operation(runner, command, selected)
     payload = {
         "recording": True,
@@ -316,7 +349,7 @@ def _record_runner(runner, command, selected):
     print(json.dumps(payload, indent=2, sort_keys=True, default=str))
 
 
-def _recorded_runner_args(runner):
+def _recorded_runner_args(runner: RemoteOpenOcdBinaryRunner) -> dict[str, object]:
     return {
         key: value
         for key, value in vars(runner.parsed_args).items()
@@ -324,7 +357,7 @@ def _recorded_runner_args(runner):
     }
 
 
-def _recorded_runner_config(runner):
+def _recorded_runner_config(runner: RemoteOpenOcdBinaryRunner) -> dict[str, object]:
     return {
         key: _json_value(getattr(runner.remote_config, key, None))
         for key in (
@@ -341,7 +374,11 @@ def _recorded_runner_config(runner):
     }
 
 
-def record_operation(runner, command, selected):
+def record_operation(
+    runner: RemoteOpenOcdBinaryRunner, command: str, selected: ResolvedRemote
+) -> tuple[
+    SessionPlan | None, list[str] | None, dict[str, object] | None, dict[str, object] | None
+]:
     if not selected.remote_host or not selected.remote_openocd:
         return None, None, None, None
     if command == "flash":
@@ -356,7 +393,7 @@ def record_operation(runner, command, selected):
         )
     version = parse_openocd_version(supplied) if requested and supplied is not None else None
     plan = _debug_plan(runner, command, selected, version)
-    thread_info = {
+    thread_info: dict[str, object] = {
         "requested": requested,
         "version": supplied if requested else None,
         "version_source": "injected" if requested else None,
@@ -367,7 +404,9 @@ def record_operation(runner, command, selected):
     return debug_request(runner, selected, plan), local_gdb, thread_info, rtt
 
 
-def _recorded_rtt(runner, command, plan):
+def _recorded_rtt(
+    runner: RemoteOpenOcdBinaryRunner, command: str, plan: DebugPlan
+) -> dict[str, object]:
     forward = plan.rtt_forward
     return {
         "enabled": forward is not None,
@@ -381,7 +420,7 @@ def _recorded_rtt(runner, command, plan):
     }
 
 
-def _flash_inputs(runner, selected):
+def _flash_inputs(runner: RemoteOpenOcdBinaryRunner, selected: ResolvedRemote) -> FlashInputs:
     return FlashInputs(
         executable=_remote_openocd(selected),
         image_type=_file_type(runner.image_type),
@@ -408,7 +447,7 @@ def _flash_inputs(runner, selected):
     )
 
 
-def _flash_request(runner, selected):
+def _flash_request(runner: RemoteOpenOcdBinaryRunner, selected: ResolvedRemote) -> SessionPlan:
     environment = _forwarded_environment(runner, selected)
     planner = PathPlanner(selected.path_mappings)
     plan = build_flash_plan(_flash_inputs(runner, selected), planner, environment)
@@ -421,11 +460,13 @@ def _flash_request(runner, selected):
     )
 
 
-def _remote_openocd(selected):
+def _remote_openocd(selected: ResolvedRemote) -> tuple[str, ...]:
     return selected.openocd_command
 
 
-def _forwarded_environment(runner, selected):
+def _forwarded_environment(
+    runner: RemoteOpenOcdBinaryRunner, selected: ResolvedRemote
+) -> tuple[tuple[str, str], ...]:
     environment = []
     for name in selected.forward_env:
         value = os.environ.get(name)
@@ -438,7 +479,7 @@ def _forwarded_environment(runner, selected):
     return tuple(environment)
 
 
-def prepare_remote_paths(selected):
+def prepare_remote_paths(selected: ResolvedRemote) -> ResolvedRemote:
     """Resolve remote ``~`` paths once before any OpenOCD planning."""
     if not _needs_remote_home(selected.openocd_command[0]) and not any(
         _needs_remote_home(str(mapping.remote)) for mapping in selected.path_mappings
@@ -479,7 +520,7 @@ def _needs_remote_home(value: str) -> bool:
     return value == "~" or value.startswith("~/")
 
 
-def _search_paths(runner):
+def _search_paths(runner: RemoteOpenOcdBinaryRunner) -> tuple[str, ...]:
     return tuple(
         runner.openocd_cmd[index + 1]
         for index, argument in enumerate(runner.openocd_cmd[:-1])
@@ -487,7 +528,12 @@ def _search_paths(runner):
     )
 
 
-def _debug_plan(runner, command, selected, version):
+def _debug_plan(
+    runner: RemoteOpenOcdBinaryRunner,
+    command: str,
+    selected: ResolvedRemote,
+    version: OpenOcdVersion | None,
+) -> DebugPlan:
     planner = PathPlanner(selected.path_mappings)
     sentinel_suffix = secrets.token_hex(16)
     rtt_requested = command == "rtt" or runner.parsed_args.rtt_server
@@ -526,7 +572,9 @@ def _debug_plan(runner, command, selected, version):
     )
 
 
-def debug_request(runner, selected, plan):
+def debug_request(
+    runner: RemoteOpenOcdBinaryRunner, selected: ResolvedRemote, plan: DebugPlan
+) -> SessionPlan:
     return SessionPlan(
         selected.remote_host,
         SshCommand(selected.ssh_command),
@@ -538,7 +586,7 @@ def debug_request(runner, selected, plan):
     )
 
 
-def _json_value(value):
+def _json_value(value: object) -> object:
     if hasattr(value, "value"):
         return value.value
     return value
@@ -595,7 +643,7 @@ def _request_record(request: SessionPlan) -> dict[str, object]:
     }
 
 
-def _file_type(value):
+def _file_type(value: object) -> str | None:
     if value == FileType.ELF:
         return "elf"
     if value == FileType.HEX:
@@ -607,7 +655,7 @@ def _file_type(value):
     return None
 
 
-def write_output(stream, payload, line_end):
+def write_output(stream: str, payload: str, line_end: bool) -> None:
     destination = sys.stderr if stream == "stderr" else sys.stdout
     destination.write(payload)
     if line_end:
