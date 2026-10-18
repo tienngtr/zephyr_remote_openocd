@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import sys
 from pathlib import Path
 
@@ -27,3 +28,16 @@ if str(PYTHON_ROOT) not in sys.path:
 def env_path(name: str) -> Path | None:
     value = os.environ.get(name)
     return Path(value).expanduser().resolve() if value else None
+
+
+def fixture_command(directory: Path, fixture: str, *arguments: str) -> Path:
+    """Write a single-executable launcher for a ``tests/fixtures`` program.
+
+    Configured SSH commands receive forwarding options directly after their
+    first element, so an SSH replacement must be one executable.
+    """
+    launcher = directory / Path(fixture).stem
+    command = shlex.join((sys.executable, str(ROOT / "tests/fixtures" / fixture), *arguments))
+    launcher.write_text(f'#!/bin/sh\nexec {command} "$@"\n', encoding="utf-8")
+    launcher.chmod(0o755)
+    return launcher

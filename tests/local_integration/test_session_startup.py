@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import os
-import sys
 import threading
 from pathlib import Path
 from typing import override
@@ -24,43 +23,7 @@ from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.protocol.wire import ProtocolError
 
 from tests.process_support import cleanup_on_exit
-
-PEER = r'''
-import hashlib, json, re, sys
-from pathlib import Path
-root = Path(__file__).parent
-command = sys.argv[-1]
-def emit(kind, **fields):
-    print(json.dumps(dict(version=1, type=kind, **fields)), flush=True)
-if command.endswith(" control"):
-    emit("SESSION_CREATED", helper="peer", session_id="session", remote_workspace="/workspace")
-    request = json.loads(sys.stdin.buffer.readline())
-    emit("ATTEMPT", argv=request["argv"])
-    emit("READY", remote_address="127.64.0.1", child_pid=1)
-    with (root / "gate").open("rb", buffering=0) as gate:
-        assert gate.read(1) == b"x"
-    terminal = (root / "terminal").read_text()
-    if terminal == "reader":
-        print("invalid helper frame", flush=True)
-        sys.exit(0)
-    error = (dict(code="CLEANUP_FAILED", message="failure during forwarding", diagnostics=[])
-             if terminal == "error" else None)
-    emit("SESSION_ENDED", trigger="helper_failure" if error else "child_exit",
-         primary_failure=error, diagnostics=[],
-         child_result=None if error else dict(returncode=int(terminal),
-                                             termination_requested=False),
-         cleanup=dict(child_disposal="confirmed", workspace_disposal="confirmed",
-                      residual_resources=[]))
-elif " stage " in command:
-    sys.stdin.buffer.read()
-    emit("STAGED", byte_count=0, sha256=hashlib.sha256(b"").hexdigest(), files=[], directories=[])
-elif re.search(r"ZRO_FORWARD_[0-9a-f]+", command):
-    print(re.search(r"ZRO_FORWARD_[0-9a-f]+", command).group(0), flush=True)
-    sys.stdin.buffer.read()
-else:
-    content = sys.stdin.buffer.read()
-    emit("DEPLOYED", status="reused", path="/helper.py", sha256=hashlib.sha256(content).hexdigest())
-'''
+from tests.support import fixture_command
 
 
 @pytest.mark.parametrize(
@@ -70,9 +33,7 @@ else:
 def test_acquisition_rejects_helper_termination_recorded_during_forwarding(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, terminal: str, auxiliary: bool
 ):
-    peer = tmp_path / "peer.py"
-    peer.write_text(f"#!{sys.executable}\n" + PEER)
-    peer.chmod(0o700)
+    peer = fixture_command(tmp_path, "terminal_during_forward_peer.py", str(tmp_path))
     (tmp_path / "terminal").write_text(terminal)
     os.mkfifo(tmp_path / "gate")
     recorded = threading.Event()
@@ -133,9 +94,7 @@ def test_acquisition_rejects_helper_termination_recorded_during_forwarding(
 def test_failure_recorded_during_forward_readiness_remains_primary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, terminal: str, required: bool
 ):
-    peer = tmp_path / "peer.py"
-    peer.write_text(f"#!{sys.executable}\n" + PEER)
-    peer.chmod(0o700)
+    peer = fixture_command(tmp_path, "terminal_during_forward_peer.py", str(tmp_path))
     (tmp_path / "terminal").write_text(terminal)
     os.mkfifo(tmp_path / "gate")
     recorded = threading.Event()
@@ -194,9 +153,7 @@ def test_failure_recorded_during_forward_readiness_remains_primary(
 def test_recorded_terminal_prevents_new_forward_entry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, terminal: str, required: bool
 ):
-    peer = tmp_path / "peer.py"
-    peer.write_text(f"#!{sys.executable}\n" + PEER)
-    peer.chmod(0o700)
+    peer = fixture_command(tmp_path, "terminal_during_forward_peer.py", str(tmp_path))
     (tmp_path / "terminal").write_text(terminal)
     os.mkfifo(tmp_path / "gate")
     recorded = threading.Event()

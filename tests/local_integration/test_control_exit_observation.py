@@ -40,43 +40,11 @@ from zephyr_remote_openocd.protocol.wire import MAX_FRAME_SIZE, encode_frame
 
 from tests.control_support import CREATED
 from tests.protocol_support import terminal_message
+from tests.support import ROOT
 
 pytestmark = [pytest.mark.local, pytest.mark.timeout(60)]
 _NO_WAIT_SOURCES = WaitSources()
 
-PEER = r'''
-import hashlib, json, os, sys
-from pathlib import Path
-root = Path(sys.argv[1])
-if " stage " in sys.argv[-1]:
-    sys.stdin.buffer.read()
-    print(json.dumps(dict(version=1, type="STAGED", files=[], directories=[],
-                         byte_count=0, sha256=hashlib.sha256(b"").hexdigest())), flush=True)
-    sys.exit(0)
-if os.fork() == 0:
-    os.close(0)
-    os.close(2)
-    with (root / "hold").open("rb", buffering=0) as hold:
-        with (root / "ack").open("wb", buffering=0) as ack:
-            ack.write(b"H")
-            while hold.read(1) == b"w":
-                try:
-                    os.write(1, (root / "noise").read_bytes())
-                except BrokenPipeError:
-                    pass
-                ack.write(b"W")
-            os.close(1)
-            ack.write(b"D")
-    os._exit(0)
-os.write(1, (root / "initial").read_bytes())
-if (root / "after_start").exists():
-    assert json.loads(sys.stdin.buffer.readline())["type"] == "START"
-    os.write(1, (root / "final").read_bytes())
-if (root / "exit_gate").exists():
-    with (root / "exit_gate").open("rb", buffering=0) as gate:
-        assert gate.read(1) == b"x"
-os._exit(int((root / "status").read_text()))
-'''
 ATTEMPT = encode_frame("ATTEMPT", argv=["child"])
 READY = encode_frame("READY", remote_address="127.64.0.1", child_pid=1)
 
@@ -117,8 +85,7 @@ class ExitPeer:
             (self.root / "after_start").touch()
         noise = encode_frame("CHILD_OUTPUT", stream="stdout", payload="x" * 3000, line_end=False)
         (self.root / "noise").write_bytes(noise)
-        peer = self.root / "peer.py"
-        peer.write_text(PEER)
+        peer = ROOT / "tests/fixtures/stdout_holding_peer.py"
         owner = self
 
         class Command(SshCommand):

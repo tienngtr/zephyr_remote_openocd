@@ -68,6 +68,8 @@ from tests.protocol_support import terminal_message, terminal_snapshot
 from tests.session_support import NotifiedAuthority, ObservedStatus
 from tests.support import ROOT
 
+SCRIPTED_HELPER = ROOT / "tests/fixtures/scripted_helper.py"
+
 TEST_PROCESS = ProcessSpec(("test-process",))
 OPENOCD_FAILURE_RC = 7
 HELPER_FAILURE_RC = 9
@@ -1141,58 +1143,7 @@ class TestRealProcessHelper:
         environment = os.environ.copy()
         environment["XDG_RUNTIME_DIR"] = str(tmp_path)
         # Hooks only pause real I/O boundaries; both processes run the real helper.
-        control_script = """
-import fcntl, sys, time
-from pathlib import Path
-from types import SimpleNamespace
-sys.path.insert(0, str(Path(sys.argv[1]).resolve().parents[2]))
-from zephyr_remote_openocd.helper.control import control
-from zephyr_remote_openocd.helper import _workspace as workspace
-# Hold helper deadlines steady during the success handshake; OS/asyncio clocks
-# remain real, and process/pipe deadlines are generous deadlock backstops.
-workspace.time = SimpleNamespace(
-    time=time.time, sleep=time.sleep, monotonic=lambda: 0.0,
-)
-original = fcntl.flock
-announced = False
-def flock(stream, operation):
-    global announced
-    if (not announced and str(stream.name).endswith('.lease')
-            and operation == fcntl.LOCK_EX | fcntl.LOCK_NB):
-        announced = True
-        print('CLEANUP', file=sys.stderr, flush=True)
-    return original(stream, operation)
-fcntl.flock = flock
-control()
-"""
-        stage_script = """
-import fcntl, os, sys, shutil, tarfile
-from pathlib import Path
-sys.path.insert(0, str(Path(sys.argv[1]).resolve().parents[2]))
-from zephyr_remote_openocd.helper.staging import stage
-original = shutil.copyfileobj if sys.argv[3] == 'upload' else tarfile.open
-def pause(*args, **kwargs):
-    if sys.argv[3] == 'upload':
-        result = original(*args, **kwargs)
-    print('PAUSED', file=sys.stderr, flush=True)
-    os.read(int(sys.argv[4]), 1)
-    if sys.argv[3] == 'extraction':
-        result = original(*args, **kwargs)
-    return result
-if sys.argv[3] == 'upload':
-    shutil.copyfileobj = pause
-elif sys.argv[3] == 'extraction':
-    tarfile.open = pause
-else:
-    original_flock = fcntl.flock
-    def flock(stream, operation):
-        if str(stream.name).endswith('.lease') and operation & fcntl.LOCK_SH:
-            print('PAUSED', file=sys.stderr, flush=True)
-            os.read(int(sys.argv[4]), 1)
-        return original_flock(stream, operation)
-    fcntl.flock = flock
-stage(sys.argv[2])
-"""
+        fixture = ROOT / "tests/fixtures/staging_lifetime.py"
         archive = io.BytesIO()
         with tarfile.open(fileobj=archive, mode="w") as contents:
             member = tarfile.TarInfo("nested/payload")
@@ -1202,7 +1153,7 @@ stage(sys.argv[2])
         processes = []
         try:
             control = subprocess.Popen(
-                [sys.executable, "-c", control_script, str(helper)],
+                [sys.executable, str(fixture), "control"],
                 env=environment,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
@@ -1213,15 +1164,7 @@ stage(sys.argv[2])
             assert control.stderr is not None
             workspace = Path(json.loads(read_line(control.stdout))["remote_workspace"])
             staging = subprocess.Popen(
-                [
-                    sys.executable,
-                    "-c",
-                    stage_script,
-                    str(helper),
-                    str(workspace),
-                    pause,
-                    str(release_read),
-                ],
+                [sys.executable, str(fixture), "stage", str(workspace), pause, str(release_read)],
                 env=environment,
                 pass_fds=(release_read,),
                 stdin=subprocess.PIPE,
@@ -1878,24 +1821,7 @@ stage(sys.argv[2])
                     port_socket.bind(("127.0.0.1", 0))
                     remote_port = port_socket.getsockname()[1]
                 output_sentinel = "ZRO_SENTINEL_collision"
-                child = Path(directory) / "collision_child.py"
-                child.write_text(
-                    "import os, pathlib, socket, sys\n"
-                    "state = pathlib.Path(os.environ['ZRO_COLLISION_STATE'])\n"
-                    "with state.open('a') as side_effect:\n"
-                    "    side_effect.write('startup work\\n')\n"
-                    "if sys.argv[3] == 'diagnostic':\n"
-                    "    print(\n"
-                    "        'Error: could not bind: Address already in use',\n"
-                    "        file=sys.stderr, flush=True\n"
-                    "    )\n"
-                    "    raise SystemExit(7)\n"
-                    "collision = socket.socket()\n"
-                    "collision.bind((sys.argv[1], int(sys.argv[2])))\n"
-                    "collision.listen()\n"
-                    "listener = socket.socket()\n"
-                    "listener.bind((sys.argv[1], int(sys.argv[2])))\n"
-                )
+                child = ROOT / "tests/fixtures/bind_collision_child.py"
                 process.stdin.write(
                     start_frame(
                         [
@@ -2337,7 +2263,6 @@ stage(sys.argv[2])
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
             environment["XDG_RUNTIME_DIR"] = directory
-            descendant_ready = Path(directory) / "descendant-ready"
 
             class LocalCommand(_BlockedSshCommand):
                 argv_prefix = ("local_test",)
@@ -2360,20 +2285,9 @@ stage(sys.argv[2])
                         check=False,
                     )
 
-            child_code = (
-                "import os, signal, sys, time\n"
-                "if os.fork() == 0:\n"
-                "    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
-                "    open(sys.argv[1], 'w', encoding='ascii').close()\n"
-                "    time.sleep(30)\n"
-                "else:\n"
-                "    while not os.path.exists(sys.argv[1]):\n"
-                "        time.sleep(0.01)\n"
-                "    print(sys.argv[2], flush=True)\n"
-                "    time.sleep(30)\n"
-            )
+            child = ROOT / "tests/fixtures/group_descendant_child.py"
             remote_process = ProcessSpec(
-                (sys.executable, "-c", child_code, str(descendant_ready), "ZRO_DESCENDANT_READY"),
+                (sys.executable, str(child), "ZRO_DESCENDANT_READY"),
                 required_output_sentinels=("ZRO_DESCENDANT_READY",),
             )
             output = []
@@ -2440,27 +2354,17 @@ stage(sys.argv[2])
         expected_openocd_result,
     ):
         event_stream_tail = "" if event_stream_tail is None else event_stream_tail + "\n"
-        helper_code = f"""
-import json
-import sys
-
-created = {{
-    "version": 1,
-    "type": "SESSION_CREATED",
-    "helper": "test",
-    "session_id": "id",
-    "remote_workspace": "/workspace",
-}}
-print(json.dumps(created, separators=(",", ":")), flush=True)
-sys.stdin.buffer.readline()
-sys.stdout.write({event_stream_tail!r})
-sys.stdout.flush()
-sys.exit({exit_code})
-"""
+        helper_argv = [
+            sys.executable,
+            str(SCRIPTED_HELPER),
+            str(exit_code),
+            event_stream_tail,
+            "any",
+        ]
 
         class LocalCommand(_BlockedSshCommand):
             def popen(inner, host, remote_command, *, local_forward=None, on_acquired=None):  # pylint: disable=no-self-argument
-                return local_transport([sys.executable, "-c", helper_code], on_acquired=on_acquired)
+                return local_transport(helper_argv, on_acquired=on_acquired)
 
         authority = notified_authority.authority
         helper_client = _helper_client(
@@ -2487,36 +2391,24 @@ sys.exit({exit_code})
                 helper_client.close()
 
     def test_helper_client_reports_helper_failure_after_close_event(self, notified_authority):
-        helper_code = f"""
-import json
-import sys
-
-events = (
-    {{
-        "version": 1,
-        "type": "SESSION_CREATED",
-        "helper": "test",
-        "session_id": "id",
-        "remote_workspace": "/workspace",
-    }},
-    {{"version": 1, "type": "ATTEMPT", "argv": ["test-process"]}},
-    {{"version": 1, "type": "READY", "remote_address": "127.64.0.1", "child_pid": 1}},
-    {json.loads(terminal_message(Trigger.CHILD_EXIT, returncode=0))!r},
-)
-for event in events:
-    print(json.dumps(event, separators=(",", ":")), flush=True)
-    if event["type"] == "SESSION_CREATED":
-        assert json.loads(sys.stdin.readline())["type"] == "START"
-sys.exit({HELPER_FAILURE_RC})
-"""
+        events = (
+            encode_frame("ATTEMPT", argv=["test-process"])
+            + encode_frame("READY", remote_address="127.64.0.1", child_pid=1)
+            + terminal_message(Trigger.CHILD_EXIT, returncode=0)
+        )
+        helper_argv = [
+            sys.executable,
+            str(SCRIPTED_HELPER),
+            str(HELPER_FAILURE_RC),
+            events.decode(),
+            "start",
+        ]
 
         class LocalCommand(_BlockedSshCommand):
             process: Any = None
 
             def popen(inner, host, remote_command, *, local_forward=None, on_acquired=None):  # pylint: disable=no-self-argument
-                process = local_transport(
-                    [sys.executable, "-c", helper_code], on_acquired=on_acquired
-                )
+                process = local_transport(helper_argv, on_acquired=on_acquired)
                 inner.process = process
                 return process
 

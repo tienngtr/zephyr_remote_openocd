@@ -56,6 +56,18 @@ effectful operations with an immediate `AssertionError`, for example
 seam and ensures that production code cannot silently cross a different boundary
 while the test continues to pass.
 
+* Keep substantive child programs in checked source files. A subprocess
+scenario, fake SSH or helper peer, fault-injection wrapper, or remote program
+with branches, loops, functions, monkeypatching, or signal, PTY, or
+process-lifecycle behavior belongs in a `tests/fixtures/` module with a
+`main()`. Pass its parameters through argv, environment, files, or
+descriptors. A program sent as remote `python3 -c` text stays a standalone
+standard-library module whose text the test reads. Patch with
+`unittest.mock.patch.object` so a renamed target fails rather than silently
+adding an attribute. Straight-line choreography of a few statements, such as
+writing a frame and waiting on a gate, may remain an inline `python -c`
+string.
+
 * Use `Protocol` for genuine narrow production roles, not as test-only typing
 scaffolding. If production code conceptually depends on a small structural
 interface, model that role with a `Protocol` and let typed fakes satisfy it

@@ -21,6 +21,7 @@ import pytest
 from zephyr_remote_openocd.controller import cancellation
 
 from tests.process_support import read_line
+from tests.support import ROOT
 
 pytestmark = [
     pytest.mark.local,
@@ -30,71 +31,7 @@ pytestmark = [
 
 GUARD = 60
 
-SCENARIO = r'''
-import fcntl
-import os
-import signal
-import subprocess
-import sys
-import termios
-
-from zephyr_remote_openocd.controller.cancellation import OperationCancelled, operation_scope
-from zephyr_remote_openocd.controller.waiting import wait_for
-
-terminal, markers = int(sys.argv[1]), int(sys.argv[2])
-mode, client = sys.argv[3], sys.argv[4:]
-fcntl.ioctl(terminal, termios.TIOCSCTTY, 0)
-os.tcsetpgrp(terminal, os.getpgrp())
-attributes = termios.tcgetattr(terminal)
-attributes[3] |= termios.ISIG
-attributes[6][termios.VINTR] = b"\x03"
-termios.tcsetattr(terminal, termios.TCSANOW, attributes)
-for descriptor in (0, 1, 2):
-    os.dup2(terminal, descriptor)
-os.close(terminal)
-
-
-def report(message):
-    os.write(markers, (message + "\n").encode())
-
-
-def run_client(argv):
-    # Zephyr 4.4 run_client(): ignore SIGINT around check_call().
-    previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
-    try:
-        subprocess.check_call(argv)
-    finally:
-        signal.signal(signal.SIGINT, previous)
-
-
-try:
-    with operation_scope() as operation:
-        report(f"capturing={operation.capturing}")
-        if mode == "latched":
-            signal.raise_signal(signal.SIGINT)
-        with operation.interactive_client():
-            report("client-launched")
-            run_client(client)
-        report(f"restored requested={operation.requested}")
-        # Runner-owned Ctrl-C after restoration ends this ordinary wait.
-        wait_for()
-except OperationCancelled:
-    report("cancelled")
-'''
-
-WRAPPER = r'''
-import os, signal, sys
-disposition = signal.getsignal(signal.SIGINT)
-state = "ignored" if disposition == signal.SIG_IGN else str(disposition)
-os.write(1, f"wrapper-sigint={state}\n".encode())
-os.execvp(sys.argv[1], sys.argv[1:])
-'''
-
-INFERIOR = r'''
-import os, sys, time
-os.write(1, b"inferior-ready\n")
-time.sleep(3600)
-'''
+FIXTURE = ROOT / "tests/fixtures/interactive_client.py"
 
 
 class Terminal:
@@ -123,11 +60,7 @@ class Terminal:
         os.write(self.master, keys)
 
 
-def run_scenario(tmp_path: Path, mode: str, client: list[str]):
-    scenario = tmp_path / "scenario.py"
-    scenario.write_text(SCENARIO, encoding="utf-8")
-    wrapper = tmp_path / "gdb-wrapper.py"
-    wrapper.write_text(WRAPPER, encoding="utf-8")
+def run_scenario(mode: str, client: list[str]):
     environment = os.environ.copy()
     production = str(Path(cancellation.__file__).resolve().parents[2])
     repository = str(Path(__file__).resolve().parents[2])
@@ -139,12 +72,14 @@ def run_scenario(tmp_path: Path, mode: str, client: list[str]):
     process = subprocess.Popen(
         [
             sys.executable,
-            str(scenario),
+            str(FIXTURE),
+            "scenario",
             str(slave),
             str(marker_write),
             mode,
             sys.executable,
-            str(wrapper),
+            str(FIXTURE),
+            "wrapper",
             *client,
         ],
         start_new_session=True,
@@ -182,8 +117,8 @@ GDB = [
 
 
 @pytest.mark.timeout(GUARD * 2)
-def test_ctrl_c_at_the_gdb_prompt_belongs_to_gdb_until_restoration(tmp_path) -> None:
-    process, terminal, markers = run_scenario(tmp_path, "prompt", GDB)
+def test_ctrl_c_at_the_gdb_prompt_belongs_to_gdb_until_restoration() -> None:
+    process, terminal, markers = run_scenario("prompt", GDB)
     completed = False
     try:
         assert read_line(markers, timeout=GUARD) == b"capturing=True\n"
@@ -205,11 +140,9 @@ def test_ctrl_c_at_the_gdb_prompt_belongs_to_gdb_until_restoration(tmp_path) -> 
 
 
 @pytest.mark.timeout(GUARD * 2)
-def test_ctrl_c_interrupts_the_gdb_inferior_without_cancelling_the_runner(tmp_path) -> None:
-    inferior = tmp_path / "inferior.py"
-    inferior.write_text(INFERIOR, encoding="utf-8")
-    client = [*GDB, "-ex", "run", "--args", sys.executable, str(inferior)]
-    process, terminal, markers = run_scenario(tmp_path, "inferior", client)
+def test_ctrl_c_interrupts_the_gdb_inferior_without_cancelling_the_runner() -> None:
+    client = [*GDB, "-ex", "run", "--args", sys.executable, str(FIXTURE), "inferior"]
+    process, terminal, markers = run_scenario("inferior", client)
     completed = False
     try:
         assert read_line(markers, timeout=GUARD) == b"capturing=True\n"
@@ -229,8 +162,8 @@ def test_ctrl_c_interrupts_the_gdb_inferior_without_cancelling_the_runner(tmp_pa
 
 
 @pytest.mark.timeout(GUARD * 2)
-def test_cancellation_latched_before_entry_never_launches_gdb(tmp_path) -> None:
-    process, terminal, markers = run_scenario(tmp_path, "latched", GDB)
+def test_cancellation_latched_before_entry_never_launches_gdb() -> None:
+    process, terminal, markers = run_scenario("latched", GDB)
     completed = False
     try:
         assert read_line(markers, timeout=GUARD) == b"capturing=True\n"

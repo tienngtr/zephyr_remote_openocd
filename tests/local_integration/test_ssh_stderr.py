@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shlex
 import sys
 from pathlib import Path
 
@@ -21,71 +20,13 @@ from zephyr_remote_openocd.controller.api import (
 )
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 
+from tests.support import fixture_command
+
 pytestmark = pytest.mark.local
 
 
-FAKE_SSH = r'''
-import hashlib
-import io
-import json
-import re
-import shlex
-import sys
-import tarfile
-
-
-def noisy_stderr(marker):
-    sys.stderr.buffer.write(b"prefix-" + b"x" * 262144 + marker + b"\n")
-    sys.stderr.flush()
-
-
-remote_command = sys.argv[-1]
-if remote_command.endswith(" control"):
-    noisy_stderr(b"control-tail")
-    print(json.dumps({
-        "version": 1,
-        "type": "SESSION_CREATED",
-        "helper": "fake",
-        "session_id": "session",
-        "remote_workspace": "/tmp/fake-workspace",
-    }), flush=True)
-    for line in sys.stdin.buffer:
-        message = json.loads(line)
-        if message["type"] == "START":
-            print(json.dumps({
-                "version": 1,
-                "type": "ATTEMPT", "argv": ["test-process"],
-            }), flush=True)
-            print(json.dumps({
-                "version": 1,
-                "type": "READY", "remote_address": "127.64.0.1",
-                "child_pid": 1,
-            }), flush=True)
-    print(json.dumps(dict(version=1, type="SESSION_ENDED", trigger="controller_eof",
-        primary_failure=None, diagnostics=[], child_result=None,
-        cleanup=dict(child_disposal="confirmed", workspace_disposal="confirmed",
-                     residual_resources=[]))), flush=True)
-elif shlex.split(remote_command)[2] == "stage":
-    with tarfile.open(fileobj=io.BytesIO(sys.stdin.buffer.read())) as archive:
-        assert archive.getmembers() == []
-    print(json.dumps(dict(version=1, type="STAGED", files=[], directories=[],
-                         byte_count=0, sha256=hashlib.sha256(b"").hexdigest())), flush=True)
-elif remote_command.startswith("python3 -c "):
-    noisy_stderr(b"forward-tail")
-    sentinel = re.search(r"ZRO_FORWARD_[0-9a-f]+", remote_command).group(0)
-    print(sentinel, flush=True)
-    sys.stdin.buffer.read()
-'''
-
-
 def fake_ssh_command(tmp_path: Path) -> SshCommand:
-    executable = tmp_path / "fake_ssh.py"
-    executable.write_text(
-        f"#!/bin/sh\nexec {shlex.quote(sys.executable)} -c {shlex.quote(FAKE_SSH)} \"$@\"\n",
-        encoding="utf-8",
-    )
-    executable.chmod(0o755)
-    return SshCommand((str(executable),))
+    return SshCommand((str(fixture_command(tmp_path, "noisy_ssh.py")),))
 
 
 def request(command: SshCommand, *, forwards=()):

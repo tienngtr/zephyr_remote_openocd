@@ -16,6 +16,7 @@ import pytest
 from tests import serial_reader
 from tests.process_support import cleanup_on_exit, local_transport
 from tests.serial_reader import read_event, remote_serial_reader_command, stop_reader
+from tests.support import ROOT
 
 
 @contextmanager
@@ -47,15 +48,7 @@ def test_serial_reader_matches_fragmented_output_after_arm(monkeypatch):
     # Observe real descriptor reads without replacing the reader's accumulation
     # or matching logic. The acknowledgement precedes return from os.read;
     # subsequent reads still follow accumulation in this single-threaded child.
-    observer = '''import base64,json,os
-original_read = os.read
-def observe_read(descriptor, size):
-    payload = original_read(descriptor, size)
-    if payload:
-        print(json.dumps(dict(type="READ", data=base64.b64encode(payload).decode())), flush=True)
-    return payload
-os.read = observe_read
-'''
+    observer = (ROOT / "tests/fixtures/serial_read_observer.py").read_text(encoding="utf-8")
     monkeypatch.setattr(
         serial_reader, "SERIAL_READER_SOURCE", observer + serial_reader.SERIAL_READER_SOURCE
     )

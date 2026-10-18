@@ -23,6 +23,7 @@ from tests.forwarding_support import RTT
 from tests.hardware_support import PreparedTarget, RttFixture, SemihostingFixture
 from tests.inventory import BuildEnvironment, InventoryHost, RttOperation, SemihostingOperation
 from tests.process_support import managed_process, read_line
+from tests.support import ROOT
 
 # Linux UAPI constants from linux/prctl.h.
 PR_SET_CHILD_SUBREAPER = 36
@@ -30,24 +31,7 @@ PR_GET_CHILD_SUBREAPER = 37
 SYNC_TIMEOUT = 30
 TEST_BACKSTOP_TIMEOUT = 60
 
-_CHILD_TREE = """
-import os,signal
-reader,writer=os.pipe()
-child=os.fork()
-if child==0:
-    os.close(reader)
-    signal.signal(signal.SIGINT,signal.SIG_IGN)
-    signal.signal(signal.SIGTERM,signal.SIG_IGN)
-    os.write(writer,b'ready')
-    os.close(writer)
-    signal.pause()
-else:
-    os.close(writer)
-    os.read(reader,len(b'ready'))
-    os.close(reader)
-    print(child,flush=True)
-    print('ZRO_GDB_RTT_READY',flush=True)
-"""
+_CHILD_TREE = ROOT / "tests/fixtures/ignoring_descendant_tree.py"
 
 
 @pytest.mark.parametrize("operation", ("semihosting", "rtt-abort", "blocking-flash"))
@@ -78,7 +62,7 @@ def test_hardware_cleanup_stops_descendant_after_leader_exit(tmp_path, monkeypat
     def popen(*args, **kwargs):
         nonlocal child_pid, child_pidfd
         assert kwargs.get("start_new_session") is True
-        process = original_popen([sys.executable, "-c", _CHILD_TREE], **kwargs)
+        process = original_popen([sys.executable, str(_CHILD_TREE)], **kwargs)
         processes.append(process)
         child_pid = int(read_line(process.stdout, timeout=SYNC_TIMEOUT))
         child_pidfd = os.pidfd_open(child_pid)

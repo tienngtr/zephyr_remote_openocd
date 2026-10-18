@@ -19,6 +19,7 @@ import pytest
 from zephyr_remote_openocd.helper import _process as helper_process
 
 from tests.helper_process_support import cleanup_supervised_process
+from tests.support import ROOT
 
 SAMPLE_CHILD_EXIT_CODE = 7
 
@@ -43,33 +44,7 @@ def _assert_pidfd_exited(pidfd, timeout=5):
         raise AssertionError("process survived cleanup")
 
 
-def _forking_child_code(exit_on_term):
-    leader_signal = "SIGTERM" if exit_on_term else "SIGUSR1"
-    leader_exit = f"""
-def stop(_signal, _frame):
-    raise SystemExit(0)
-
-signal.signal(signal.{leader_signal}, stop)
-"""
-    parent_wait = "time.sleep(30)" if exit_on_term else "signal.pause()"
-    return f"""
-import os
-import signal
-import sys
-import time
-
-{leader_exit}
-descendant = os.fork()
-if descendant == 0:
-    signal.signal(signal.SIGTERM, signal.SIG_IGN)
-    descriptor = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    os.write(descriptor, str(os.getpid()).encode("ascii"))
-    os.close(descriptor)
-    os.close(1)
-    os.close(2)
-    time.sleep(30)
-{parent_wait}
-"""
+FORKING_CHILD = ROOT / "tests/fixtures/forking_child.py"
 
 
 @pytest.mark.parametrize("cleanup_fails", (False, True))
@@ -176,7 +151,7 @@ def test_spawn_rollback_preserves_exited_leader_identity_until_group_signal(monk
 def test_supervised_child_terminates_descendant_after_leader_term(tmp_path):
     descendant_path = tmp_path / "descendant.pid"
     child = helper_process.spawn_child(
-        (sys.executable, "-c", _forking_child_code(True), str(descendant_path))
+        (sys.executable, str(FORKING_CHILD), "exits-on-term", str(descendant_path))
     )
     descendant_pid = None
     descendant_pidfd = None
@@ -204,7 +179,7 @@ def test_supervised_child_terminates_descendant_after_leader_term(tmp_path):
 def test_supervised_child_warns_and_terminates_descendant_after_leader_exit(tmp_path, capfd):
     descendant_path = tmp_path / "descendant.pid"
     child = helper_process.spawn_child(
-        (sys.executable, "-c", _forking_child_code(False), str(descendant_path))
+        (sys.executable, str(FORKING_CHILD), "exits-on-usr1", str(descendant_path))
     )
     descendant_pid = None
     descendant_pidfd = None

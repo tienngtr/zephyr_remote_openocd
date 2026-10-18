@@ -105,28 +105,13 @@ def test_address_lease_coordinates_helpers_and_releases_on_exit(
     tmp_path, monkeypatch, isolated_lease_addresses, termination
 ):
     address, other_address = isolated_lease_addresses
-    script = """
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(sys.argv[1]).resolve().parents[2]))
-from zephyr_remote_openocd.helper import _addresses as helper_addresses
-from zephyr_remote_openocd.helper import _workspace as workspace_module
-workspace_module.workspace_root = lambda: Path(sys.argv[2])
-helper_addresses.random_address = lambda: sys.argv[3]
-allocated = helper_addresses.allocate_listener_address(())
-print(allocated, flush=True)
-sys.stdin.buffer.read()
-"""
     monkeypatch.setattr(workspace_module, 'workspace_root', lambda: tmp_path / "local-user")
     candidates = iter((address, other_address, address))
     monkeypatch.setattr(helper_addresses, 'random_address', lambda: next(candidates))
     with subprocess.Popen(
         [
             sys.executable,
-            "-c",
-            script,
-            str(ROOT / "python/zephyr_remote_openocd/helper/__main__.py"),
+            str(ROOT / "tests/fixtures/address_lease_holder.py"),
             str(tmp_path / "other-user"),
             address,
         ],

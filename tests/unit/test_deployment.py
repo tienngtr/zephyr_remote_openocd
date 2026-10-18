@@ -21,6 +21,9 @@ from zephyr_remote_openocd.protocol.wire import (
 )
 
 from tests.process_support import managed_process, read_line
+from tests.support import ROOT
+
+FAULTS = ROOT / "tests/fixtures/deployment_faults.py"
 
 
 def test_missing_packaged_helper_is_actionable(monkeypatch, tmp_path):
@@ -119,13 +122,17 @@ def test_deployment_rejects_digest_that_differs_from_source():
 def _run_bootstrap(
     home: Path,
     source: bytes,
-    program: str | None = None,
-    args: tuple[str, ...] = (),
+    fault: tuple[str, ...] = (),
 ) -> dict[str, object]:
     environment = os.environ.copy()
     environment["HOME"] = str(home)
+    command = (
+        [sys.executable, str(FAULTS), *fault]
+        if fault
+        else [sys.executable, "-c", deploy_module.bootstrap_program()]
+    )
     result = subprocess.run(
-        [sys.executable, "-c", program or deploy_module.bootstrap_program(), *args],
+        command,
         input=source,
         capture_output=True,
         check=False,
@@ -185,24 +192,8 @@ def test_stale_revision_failure_does_not_block_deployment_or_other_pruning(tmp_p
         os.utime(stale, (stale_time, stale_time))
     # Fail the first stale revision the bootstrap inspects or removes, whatever
     # the directory order; the real bootstrap and its filesystem effects remain.
-    wrapper = f"""
-import pathlib, sys
-operation, *stale_names = sys.argv[1:]
-original = getattr(pathlib.Path, operation)
-failed = []
-
-def fail_first_stale_revision(path, *args, **kwargs):
-    if path.name in stale_names and not failed:
-        failed.append(path)
-        raise PermissionError(f"injected {{operation}} failure: {{path}}")
-    return original(path, *args, **kwargs)
-
-setattr(pathlib.Path, operation, fail_first_stale_revision)
-exec({deploy_module.bootstrap_program()!r}, {{"__name__": "__main__"}})
-"""
-
     deployed = _run_bootstrap(
-        tmp_path, source, wrapper, (operation, *(stale.name for stale in stale_revisions))
+        tmp_path, source, ("stale-failure", operation, *(stale.name for stale in stale_revisions))
     )
 
     selected = helper_directory / f"helper-{hashlib.sha256(source).hexdigest()}.py"
@@ -218,35 +209,6 @@ exec({deploy_module.bootstrap_program()!r}, {{"__name__": "__main__"}})
 def test_helper_deployment_serializes_refresh_and_pruning(tmp_path):
     source = b"concurrent helper revision"
     environment = {**os.environ, "HOME": str(tmp_path)}
-    wrapper = f"""
-import fcntl,os,sys
-role,events,release=sys.argv[1:]
-events=int(events);release=int(release)
-original_flock=fcntl.flock
-original_utime=os.utime
-
-def acquire(lock,operation):
-    if role=="second":
-        try:
-            original_flock(lock,operation|fcntl.LOCK_NB)
-        except BlockingIOError:
-            os.write(events,b"blocked\\n")
-            original_flock(lock,operation)
-        else:
-            os.write(events,b"unexpected-entry\\n")
-    else:
-        original_flock(lock,operation)
-
-def refresh(path,*args,**kwargs):
-    os.write(events,b"refresh\\n")
-    if role=="first":
-        assert os.read(release,1)==b"x"
-    return original_utime(path,*args,**kwargs)
-
-fcntl.flock=acquire
-os.utime=refresh
-exec({deploy_module.bootstrap_program()!r}, {{"__name__":"__main__"}})
-"""
     with ExitStack() as resources:
 
         def pipe():
@@ -265,8 +227,8 @@ exec({deploy_module.bootstrap_program()!r}, {{"__name__":"__main__"}})
                 managed_process(
                     [
                         sys.executable,
-                        "-c",
-                        wrapper,
+                        str(FAULTS),
+                        "serialized",
                         role,
                         str(event_writer.fileno()),
                         str(release_reader.fileno()),

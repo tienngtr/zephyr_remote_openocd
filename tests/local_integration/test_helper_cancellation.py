@@ -25,7 +25,6 @@ from zephyr_remote_openocd.controller.cancellation import OperationCancelled, op
 from zephyr_remote_openocd.controller.helper_connection import HelperConnection
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
 from zephyr_remote_openocd.protocol.process import ProcessSpec
-from zephyr_remote_openocd.protocol.wire import encode_frame
 
 from tests.control_support import ControlProcess
 from tests.process_support import cleanup_on_exit
@@ -35,28 +34,7 @@ from tests.support import ROOT
 pytestmark = [pytest.mark.local, pytest.mark.skipif(os.name != "posix", reason="POSIX signals")]
 
 GUARD = 60
-CREATED = encode_frame(
-    "SESSION_CREATED", helper="test", session_id="session", remote_workspace="/workspace"
-)
-
-
-def helper_code(entered: Path, *, created: bool, read_start: bool) -> str:
-    """A control helper that reports entry through a FIFO, then stays silent.
-
-    Without reading START it leaves controller input unread until EOF, so a
-    large START applies pipe backpressure to the coordinator.
-    """
-    return (
-        "import os, select, signal, sys\n"
-        "signal.signal(signal.SIGINT, signal.SIG_IGN)\n"
-        + (f"os.write(1, {CREATED!r})\n" if created else "")
-        + ("sys.stdin.buffer.readline()\n" if read_start else "")
-        + f"open({str(entered)!r}, 'wb').close()\n"
-        "poller = select.poll()\n"
-        "poller.register(0, select.POLLHUP)\n"
-        "while not poller.poll():\n"
-        "    pass\n"
-    )
+SILENT_PEER = ROOT / "tests/fixtures/silent_control_peer.py"
 
 
 def interrupt_after(entered: Path) -> threading.Thread:
@@ -80,7 +58,13 @@ def run_cancelled(
     os.mkfifo(entered)
     helper = HelperConnection(
         SshCommand(
-            (sys.executable, "-c", helper_code(entered, created=created, read_start=read_start))
+            (
+                sys.executable,
+                str(SILENT_PEER),
+                str(entered),
+                "yes" if created else "no",
+                "yes" if read_start else "no",
+            )
         ),
         "host",
         DeploymentResult("/helper.py", "digest", False),

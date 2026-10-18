@@ -18,41 +18,14 @@ from zephyr_remote_openocd.controller.api import (
     SessionPlan,
 )
 from zephyr_remote_openocd.protocol.process import ProcessSpec
-from zephyr_remote_openocd.protocol.wire import encode_frame
 
-from tests.control_support import CREATED
+from tests.support import ROOT
 
 pytestmark = [pytest.mark.local, pytest.mark.timeout(60)]
 
 # A control peer that reports READY, then closes its only stdout while staying
 # alive with stderr open until the test releases its exit gate.
-PEER = r'''
-import hashlib, json, os, sys
-from pathlib import Path
-root = Path(sys.argv[1])
-if " stage " in sys.argv[-1]:
-    sys.stdin.buffer.read()
-    print(json.dumps(dict(version=1, type="STAGED", files=[], directories=[],
-                         byte_count=0, sha256=hashlib.sha256(b"").hexdigest())), flush=True)
-    sys.exit(0)
-
-def gate(name):
-    with (root / name).open("rb", buffering=0) as opened:
-        assert opened.read(1) == b"x"
-
-os.write(1, CREATED)
-assert json.loads(sys.stdin.buffer.readline())["type"] == "START"
-os.write(1, READY)
-gate("eof")
-os.close(1)
-gate("exit")
-'''.replace("CREATED", repr(CREATED)).replace(
-    "READY",
-    repr(
-        encode_frame("ATTEMPT", argv=["child"])
-        + encode_frame("READY", remote_address="127.64.0.1", child_pid=1)
-    ),
-)
+PEER = ROOT / "tests/fixtures/stdout_eof_peer.py"
 
 
 def _release(gate: Path) -> None:
@@ -65,11 +38,10 @@ def test_stdout_eof_revokes_admission_before_collecting_stderr(
 ) -> None:
     for gate in ("eof", "exit"):
         os.mkfifo(tmp_path / gate)
-    (tmp_path / "peer.py").write_text(PEER)
     session = SessionController(
         SessionPlan(
             "local-test",
-            SshCommand((sys.executable, str(tmp_path / "peer.py"), str(tmp_path))),
+            SshCommand((sys.executable, str(PEER), str(tmp_path))),
             ProcessSpec(("child",)),
             (),
         ),

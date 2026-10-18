@@ -36,28 +36,13 @@ from zephyr_remote_openocd.protocol.responses import validate_openocd_version_re
 from zephyr_remote_openocd.protocol.wire import decode_frame
 
 from tests.process_support import cleanup_on_exit, read_line, stop_and_close
+from tests.support import ROOT
 
 pytestmark = pytest.mark.ssh
 REMOTE_FAILURE_EXIT_CODE = 7
 
-REMOTE_SESSION_ECHO = """
-import socket
-import sys
-
-listener = socket.socket()
-listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-listener.bind((sys.argv[1], int(sys.argv[2])))
-listener.listen()
-print("ZRO_TEST_READY", flush=True)
-while True:
-    connection, _ = listener.accept()
-    with connection:
-        while True:
-            data = connection.recv(65536)
-            if not data:
-                break
-            connection.sendall(data)
-"""
+# Sent as remote ``python3 -c`` source text; see that module for its arguments.
+REMOTE_SESSION_ECHO = (ROOT / "tests/fixtures/remote_session_echo.py").read_text(encoding="utf-8")
 
 
 def session_echo_process() -> ProcessSpec:
@@ -326,22 +311,15 @@ class TestSshTransportIntegration:
 
     def test_post_spawn_bind_collision_fails_without_repeating_startup(self):
         """Real EADDRINUSE cannot authorize replay through the deployed helper."""
-        child = (
-            """
-import pathlib, socket, sys
-
-state = pathlib.Path(sys.argv[3])
-with state.open("a") as side_effect:
-    side_effect.write("startup work")
-print("ZRO_TEST_STARTUP_WORK", flush=True)
-collision = socket.socket()
-collision.bind((sys.argv[1], int(sys.argv[2])))
-collision.listen()
-"""
-            + REMOTE_SESSION_ECHO
-        )
         process = ProcessSpec(
-            ("python3", "-c", child, "{address}", "3333", "{workspace}/first-address"),
+            (
+                "python3",
+                "-c",
+                REMOTE_SESSION_ECHO,
+                "{address}",
+                "3333",
+                "{workspace}/first-address",
+            ),
             required_output_sentinels=("ZRO_TEST_READY",),
             literal_prefix=3,
             argv_templates=(
