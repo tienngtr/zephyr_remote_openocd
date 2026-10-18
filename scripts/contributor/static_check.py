@@ -6,9 +6,12 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
+
+import yaml
 
 
 def repository_root() -> Path:
@@ -79,6 +82,18 @@ def markdown_files(root: Path) -> tuple[str, ...]:
     return tuple(path for path in result.stdout.splitlines() if (root / path).is_file())
 
 
+def shell_files(root: Path) -> tuple[str, ...]:
+    """Return existing tracked or untracked shell scripts."""
+    result = subprocess.run(
+        ("git", "ls-files", "--cached", "--others", "--exclude-standard", "--", "*.sh"),
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return tuple(path for path in result.stdout.splitlines() if (root / path).is_file())
+
+
 def json_schema_files() -> tuple[str, ...]:
     """Return repository JSON schemas that use the canonical formatting."""
     return (
@@ -108,6 +123,58 @@ def check_json_format(root: Path, paths: tuple[str, ...]) -> bool:
                 file=sys.stderr,
             )
             valid = False
+    return valid
+
+
+# GitHub runs these shells with errexit; ShellCheck must see the same options.
+_ACTION_SHELL_OPTIONS = {"bash": "set -eo pipefail", "sh": "set -e"}
+
+
+def check_composite_action_shell(root: Path, yaml_paths: tuple[str, ...]) -> bool:
+    """ShellCheck composite-action run: scripts, which actionlint does not lint."""
+    actions = tuple(
+        path
+        for path in yaml_paths
+        if Path(path).parts[:2] == (".github", "actions")
+        and Path(path).name in {"action.yml", "action.yaml"}
+    )
+    valid = True
+    checked = 0
+    for relative_path in actions:
+        document = yaml.safe_load((root / relative_path).read_text(encoding="utf-8"))
+        for index, step in enumerate(document["runs"].get("steps", ()), start=1):
+            if "run" not in step:
+                continue
+            label = f"{relative_path} step {index} ({step.get('name', 'unnamed')})"
+            shell = step.get("shell")
+            if shell not in _ACTION_SHELL_OPTIONS:
+                print(f"{label}: cannot ShellCheck shell {shell!r}", file=sys.stderr)
+                valid = False
+                continue
+            # Like actionlint, keep expression width so columns stay meaningful.
+            script = re.sub(r"\$\{\{.*?\}\}", lambda match: "_" * len(match[0]), step["run"])
+            script = f"{_ACTION_SHELL_OPTIONS[shell]}\n{script}"
+            result = subprocess.run(
+                (tool_executable("shellcheck"), f"--shell={shell}", "--format=gcc", "-"),
+                cwd=root,
+                input=script,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            checked += 1
+            if result.returncode:
+                # Report run: script lines, excluding the added options line.
+                diagnostics = re.sub(
+                    r"^-:(\d+):",
+                    lambda match: f"run line {int(match[1]) - 1}:",
+                    result.stdout,
+                    flags=re.MULTILINE,
+                )
+                print(f"{label}:", file=sys.stderr)
+                print(diagnostics + result.stderr, end="", file=sys.stderr)
+                valid = False
+    print(f"Checked {checked} composite-action scripts in {len(actions)} actions.")
     return valid
 
 
@@ -166,6 +233,7 @@ def commands(
     python_files: tuple[str, ...],
     yaml_paths: tuple[str, ...],
     markdown_paths: tuple[str, ...],
+    shell_paths: tuple[str, ...],
 ) -> tuple[tuple[str, tuple[str, ...]], ...]:
     """Build the ordered static-check commands."""
     python = sys.executable
@@ -252,8 +320,19 @@ def commands(
             ),
         ),
         (
+            "shellcheck",
+            (tool_executable("shellcheck"), *shell_paths),
+        ),
+        (
             "actionlint",
-            (tool_executable("actionlint"), "-no-color", *workflow_paths),
+            # actionlint silently skips run: scripts when it cannot find
+            # shellcheck, which is not on PATH for an unactivated virtualenv.
+            (
+                tool_executable("actionlint"),
+                "-no-color",
+                f"-shellcheck={tool_executable('shellcheck')}",
+                *workflow_paths,
+            ),
         ),
         (
             "rumdl",
@@ -285,13 +364,18 @@ def main() -> int:
     report_phase("JSON schema formatting")
     if not check_json_format(root, json_schema_files()):
         return 1
+    report_phase("composite action ShellCheck")
+    if not check_composite_action_shell(root, yaml_files(root)):
+        return 1
     report_phase("OpenSSH client configuration check")
     if not check_ssh_config(root):
         return 1
     report_phase("Zephyr import boundary check")
     if not check_zephyr_import_boundary(root, python_files):
         return 1
-    for name, command in commands(python_files, yaml_files(root), markdown_files(root)):
+    for name, command in commands(
+        python_files, yaml_files(root), markdown_files(root), shell_files(root)
+    ):
         report_phase(name)
         result = subprocess.run(
             command,
