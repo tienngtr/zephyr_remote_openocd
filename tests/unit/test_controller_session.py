@@ -335,6 +335,30 @@ def test_check_openocd_exit_propagates_forward_failure_after_successful_openocd_
     session.close()
 
 
+@pytest.mark.parametrize("state", ("acquired", "closed"))
+def test_session_cannot_be_acquired_again(monkeypatch: pytest.MonkeyPatch, state: str) -> None:
+    harness = ForwardingHarness(monkeypatch)
+    session = harness.prepare((GDB,), ())
+    with cleanup_on_exit(session.close):
+        if state == "acquired":
+            session.acquire()
+        else:
+            session.close()
+        connections: list[object] = []
+        monkeypatch.setattr(
+            session_module, "HelperConnection", lambda *args, **_kwargs: connections.append(args)
+        )
+        with pytest.raises(SessionError):
+            session.acquire()
+        # The single-use owner never replaces, and so never strands, its
+        # existing helper connection.
+        assert not connections
+    assert harness.helper.close_calls == (1 if state == "acquired" else 0)
+    assert harness.ssh.process(GDB).mock.close_stderr.call_count == (
+        1 if state == "acquired" else 0
+    )
+
+
 @pytest.mark.parametrize(
     "established",
     (
