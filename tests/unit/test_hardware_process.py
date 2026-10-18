@@ -34,6 +34,17 @@ TEST_BACKSTOP_TIMEOUT = 60
 _CHILD_TREE = ROOT / "tests/fixtures/ignoring_descendant_tree.py"
 
 
+def _ignored_signals(pid: int) -> set[int]:
+    """Read a live process's ignored-signal set from procfs."""
+    for line in Path(f"/proc/{pid}/status").read_text(encoding="ascii").splitlines():
+        if line.startswith("SigIgn:"):
+            mask = int(line.split()[1], 16)
+            return {
+                signum for signum in range(1, mask.bit_length() + 1) if mask >> (signum - 1) & 1
+            }
+    raise AssertionError(f"process {pid} reports no ignored-signal set")
+
+
 @pytest.mark.parametrize("operation", ("semihosting", "rtt-abort", "blocking-flash"))
 @pytest.mark.timeout(TEST_BACKSTOP_TIMEOUT)
 def test_hardware_cleanup_stops_descendant_after_leader_exit(tmp_path, monkeypatch, operation):
@@ -66,6 +77,10 @@ def test_hardware_cleanup_stops_descendant_after_leader_exit(tmp_path, monkeypat
         processes.append(process)
         child_pid = int(read_line(process.stdout, timeout=SYNC_TIMEOUT))
         child_pidfd = os.pidfd_open(child_pid)
+        # The descendant installs its dispositions before the leader reports its
+        # PID. Only the group SIGKILL can stop it, not graceful termination.
+        assert {signal.SIGINT, signal.SIGTERM} <= _ignored_signals(child_pid)
+        signal.pidfd_send_signal(child_pidfd, signal.SIGTERM)
         assert process.wait(timeout=SYNC_TIMEOUT) == 0
 
         def communicate(*args, **kwargs):
@@ -98,8 +113,12 @@ def test_hardware_cleanup_stops_descendant_after_leader_exit(tmp_path, monkeypat
         poller = select.poll()
         poller.register(child_pidfd, select.POLLIN)
         assert poller.poll(SYNC_TIMEOUT * 1000), "harness left its descendant alive"
-        assert os.waitpid(child_pid, 0)[0] == child_pid
+        descendant = child_pid
+        reaped, status = os.waitpid(descendant, 0)
         child_pid = None
+        assert reaped == descendant
+        # The wait status records the signal that ended it: SIGTERM did not.
+        assert os.WIFSIGNALED(status) and os.WTERMSIG(status) == signal.SIGKILL
         assert processes[0].stdout is not None and processes[0].stdout.closed
     finally:
         if child_pid is not None:
