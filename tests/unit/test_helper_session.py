@@ -25,6 +25,7 @@ from zephyr_remote_openocd.helper import _session as helper_session
 from zephyr_remote_openocd.helper import _streams as helper_streams
 from zephyr_remote_openocd.helper import _workspace as workspace_module
 from zephyr_remote_openocd.helper import control as helper_control
+from zephyr_remote_openocd.helper._observations import ChildOutput
 from zephyr_remote_openocd.helper._process import ChildAcquisition, SupervisedProcess
 from zephyr_remote_openocd.helper._session import HelperSession
 from zephyr_remote_openocd.helper.lifecycle import Closed
@@ -311,7 +312,7 @@ def test_completion_policy_controls_readiness(
     assert not session.work.exists() and session.workspace_lock.closed
 
 
-@pytest.mark.parametrize("admission", ("ATTEMPT", "READY", "SESSION_ENDED"))
+@pytest.mark.parametrize("admission", ("SESSION_CREATED", "ATTEMPT", "READY", "SESSION_ENDED"))
 def test_admission_failure_does_not_publish_success_or_repeat_terminal(
     coordinated_helper: CoordinatedHelper, monkeypatch: pytest.MonkeyPatch, admission: str
 ) -> None:
@@ -333,7 +334,7 @@ def test_admission_failure_does_not_publish_success_or_repeat_terminal(
     write_start(writer, ProcessSpec((sys.executable, "-c", "import signal;signal.pause()")), ())
     _run_terminated(session, fails=True)
     assert attempts.count("SESSION_ENDED") == 1
-    assert len(children) == (0 if admission == "ATTEMPT" else 1)
+    assert len(children) == (0 if admission in ("SESSION_CREATED", "ATTEMPT") else 1)
     state = session.lifecycle.state
     assert isinstance(state, Closed) and state.snapshot.cleanup.confirmed
     assert not session.work.exists()
@@ -880,6 +881,120 @@ def test_readiness_deadline_processes_final_visible_observation(
     assert lock.closed
 
 
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("established", ("first", "after-signal"))
+@pytest.mark.parametrize("observer", ("stdout", "child exit"))
+def test_child_observer_failure_is_accounted_once_without_blocking_disposal(
+    coordinated_helper: CoordinatedHelper,
+    monkeypatch: pytest.MonkeyPatch,
+    observer: str,
+    established: str,
+) -> None:
+    session, writer, events, children = coordinated_helper
+    failure = OSError(f"{observer} observation failed")
+    observe_output = HelperSession._observe_output
+    observe_exit = HelperSession._observe_exit
+
+    async def output(
+        owner: HelperSession, child: SupervisedProcess, name: str, stream: IO[bytes]
+    ) -> None:
+        if name != observer:
+            return await observe_output(owner, child, name, stream)
+        # Relay readiness evidence, then fail at the end of the stream, which
+        # the first case reaches only once disposal begins.
+        with helper_streams.AsyncInput(stream.fileno()) as reader:
+            child.readers[name] = reader
+            while chunk := await reader.read():
+                await owner._events.put(ChildOutput(child, name, chunk))
+        raise failure
+
+    async def exit_observer(owner: HelperSession, child: SupervisedProcess) -> None:
+        if observer != "child exit":
+            return await observe_exit(owner, child)
+        if established == "first":
+            raise failure
+        await child.wait_for_exit()
+        raise failure
+
+    record = helper_streams.emit
+
+    def emit(kind: str, **fields: object) -> None:
+        record(kind, **fields)
+        if kind == "READY" and established == "after-signal":
+            session.handle_signal(signal.SIGTERM)
+
+    monkeypatch.setattr(HelperSession, "_observe_output", output)
+    monkeypatch.setattr(HelperSession, "_observe_exit", exit_observer)
+    monkeypatch.setattr(helper_streams, 'emit', emit)
+    sentinels = ("ZRO_ARMED",) if established == "after-signal" else ()
+    argv = _idle_child("ZRO_ARMED") if established == "after-signal" else _idle_child()
+    if observer == "stdout" and established == "first":
+        # The child ends its own output while it stays alive.
+        argv = (sys.executable, str(ROOT / "tests/fixtures/output_closing_child.py"))
+    write_start(writer, ProcessSpec(argv, required_output_sentinels=sentinels), ())
+    _run_terminated(session, fails=True)
+    snapshot = _terminal_event(events)
+    outcome = snapshot.outcome
+    reported = [
+        detail
+        for detail in (outcome.primary_failure, *outcome.diagnostics)
+        if detail is not None and detail.message == str(failure)
+    ]
+    assert [detail.code for detail in reported] == ["OBSERVER_FAILURE"]
+    if established == "first":
+        assert outcome.trigger == Trigger.HELPER_FAILURE
+        assert outcome.primary_failure is reported[0]
+    else:
+        # The earlier signal stays primary; the observer failure stays visible.
+        assert outcome.trigger == Trigger.SIGNAL
+        assert _failure_code(snapshot) == "REMOTE_SIGNAL"
+    # A failed relay observer counts as finished rather than waiting out the
+    # drain deadline, which would add a cleanup failure.
+    assert [detail.code for detail in outcome.diagnostics] == (
+        [] if established == "first" else ["OBSERVER_FAILURE"]
+    )
+    assert snapshot.cleanup.confirmed
+    assert children[0].group_disposed and children[0].process.returncode is not None
+    assert not session.work.exists()
+
+
+@pytest.mark.timeout(60)
+def test_observer_failure_recorded_before_ready_dispatch_prevents_ready(
+    coordinated_helper: CoordinatedHelper, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session, writer, events, children = coordinated_helper
+    failure = OSError("stderr observation failed")
+    stderr_waiting = asyncio.Event()
+    release = asyncio.Event()
+    observe_output = HelperSession._observe_output
+
+    async def output(
+        owner: HelperSession, child: SupervisedProcess, name: str, stream: IO[bytes]
+    ) -> None:
+        if name == "stderr":
+            stderr_waiting.set()
+            await release.wait()
+            raise failure
+        await stderr_waiting.wait()
+        # Wake the failing observer first; the readiness evidence queued next
+        # wakes the coordinator, which therefore dispatches that evidence only
+        # after the failure is recorded and while it is still queued behind it.
+        release.set()
+        await owner._events.put(ChildOutput(child, name, b"ZRO_ARMED\n"))
+        await observe_output(owner, child, name, stream)
+
+    monkeypatch.setattr(HelperSession, "_observe_output", output)
+    write_start(writer, ProcessSpec(_idle_child(), required_output_sentinels=("ZRO_ARMED",)), ())
+    _run_terminated(session, fails=True)
+    snapshot = _terminal_event(events)
+    assert "READY" not in [kind for kind, _ in events]
+    assert snapshot.outcome.trigger == Trigger.HELPER_FAILURE
+    assert snapshot.outcome.primary_failure is not None
+    assert snapshot.outcome.primary_failure.message == str(failure)
+    assert snapshot.cleanup.confirmed
+    assert children[0].group_disposed
+
+
 @pytest.mark.parametrize("failure_type", (OSError, asyncio.CancelledError))
 @pytest.mark.parametrize("restoration_fails", (False, True))
 def test_partial_signal_installation_restores_handlers_and_preserves_failure(
@@ -1166,12 +1281,25 @@ def test_unconfirmed_disposal_retains_inputs_but_settles_independent_owners(
                 stream.close()
 
 
-@pytest.mark.parametrize("boundary", ("ready", "freeze"))
+@pytest.mark.parametrize("boundary", ("attempt", "ready", "freeze"))
 def test_latched_signal_before_commit_is_accounted(
     coordinated_helper: CoordinatedHelper, monkeypatch: pytest.MonkeyPatch, boundary: str
 ) -> None:
     session, writer, events, children = coordinated_helper
-    if boundary == "ready":
+    if boundary == "attempt":
+        allocate = helper_session.addresses.allocate_listener_address
+
+        def allocate_then_signal(*args: Any, **kwargs: Any) -> Any:
+            # The signal arrives during START preparation, before ATTEMPT.
+            allocated = allocate(*args, **kwargs)
+            session.handle_signal(signal.SIGTERM)
+            return allocated
+
+        monkeypatch.setattr(
+            helper_session.addresses, "allocate_listener_address", allocate_then_signal
+        )
+        write_start(writer, ProcessSpec(_idle_child()), ())
+    elif boundary == "ready":
         poll = helper_process.SupervisedProcess.poll
         injected = False
 
@@ -1202,6 +1330,9 @@ def test_latched_signal_before_commit_is_accounted(
     # One delivered signal is one failure, however often failures are accounted.
     assert not any(detail.code == "REMOTE_SIGNAL" for detail in snapshot.outcome.diagnostics)
     assert not any(kind == "READY" for kind, _ in events)
+    if boundary == "attempt":
+        assert not any(kind == "ATTEMPT" for kind, _ in events) and not children
+        assert snapshot.cleanup.child_disposal == "not_acquired"
     assert snapshot.cleanup.confirmed
     assert all(child.process.returncode is not None for child in children)
 
