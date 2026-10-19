@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import errno
 import fcntl
 import io
@@ -25,7 +26,7 @@ from zephyr_remote_openocd.helper import _session as helper_session
 from zephyr_remote_openocd.helper import _streams as helper_streams
 from zephyr_remote_openocd.helper import _workspace as workspace_module
 from zephyr_remote_openocd.helper import control as helper_control
-from zephyr_remote_openocd.helper._observations import ChildOutput
+from zephyr_remote_openocd.helper._observations import ChildOutput, Deadline
 from zephyr_remote_openocd.helper._process import ChildAcquisition, SupervisedProcess
 from zephyr_remote_openocd.helper._session import HelperSession
 from zephyr_remote_openocd.helper.lifecycle import Closed
@@ -250,14 +251,18 @@ def test_post_start_input_in_a_later_read_is_protocol_failure(
         record(kind, **fields)
         if kind == "ATTEMPT":
             # START has been consumed; an incomplete trailing frame must not
-            # wait for more input before failing.
+            # wait for more input before failing. EOF follows so that a missed
+            # rejection surfaces as a different failure rather than a hang.
             writer.write(b"junk")
+            writer.close()
 
     monkeypatch.setattr(helper_streams, 'emit', emit)
     write_start(writer, ProcessSpec(_idle_child()), ())
     _run_terminated(session, fails=True)
     snapshot = _terminal_event(events)
     assert snapshot.outcome.trigger == Trigger.PROTOCOL_FAILURE
+    assert snapshot.outcome.primary_failure is not None
+    assert "unexpected input after START" in snapshot.outcome.primary_failure.message
     assert snapshot.cleanup.confirmed
 
 
@@ -408,6 +413,102 @@ def test_staging_admission_closes_before_child_disposal_signal(
     assert _terminal_event(events).cleanup.confirmed
     # Termination closes new staging before child disposal begins.
     assert witness.read_text() == "closed"
+
+
+@pytest.mark.parametrize("evidence", ("no-sentinel", "sentinel"))
+def test_live_readiness_is_published_without_waiting_for_its_deadline(
+    coordinated_helper: CoordinatedHelper, monkeypatch: pytest.MonkeyPatch, evidence: str
+) -> None:
+    session, writer, events, _children = coordinated_helper
+    observe_deadline = HelperSession._observe_deadline
+    evidence_published = asyncio.Event()
+    if evidence == "no-sentinel":
+        evidence_published.set()
+
+    async def deadline_after_evidence(
+        owner: HelperSession, child: SupervisedProcess, timeout: float, *, readiness: bool
+    ) -> None:
+        if not readiness:
+            return await observe_deadline(owner, child, timeout, readiness=readiness)
+        # READY cancels this deadline in the same coordinator step that
+        # publishes the evidence, so the deadline never observes it.
+        await evidence_published.wait()
+        raise AssertionError("readiness waited for its deadline")
+
+    record = helper_streams.emit
+
+    def emit(kind: str, **fields: object) -> None:
+        record(kind, **fields)
+        if kind == "CHILD_OUTPUT" and fields.get("payload") == "ZRO_ARMED":
+            evidence_published.set()
+        if kind == "READY":
+            writer.close()
+
+    monkeypatch.setattr(HelperSession, "_observe_deadline", deadline_after_evidence)
+    monkeypatch.setattr(helper_streams, 'emit', emit)
+    sentinels = ("ZRO_ARMED",) if evidence == "sentinel" else ()
+    write_start(
+        writer, ProcessSpec(_idle_child(*sentinels), required_output_sentinels=sentinels), ()
+    )
+    _run_terminated(session, fails=False)
+    assert "READY" in [kind for kind, _ in events]
+    snapshot = _terminal_event(events)
+    assert snapshot.outcome.primary_failure is None
+    assert snapshot.cleanup.confirmed
+
+
+def test_output_held_after_group_disposal_ends_at_drain_deadline(
+    coordinated_helper: CoordinatedHelper, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    session, writer, events, children = coordinated_helper
+    holder = tmp_path / "escaped-pid"
+    observe_deadline = HelperSession._observe_deadline
+    drain_deadlines: list[SupervisedProcess] = []
+
+    async def expire_drain(
+        owner: HelperSession, child: SupervisedProcess, timeout: float, *, readiness: bool
+    ) -> None:
+        if readiness:
+            return await observe_deadline(owner, child, timeout, readiness=readiness)
+        # The escaped descendant keeps both pipes open, so relay EOF cannot
+        # precede the deadline; expire it as soon as it is armed.
+        drain_deadlines.append(child)
+        await owner._events.put(Deadline(child, readiness=False))
+        return None
+
+    record = helper_streams.emit
+
+    def emit(kind: str, **fields: object) -> None:
+        record(kind, **fields)
+        if kind == "READY":
+            writer.close()
+
+    monkeypatch.setattr(HelperSession, "_observe_deadline", expire_drain)
+    monkeypatch.setattr(helper_streams, 'emit', emit)
+    write_start(
+        writer,
+        ProcessSpec(
+            (sys.executable, str(ROOT / "tests/fixtures/escaped_output_holder.py"), str(holder)),
+            required_output_sentinels=("ZRO_ARMED",),
+        ),
+        (),
+    )
+    try:
+        _run_terminated(session, fails=True)
+        snapshot = _terminal_event(events)
+        assert len(children) == 1 and drain_deadlines == children
+        assert snapshot.outcome.trigger == Trigger.CONTROLLER_EOF
+        assert snapshot.outcome.primary_failure is not None
+        assert "output relay did not stop" in snapshot.outcome.primary_failure.message
+        # The relays stop at the deadline; the escaped process is not owned.
+        assert snapshot.cleanup.confirmed
+        assert children[0].group_disposed and _output_closed(children[0])
+        assert all(task.done() for task in children[0].tasks)
+        assert not session.work.exists()
+    finally:
+        if holder.exists():
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(int(holder.read_text()), signal.SIGKILL)
 
 
 @pytest.mark.parametrize("completion", ("natural-exit", "termination"))
@@ -797,6 +898,7 @@ def test_readiness_deadline_processes_final_visible_observation(
     original_spawn = helper_process.spawn_child
     original_read = os.read
     original_sleep = asyncio.sleep
+    original_checkpoint = helper_streams.AsyncInput.checkpoint
     output_blocked = True
 
     def spawn(
@@ -824,7 +926,6 @@ def test_readiness_deadline_processes_final_visible_observation(
         return original_read(descriptor, size)
 
     async def controlled_sleep(delay: float) -> None:
-        nonlocal output_blocked
         if delay == 30:
             # Observe readiness through a duplicate fd without reading any bytes.
             stream = children[0].process.stdout
@@ -842,10 +943,15 @@ def test_readiness_deadline_processes_final_visible_observation(
                     await helper_streams.readable(descriptor)
                 finally:
                     os.close(descriptor)
-            # The deadline producer enqueues its fact before yielding again.
-            output_blocked = False
         else:
             await original_sleep(delay)
+
+    def checkpoint(reader: helper_streams.AsyncInput) -> asyncio.Future[None]:
+        nonlocal output_blocked
+        # Visible bytes stay unread until the final observation requests the
+        # reader's scan, so READY depends on that scan rather than relay timing.
+        output_blocked = False
+        return original_checkpoint(reader)
 
     def emit(kind: str, **values: object) -> None:
         events.append((kind, values))
@@ -855,6 +961,7 @@ def test_readiness_deadline_processes_final_visible_observation(
     monkeypatch.setattr(helper_process, 'spawn_child', spawn)
     monkeypatch.setattr(os, "read", controlled_read)
     monkeypatch.setattr(asyncio, "sleep", controlled_sleep)
+    monkeypatch.setattr(helper_streams.AsyncInput, "checkpoint", checkpoint)
     monkeypatch.setattr(helper_streams, 'emit', emit)
     marker = "diagnostic" if final_observation == "timeout" else "READY"
     writer.write(
@@ -1239,7 +1346,21 @@ def test_coordinator_failure_with_live_child_still_disposes_it(
             raise failure
         return poll(child)
 
+    record = helper_streams.emit
+    live_at_terminal: list[bool] = []
+
+    def emit(kind: str, **fields: object) -> None:
+        record(kind, **fields)
+        if kind == "SESSION_ENDED":
+            child = children[0]
+            live_at_terminal.append(child.process.returncode is None)
+            if live_at_terminal[-1]:
+                # Disposal was skipped. End the child here so the failure is
+                # reported by the assertions below instead of a hung session.
+                os.killpg(child.pid, signal.SIGKILL)
+
     monkeypatch.setattr(helper_process.SupervisedProcess, "poll", poll_after_marker)
+    monkeypatch.setattr(helper_streams, 'emit', emit)
     write_start(
         writer,
         ProcessSpec(
@@ -1250,10 +1371,10 @@ def test_coordinator_failure_with_live_child_still_disposes_it(
     )
     _run_terminated(session, fails=True)
     snapshot = _terminal_event(events)
+    assert live_at_terminal == [False]
     assert snapshot.outcome.trigger == Trigger.HELPER_FAILURE
     assert "READY" not in [kind for kind, _ in events]
     assert snapshot.cleanup.confirmed
-    assert children[0].process.returncode is not None
     assert not session.work.exists()
 
 
