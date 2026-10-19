@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import fcntl
 import io
 import json
@@ -405,6 +406,70 @@ def test_staging_admission_closes_before_child_disposal_signal(
     assert _terminal_event(events).cleanup.confirmed
     # Termination closes new staging before child disposal begins.
     assert witness.read_text() == "closed"
+
+
+@pytest.mark.parametrize("completion", ("natural-exit", "termination"))
+def test_exit_observation_without_pidfd_keeps_genuine_status_and_ownership(
+    coordinated_helper: CoordinatedHelper,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    completion: str,
+) -> None:
+    session, writer, events, children = coordinated_helper
+    gate = tmp_path / "exit-gate"
+    os.mkfifo(gate)
+    attempts: list[int] = []
+
+    def unavailable(pid: int, flags: int = 0) -> int:
+        del flags
+        # The event loop also probes pidfd support with its own PID.
+        if pid == os.getpid():
+            raise OSError(errno.ENOSYS, "pidfd unavailable")
+        attempts.append(pid)
+        if completion == "natural-exit" and len(attempts) == 1:
+            # The child exits only once its observer has chosen the fallback.
+            with gate.open("wb") as opened:
+                opened.write(b"x")
+        raise OSError(errno.ENOSYS, "pidfd unavailable")
+
+    record = helper_streams.emit
+
+    def emit(kind: str, **fields: object) -> None:
+        record(kind, **fields)
+        if kind == "READY":
+            writer.close()
+
+    monkeypatch.setattr(os, "pidfd_open", unavailable)
+    monkeypatch.setattr(helper_streams, 'emit', emit)
+    if completion == "natural-exit":
+        spec = ProcessSpec(
+            (
+                sys.executable,
+                "-c",
+                f"import sys; open(sys.argv[1], 'rb').read(1); sys.exit({SAMPLE_CHILD_EXIT_CODE})",
+                str(gate),
+            ),
+            completion_policy=CompletionPolicy.PROCESS_EXIT,
+        )
+    else:
+        spec = ProcessSpec(_idle_child("ZRO_ARMED"), required_output_sentinels=("ZRO_ARMED",))
+    write_start(writer, spec, ())
+    _run_terminated(session, fails=completion == "natural-exit")
+    snapshot = _terminal_event(events)
+    result = snapshot.outcome.child_result
+    assert len(children) == 1 and attempts and set(attempts) == {children[0].pid}
+    assert result is not None
+    if completion == "natural-exit":
+        # Polling without reaping still reports the child's own status.
+        assert snapshot.outcome.trigger == Trigger.CHILD_EXIT
+        assert (result.returncode, result.termination_requested) == (SAMPLE_CHILD_EXIT_CODE, False)
+    else:
+        # Cleanup and the fallback exit observer share one leader identity.
+        assert snapshot.outcome.trigger == Trigger.CONTROLLER_EOF
+        assert (result.returncode, result.termination_requested) == (-signal.SIGTERM, True)
+    assert snapshot.cleanup.confirmed
+    assert children[0].group_disposed and children[0].process.returncode == result.returncode
+    assert _output_closed(children[0])
 
 
 @pytest.mark.parametrize("boundary", ("before_spawn", "returned", "wrapper_failure"))
