@@ -1055,8 +1055,10 @@ def test_child_observer_failure_is_accounted_once_without_blocking_disposal(
         assert outcome.trigger == Trigger.SIGNAL
         assert _failure_code(snapshot) == "REMOTE_SIGNAL"
     # A failed relay observer counts as finished rather than waiting out the
-    # drain deadline.
-    assert "relay did not stop" not in repr(outcome)
+    # drain deadline, which would add a cleanup failure.
+    assert [detail.code for detail in outcome.diagnostics] == (
+        [] if established == "first" else ["OBSERVER_FAILURE"]
+    )
     assert snapshot.cleanup.confirmed
     assert children[0].group_disposed and children[0].process.returncode is not None
     assert not session.work.exists()
