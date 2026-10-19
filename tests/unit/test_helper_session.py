@@ -48,7 +48,7 @@ from zephyr_remote_openocd.protocol.outcome import (
 from zephyr_remote_openocd.protocol.process import ProcessSpec, RequiredPathSpec
 from zephyr_remote_openocd.protocol.wire import decode_terminal
 
-from tests.helper_process_support import cleanup_supervised_process
+from tests.helper_process_support import dispose_child_groups
 from tests.support import ROOT
 
 if TYPE_CHECKING:
@@ -141,10 +141,34 @@ def _start_session_command(argv: list[str], sentinels: Iterable[str] = ()) -> by
 
 
 @pytest.fixture
+def child_acquisitions(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[ChildAcquisition]]:
+    """Record every child acquisition, then dispose its group without production cleanup.
+
+    The ticket registers the raw child before Popen can publish its PID, so
+    children that never become supervised are still found when production
+    rollback or disposal is broken.
+    """
+    acquisitions: list[ChildAcquisition] = []
+
+    def acquisition() -> ChildAcquisition:
+        owner = ChildAcquisition()
+        acquisitions.append(owner)
+        return owner
+
+    monkeypatch.setattr(helper_process, 'ChildAcquisition', acquisition)
+    yield acquisitions
+    dispose_child_groups(*(owner.process for owner in acquisitions if owner.process is not None))
+
+
+@pytest.fixture
 def coordinated_helper(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, control_pipe: tuple[BufferedReader, FileIO]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    control_pipe: tuple[BufferedReader, FileIO],
+    child_acquisitions: list[ChildAcquisition],
 ) -> Iterator[CoordinatedHelper]:
     """Use real workspace, child owners, pipes, and the lifecycle coordinator."""
+    del child_acquisitions  # Requested only for its independent child disposal.
     monkeypatch.setattr(workspace_module, 'workspace_root', lambda: tmp_path)
     session = helper_session.HelperSession.create()
     _, writer = control_pipe
@@ -175,8 +199,6 @@ def coordinated_helper(
         helper_streams, 'emit', lambda kind, **fields: events.append((kind, fields))
     )
     yield session, writer, events, children
-    for child in children:
-        cleanup_supervised_process(child, None)
     session.release_workspace()
 
 
@@ -637,7 +659,10 @@ def test_exit_observation_without_pidfd_keeps_genuine_status_and_ownership(
 
 @pytest.mark.parametrize("boundary", ("before_spawn", "returned", "wrapper_failure"))
 def test_signal_capture_and_spawn_handoff_keep_cleanup_reachable(
-    coordinated_helper: CoordinatedHelper, monkeypatch: pytest.MonkeyPatch, boundary: str
+    coordinated_helper: CoordinatedHelper,
+    child_acquisitions: list[ChildAcquisition],
+    monkeypatch: pytest.MonkeyPatch,
+    boundary: str,
 ) -> None:
     session, writer, events, _children = coordinated_helper
     spawn = helper_process.spawn_child
@@ -679,6 +704,10 @@ def test_signal_capture_and_spawn_handoff_keep_cleanup_reachable(
     assert snapshot.cleanup.confirmed
     assert "READY" not in [kind for kind, _ in events]
     assert not session.work.exists() and session.workspace_lock.closed
+    # The session itself reaped the raw child, even one never supervised.
+    assert len(child_acquisitions) == 1
+    process = child_acquisitions[0].process
+    assert process is not None and process.returncode is not None
     monkeypatch.setattr(helper_process, 'SupervisedProcess', supervisor)
 
 
@@ -700,38 +729,28 @@ def test_raw_child_return_failure_keeps_disposal_owned(
         return fail_at_return
 
     write_start(writer, ProcessSpec((sys.executable, "-c", "import signal; signal.pause()")), ())
+    sys.settrace(fail_at_return)
     try:
-        sys.settrace(fail_at_return)
-        try:
-            _run_terminated(session, fails=True)
-        finally:
-            sys.settrace(previous_trace)
-
-        assert len(processes) == 1
-        child = processes[0]
-        # Inspect before fallback cleanup: session rollback must settle the raw
-        # process even when normal constructor-return adoption did not occur.
-        assert child.returncode is not None
-        with pytest.raises(ChildProcessError):
-            os.waitpid(child.pid, os.WNOHANG)
-        assert child.stdout is not None and child.stdout.closed
-        assert child.stderr is not None and child.stderr.closed
-        snapshot = _terminal_event(events)
-        assert snapshot.outcome.primary_failure is not None
-        # Rollback killed the live child; its status is not a genuine exit.
-        assert snapshot.outcome.child_result == ChildResult(-signal.SIGKILL, True)
-        assert snapshot.cleanup.child_disposal == "confirmed"
-        assert snapshot.cleanup.confirmed
-        assert not session.work.exists() and session.workspace_lock.closed
+        _run_terminated(session, fails=True)
     finally:
         sys.settrace(previous_trace)
-        for child in processes:
-            if child.poll() is None:
-                os.killpg(child.pid, signal.SIGKILL)
-            child.wait(timeout=5)
-            for stream in (child.stdout, child.stderr):
-                if stream is not None:
-                    stream.close()
+
+    assert len(processes) == 1
+    child = processes[0]
+    # Inspect before fallback cleanup: session rollback must settle the raw
+    # process even when normal constructor-return adoption did not occur.
+    assert child.returncode is not None
+    with pytest.raises(ChildProcessError):
+        os.waitpid(child.pid, os.WNOHANG)
+    assert child.stdout is not None and child.stdout.closed
+    assert child.stderr is not None and child.stderr.closed
+    snapshot = _terminal_event(events)
+    assert snapshot.outcome.primary_failure is not None
+    # Rollback killed the live child; its status is not a genuine exit.
+    assert snapshot.outcome.child_result == ChildResult(-signal.SIGKILL, True)
+    assert snapshot.cleanup.child_disposal == "confirmed"
+    assert snapshot.cleanup.confirmed
+    assert not session.work.exists() and session.workspace_lock.closed
 
 
 @pytest.mark.parametrize(
@@ -942,6 +961,7 @@ def test_observer_settlement_retains_descriptor_restoration_failure(
 
 
 @pytest.mark.parametrize("final_observation", ("ready", "exit", "timeout"))
+@pytest.mark.usefixtures("child_acquisitions")
 def test_readiness_deadline_processes_final_visible_observation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

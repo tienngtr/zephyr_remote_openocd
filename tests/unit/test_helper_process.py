@@ -11,7 +11,6 @@ import signal
 import subprocess
 import sys
 import time
-from contextlib import suppress
 from pathlib import Path
 from types import SimpleNamespace
 from typing import IO, Any
@@ -21,7 +20,7 @@ import pytest
 from zephyr_remote_openocd.helper import _process as helper_process
 from zephyr_remote_openocd.helper._process import ChildProcessHandle
 
-from tests.helper_process_support import cleanup_supervised_process
+from tests.helper_process_support import dispose_child_groups
 from tests.support import ROOT
 
 SAMPLE_CHILD_EXIT_CODE = 7
@@ -100,17 +99,11 @@ def test_spawn_child_rolls_back_process_when_ownership_wrapper_fails(
             for cleanup_error in cleanup_errors:
                 assert any(str(cleanup_error) in note for note in failure.__notes__)
     finally:
-        for process in processes:
-            if process.poll() is None:
-                with suppress(ProcessLookupError):
-                    os.killpg(process.pid, signal.SIGKILL)
-                with suppress(BaseException):
-                    process.wait(timeout=5)
-            for stream in (process.stdout, process.stderr):
-                if stream is not None and not stream.closed:
-                    stream.close()
-        for process_pidfd in process_pidfds:
-            os.close(process_pidfd)
+        try:
+            dispose_child_groups(*processes)
+        finally:
+            for process_pidfd in process_pidfds:
+                os.close(process_pidfd)
 
 
 @pytest.mark.timeout(10)
@@ -181,7 +174,7 @@ def test_supervised_child_terminates_descendant_after_leader_term(tmp_path: Path
         with pytest.raises(ProcessLookupError):
             os.killpg(child.pid, 0)
     finally:
-        cleanup_supervised_process(child, descendant_pidfd)
+        dispose_child_groups(child.process, descendant_pidfd=descendant_pidfd)
         if descendant_pidfd is not None:
             os.close(descendant_pidfd)
 
@@ -217,7 +210,7 @@ def test_supervised_child_warns_and_terminates_descendant_after_leader_exit(
         with pytest.raises(ProcessLookupError):
             os.killpg(child.pid, 0)
     finally:
-        cleanup_supervised_process(child, descendant_pidfd)
+        dispose_child_groups(child.process, descendant_pidfd=descendant_pidfd)
         if descendant_pidfd is not None:
             os.close(descendant_pidfd)
         if leader_pidfd is not None:
