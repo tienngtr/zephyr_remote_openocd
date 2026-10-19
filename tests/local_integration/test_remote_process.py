@@ -59,6 +59,7 @@ from zephyr_remote_openocd.controller.paths import REMOTE_ADDRESS_PLACEHOLDER, P
 from zephyr_remote_openocd.controller.staging import build_archive
 from zephyr_remote_openocd.controller.waiting import WaitSources
 from zephyr_remote_openocd.helper import _workspace as workspace_module
+from zephyr_remote_openocd.protocol.commands import encode_release
 from zephyr_remote_openocd.protocol.listeners import ListenerSpec
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy, Trigger
 from zephyr_remote_openocd.protocol.process import ProcessSpec
@@ -1850,6 +1851,7 @@ class TestRealProcessHelper:
                     event["payload"] for event in events if event["type"] == "CHILD_OUTPUT"
                 }
                 assert output_payloads >= {first_sentinel, second_sentinel}
+                process.stdin.write(encode_release())
                 process.stdin.close()
                 assert process.wait(timeout=8) == 0
                 assert not workspace.exists()
@@ -2123,9 +2125,9 @@ class TestRealProcessHelper:
                 if child_pidfd is not None:
                     os.close(child_pidfd)
 
-    @pytest.mark.parametrize("close_input", (True, False), ids=("eof", "unexpected-input"))
+    @pytest.mark.parametrize("ending", ("released-eof", "lease-loss", "unexpected-input"))
     def test_pending_readiness_shutdown_cleans_child_and_workspace(
-        self, tmp_path: Path, close_input: bool
+        self, tmp_path: Path, ending: str
     ) -> None:
         helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         environment = os.environ.copy()
@@ -2160,19 +2162,25 @@ class TestRealProcessHelper:
             assert output["type"] == "CHILD_OUTPUT"
             child_pid = int(output["payload"])
             child_pidfd = os.pidfd_open(child_pid)
-            if close_input:
-                process.stdin.close()
-            else:
+            if ending == "unexpected-input":
                 process.stdin.write(encode_frame("UNEXPECTED"))
                 process.stdin.flush()
+            else:
+                if ending == "released-eof":
+                    process.stdin.write(encode_release())
+                process.stdin.close()
 
             events = [json.loads(line) for line in read_lines(process.stdout, timeout=10)]
 
-            assert process.wait(timeout=10) == (0 if close_input else 1)
+            assert process.wait(timeout=10) == (0 if ending == "released-eof" else 1)
             assert not any(event["type"] == "READY" for event in events)
-            assert events[-1]["type"] == "SESSION_ENDED"
-            assert events[-1]["trigger"] == (
-                "controller_eof" if close_input else "protocol_failure"
+            terminal = decode_terminal(events[-1])
+            assert terminal.outcome.trigger == (
+                Trigger.PROTOCOL_FAILURE if ending == "unexpected-input" else Trigger.CONTROLLER_EOF
+            )
+            failure = terminal.outcome.primary_failure
+            assert (failure is not None and failure.code == "CONTROLLER_LEASE_LOST") == (
+                ending == "lease-loss"
             )
             assert not workspace.exists()
             _assert_pidfd_exited(child_pidfd)
@@ -2216,6 +2224,7 @@ class TestRealProcessHelper:
                 assert started["type"] == "READY"
                 child_pid = started["child_pid"]
                 child_pidfd = os.pidfd_open(child_pid)
+                process.stdin.write(encode_release())
                 process.stdin.close()
                 assert process.wait(timeout=8) == 0
                 assert not workspace.exists()

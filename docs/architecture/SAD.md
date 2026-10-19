@@ -1827,9 +1827,22 @@ when observed; later cleanup failures remain diagnostics.
 
 The authority revalidates Starting state and absence of its own terminal
 decision at entry. It accounts already-recorded fatal facts before READY.
-EOF occurring, an adapter recognizing it, publishing it, and the authority
-handling it are distinct stages. READY can precede authority handling;
-after termination commits, READY cannot be newly authorized.
+EOF occurring, the control reader recognizing it, publishing it, the authority
+dispatching it, and terminal freeze are distinct stages. The reader parses
+`START [RELEASE] EOF` with the bounded frame buffer across arbitrary read
+boundaries. It records whether RELEASE preceded EOF only as parser state; at
+recognition of EOF after START without RELEASE it retains one monotonic
+controller-lease-loss fact before the queue publication that can block, as
+observer failures are retained before theirs. The coordinator accounts that
+fact once, as a `controller_eof` termination with `CONTROLLER_LEASE_LOST`, at
+the same points as other recorded fatal facts: its loop, attempt entry, both
+READY checks, attempt settlement, and immediately before freeze. A trigger
+already committed is kept and the loss joins the outcome under the ordinary
+first-failure rule, behind an earlier natural failing child result. READY
+can precede recognition of unread EOF and authority handling of released EOF;
+it is never admitted after unreleased EOF was recognized, and after termination
+commits READY cannot be newly authorized. The reader is cancelled before freeze,
+so recognition cannot follow it; bytes it never read are not classified.
 
 Local cancellation revokes dependent launch, and remote handling of controller
 loss cleans all owned work. These separate authorities do not require a global
@@ -2078,7 +2091,8 @@ the signal remains a local diagnostic and forces nonzero helper status rather
 than changing or replaying that snapshot. Client helper-status validation retains
 that late failure independently of the received outcome.
 
-Intentional local shutdown closes the controller input lease. The helper's
+Intentional local shutdown releases the controller lease: RELEASE, then
+controller-input EOF. The helper's
 SIGTERM/SIGKILL of its owned child group is ordinary child disposal, not a native
 signal delivered to the helper. Interactive local GDB Ctrl-C retains its separate
 stock behavior; it does not justify treating remote helper signals as success.
@@ -2223,7 +2237,8 @@ shared authority's entry, immediately before the synchronous launch callback. In
 through Zephyr's `run_client` inside the interactive ownership scope of
 [§39.1](#391-operation-cancellation-and-waits); RTT batch GDB setup and the RTT
 client are ordinary cancellable work. Cleanup ownership protects interruption
-rollback. Controller input EOF ends the remote lease.
+rollback. RELEASE followed by controller-input EOF ends the remote lease;
+EOF without RELEASE is remote lease loss.
 
 New forwarding work uses the same synchronized authority entry as GDB/RTT.
 Immediately before starting a required forwarding batch or each best-effort
@@ -2258,7 +2273,7 @@ prepare and adopt resource-free coordinator
     -> validate forwarding entry; establish required forwarding
     -> validate local launch eligibility at actual entry
     -> run GDB / RTT / foreground server / one-shot result wait
-    -> commit local closure; close helper stdin
+    -> commit local closure; write RELEASE if still needed; close helper stdin
     -> read final output/outcome and settle owned local transports
 ```
 
@@ -2288,8 +2303,16 @@ required/best-effort forwarding transition. GDB Ctrl-C retains stock
 interactive behavior rather than automatically committing local cancellation.
 
 Local closure first commits cancellation where applicable and prevents further
-launch. It closes helper stdin once, retaining stdout/stderr readers for final
-output and SESSION_ENDED. A shared 15-second coordination budget covers waiting
+launch. If START was completely written and neither a terminal nor control end
+has been recorded, it makes one nonblocking write of the RELEASE frame, no
+larger than `PIPE_BUF`, so the local SSH input pipe receives all of it or none. That is
+a local pipe property only; remote framing tolerates any fragmentation. The
+write is not retried or acknowledged, and its failure records no operation
+failure: an unreleased EOF reaching a live helper is reported by the helper as
+lease loss, and an ended or unreachable helper is accounted through terminal,
+missing-terminal, and helper/SSH status. Closure then closes helper stdin once,
+retaining stdout/stderr readers for final output and SESSION_ENDED. A shared
+15-second coordination budget covers waiting
 for terminal information and ordinary helper-transport exit. On expiry or
 transport failure, cleanup escalates only the owned local SSH process with finite
 termination/reaping budgets and closes its owned pipes/readers/drains. Forwarding
@@ -2302,14 +2325,15 @@ helper/SSH status independently. Missing terminal information, including with
 zero SSH status, is infrastructure uncertainty and cannot establish remote
 cleanup success. A nonzero helper status after a valid remote snapshot remains
 an infrastructure failure without changing its child result. The remote
-`controller_eof` trigger reports only that the helper observed input EOF. The
-local authority applies local context: after local closure has begun it is the
-orderly end of the controller lease; before that, the local operation still
-owned the lease, so it is a control-channel failure even with a zero or
-termination-requested child result. That failure is accounted independently of
-terminal failure: because the EOF initiated remote termination, it is
-established first, and a terminal failure or genuine nonzero child result in
-the same snapshot is retained behind it. Local timeout may
+`controller_eof` trigger reports that the helper ended on input EOF; the helper
+classified it when its reader recognized it, and lease loss arrives as the
+snapshot's `CONTROLLER_LEASE_LOST` failure. The local authority interprets the
+snapshot like any other: it never reclassifies controller EOF from whether the
+snapshot arrived before or after local closure began, because receipt time is
+not remote observation time. The local error follows the snapshot's
+precedence: a primary failure leads with a genuine nonzero child result noted
+behind it, and a natural failing child result without one leads with its
+secondary diagnostics noted behind it. Local timeout may
 leave remote cleanup unconfirmed even after local SSH is reaped. External
 sharing masters are never terminated by session closure.
 
@@ -3071,7 +3095,7 @@ Selected architecture:
 
 | Concern | Architectural decision and cost |
 | --- | --- |
-| Controller lifetime | Open controller stdin is the remote lease. Directional EOF ends the lease while reverse output remains available; configured SSH wrappers require qualification at this boundary. |
+| Controller lifetime | Open controller stdin is the remote lease. RELEASE then directional EOF ends it intentionally while reverse output remains available; EOF recognized without RELEASE is lease loss, retained at recognition without a fence or acknowledgement. Configured SSH wrappers require qualification at this boundary. |
 | Separate authorities | The local launch gate owns dependent launch eligibility; the remote authority owns attempts, readiness, termination, and terminal freeze. Each acts on its own observations. |
 | Continuous physical ownership | Acquisition and adoption must preserve cleanup reachability across interruption. Process groups, producers, staging exclusion, forwards, and RTT resources require independent settlement evidence. |
 | Bounded observation and reporting | Finite final observation, bounded frame and writer storage, and a finite terminal drain keep failure handling bounded. One structured snapshot preserves result provenance and nested diagnostics. |
@@ -3089,7 +3113,8 @@ output before accumulating an unbounded encoded frame. Terminal delivery
 receives a finite drain opportunity after physical cleanup. Delivery failure
 records local diagnostics and nonzero helper status without another freeze.
 
-Local shutdown cancels launch first, half-closes stdin, retains the event reader
+Local shutdown cancels launch first, writes RELEASE if still needed, half-closes
+stdin, retains the event reader
 through a 15-second coordination window, then applies bounded cleanup to the
 owned SSH transport and reader. Missing or malformed terminal information and
 independent nonzero helper/SSH status are failures. The shared connection master

@@ -422,71 +422,50 @@ def test_session_cannot_be_acquired_again(monkeypatch: pytest.MonkeyPatch, state
     )
 
 
-@pytest.mark.parametrize(
-    "established",
-    (
-        "unexpected",
-        "after-local-closure",
-        "after-failure",
-        "with-terminal-failure",
-        "with-child-failure",
-    ),
-)
-def test_controller_eof_fails_live_operation_only_before_local_closure(
-    monkeypatch: pytest.MonkeyPatch, established: str
+@pytest.mark.parametrize("received", ("before-local-closure", "after-local-closure"))
+@pytest.mark.parametrize("classification", ("released", "lease-lost", "after-failure"))
+def test_controller_eof_result_is_the_helper_classification_not_receipt_time(
+    monkeypatch: pytest.MonkeyPatch, classification: str, received: str
 ) -> None:
     harness = ForwardingHarness(monkeypatch)
-    if established == "with-terminal-failure":
-        # The helper failed while terminating because of the EOF.
-        eof = terminal_snapshot(
-            Trigger.CONTROLLER_EOF,
-            returncode=0,
-            termination_requested=True,
-            code="OUTPUT_FAILURE",
-            message="relay failed during termination",
-        )
-    elif established == "with-child-failure":
-        # The child failed on its own before termination was requested.
-        eof = terminal_snapshot(Trigger.CONTROLLER_EOF, returncode=3)
-    else:
-        eof = terminal_snapshot(Trigger.CONTROLLER_EOF, returncode=0, termination_requested=True)
+    eof = terminal_snapshot(
+        Trigger.CONTROLLER_EOF,
+        returncode=0,
+        termination_requested=True,
+        code=None if classification == "released" else "CONTROLLER_LEASE_LOST",
+        message="controller input ended without RELEASE",
+    )
     reader_error = RuntimeError("earlier reader failure")
 
     class Helper(ControlledHelper):
         @override
         def close(self) -> None:
             super().close()
-            if established == "after-local-closure":
-                # The helper reports EOF only after closure closed its input.
+            if received == "after-local-closure":
                 self.authority.record_terminal(eof)
 
-    def report_eof() -> None:
-        if established == "after-failure":
-            harness.helper.authority.record_reader_failure(reader_error)
-        harness.helper.authority.record_terminal(eof)
-
     harness.helper = Helper()
-    harness.helper.on_wait = report_eof
     session = harness.prepare((GDB,), ())
     session.acquire()
-    if established == "after-local-closure":
+    if classification == "after-failure":
+        harness.helper.authority.record_reader_failure(reader_error)
+    if received == "before-local-closure":
+        harness.helper.authority.record_terminal(eof)
+        assert (harness.helper.authority.snapshot().failure is None) == (
+            classification == "released"
+        )
+    if classification == "released":
         session.finish()
         assert session.openocd_returncode == 0
         return
     with pytest.raises(SessionError) as raised:
-        session.wait_for_openocd_exit()
-    if established == "after-failure":
-        assert raised.value.__cause__ is reader_error
-        assert any("before local closure" in note for note in raised.value.__notes__)
-    else:
-        assert "before local closure" in str(raised.value)
-    if established == "with-terminal-failure":
-        assert any("relay failed during termination" in note for note in raised.value.__notes__)
-    elif established == "with-child-failure":
-        assert any("exit status 3" in note for note in raised.value.__notes__)
-    with pytest.raises(SessionError) as finished:
         session.finish()
-    assert finished.value is raised.value
+    if classification == "after-failure":
+        # The earlier failure stays primary; the helper's lease loss is retained.
+        assert raised.value.__cause__ is reader_error
+        assert any("CONTROLLER_LEASE_LOST" in note for note in raised.value.__notes__)
+    else:
+        assert "CONTROLLER_LEASE_LOST" in str(raised.value)
 
 
 @pytest.mark.parametrize("failure_phase", ("health", "disposal"))

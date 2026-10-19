@@ -243,6 +243,18 @@ def decode_command(frame: bytes) -> StartRequest:
     raise ValueError("only START is valid on controller input")
 
 
+def encode_release() -> bytes:
+    """Serialize RELEASE, the controller's evidence that its next EOF is intentional."""
+    return encode_frame("RELEASE")
+
+
+def decode_release(frame: bytes) -> None:
+    """Accept exactly one complete RELEASE frame after START."""
+    message = decode_frame(frame)
+    if message["type"] != "RELEASE" or set(message) != {"version", "type"}:
+        raise ValueError("only RELEASE is valid on controller input after START")
+
+
 def encode_start(
     process: ProcessSpec,
     listeners: Iterable[ListenerSpec],

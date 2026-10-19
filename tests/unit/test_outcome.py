@@ -100,6 +100,21 @@ def test_signal_failure_preserves_controller_trigger_and_child_zero() -> None:
 
 
 @pytest.mark.parametrize(
+    ("result", "later_is_primary"),
+    ((ChildResult(7, False), False), (ChildResult(0, False), True), (ChildResult(-15, True), True)),
+)
+def test_earlier_natural_child_failure_stays_the_established_failure(
+    result: ChildResult, later_is_primary: bool
+) -> None:
+    later = Diagnostic("CONTROLLER_LEASE_LOST", "controller input ended without RELEASE")
+    outcome = Outcome(Trigger.CHILD_EXIT, child_result=result).with_failure(later)
+    assert (outcome.primary_failure == later) is later_is_primary
+    assert outcome.diagnostics == (() if later_is_primary else (later,))
+    assert outcome.child_result == result
+    assert outcome.operation_failed(CompletionPolicy.LIVE_SERVER)
+
+
+@pytest.mark.parametrize(
     ("result", "live_failed", "exit_failed"),
     (
         (None, False, True),

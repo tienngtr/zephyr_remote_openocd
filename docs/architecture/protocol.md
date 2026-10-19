@@ -8,8 +8,10 @@ There is no negotiation or dual-version session. Content-addressed deployment
 supplies matching revisions in the `protocol_v1` helper namespace.
 
 Configured SSH wrappers must deliver directional EOF: closing controller stdin
-leaves helper stdout/stderr readable until helper exit. A wrapper that cannot
-satisfy this contract requires replacement or reconfiguration.
+leaves helper stdout/stderr readable until helper exit. They must also deliver
+controller input bytes in order, although not with their local write
+boundaries. A wrapper that cannot satisfy this contract requires replacement or
+reconfiguration.
 
 Maintained wire, lifecycle, and physical-boundary evidence and selected external
 qualification are recorded in
@@ -36,11 +38,22 @@ wire data and event order. Decoding, accumulation, diagnostic rendering, and
 writer storage must remain bounded. Oversized output is an admission failure,
 not permission to exceed the limit or silently discard required outcome detail.
 
-Before START, incomplete input remains buffered until LF. EOF with a partial
-START is protocol failure; EOF with no partial frame ends the controller lease.
-After the one valid START, any additional input byte, including whitespace or
-another LF, is protocol failure; there is no post-START frame parser to await.
-A START followed by extra bytes in the same read still violates this rule.
+Controller input after SESSION_CREATED has exactly this form:
+
+```text
+START [RELEASE] EOF
+```
+
+Input is a byte stream; neither local writes nor helper reads are frame
+boundaries. A frame may arrive split across reads, and frames may be coalesced
+into one read, including START and RELEASE together. Incomplete input remains
+buffered, within the frame bound, until its LF or EOF. RELEASE contains exactly
+the envelope with `type: RELEASE`. It is valid only after a complete START, at
+most once, and only EOF may follow it. Any other frame, a second START or
+RELEASE, any byte after RELEASE, or EOF with an incomplete frame is protocol
+failure. A complete invalid frame is rejected when recognized, so one batched
+with START is rejected before child creation. EOF with no input ends the
+session before START without a controller lease or failure.
 Already recorded validation/observer failures remain fatal and are accounted
 before success publication.
 
@@ -59,21 +72,50 @@ Creation failure may instead end with SESSION_ENDED without SESSION_CREATED if
 output remains usable. No child is started before valid START. Staging uses a
 separate helper invocation against the created workspace, before START.
 
-After START, open helper stdin is the controller-lifetime lease. Local stdin
-closure must deliver remote stdin EOF while helper stdout/stderr remain usable
-until helper exit. Remote EOF, native termination signal, natural child exit,
-protocol failure, or another fatal failure can initiate termination. Input EOF
-does not distinguish intentional local closure from transport loss. Local
-shutdown must preserve reverse readers for final output/outcome, wait within a
-finite budget, and escalate only its owned transport if needed. External SSH
+After START, open helper stdin is the controller-lifetime lease. Intentional
+local release writes one complete RELEASE frame, then closes stdin; remote stdin
+EOF follows while helper stdout/stderr remain usable until helper exit. RELEASE
+is causal evidence for the EOF that follows it. It is not itself a lifecycle
+transition, termination request, or acknowledged command.
+
+When the helper's control reader recognizes EOF after START, the EOF is orderly
+`controller_eof` if that reader recognized a valid RELEASE earlier on the same
+input stream. Otherwise it is controller-lease loss: termination with trigger
+`controller_eof` and failure `CONTROLLER_LEASE_LOST`. The reader classifies at
+recognition and retains a recognized lease loss independently of the helper's
+observation queue, before any publication that can block. The lifecycle
+authority remains the only transition authority. It accounts the retained loss
+before READY admission, at its ordinary accounting points, and immediately
+before freezing the terminal snapshot. If another cause already committed
+termination, that trigger is kept, and the loss becomes the primary failure if
+no failure has been established, including by an earlier natural failing child
+result, or a secondary diagnostic otherwise. No input fence, scan for
+unread bytes, or acknowledgement is part of this classification: an EOF still
+unread when the snapshot freezes is not known to the helper and does not by
+itself fail the session.
+
+Remote EOF, native termination signal, natural child exit, protocol failure, or
+another fatal failure can initiate termination. Local shutdown must revoke
+dependent work, write RELEASE while a started session may still read it,
+close stdin, preserve reverse readers for final output/outcome, wait within a
+finite budget, and escalate only its owned transport if needed. A session whose
+terminal or control end the client has already observed needs no release. A
+failed RELEASE write is not itself an operation failure: a still-live helper
+then recognizes unreleased EOF and reports lease loss, and transport loss
+remains visible through terminal and helper/SSH status accounting. External SSH
 sharing masters remain externally owned.
 
 The remote authority handles controller termination independently of the local
-operation. EOF occurrence, adapter recognition, publication, and authority
-handling are not one atomic boundary. READY may precede that handling;
-each authority acts on its own observations. After remote termination
-commits, no new attempt or READY admission is permitted. Local cancellation
-independently revokes local launch eligibility, including for late READY.
+operation. EOF occurrence, reader recognition, publication, authority dispatch,
+and terminal freeze are distinct stages, not one atomic boundary. READY may
+precede recognition of an EOF that the helper has not yet read, and may precede
+dispatch of a released EOF. READY is not published after unreleased EOF has
+been recognized. Each authority acts on its own observations. After remote
+termination commits, no new attempt or READY admission is permitted. Local
+cancellation independently revokes local launch eligibility, including for
+late READY. The client takes the controller-EOF classification from the
+terminal snapshot; when the snapshot is received relative to local closure
+never changes it.
 
 ## START
 
@@ -281,7 +323,7 @@ still records failure without changing that trigger or abandoning cleanup.
 If the snapshot has already frozen, retain the signal failure in local
 diagnostics and return nonzero helper status; do not mutate or replace the
 snapshot. Independent helper-status validation makes that late failure visible.
-Intentional local closure uses controller EOF. Signals sent by the helper to its
+Intentional local closure uses RELEASE followed by controller EOF. Signals sent by the helper to its
 owned child group for disposal are child cleanup, not native signals received
 by the helper, and do not by themselves establish this helper/session failure.
 
@@ -300,8 +342,12 @@ primary failure is established, later cleanup, observer, transport, or writer
 failures remain ordered secondary diagnostics. No total ordering is promised
 between unrelated failures before one is established. An independently observed
 nonzero child result fails a one-shot operation, but result provenance stays
-independent of whether it becomes the primary failure. A zero result cannot
-mask infrastructure or cleanup failure.
+independent of whether it becomes the primary failure. A natural nonzero child
+result observed before any failure is itself the established operation failure:
+later failures, such as cleanup failure or controller-lease loss, become
+secondary diagnostics and `primary_failure` stays null. A failure established
+first stays primary when a natural nonzero result is observed afterward. A zero
+result cannot mask infrastructure or cleanup failure.
 
 `termination_requested` records whether the helper issued a cleanup termination
 signal to the child scope before observing its status. Before signalling, account
@@ -340,9 +386,9 @@ cleanup cannot replace an already established local operation failure.
 
 ```text
 helper: SESSION_CREATED
-client: START, then no bytes; stdin remains open as lease
+client: START; stdin remains open as lease
 helper: ATTEMPT?; CHILD_OUTPUT*; READY?; CHILD_OUTPUT*; SESSION_ENDED
-client: input closure may occur at any point
+client: RELEASE then EOF at intentional closure; input EOF alone may occur at any point
 ```
 
 The compact grammar is illustrative: setup/startup failure can end before
@@ -356,15 +402,17 @@ requires no readiness event. Failed spawn remains an admitted diagnostic
 attempt with no acquired process.
 
 Malformed JSON/UTF-8, non-object input, invalid version/schema, oversize input,
-unexpected post-START bytes, or invalid state becomes protocol
+post-START input other than one RELEASE, bytes after RELEASE, or invalid state becomes protocol
 failure when handled by the authority and initiates cleanup. Failed session
 creation, START validation, spawn, readiness, or output admission ends through the same outcome model if a
 terminal frame can be delivered. Unexpected transport loss is local failure;
-remote cleanup begins after remote authority observation of EOF/signal.
+remote cleanup begins after remote authority observation of EOF/signal, and an
+unreleased EOF the helper recognizes is controller-lease loss.
 
-Intentional benign races include late remote READY after local cancellation
-and natural exit versus controller termination selecting either initiating
-trigger. They are permitted only while
+Intentional benign races include late remote READY after local cancellation,
+READY before the helper recognizes or dispatches controller EOF as allowed
+above, and natural exit versus controller termination selecting either
+initiating trigger. They are permitted only while
 local launch gating, single-attempt admission, result provenance, continuous
 cleanup reachability, and eventual bounded cleanup after authority observation
 remain satisfied. Local and remote authorities observe controller loss

@@ -211,14 +211,16 @@ remotes:
 Do not use shell pipelines, redirections, or a command string. SSH
 authentication remains the configured client's responsibility.
 
-The command must pass local stdin to the remote command. Closing local stdin
-must deliver remote EOF while leaving stdout and stderr readable until the
-remote command exits. The runner uses this half-close to request normal session
-cleanup and receive its final result. Wrappers that suppress stdin, close both
-directions together, require remote pseudo-terminal behavior that prevents this
-half-close, or detach the remote helper from the controller channel are
-unsupported. Replace or reconfigure an incompatible wrapper; there is no
-alternate shutdown mode or YAML option for it.
+The command must pass local stdin to the remote command, preserving byte order,
+and closing local stdin must deliver remote EOF while leaving stdout and stderr
+readable until the remote command exits. For normal session cleanup the runner
+writes a short release message on stdin, then uses this half-close and receives
+its final result. Remote input that ends without that release is reported as
+controller-lease loss and fails the operation. Wrappers that suppress stdin,
+close both directions together, require remote pseudo-terminal behavior that
+prevents this half-close, or detach the remote helper from the controller
+channel are unsupported. Replace or reconfigure an incompatible wrapper; there
+is no alternate shutdown mode or YAML option for it.
 
 For local service forwards, the runner places `ExitOnForwardFailure=yes` and
 `ClearAllForwardings=no` before your fixed arguments. These mandatory settings

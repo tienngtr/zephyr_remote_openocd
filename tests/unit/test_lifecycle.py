@@ -117,6 +117,29 @@ def test_settlement_requires_both_producer_quiescence_and_resource_disposal(
     assert lifecycle.freeze(CONFIRMED).cleanup.child_disposal == "confirmed"
 
 
+@pytest.mark.parametrize("child_first", (True, False), ids=("child-exit-first", "loss-first"))
+def test_first_established_of_natural_child_failure_and_lease_loss_stays_primary(
+    child_first: bool,
+) -> None:
+    lifecycle = _owned()
+    assert lifecycle.ready(child_live=True, admitted=True)
+    loss = Diagnostic("CONTROLLER_LEASE_LOST", "controller input ended without RELEASE")
+    if child_first:
+        assert lifecycle.observe_child_exit(3)
+    lifecycle.terminate(Trigger.CONTROLLER_EOF, loss)
+    if not child_first:
+        assert lifecycle.observe_child_exit(3)
+    assert lifecycle.settle_attempt(producer_quiescent=True, resources_disposed=True)
+    outcome = lifecycle.freeze(CONFIRMED).outcome
+    assert outcome.child_result == ChildResult(3, False)
+    if child_first:
+        assert outcome.trigger == Trigger.CHILD_EXIT
+        assert outcome.primary_failure is None and outcome.diagnostics == (loss,)
+    else:
+        assert outcome.trigger == Trigger.CONTROLLER_EOF
+        assert outcome.primary_failure == loss and not outcome.diagnostics
+
+
 def test_startup_failure_is_primary_before_cleanup() -> None:
     lifecycle = _owned()
     startup = Diagnostic("STARTUP", "configuration failed")

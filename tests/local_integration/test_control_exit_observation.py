@@ -52,6 +52,9 @@ _NO_WAIT_SOURCES = WaitSources()
 
 ATTEMPT = encode_frame("ATTEMPT", argv=["child"])
 READY = encode_frame("READY", remote_address="127.64.0.1", child_pid=1)
+LEASE_LOST = terminal_message(
+    Trigger.CONTROLLER_EOF, code="CONTROLLER_LEASE_LOST", message="input ended without RELEASE"
+)
 
 
 class ExitPeer:
@@ -216,8 +219,8 @@ def peer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[ExitPeer]:
 
 @pytest.mark.parametrize(
     "initial",
-    (b"", CREATED, CREATED + terminal_message(Trigger.CONTROLLER_EOF, child_acquired=False)),
-    ids=("before-created", "buffered-created", "created-and-unexpected-eof-terminal"),
+    (b"", CREATED, CREATED + LEASE_LOST),
+    ids=("before-created", "buffered-created", "created-and-lease-loss-terminal"),
 )
 def test_control_exit_prevents_session_acquisition(peer: ExitPeer, initial: bytes) -> None:
     session = peer.create(initial)
@@ -227,8 +230,8 @@ def test_control_exit_prevents_session_acquisition(peer: ExitPeer, initial: byte
     assert snapshot.control_ended
     assert (snapshot.allocation is not None) == bool(initial)
     assert (snapshot.terminal is not None) == (b"SESSION_ENDED" in initial)
-    # The helper reported input EOF the controller never sent.
-    expected = "before local closure" if b"SESSION_ENDED" in initial else "control transport ended"
+    # The helper classified the input EOF the controller never sent as lease loss.
+    expected = "CONTROLLER_LEASE_LOST" if b"SESSION_ENDED" in initial else "control transport ended"
     assert expected in str(raised.value)
     assert not isinstance(raised.value.__cause__, TimeoutError)
     assert peer.transport is not None
@@ -516,8 +519,7 @@ def test_control_exit_survives_reaping_during_wait_registration(
 ) -> None:
     snapshot_taken = threading.Event()
     reaped = threading.Event()
-    terminal = terminal_message(Trigger.CONTROLLER_EOF, child_acquired=False)
-    session = peer.create(CREATED + terminal)
+    session = peer.create(CREATED + LEASE_LOST)
     returncode = cast(property, inspect.getattr_static(ManagedSshProcess, "returncode")).fget
     assert returncode is not None
     open_pidfd = os.pidfd_open
@@ -590,9 +592,9 @@ def test_control_exit_survives_reaping_during_wait_registration(
         monkeypatch.setattr(os, "waitid", reused_waitid)
         monkeypatch.setattr(connection_module, "wait_for", observe_wait)
         try:
-            with pytest.raises(SessionError, match="before local closure"):
+            with pytest.raises(SessionError, match="CONTROLLER_LEASE_LOST"):
                 session.acquire()
-            # The unexpected EOF fails acquisition as soon as the reader
+            # The reported lease loss fails acquisition as soon as the reader
             # records it, possibly before final control accounting finishes.
             while session._authority.snapshot().control_observation_pending:
                 wait_for(sources=WaitSources(notifiers=(session._notifier,)))

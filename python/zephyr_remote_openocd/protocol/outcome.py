@@ -59,6 +59,11 @@ class ChildResult:
     returncode: int
     termination_requested: bool
 
+    @property
+    def natural_failure(self) -> bool:
+        """A nonzero exit the helper did not request fails every completion policy."""
+        return not self.termination_requested and self.returncode != 0
+
 
 @dataclass(frozen=True, slots=True)
 class Outcome:
@@ -77,9 +82,19 @@ class Outcome:
         if self.trigger == Trigger.CHILD_EXIT and self.child_result is None:
             raise ValueError("child-exit termination requires an observed child result")
 
+    @property
+    def child_failure_is_primary(self) -> bool:
+        """A natural failing child result observed before any failure established it."""
+        result = self.child_result
+        return self.primary_failure is None and result is not None and result.natural_failure
+
     def with_failure(self, failure: Diagnostic) -> Outcome:
-        """Establish the first failure; preserve later failures in arrival order."""
-        if self.primary_failure is None:
+        """Establish the first failure; preserve later failures in arrival order.
+
+        An earlier natural failing child result is already the established
+        operation failure, so a later failure joins the secondary diagnostics.
+        """
+        if self.primary_failure is None and not self.child_failure_is_primary:
             return replace(self, primary_failure=failure)
         return replace(self, diagnostics=(*self.diagnostics, failure))
 

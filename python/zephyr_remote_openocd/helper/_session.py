@@ -40,7 +40,12 @@ from zephyr_remote_openocd.helper.lifecycle import (
     Terminating,
 )
 from zephyr_remote_openocd.protocol.arguments import materialize_argv
-from zephyr_remote_openocd.protocol.commands import StartRequest, decode_command, validate_argv
+from zephyr_remote_openocd.protocol.commands import (
+    StartRequest,
+    decode_command,
+    decode_release,
+    validate_argv,
+)
 from zephyr_remote_openocd.protocol.outcome import (
     CleanupReport,
     CompletionPolicy,
@@ -73,6 +78,8 @@ class HelperSession:
         self._signals: asyncio.Queue[int] = asyncio.Queue(1)
         self._signal_scope = SessionSignals()
         self._signal_accounted = False
+        self._controller_lease_lost = False
+        self._controller_lease_loss_accounted = False
         self._loop: asyncio.AbstractEventLoop | None = None
         self._tasks: asyncio.TaskGroup | None = None
         self._session_tasks: list[asyncio.Task[ObservationFailed | None]] = []
@@ -119,25 +126,35 @@ class HelperSession:
         await self._events.put(SignalReceived(await self._signals.get()))
 
     async def _observe_control(self) -> None:
+        """Recognize ``START [RELEASE] EOF``; read boundaries are not frame boundaries."""
         frames = ControlFrameBuffer()
-        started = False
+        started = released = False
         with streams.AsyncInput(sys.stdin.buffer.fileno()) as reader:
             while True:
                 chunk = await reader.read()
                 if not chunk:
                     frames.finish()
+                    if started and not released:
+                        # Classified at recognition and retained before the
+                        # possibly blocking publication below.
+                        self._controller_lease_lost = True
                     await self._events.put(ControlEOF())
                     return
-                if started:
-                    raise ValueError("unexpected input after START")
+                if released:
+                    raise ValueError("unexpected input after RELEASE")
                 frames.feed(chunk)
-                frame = frames.pop_frame()
-                if frame is not None:
-                    request = decode_command(frame)
-                    if frames.has_pending_bytes:
-                        raise ValueError("unexpected input after START")
-                    started = True
-                    await self._events.put(StartReceived(request))
+                while (frame := frames.pop_frame()) is not None:
+                    if released:
+                        raise ValueError("unexpected input after RELEASE")
+                    if started:
+                        decode_release(frame)
+                        released = True
+                    else:
+                        request = decode_command(frame)
+                        started = True
+                        await self._events.put(StartReceived(request))
+                if released and frames.has_pending_bytes:
+                    raise ValueError("unexpected input after RELEASE")
 
     async def _observe_output(
         self, child: process.SupervisedProcess, name: str, stream: IO[bytes]
@@ -212,6 +229,12 @@ class HelperSession:
                 Diagnostic(
                     "REMOTE_SIGNAL", f"helper received signal {self._signal_scope.pending_signum}"
                 ),
+            )
+        if self._controller_lease_lost and not self._controller_lease_loss_accounted:
+            self._controller_lease_loss_accounted = True
+            self.lifecycle.terminate(
+                Trigger.CONTROLLER_EOF,
+                Diagnostic("CONTROLLER_LEASE_LOST", "controller input ended without RELEASE"),
             )
         for failure in tuple(self._observation_failures.values()):
             self._observation_failed(failure)
@@ -528,6 +551,7 @@ class HelperSession:
                 except BaseException as error:
                     self._failure(Trigger.STARTUP_FAILURE, "STARTUP_FAILURE", error)
         elif isinstance(observation, ControlEOF):
+            self.account_recorded_failures()
             self.lifecycle.terminate(Trigger.CONTROLLER_EOF)
         elif isinstance(observation, SignalReceived):
             self.account_recorded_failures()

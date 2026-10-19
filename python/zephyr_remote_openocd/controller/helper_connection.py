@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import os
+import select
 import shlex
 import subprocess
 import threading
@@ -26,7 +27,7 @@ from zephyr_remote_openocd.controller.waiting import (
     WaitSources,
     wait_for,
 )
-from zephyr_remote_openocd.protocol.commands import encode_start
+from zephyr_remote_openocd.protocol.commands import encode_release, encode_start
 from zephyr_remote_openocd.protocol.listeners import ListenerSpec
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
 from zephyr_remote_openocd.protocol.process import ProcessSpec
@@ -50,6 +51,12 @@ HELPER_START_TIMEOUT = 10.0
 # allowance is never replenished by a descendant that keeps writing.
 _FINAL_OBSERVATION_BYTES = MAX_FRAME_SIZE
 _READ_CHUNK_SIZE = 64 * 1024
+
+# One nonblocking pipe write of at most PIPE_BUF bytes enters the local SSH
+# input pipe whole or not at all. That is all it promises: the remote helper
+# frames RELEASE across arbitrary fragmentation.
+_RELEASE = encode_release()
+assert len(_RELEASE) <= select.PIPE_BUF
 
 # Relayed child output: stream name, decoded payload, and whether it ended a line.
 type OutputHandler = Callable[[str, str, bool], None]
@@ -89,6 +96,7 @@ class HelperConnection:
         self._completion = ProcessCompletion()
         self._allocation: SessionAllocation | None = None
         self._order: EventOrder | None = None
+        self._start_written = False
         self._closed = False
 
     @property
@@ -128,6 +136,7 @@ class HelperConnection:
         # operation's cancellation are accounted at one admission point.
         self._authority.admit_helper_effect("START", admit_effect)
         self._write_control(helper.stdin.fileno(), frame)
+        self._start_written = True
         if process_spec.completion_policy != CompletionPolicy.LIVE_SERVER:
             return None
         return self._await(self._ready_address, "remote process ended before READY")
@@ -223,13 +232,14 @@ class HelperConnection:
         self._closed = True
 
     def _request_shutdown(self, helper: ManagedSshProcess) -> None:
-        """Half-close stdin while retaining reverse output for bounded shutdown."""
+        """Release the lease and half-close stdin, retaining reverse output."""
         self._authority.cancel()
         try:
             if self._reader_thread is None:
                 self._start_event_drain()
         except BaseException as error:
             self._authority.record_failure("READER_START_FAILURE", error)
+        self._release_lease(helper)
         try:
             if helper.stdin is not None:
                 helper.stdin.close()
@@ -243,6 +253,32 @@ class HelperConnection:
             helper.wait(timeout=HELPER_STOP_TIMEOUT)
         except BaseException as error:
             self._authority.record_failure("HELPER_WAIT_FAILURE", error)
+
+    def _release_lease(self, helper: ManagedSshProcess) -> None:
+        """Write RELEASE before stdin EOF while a started session may still read it.
+
+        An ended session needs no release. Undelivered RELEASE never selects a
+        failure here: a live helper that recognizes the following EOF without
+        it reports controller-lease loss, and transport loss remains visible
+        through terminal and helper/SSH status accounting. The write is never
+        retried, so a full transport pipe cannot extend shutdown.
+        """
+        snapshot = self._authority.snapshot()
+        if (
+            not self._start_written
+            or helper.stdin is None
+            or snapshot.terminal is not None
+            or snapshot.control_ended
+        ):
+            return
+        try:
+            descriptor = helper.stdin.fileno()
+            os.set_blocking(descriptor, False)
+            os.write(descriptor, _RELEASE)
+        except OSError:
+            return
+        except BaseException as error:
+            self._authority.record_failure("CONTROL_RELEASE_FAILURE", error)
 
     def _cleanup_control_process(self, helper: ManagedSshProcess) -> None:
         """Stop the reader and helper process without abandoning cleanup."""

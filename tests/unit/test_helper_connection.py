@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import os
 import shutil
 import subprocess
 import sys
@@ -32,7 +33,7 @@ from zephyr_remote_openocd.controller.helper_connection import (
     ProcessStartHandler,
 )
 from zephyr_remote_openocd.controller.paths import PathPlanner
-from zephyr_remote_openocd.controller.waiting import Descriptor, WaitResult, WaitSources
+from zephyr_remote_openocd.controller.waiting import Descriptor, WaitResult, WaitSources, wait_for
 from zephyr_remote_openocd.openocd.flash import FlashInputs, build_flash_plan
 from zephyr_remote_openocd.protocol.arguments import (
     ArgumentTemplate,
@@ -523,6 +524,90 @@ def test_helper_shutdown_retains_established_failure(notified_authority: Notifie
         decode_frame(bytes(line))["type"] for line in process.written.splitlines(keepends=True)
     ]
     assert commands == ["START"]
+
+
+@pytest.mark.timeout(10)
+def test_close_releases_live_lease_before_input_eof(notified_authority: NotifiedAuthority) -> None:
+    helper_client, process = _open_helper_client_with_events(
+        encode_frame("ATTEMPT", argv=["child"]),
+        encode_frame("READY", remote_address="127.64.0.1", child_pid=1),
+        later=(),
+        wiring=notified_authority,
+    )
+    helper_client.start_process(ProcessSpec(("child",)), ())
+    helper_client.close()
+    commands = [
+        decode_frame(bytes(line))["type"] for line in process.written.splitlines(keepends=True)
+    ]
+    assert commands == ["START", "RELEASE"]
+
+
+class _InputEndingHelper(ControlProcess):
+    """A helper whose input may end before its terminal is delivered at exit."""
+
+    def __init__(self, terminal: bytes) -> None:
+        super().__init__()
+        read_fd, write_fd = os.pipe()
+        self.stdin = os.fdopen(write_fd, "wb")
+        self.controller_input = os.fdopen(read_fd, "rb")
+        self._terminal = terminal
+
+    def deliver_terminal(self) -> None:
+        if self._terminal:
+            self.emit(self._terminal)
+            self._terminal = b""
+
+    @override
+    def wait(self, timeout: float | None = None) -> int:
+        self.deliver_terminal()
+        return super().wait(timeout)
+
+
+@pytest.mark.timeout(10)
+@pytest.mark.parametrize(
+    ("ending", "returncode"),
+    (
+        ("terminal-before-close", 0),
+        ("input-ended-before-terminal", 0),
+        ("input-ended-before-terminal", OPENOCD_FAILURE_RC),
+    ),
+)
+def test_unneeded_or_undeliverable_release_keeps_one_shot_terminal_result(
+    notified_authority: NotifiedAuthority, ending: str, returncode: int
+) -> None:
+    authority = notified_authority.authority
+    process = _InputEndingHelper(
+        encode_frame("ATTEMPT", argv=["child"])
+        + terminal_message(Trigger.CHILD_EXIT, returncode=returncode)
+    )
+    client = _open_helper_client(process, notified_authority)
+    try:
+        client.start_process(
+            ProcessSpec(("child",), completion_policy=CompletionPolicy.PROCESS_EXIT), ()
+        )
+        start = process.controller_input.readline()
+        if ending == "terminal-before-close":
+            process.deliver_terminal()
+            while authority.snapshot().terminal is None:
+                wait_for(sources=WaitSources(notifiers=(notified_authority.notifier,)))
+        else:
+            # The helper exited after natural completion; RELEASE meets EPIPE.
+            process.controller_input.close()
+        client.close()
+    finally:
+        process.end_events()
+        assert client._join_reader(10)
+    snapshot = authority.snapshot()
+    assert decode_frame(start)["type"] == "START"
+    if ending == "terminal-before-close":
+        # An ended session needs no release.
+        assert process.controller_input.read() == b""
+    assert {detail.code for detail in snapshot.diagnostics} <= {"TERMINAL_FAILURE"}
+    if returncode == 0:
+        assert authority.operation_status() == 0
+    else:
+        with pytest.raises(SessionError, match=f"exit status {returncode}"):
+            authority.operation_status()
 
 
 @pytest.mark.timeout(10)

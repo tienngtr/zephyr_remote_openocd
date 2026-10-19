@@ -16,7 +16,6 @@ from zephyr_remote_openocd.protocol.outcome import (
     CompletionPolicy,
     Diagnostic,
     TerminalSnapshot,
-    Trigger,
 )
 
 
@@ -151,21 +150,18 @@ class SessionAuthority:
 
     def record_terminal(self, snapshot: TerminalSnapshot) -> None:
         with self._changed:
+            # The helper classified controller EOF when it recognized it; the
+            # receipt time of this snapshot never reinterprets that cause.
             self._terminal = snapshot
-            if snapshot.outcome.trigger == Trigger.CONTROLLER_EOF and not self._closing:
-                # Input EOF ends the controller lease only after local closure
-                # begins; earlier, the remote saw the control channel fail. The
-                # EOF initiated remote termination, so it precedes any terminal
-                # failure recorded below.
-                self.record_failure(
-                    "UNEXPECTED_CONTROLLER_EOF",
-                    SessionError(
-                        "remote helper observed controller-input EOF before local closure"
-                    ),
-                    key="controller_eof",
-                )
-            if snapshot.operation_failed(self._policy):
-                outcome = snapshot.outcome
+            outcome = snapshot.outcome
+            result = outcome.child_result
+            if result is not None and outcome.child_failure_is_primary:
+                # The helper established the genuine child failure first.
+                error = SessionError(f"remote OpenOCD failed with exit status {result.returncode}")
+                for item in outcome.diagnostics:
+                    error.add_note(f"remote session also failed: {_render_diagnostic(item)}")
+                self.record_failure("TERMINAL_FAILURE", error, key="terminal")
+            elif snapshot.operation_failed(self._policy):
                 details = tuple(
                     _render_diagnostic(item)
                     for item in (
@@ -177,7 +173,6 @@ class SessionAuthority:
                         *outcome.diagnostics,
                     )
                 )
-                result = outcome.child_result
                 message = "; ".join(details) or (
                     f"remote OpenOCD failed with exit status {result.returncode}"
                     if result is not None

@@ -7,7 +7,15 @@ import threading
 import pytest
 from zephyr_remote_openocd.controller.authority import SessionAuthority, SessionError
 from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
-from zephyr_remote_openocd.protocol.outcome import CompletionPolicy, Trigger
+from zephyr_remote_openocd.protocol.outcome import (
+    ChildResult,
+    CleanupReport,
+    CompletionPolicy,
+    Diagnostic,
+    Outcome,
+    TerminalSnapshot,
+    Trigger,
+)
 
 from tests.protocol_support import terminal_snapshot
 
@@ -268,3 +276,24 @@ def test_refusal_during_final_observation_waits_for_final_accounting(
     assert (snapshot.failure is refused.value) == (ending == "orderly-terminal")
     with pytest.raises(SessionError):
         _admit(authority, entry)
+
+
+@pytest.mark.parametrize("child_first", (True, False), ids=("child-exit-first", "loss-first"))
+def test_terminal_failure_reports_the_helper_established_primary(child_first: bool) -> None:
+    loss = Diagnostic("CONTROLLER_LEASE_LOST", "controller input ended without RELEASE")
+    result = ChildResult(3, False)
+    outcome = (
+        Outcome(Trigger.CHILD_EXIT, child_result=result, diagnostics=(loss,))
+        if child_first
+        else Outcome(Trigger.CONTROLLER_EOF, loss, child_result=result)
+    )
+    authority = SessionAuthority()
+    authority.record_terminal(TerminalSnapshot(outcome, CleanupReport("confirmed", "confirmed")))
+    with pytest.raises(SessionError) as raised:
+        authority.operation_status()
+    main, notes = str(raised.value), " ".join(raised.value.__notes__)
+    first, second = ("status 3", "CONTROLLER_LEASE_LOST")
+    if not child_first:
+        first, second = second, first
+    assert first in main and first not in notes
+    assert second in notes and second not in main

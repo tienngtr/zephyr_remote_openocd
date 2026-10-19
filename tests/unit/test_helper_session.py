@@ -26,12 +26,18 @@ from zephyr_remote_openocd.helper import _session as helper_session
 from zephyr_remote_openocd.helper import _streams as helper_streams
 from zephyr_remote_openocd.helper import _workspace as workspace_module
 from zephyr_remote_openocd.helper import control as helper_control
-from zephyr_remote_openocd.helper._observations import ChildOutput, Deadline
+from zephyr_remote_openocd.helper._observations import (
+    ChildExited,
+    ChildOutput,
+    ControlEOF,
+    Deadline,
+    Observation,
+)
 from zephyr_remote_openocd.helper._process import ChildAcquisition, SupervisedProcess
 from zephyr_remote_openocd.helper._session import HelperSession
 from zephyr_remote_openocd.helper.lifecycle import Closed
 from zephyr_remote_openocd.protocol import commands as protocol_commands
-from zephyr_remote_openocd.protocol.commands import write_start
+from zephyr_remote_openocd.protocol.commands import encode_release, write_start
 from zephyr_remote_openocd.protocol.outcome import (
     ChildResult,
     CleanupReport,
@@ -196,6 +202,12 @@ def _idle_child(*lines: str) -> tuple[str, ...]:
     return (sys.executable, str(ROOT / "tests/fixtures/idle_child.py"), *lines)
 
 
+def _release(writer: FileIO) -> None:
+    """End the controller lease intentionally: RELEASE, then EOF."""
+    writer.write(encode_release())
+    writer.close()
+
+
 def _run_terminated(session: HelperSession, *, fails: bool) -> None:
     if fails:
         with pytest.raises(SystemExit) as raised:
@@ -206,8 +218,21 @@ def _run_terminated(session: HelperSession, *, fails: bool) -> None:
     assert isinstance(session.lifecycle.state, Closed)
 
 
-@pytest.mark.parametrize("suffix", (b"\n", b" ", b'{"version":1,"type":"UNEXPECTED"}\n', b"junk"))
-def test_post_start_bytes_are_failure_even_in_same_read(
+RELEASE = encode_release()
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    (
+        b"\n",
+        b'{"version":1,"type":"UNEXPECTED"}\n',
+        b'{"version":1,"type":"RELEASE","extra":null}\n',
+        RELEASE + RELEASE,
+        RELEASE + b" ",
+    ),
+    ids=("empty-frame", "unrelated-frame", "invalid-release", "duplicate-release", "after-release"),
+)
+def test_complete_invalid_post_start_input_fails_before_entry(
     coordinated_helper: CoordinatedHelper, suffix: bytes
 ) -> None:
     session, writer, events, _children = coordinated_helper
@@ -220,6 +245,45 @@ def test_post_start_bytes_are_failure_even_in_same_read(
     assert snapshot.outcome.primary_failure is not None
     assert snapshot.cleanup.confirmed
     assert not _children  # Reject the batched invalid input before physical entry.
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("fragmented", (False, True), ids=("one-read", "byte-reads"))
+@pytest.mark.parametrize(
+    ("suffix", "trigger", "failure"),
+    (
+        (RELEASE, Trigger.CONTROLLER_EOF, None),
+        (b"", Trigger.CONTROLLER_EOF, "CONTROLLER_LEASE_LOST"),
+        (RELEASE[:-1], Trigger.PROTOCOL_FAILURE, "OBSERVER_FAILURE"),
+        (RELEASE + RELEASE, Trigger.PROTOCOL_FAILURE, "OBSERVER_FAILURE"),
+        (b"junk", Trigger.PROTOCOL_FAILURE, "OBSERVER_FAILURE"),
+    ),
+    ids=("released", "unreleased", "partial-release", "duplicate-release", "unrelated-bytes"),
+)
+def test_controller_input_is_start_optional_release_eof(
+    coordinated_helper: CoordinatedHelper,
+    control_pipe: tuple[BufferedReader, FileIO],
+    monkeypatch: pytest.MonkeyPatch,
+    suffix: bytes,
+    trigger: Trigger,
+    failure: str | None,
+    fragmented: bool,
+) -> None:
+    session, writer, events, _children = coordinated_helper
+    control = control_pipe[0].fileno()
+    read = os.read
+    if fragmented:
+        # Write boundaries are not frame boundaries: every frame arrives split.
+        monkeypatch.setattr(os, "read", lambda fd, size: read(fd, 1 if fd == control else size))
+    stream = io.BytesIO()
+    write_start(stream, ProcessSpec(_idle_child()), ())
+    writer.write(stream.getvalue() + suffix)
+    writer.close()
+    _run_terminated(session, fails=failure is not None)
+    snapshot = _terminal_event(events)
+    assert snapshot.outcome.trigger == trigger
+    assert _failure_code(snapshot) == failure
+    assert snapshot.cleanup.confirmed
 
 
 @pytest.mark.parametrize("partial", (False, True))
@@ -250,9 +314,9 @@ def test_post_start_input_in_a_later_read_is_protocol_failure(
     def emit(kind: str, **fields: object) -> None:
         record(kind, **fields)
         if kind == "ATTEMPT":
-            # START has been consumed; an incomplete trailing frame must not
-            # wait for more input before failing.
-            writer.write(b"junk")
+            # START has been consumed; a complete frame other than RELEASE
+            # fails without waiting for EOF.
+            writer.write(b"junk\n")
 
     monkeypatch.setattr(helper_streams, 'emit', emit)
     write_start(writer, ProcessSpec(_idle_child()), ())
@@ -291,7 +355,7 @@ def test_completion_policy_controls_readiness(
     def emit(kind: str, **fields: object) -> None:
         record(kind, **fields)
         if kind == "READY":
-            writer.close()
+            _release(writer)
 
     monkeypatch.setattr(helper_streams, 'emit', emit)
     code = (
@@ -330,7 +394,7 @@ def test_admission_failure_does_not_publish_success_or_repeat_terminal(
             raise BrokenPipeError("admission failed")
         record(kind, **fields)
         if kind == "READY":
-            writer.close()
+            _release(writer)
 
     monkeypatch.setattr(helper_streams, 'emit', emit)
     write_start(writer, ProcessSpec((sys.executable, "-c", "import signal;signal.pause()")), ())
@@ -389,7 +453,7 @@ def test_staging_admission_closes_before_child_disposal_signal(
     def emit(kind: str, **fields: object) -> None:
         record(kind, **fields)
         if kind == "READY":
-            writer.close()
+            _release(writer)
 
     monkeypatch.setattr(helper_streams, 'emit', emit)
     write_start(
@@ -438,7 +502,7 @@ def test_live_readiness_is_published_without_waiting_for_its_deadline(
         if kind == "CHILD_OUTPUT" and fields.get("payload") == "ZRO_ARMED":
             evidence_published.set()
         if kind == "READY":
-            writer.close()
+            _release(writer)
 
     monkeypatch.setattr(HelperSession, "_observe_deadline", deadline_after_evidence)
     monkeypatch.setattr(helper_streams, 'emit', emit)
@@ -477,7 +541,7 @@ def test_output_held_after_group_disposal_ends_at_drain_deadline(
     def emit(kind: str, **fields: object) -> None:
         record(kind, **fields)
         if kind == "READY":
-            writer.close()
+            _release(writer)
 
     monkeypatch.setattr(HelperSession, "_observe_deadline", expire_drain)
     monkeypatch.setattr(helper_streams, 'emit', emit)
@@ -536,7 +600,7 @@ def test_exit_observation_without_pidfd_keeps_genuine_status_and_ownership(
     def emit(kind: str, **fields: object) -> None:
         record(kind, **fields)
         if kind == "READY":
-            writer.close()
+            _release(writer)
 
     monkeypatch.setattr(os, "pidfd_open", unavailable)
     monkeypatch.setattr(helper_streams, 'emit', emit)
@@ -710,7 +774,7 @@ def test_cleanup_task_setup_failure_still_disposes_child_and_independent_resourc
     def emit(kind: str, **fields: object) -> None:
         record(kind, **fields)
         if kind == "READY":
-            writer.close()
+            _release(writer)
 
     monkeypatch.setattr(asyncio.TaskGroup, "create_task", create)
     monkeypatch.setattr(helper_streams, 'emit', emit)
@@ -776,7 +840,7 @@ def test_nested_failure_detail_survives_cleanup_and_wire(
         def emit(kind: str, **fields: object) -> None:
             record(kind, **fields)
             if kind == "READY":
-                writer.close()
+                _release(writer)
 
         monkeypatch.setattr(helper_streams, 'emit', emit)
     write_start(writer, ProcessSpec((sys.executable, "-c", "import signal;signal.pause()")), ())
@@ -952,7 +1016,7 @@ def test_readiness_deadline_processes_final_visible_observation(
     def emit(kind: str, **values: object) -> None:
         events.append((kind, values))
         if kind == "READY":
-            writer.close()
+            _release(writer)
 
     monkeypatch.setattr(helper_process, 'spawn_child', spawn)
     monkeypatch.setattr(os, "read", controlled_read)
@@ -1085,7 +1149,7 @@ def test_group_cleanup_failure_fails_session_even_when_disposal_is_confirmed(
     def emit(kind: str, **fields: object) -> None:
         record(kind, **fields)
         if kind == "READY":
-            writer.close()
+            _release(writer)
 
     monkeypatch.setattr(helper_process, "_group_exists", probe_once_failing)
     monkeypatch.setattr(helper_streams, 'emit', emit)
@@ -1134,6 +1198,130 @@ def test_observer_failure_recorded_before_ready_dispatch_prevents_ready(
     assert snapshot.outcome.primary_failure.message == str(failure)
     assert snapshot.cleanup.confirmed
     assert children[0].group_disposed
+
+
+@pytest.fixture
+def held_controller_eof(monkeypatch: pytest.MonkeyPatch) -> asyncio.Event:
+    """Hold recognized controller EOF before queue publication.
+
+    This dispatch gate separates recognition from publication: the returned
+    event is set once the control reader recognized EOF and offered it to the
+    coordinator queue, which never receives it before the reader is cancelled.
+    """
+    offered = asyncio.Event()
+    put = asyncio.Queue.put
+
+    async def hold(queue: asyncio.Queue[Observation], item: Observation) -> None:
+        if isinstance(item, ControlEOF):
+            offered.set()
+            await asyncio.Event().wait()
+        await put(queue, item)
+
+    monkeypatch.setattr(asyncio.Queue, "put", hold)
+    return offered
+
+
+@pytest.mark.timeout(60)
+def test_lease_loss_recognized_behind_readiness_evidence_prevents_ready(
+    coordinated_helper: CoordinatedHelper,
+    monkeypatch: pytest.MonkeyPatch,
+    held_controller_eof: asyncio.Event,
+) -> None:
+    session, writer, events, children = coordinated_helper
+    observe_output = HelperSession._observe_output
+
+    async def output(
+        owner: HelperSession, child: SupervisedProcess, name: str, stream: IO[bytes]
+    ) -> None:
+        if name == "stdout":
+            # The reader recognizes unreleased EOF before the readiness
+            # evidence is queued; the EOF itself is never dispatched.
+            writer.close()
+            await held_controller_eof.wait()
+            await owner._events.put(ChildOutput(child, name, b"ZRO_ARMED\n"))
+        await observe_output(owner, child, name, stream)
+
+    monkeypatch.setattr(HelperSession, "_observe_output", output)
+    write_start(writer, ProcessSpec(_idle_child(), required_output_sentinels=("ZRO_ARMED",)), ())
+    _run_terminated(session, fails=True)
+    snapshot = _terminal_event(events)
+    assert "READY" not in [kind for kind, _ in events]
+    assert snapshot.outcome.trigger == Trigger.CONTROLLER_EOF
+    assert _failure_code(snapshot) == "CONTROLLER_LEASE_LOST"
+    assert snapshot.cleanup.confirmed
+    assert children[0].group_disposed
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    ("recognized", "status"),
+    (("before-exit-dispatch", 0), ("after-exit-commit", 0), ("after-exit-commit", 3)),
+)
+def test_lease_loss_recognized_around_child_exit_fails_without_eof_dispatch(
+    coordinated_helper: CoordinatedHelper,
+    monkeypatch: pytest.MonkeyPatch,
+    held_controller_eof: asyncio.Event,
+    recognized: str,
+    status: int,
+) -> None:
+    session, writer, events, children = coordinated_helper
+    record = helper_streams.emit
+
+    def emit(kind: str, **fields: object) -> None:
+        record(kind, **fields)
+        if kind == "READY":
+            os.kill(children[0].pid, signal.SIGUSR1)  # A natural, successful exit.
+
+    monkeypatch.setattr(helper_streams, "emit", emit)
+    if recognized == "before-exit-dispatch":
+
+        async def exit_behind_lease_loss(owner: HelperSession, child: SupervisedProcess) -> None:
+            # The natural exit is published only after the reader recognized
+            # unreleased EOF, so the coordinator dispatches the exit first.
+            returncode = await child.wait_for_exit()
+            writer.close()
+            await held_controller_eof.wait()
+            await owner._events.put(ChildExited(child, returncode))
+
+        monkeypatch.setattr(HelperSession, "_observe_exit", exit_behind_lease_loss)
+    else:
+        record_exit = HelperSession._record_exit
+        begin_cleanup = HelperSession._begin_child_cleanup
+
+        def lose_lease_after_commit(
+            owner: HelperSession, child: SupervisedProcess, returncode: int
+        ) -> None:
+            # Input ends only after the child-exit cause has committed.
+            record_exit(owner, child, returncode)
+            if not writer.closed:
+                writer.close()
+
+        async def clean_after_recognition(owner: HelperSession) -> None:
+            # Recognition precedes cleanup and therefore freeze; the EOF itself
+            # stays unpublished.
+            await held_controller_eof.wait()
+            await begin_cleanup(owner)
+
+        monkeypatch.setattr(HelperSession, "_record_exit", lose_lease_after_commit)
+        monkeypatch.setattr(HelperSession, "_begin_child_cleanup", clean_after_recognition)
+    child = (sys.executable, str(ROOT / "tests/fixtures/usr1_exit_child.py"), str(status))
+    write_start(writer, ProcessSpec(child, required_output_sentinels=("ZRO_ARMED",)), ())
+    _run_terminated(session, fails=True)
+    snapshot = _terminal_event(events)
+    assert "READY" in [kind for kind, _ in events]
+    if recognized == "after-exit-commit":
+        # The committed child-exit cause is retained; the loss is a failure.
+        assert snapshot.outcome.trigger == Trigger.CHILD_EXIT
+    # Otherwise unrelated output EOF may let the loss commit first; either way
+    # the EOF was never dispatched and its retained recognition fails the session.
+    assert snapshot.outcome.child_result == ChildResult(status, False)
+    if status:
+        # The earlier natural child failure stays primary; the loss is retained.
+        assert snapshot.outcome.primary_failure is None
+        assert [item.code for item in snapshot.outcome.diagnostics] == ["CONTROLLER_LEASE_LOST"]
+    else:
+        assert _failure_code(snapshot) == "CONTROLLER_LEASE_LOST"
+    assert snapshot.cleanup.confirmed
 
 
 @pytest.mark.parametrize("failure_type", (OSError, asyncio.CancelledError))
@@ -1404,7 +1592,7 @@ def test_unconfirmed_disposal_retains_inputs_but_settles_independent_owners(
             if cleanup_failure == "lease":
                 lease = session._address_lease
                 monkeypatch.setattr(session, "_address_lease", UnconfirmedLease())
-            writer.close()
+            _release(writer)
 
     monkeypatch.setattr(helper_streams, 'emit', emit)
     if cleanup_failure == "group":

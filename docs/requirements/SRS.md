@@ -140,9 +140,11 @@ mechanism after those subprocesses exit.
 The connection used to start a remote session, retain controller-input lifetime,
 and receive attempt diagnostics, OpenOCD output, startup readiness, and the
 terminal outcome. After startup is requested, input remains open while the
-local operation owns the session. Input EOF ends that lease; output may remain
-usable for final diagnostics and cleanup confirmation. A continuing command
-stream is not required. The wire grammar belongs in the protocol document.
+local operation owns the session. Intentional release marks the end of that
+lease and then ends input; input EOF without that release marker is lease
+loss. Output may remain usable for final diagnostics and cleanup confirmation.
+A continuing command stream is not required. The wire grammar belongs in the
+protocol document.
 
 ### 2.12 Probe
 
@@ -1366,16 +1368,18 @@ retained as a secondary diagnostic under REQ-FUNC-HELP-011. A signal observed
 during already-initiated shutdown SHALL remain a failure without replacing its
 initiating cause; successful disposal SHALL NOT mask that failure. If the terminal outcome is already frozen, the
 signal failure SHALL remain visible through nonzero helper status without
-replacing that outcome. Intentional local closure uses controller-input EOF;
-helper-issued child-disposal signals SHALL NOT by themselves constitute this
-helper failure.
+replacing that outcome. Intentional local closure releases the controller
+lease under REQ-FUNC-HELP-015; helper-issued child-disposal signals SHALL NOT by
+themselves constitute this helper failure.
 
 The helper SHALL continue observing controller termination while readiness is
 pending. Bulk output backpressure SHALL NOT prevent controller or signal
 observation, child exit accounting, or cleanup progress. Readiness MAY precede
-remote handling of EOF, even if another observer has already
-recognized it. Once remote termination is committed, no new attempt or readiness
-may be authorized. Local cancellation independently prevents dependent launch.
+the helper's recognition of controller-input EOF, and MAY precede remote
+handling of a released EOF. Readiness SHALL NOT be reported after the helper
+has recognized controller-lease loss (REQ-FUNC-HELP-015). Once remote
+termination is committed, no new attempt or readiness may be authorized. Local
+cancellation independently prevents dependent launch.
 
 ### REQ-FUNC-HELP-006
 
@@ -1590,6 +1594,29 @@ a bind diagnostic nor a genuine post-spawn bind collision establishes safe
 repeatability: opaque/user Tcl and target initialization may already have run.
 Pre-spawn address selection and rejection MAY continue without executing child
 work again.
+
+### REQ-FUNC-HELP-015
+
+Intentional local closure of a started session SHALL release the controller
+lease explicitly before ending controller input. The helper SHALL classify
+controller-input EOF when it recognizes that EOF: after an earlier explicit
+release on the same input stream it is orderly session closure; otherwise it
+is controller-lease loss and SHALL fail the session. Lease loss recognized by
+the helper SHALL be retained for its lifecycle authority independently of
+queued observation delivery and accounted before readiness is reported and
+before the terminal outcome is frozen. If another cause has already initiated
+termination, that cause SHALL be retained and the lease loss reported as a
+failure under REQ-FUNC-HELP-011. EOF that the helper has not recognized when
+its outcome is frozen is not required to fail the session.
+
+The client SHALL take this classification from the helper's terminal outcome.
+The time that outcome is received, relative to local closure, SHALL NOT change
+it.
+Release SHALL NOT require an acknowledgement, a wait for unread input, or more
+than one attempt. Inability to deliver the release SHALL NOT by itself replace a
+terminal outcome the helper reports, nor make a missing or failed outcome
+successful. Input framing SHALL tolerate arbitrary transport fragmentation and
+coalescing.
 
 ---
 

@@ -55,6 +55,13 @@ that interval. Configure client-side keepalive or timeout behavior through
 `ssh_command` if different local detection behavior is required; it does not
 control remote detection timing.
 
+`CONTROLLER_LEASE_LOST` means the remote helper's input ended before the runner
+released the session: the SSH connection or a wrapper ended remote stdin
+without the local runner closing it. The operation fails even if the helper's
+final result arrives after local shutdown begins. Check the SSH connection and
+confirm that `ssh_command` forwards stdin as described in
+[configuration](configuration.md).
+
 ## Shutdown results
 
 If shutdown reports a missing final result or times out, the runner could not
