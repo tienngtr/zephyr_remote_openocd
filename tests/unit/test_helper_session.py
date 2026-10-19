@@ -1040,7 +1040,7 @@ def test_child_observer_failure_is_accounted_once_without_blocking_disposal(
     argv = _idle_child("ZRO_ARMED") if established == "after-signal" else _idle_child()
     if observer == "stdout" and established == "first":
         # The child ends its own output while it stays alive.
-        argv = (sys.executable, "-c", "import os, signal; os.close(1); signal.pause()")
+        argv = (sys.executable, str(ROOT / "tests/fixtures/output_closing_child.py"))
     write_start(writer, ProcessSpec(argv, required_output_sentinels=sentinels), ())
     _run_terminated(session, fails=True)
     snapshot = _terminal_event(events)
