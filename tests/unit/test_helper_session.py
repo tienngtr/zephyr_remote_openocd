@@ -32,6 +32,7 @@ from zephyr_remote_openocd.helper.lifecycle import Closed
 from zephyr_remote_openocd.protocol import commands as protocol_commands
 from zephyr_remote_openocd.protocol.commands import write_start
 from zephyr_remote_openocd.protocol.outcome import (
+    ChildResult,
     CleanupReport,
     CompletionPolicy,
     TerminalSnapshot,
@@ -556,6 +557,8 @@ def test_raw_child_return_failure_keeps_disposal_owned(
         assert child.stderr is not None and child.stderr.closed
         snapshot = _terminal_event(events)
         assert snapshot.outcome.primary_failure is not None
+        # Rollback killed the live child; its status is not a genuine exit.
+        assert snapshot.outcome.child_result == ChildResult(-signal.SIGKILL, True)
         assert snapshot.cleanup.child_disposal == "confirmed"
         assert snapshot.cleanup.confirmed
         assert not session.work.exists() and session.workspace_lock.closed
@@ -958,6 +961,41 @@ def test_child_observer_failure_is_accounted_once_without_blocking_disposal(
     assert not session.work.exists()
 
 
+def test_group_cleanup_failure_fails_session_even_when_disposal_is_confirmed(
+    coordinated_helper: CoordinatedHelper, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session, writer, events, children = coordinated_helper
+    group_exists = helper_process._group_exists
+    failure = PermissionError("process group could not be probed")
+    probes: list[int] = []
+
+    def probe_once_failing(pid: int) -> bool:
+        # The first post-termination probe fails; disposal still completes
+        # through SIGKILL, reaping, and a later successful probe.
+        probes.append(pid)
+        if len(probes) == 1:
+            raise failure
+        return group_exists(pid)
+
+    record = helper_streams.emit
+
+    def emit(kind: str, **fields: object) -> None:
+        record(kind, **fields)
+        if kind == "READY":
+            writer.close()
+
+    monkeypatch.setattr(helper_process, "_group_exists", probe_once_failing)
+    monkeypatch.setattr(helper_streams, 'emit', emit)
+    write_start(writer, ProcessSpec(_idle_child()), ())
+    _run_terminated(session, fails=True)
+    snapshot = _terminal_event(events)
+    assert snapshot.cleanup.confirmed and children[0].group_disposed
+    assert snapshot.outcome.trigger == Trigger.CONTROLLER_EOF
+    assert snapshot.outcome.primary_failure is not None
+    assert snapshot.outcome.primary_failure.code == "CLEANUP_FAILURE"
+    assert snapshot.outcome.primary_failure.message == str(failure)
+
+
 @pytest.mark.timeout(60)
 def test_observer_failure_recorded_before_ready_dispatch_prevents_ready(
     coordinated_helper: CoordinatedHelper, monkeypatch: pytest.MonkeyPatch
@@ -1263,11 +1301,12 @@ def test_unconfirmed_disposal_retains_inputs_but_settles_independent_owners(
         assert not snapshot.cleanup.confirmed
         assert snapshot.cleanup.child_disposal == "unconfirmed"
         residual = {"group": "child_group", "lease": "address_lease", "relays": "child_relays"}
-        assert residual[cleanup_failure] in snapshot.cleanup.residual_resources
-        assert "workspace" in snapshot.cleanup.residual_resources
-        assert ("child_relays" in snapshot.cleanup.residual_resources) == (
-            cleanup_failure == "relays"
-        )
+        # Only the obligation that failed, plus the workspace retained for it.
+        assert set(snapshot.cleanup.residual_resources) == {
+            residual[cleanup_failure],
+            "workspace",
+            "workspace_metadata",
+        }
         assert session.work.is_dir()
         assert (session.work / workspace_module.UNCONFIRMED_CHILD).is_file()
         assert session.workspace_lock.closed
