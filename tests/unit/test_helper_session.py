@@ -495,7 +495,7 @@ def test_output_held_after_group_disposal_ends_at_drain_deadline(
         assert len(children) == 1 and drain_deadlines == children
         assert snapshot.outcome.trigger == Trigger.CONTROLLER_EOF
         assert snapshot.outcome.primary_failure is not None
-        assert "output relay did not stop" in snapshot.outcome.primary_failure.message
+        assert snapshot.outcome.primary_failure.code == "CLEANUP_FAILURE"
         # The relays stop at the deadline; the escaped process is not owned.
         assert snapshot.cleanup.confirmed
         assert children[0].group_disposed and _output_closed(children[0])
