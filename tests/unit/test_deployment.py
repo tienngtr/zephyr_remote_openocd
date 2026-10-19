@@ -127,11 +127,11 @@ def test_deployment_rejects_digest_that_differs_from_source() -> None:
         deploy_module.deploy_helper(ssh, "host", source=source)
 
 
-def _run_bootstrap(
+def _bootstrap(
     home: Path,
     source: bytes,
     fault: tuple[str, ...] = (),
-) -> dict[str, object]:
+) -> subprocess.CompletedProcess[bytes]:
     environment = os.environ.copy()
     environment["HOME"] = str(home)
     command = (
@@ -139,13 +139,21 @@ def _run_bootstrap(
         if fault
         else [sys.executable, "-c", deploy_module.bootstrap_program()]
     )
-    result = subprocess.run(
+    return subprocess.run(
         command,
         input=source,
         capture_output=True,
         check=False,
         env=environment,
     )
+
+
+def _run_bootstrap(
+    home: Path,
+    source: bytes,
+    fault: tuple[str, ...] = (),
+) -> dict[str, object]:
+    result = _bootstrap(home, source, fault)
     assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
     return json.loads(result.stdout)
 
@@ -185,6 +193,35 @@ def test_helper_deployment_is_content_addressed_and_prunes_stale_revisions(tmp_p
     assert first_path.exists()
     assert second_path.read_bytes() == second_source
     assert not stale_path.exists()
+    assert not list(helper_directory.glob(".helper_*"))
+
+
+def test_corrupted_revision_at_digest_path_is_replaced(tmp_path: Path) -> None:
+    source = b"intact helper revision"
+    target = Path(str(_run_bootstrap(tmp_path, source)["path"]))
+    assert target.name == f"helper-{hashlib.sha256(source).hexdigest()}.py"
+    target.write_bytes(source[:-1])
+    target.chmod(0o644)
+
+    repaired = _run_bootstrap(tmp_path, source)
+
+    assert repaired["status"] == "deployed"
+    assert repaired["path"] == str(target)
+    assert target.read_bytes() == source
+    assert target.stat().st_mode & 0o777 == 0o600
+    assert not list(target.parent.glob(".helper_*"))
+
+
+def test_failed_install_publishes_no_revision_or_response(tmp_path: Path) -> None:
+    source = b"undurable helper revision"
+    # Durability fails after the complete source is written to the temporary
+    # file, so neither a partial nor an unsynchronized revision may appear.
+    result = _bootstrap(tmp_path, source, ("install-failure",))
+
+    helper_directory = tmp_path / ".local/libexec/zephyr_remote_openocd/protocol_v1"
+    assert result.returncode != 0
+    assert result.stdout == b""
+    assert not (helper_directory / f"helper-{hashlib.sha256(source).hexdigest()}.py").exists()
     assert not list(helper_directory.glob(".helper_*"))
 
 

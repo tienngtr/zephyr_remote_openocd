@@ -4,6 +4,8 @@
 
 ``stale-failure OPERATION NAME...`` makes the first ``pathlib.Path`` call of
 that operation on a named stale revision raise ``PermissionError``.
+``install-failure`` makes synchronizing the written temporary file raise
+``OSError``.
 ``serialized ROLE EVENTS_FD RELEASE_FD`` reports lock contention and target
 refresh on the events descriptor; the ``first`` role holds its refresh, and
 therefore its deployment lock, until one byte arrives on the release
@@ -12,6 +14,7 @@ descriptor. The bootstrap and its filesystem effects otherwise stay real.
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import os
 import pathlib
@@ -39,6 +42,16 @@ def stale_failure(operation: str, stale_names: list[str]) -> None:
         return original(path, *args, **kwargs)
 
     with patch.object(pathlib.Path, operation, fail_first_stale_revision):
+        run(program)
+
+
+def install_failure() -> None:
+    program = bootstrap_program()
+
+    def fail_fsync(fd: int) -> None:
+        raise OSError(errno.EIO, f"injected fsync failure: {fd}")
+
+    with patch.object(os, "fsync", fail_fsync):
         run(program)
 
 
@@ -74,6 +87,8 @@ def main() -> None:
     if mode == "stale-failure":
         operation, *stale_names = arguments
         stale_failure(operation, stale_names)
+    elif mode == "install-failure":
+        install_failure()
     else:
         assert mode == "serialized"
         role, events, release = arguments
