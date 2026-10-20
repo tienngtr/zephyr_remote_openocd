@@ -62,7 +62,9 @@ class TestProtocol:
         with pytest.raises(ProtocolError):
             read_message(io.BytesIO(frame))
 
-    @pytest.mark.parametrize("argv", (None, [], [""], "openocd", ["openocd", None], [1]))
+    @pytest.mark.parametrize(
+        "argv", (None, [], [""], "openocd", ["openocd", None], [1], ["open\0ocd"])
+    )
     def test_attempt_rejects_invalid_argv(self, argv: object) -> None:
         with pytest.raises(ProtocolError):
             validate_event(decode_frame(encode_frame("ATTEMPT", argv=argv)))
@@ -198,6 +200,38 @@ class TestProtocol:
             with pytest.raises(ProtocolError):
                 validator(response)
 
+    @pytest.mark.parametrize(
+        "manifest",
+        (
+            pytest.param({"directories": ["."]}, id="dot"),
+            pytest.param({"files": ["./f"]}, id="dot-component"),
+            pytest.param({"files": ["d/../f"]}, id="dotdot-component"),
+            pytest.param({"files": ["d//f"]}, id="empty-component"),
+            pytest.param({"files": ["/f"]}, id="absolute"),
+            pytest.param({"directories": ["d/"]}, id="trailing-slash"),
+            pytest.param({"files": [""]}, id="empty"),
+            pytest.param({"files": ["f\0"]}, id="nul"),
+            pytest.param({"files": [1]}, id="non-string"),
+            pytest.param({"files": ["f", "f"]}, id="duplicate-file"),
+            pytest.param({"files": ["d"], "directories": ["d"]}, id="file-and-directory"),
+            pytest.param({"files": ["d"], "directories": ["d/e"]}, id="file-ancestor"),
+        ),
+    )
+    def test_staged_response_requires_normalized_disjoint_manifest(
+        self, manifest: dict[str, object]
+    ) -> None:
+        valid = {
+            "version": 1,
+            "type": "STAGED",
+            "byte_count": 0,
+            "sha256": "0" * 64,
+            "files": ["d/f"],
+            "directories": ["d"],
+        }
+        validate_staged_response(valid)
+        with pytest.raises(ProtocolError):
+            validate_staged_response({**valid, **manifest})
+
     @pytest.mark.parametrize("payload", ("line\nbreak", "line\n"))
     def test_child_output_payload_rejects_embedded_line_delimiters(self, payload: str) -> None:
         with pytest.raises(ProtocolError):
@@ -237,7 +271,18 @@ class TestProtocol:
                     )
                 )
 
+    def test_child_output_stream_is_stdout_or_stderr(self) -> None:
+        with pytest.raises(ProtocolError):
+            validate_event(
+                decode_frame(
+                    encode_frame("CHILD_OUTPUT", stream="console", payload="x", line_end=False)
+                )
+            )
+
     def test_child_output_boundary_states_are_unambiguous(self) -> None:
+        validate_event(
+            decode_frame(encode_frame("CHILD_OUTPUT", stream="stdout", payload="", line_end=True))
+        )
         with pytest.raises(ProtocolError):
             validate_event(
                 decode_frame(

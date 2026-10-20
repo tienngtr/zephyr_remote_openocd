@@ -121,6 +121,7 @@ def test_decode_command_rejects_tcl_quoting_in_a_filesystem_path(
     ("field", "value"),
     (
         pytest.param("argv", [], id="empty-argv"),
+        pytest.param("argv", ["", "argument"], id="empty-program"),
         pytest.param("argv", ["openocd", "bad\0argument"], id="nul-in-argv"),
         pytest.param("environment", {"BAD=NAME": "value"}, id="environment-name"),
         pytest.param("environment", {"": "value"}, id="empty-environment-name"),
@@ -133,11 +134,15 @@ def test_decode_command_rejects_tcl_quoting_in_a_filesystem_path(
             id="unknown-service-field",
         ),
         pytest.param("services", [{"name": "", "remote_port": 3333}], id="empty-service-name"),
+        pytest.param("services", [{"name": 1, "remote_port": 3333}], id="non-string-service-name"),
         pytest.param("services", [{"name": "gdb", "remote_port": 0}], id="zero-service-port"),
         pytest.param(
             "services", [{"name": "gdb", "remote_port": 65536}], id="out-of-range-service-port"
         ),
         pytest.param("services", [{"name": "gdb", "remote_port": True}], id="boolean-service-port"),
+        pytest.param("services", [{"name": "gdb", "remote_port": 3333.0}], id="float-service-port"),
+        pytest.param("required_output_sentinels", "READY", id="non-list-markers"),
+        pytest.param("required_output_sentinels", [""], id="empty-marker"),
         pytest.param("required_output_sentinels", [" READY "], id="untrimmed-marker"),
         pytest.param("required_output_sentinels", ["READY", "READY"], id="duplicate-marker"),
         pytest.param("required_output_sentinels", ["RE\0ADY"], id="nul-in-marker"),
@@ -147,6 +152,7 @@ def test_decode_command_rejects_tcl_quoting_in_a_filesystem_path(
         pytest.param("readiness_timeout", True, id="boolean-timeout"),
         pytest.param("literal_prefix", 3, id="prefix-outside-argv"),
         pytest.param("literal_prefix", True, id="boolean-prefix"),
+        pytest.param("literal_prefix", 1.0, id="float-prefix"),
     ),
 )
 def test_decode_command_rejects_invalid_start_values(

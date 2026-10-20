@@ -153,6 +153,12 @@ def test_unconfirmed_disposal_retains_dependencies_and_fails_zero_result() -> No
         outcome.with_failure(Diagnostic("CLEANUP", "group remains")), cleanup
     )
     assert snapshot.operation_failed(CompletionPolicy.LIVE_SERVER)
+    # An earlier natural child failure keeps the cleanup failure secondary.
+    natural = Outcome(Trigger.CHILD_EXIT, child_result=ChildResult(1, False))
+    secondary = TerminalSnapshot(
+        natural.with_failure(Diagnostic("CLEANUP", "group remains")), cleanup
+    )
+    assert secondary.outcome.primary_failure is None
     with pytest.raises(ValueError):
         CleanupReport("unconfirmed", "confirmed", ("child_group",))
     with pytest.raises(ValueError):

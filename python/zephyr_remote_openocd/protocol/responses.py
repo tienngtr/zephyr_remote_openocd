@@ -64,7 +64,8 @@ def _valid_manifest_path(value: object) -> bool:
     return (
         not path.is_absolute()
         and str(path) == value
-        and all(part not in ("", ".", "..") for part in path.parts)
+        # PurePosixPath(".") has no parts, so inspect the literal components.
+        and all(part not in ("", ".", "..") for part in value.split("/"))
     )
 
 

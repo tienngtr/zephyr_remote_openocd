@@ -51,6 +51,9 @@ def _terminal() -> TerminalSnapshot:
         b'{"version":99,"type":"START"}\n',
         b'{"version":1,"type":"START"}',
         b'{"version":1,"type":"START"}\n\n',
+        b'{"version":1,"type":"START"}\n ',
+        b'{"version":1}\n',
+        b'{"version":1,"type":""}\n',
         b'\xff\n',
         b'"scalar"\n',
         b'not-json\n',
@@ -88,6 +91,7 @@ def test_terminal_round_trip_retains_group_causes_notes_and_provenance() -> None
         ("child_result", {"returncode": 0, "termination_requested": False, "extra": True}),
         ("child_result", {"returncode": True, "termination_requested": False}),
         ("child_result", None),
+        ("child_result", {"returncode": 0, "termination_requested": 0}),
         (
             "cleanup",
             {
@@ -105,6 +109,35 @@ def test_terminal_round_trip_retains_group_causes_notes_and_provenance() -> None
             },
         ),
         ("primary_failure", {"code": "FAIL", "message": "bad", "diagnostics": [], "extra": 1}),
+        ("primary_failure", {"code": "", "message": "bad", "diagnostics": []}),
+        ("primary_failure", {"code": "FAIL", "message": None, "diagnostics": []}),
+        ("primary_failure", {"code": "FAIL", "message": "bad", "diagnostics": {}}),
+        (
+            "diagnostics",
+            [
+                {
+                    "code": "FAIL",
+                    "message": "bad",
+                    "diagnostics": [{"code": "", "message": "", "diagnostics": []}],
+                }
+            ],
+        ),
+        (
+            "cleanup",
+            {
+                "child_disposal": "released",
+                "workspace_disposal": "confirmed",
+                "residual_resources": [],
+            },
+        ),
+        (
+            "cleanup",
+            {
+                "child_disposal": "confirmed",
+                "workspace_disposal": "removed",
+                "residual_resources": [],
+            },
+        ),
         ("version", True),
     ),
 )
@@ -115,9 +148,23 @@ def test_terminal_rejects_inconsistent_outcomes_and_cleanup(field: str, value: o
         decode_terminal(message)
 
 
+def test_terminal_rejects_unknown_residual_resource() -> None:
+    snapshot = TerminalSnapshot(
+        Outcome(Trigger.HELPER_FAILURE, Diagnostic("CLEANUP", "group remains")),
+        CleanupReport("unconfirmed", "unconfirmed", ("child_group", "workspace")),
+    )
+    message = _event("SESSION_ENDED", **terminal_fields(snapshot))
+    decode_terminal(message)
+    # Otherwise consistent: only the residual-name allow-list rejects it.
+    message["cleanup"]["residual_resources"] = ["unknown_resource", "workspace"]
+    with pytest.raises(ProtocolError):
+        decode_terminal(message)
+
+
 @pytest.mark.parametrize(
     "violation",
     (
+        "attempt-before-creation",
         "ready-before-attempt",
         "duplicate-attempt",
         "ready-process-exit",
@@ -133,17 +180,25 @@ def test_order_rejects_invalid_attempt_and_ready_histories(violation: str) -> No
         if violation == "ready-process-exit"
         else CompletionPolicy.LIVE_SERVER
     )
-    order.accept(
-        _event("SESSION_CREATED", helper="helper", session_id="session", remote_workspace="/work")
-    )
+    if violation != "attempt-before-creation":
+        order.accept(
+            _event(
+                "SESSION_CREATED", helper="helper", session_id="session", remote_workspace="/work"
+            )
+        )
     ready = _event("READY", remote_address="127.64.0.1", child_pid=1)
     attempt = _event("ATTEMPT", argv=["openocd"])
-    if violation not in {"ready-before-attempt", "unadmitted-output", "unadmitted-result"}:
+    if violation not in {
+        "attempt-before-creation",
+        "ready-before-attempt",
+        "unadmitted-output",
+        "unadmitted-result",
+    }:
         order.accept(attempt)
     if violation in {"duplicate-ready", "attempt-after-ready"}:
         order.accept(ready)
     invalid = ready
-    if violation in {"duplicate-attempt", "attempt-after-ready"}:
+    if violation in {"attempt-before-creation", "duplicate-attempt", "attempt-after-ready"}:
         invalid = attempt
     elif violation == "unadmitted-output":
         invalid = _event("CHILD_OUTPUT", stream="stderr", payload="bad", line_end=False)
@@ -151,6 +206,29 @@ def test_order_rejects_invalid_attempt_and_ready_histories(violation: str) -> No
         invalid = _event("SESSION_ENDED", **terminal_fields(_terminal()))
     with pytest.raises(ProtocolError):
         order.accept(invalid)
+
+
+@pytest.mark.parametrize(
+    "fields",
+    (
+        {"remote_address": "127.0.0.1", "child_pid": 1},
+        {"remote_address": "127.64.0.0", "child_pid": 1},
+        {"remote_address": "127.127.255.255", "child_pid": 1},
+        {"remote_address": "localhost", "child_pid": 1},
+        {"remote_address": 2134900737, "child_pid": 1},  # 127.64.0.1 as a number
+        {"remote_address": "127.64.0.1", "child_pid": 0},
+        {"remote_address": "127.64.0.1", "child_pid": True},
+    ),
+)
+def test_order_rejects_invalid_ready_fields(fields: dict[str, object]) -> None:
+    order = EventOrder()
+    order.accept(
+        _event("SESSION_CREATED", helper="helper", session_id="session", remote_workspace="/work")
+    )
+    order.accept(_event("ATTEMPT", argv=["openocd"]))
+    with pytest.raises(ProtocolError):
+        order.accept(_event("READY", **fields))
+    order.accept(_event("READY", remote_address="127.64.0.1", child_pid=1))
 
 
 @pytest.mark.parametrize(
