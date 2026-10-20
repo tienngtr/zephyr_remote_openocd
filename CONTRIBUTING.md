@@ -180,7 +180,9 @@ hardware inventory. See [`docs/development/testing.md`](docs/development/testing
 before running them. See [`SRS`](docs/requirements/SRS.md) for behavior and
 requirements, [`SAD`](docs/architecture/SAD.md) for architecture and rationale,
 [`protocol.md`](docs/architecture/protocol.md) for the helper wire contract, and
-[`test_design.md`](docs/development/test_design.md) for guidelines on writing tests.
+[`test_design.md`](docs/development/test_design.md) for guidelines on writing tests,
+and [`assurance_methods.md`](docs/development/assurance_methods.md) for bounded
+exploratory campaigns beyond the maintained suite.
 Never commit credentials, host/device details, generated builds, or `.scratch/`
 files.
 
