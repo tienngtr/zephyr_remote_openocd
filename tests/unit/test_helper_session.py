@@ -308,6 +308,34 @@ def test_controller_input_is_start_optional_release_eof(
     assert snapshot.cleanup.confirmed
 
 
+def test_release_before_readiness_is_not_a_termination_request(
+    coordinated_helper: CoordinatedHelper, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session, writer, events, _children = coordinated_helper
+    record = helper_streams.emit
+
+    def emit(kind: str, **fields: object) -> None:
+        record(kind, **fields)
+        if kind == "READY":
+            writer.close()
+
+    monkeypatch.setattr(helper_streams, 'emit', emit)
+    stream = io.BytesIO()
+    write_start(stream, ProcessSpec(_idle_child("ready"), required_output_sentinels=("ready",)), ())
+    # RELEASE recognized with START only qualifies a later EOF; the session
+    # stays live until that EOF, which is sent only after READY.
+    writer.write(stream.getvalue() + RELEASE)
+    _run_terminated(session, fails=False)
+    kinds = [kind for kind, _ in events]
+    assert kinds.index("READY") < kinds.index("SESSION_ENDED")
+    snapshot = _terminal_event(events)
+    assert snapshot.outcome.trigger == Trigger.CONTROLLER_EOF
+    assert snapshot.outcome.primary_failure is None
+    assert snapshot.outcome.child_result is not None
+    assert snapshot.outcome.child_result.termination_requested
+    assert snapshot.cleanup.confirmed
+
+
 @pytest.mark.parametrize("partial", (False, True))
 def test_controller_eof_before_start_has_explicit_result(
     coordinated_helper: CoordinatedHelper, partial: bool
