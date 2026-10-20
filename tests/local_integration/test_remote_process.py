@@ -431,21 +431,35 @@ def start_frame(
     )
 
 
-def archive_bytes(members: Iterable[tuple[str, bytes, str | None]]) -> bytes:
+def archive_bytes(members: Iterable[tuple[str, bytes, str | bytes | None]]) -> bytes:
+    """Encode members; a string detail is a link target, bytes are member content."""
     stream = io.BytesIO()
     with tarfile.open(fileobj=stream, mode="w", format=tarfile.PAX_FORMAT) as archive:
-        for name, member_type, linkname in members:
+        for name, member_type, detail in members:
             info = tarfile.TarInfo(name)
             info.type = member_type
-            if member_type in (tarfile.SYMTYPE, tarfile.LNKTYPE):
-                assert linkname is not None
-                info.linkname = linkname
-            if member_type == tarfile.REGTYPE:
-                info.size = 1
-                archive.addfile(info, io.BytesIO(b"x"))
-            else:
+            content = b"x" if member_type == tarfile.REGTYPE else None
+            if isinstance(detail, str):
+                info.linkname = detail
+            elif detail is not None:
+                content = detail
+            if content is None:
                 archive.addfile(info)
+            else:
+                info.size = len(content)
+                archive.addfile(info, io.BytesIO(content))
     return stream.getvalue()
+
+
+def staging_confirmation(**overrides: object) -> dict[str, object]:
+    """STAGED fields matching the confirmation tests' local archive."""
+    return {
+        "byte_count": len(b"firmware") * 2,
+        "sha256": hashlib.sha256(b"firmware" * 2).hexdigest(),
+        "files": ["firmware.bin", "copy.bin"],
+        "directories": ["config", "scripts"],
+        **overrides,
+    }
 
 
 class TestForwardingLifecycle:
@@ -1476,6 +1490,7 @@ class TestRealProcessHelper:
             (("nested/link", tarfile.SYMTYPE, "target"),),
             (("hard", tarfile.LNKTYPE, "valid/payload"),),
             (("fifo", tarfile.FIFOTYPE, None),),
+            (("directory", tarfile.DIRTYPE, b"payload"),),
             (
                 ("duplicate", tarfile.REGTYPE, None),
                 ("duplicate", tarfile.REGTYPE, None),
@@ -1495,7 +1510,7 @@ class TestRealProcessHelper:
         ),
     )
     def test_helper_rejects_unsafe_staging_members(
-        self, helper_workspace: Path, members: tuple[tuple[str, bytes, str | None], ...]
+        self, helper_workspace: Path, members: tuple[tuple[str, bytes, str | bytes | None], ...]
     ) -> None:
         helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         workspace = helper_workspace
@@ -1554,40 +1569,26 @@ class TestRealProcessHelper:
     @pytest.mark.parametrize(
         "response",
         (
+            encode_frame("STAGED", **staging_confirmation(byte_count=999)),
+            encode_frame("STAGED", **staging_confirmation(files=["firmware.bin"])),
             encode_frame(
-                "STAGED",
-                byte_count=999,
-                sha256=hashlib.sha256(b"firmware").hexdigest(),
-                files=["firmware.bin"],
-                directories=[],
+                "STAGED", **staging_confirmation(directories=["config", "scripts", "extra"])
             ),
-            encode_frame(
-                "STAGED",
-                byte_count=len(b"firmware"),
-                sha256=hashlib.sha256(b"firmware").hexdigest(),
-                files=[],
-                directories=[],
-            ),
-            encode_frame(
-                "STAGED",
-                byte_count=len(b"firmware"),
-                sha256=hashlib.sha256(b"firmware").hexdigest(),
-                files=["firmware.bin"],
-                directories=["extra"],
-            ),
-            json.dumps(
-                {
-                    "version": 1,
-                    "byte_count": len(b"firmware"),
-                    "sha256": hashlib.sha256(b"firmware").hexdigest(),
-                    "files": ["firmware.bin"],
-                    "directories": [],
-                }
-            ).encode("utf-8")
-            + b"\n",
+            # Identical file contents keep the count and digest order-independent.
+            encode_frame("STAGED", **staging_confirmation(files=["copy.bin", "firmware.bin"])),
+            encode_frame("STAGED", **staging_confirmation(directories=["scripts", "config"])),
+            json.dumps({"version": 1, **staging_confirmation()}).encode("utf-8") + b"\n",
             b"\xff",
         ),
-        ids=("wrong-byte-count", "missing-file", "extra-directory", "missing-type", "invalid-utf8"),
+        ids=(
+            "wrong-byte-count",
+            "missing-file",
+            "extra-directory",
+            "reordered-files",
+            "reordered-directories",
+            "missing-type",
+            "invalid-utf8",
+        ),
     )
     def test_controller_rejects_invalid_staging_confirmation(
         self, monkeypatch: pytest.MonkeyPatch, response: bytes
@@ -1600,14 +1601,20 @@ class TestRealProcessHelper:
                 return subprocess.CompletedProcess(command, 0, response, b"")
 
         with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "firmware.bin"
+            root = Path(directory)
+            source = root / "firmware.bin"
             source.write_bytes(b"firmware")
             session = SessionController(
                 SessionPlan(
                     "local",
                     LocalCommand(),
                     TEST_PROCESS,
-                    staged_files=(StagedFile(source, PurePosixPath("firmware.bin")),),
+                    staged_files=(
+                        StagedDirectory(root, PurePosixPath("config")),
+                        StagedFile(source, PurePosixPath("firmware.bin")),
+                        StagedDirectory(root, PurePosixPath("scripts")),
+                        StagedFile(source, PurePosixPath("copy.bin")),
+                    ),
                 ),
                 DeploymentResult("/helper.py", "digest", False),
             )
