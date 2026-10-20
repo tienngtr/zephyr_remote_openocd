@@ -394,6 +394,26 @@ def test_missing_required_path_fails_before_attempt_admission(
     assert snapshot.cleanup.confirmed
 
 
+def test_empty_resolved_required_path_is_startup_failure_before_attempt(
+    coordinated_helper: CoordinatedHelper,
+) -> None:
+    session, writer, events, children = coordinated_helper
+    # Domain models reject this template, so only a raw START reaches the helper.
+    start = json.loads(
+        encode_start(
+            ProcessSpec((sys.executable,), required_paths=(RequiredPathSpec("unused", "file"),)),
+            (),
+        )
+    )
+    start["required_paths"][0]["path"] = {"parts": [""]}
+    writer.write(json.dumps(start).encode() + b"\n")
+    _run_terminated(session, fails=True)
+    snapshot = _terminal_event(events)
+    assert snapshot.outcome.trigger == Trigger.STARTUP_FAILURE
+    assert not children and not any(event == "ATTEMPT" for event, _ in events)
+    assert snapshot.cleanup.confirmed
+
+
 @pytest.mark.parametrize("policy", tuple(CompletionPolicy))
 def test_completion_policy_controls_readiness(
     coordinated_helper: CoordinatedHelper, monkeypatch: pytest.MonkeyPatch, policy: CompletionPolicy

@@ -136,12 +136,14 @@ def _validate_process_readiness(required_output_sentinels: tuple[str, ...], time
         for sentinel in required_output_sentinels
     ) or len(required_output_sentinels) != len(set(required_output_sentinels)):
         raise ValueError("required output markers must be unique non-empty trimmed output lines")
-    if (
-        isinstance(timeout, bool)
-        or not isinstance(timeout, (int, float))
-        or not math.isfinite(timeout)
-        or timeout <= 0
-    ):
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+        raise ValueError("readiness timeout must be positive")
+    try:
+        seconds = float(timeout)
+    except OverflowError as error:
+        # Mirror START decoding: the timeout domain is finite binary64.
+        raise ValueError("readiness timeout does not convert to a finite float") from error
+    if not math.isfinite(seconds) or seconds <= 0:
         raise ValueError("readiness timeout must be positive")
 
 

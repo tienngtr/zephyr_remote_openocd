@@ -94,6 +94,7 @@ class TestSessionSpecifications:
             pytest.param({"required_output_sentinels": ("READY", "READY")}, id="duplicate-marker"),
             pytest.param({"readiness_timeout": True}, id="boolean-timeout"),
             pytest.param({"readiness_timeout": float("inf")}, id="infinite-timeout"),
+            pytest.param({"readiness_timeout": 10**400}, id="unrepresentable-timeout"),
             pytest.param({"readiness_timeout": 0}, id="zero-timeout"),
             pytest.param({"literal_prefix": True}, id="boolean-prefix"),
             pytest.param({"literal_prefix": -1}, id="negative-prefix"),

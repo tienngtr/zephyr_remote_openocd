@@ -150,6 +150,7 @@ def test_decode_command_rejects_tcl_quoting_in_a_filesystem_path(
         pytest.param("required_output_sentinels", ["RE\rADY"], id="carriage-return-in-marker"),
         pytest.param("readiness_timeout", 0, id="zero-timeout"),
         pytest.param("readiness_timeout", True, id="boolean-timeout"),
+        pytest.param("readiness_timeout", 10**400, id="unrepresentable-timeout"),
         pytest.param("literal_prefix", 3, id="prefix-outside-argv"),
         pytest.param("literal_prefix", True, id="boolean-prefix"),
         pytest.param("literal_prefix", 1.0, id="float-prefix"),

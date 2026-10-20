@@ -54,6 +54,9 @@ def _terminal() -> TerminalSnapshot:
         b'{"version":1,"type":"START"}\n ',
         b'{"version":1}\n',
         b'{"version":1,"type":""}\n',
+        b'{"version":1,"type":"START","value":"\\ud800"}\n',
+        b'{"version":1,"type":"START","\\udc80":1}\n',
+        b'{"version":1,"type":"START","items":["ok","\\udfff"]}\n',
         b'\xff\n',
         b'"scalar"\n',
         b'not-json\n',
@@ -311,6 +314,17 @@ def test_terminal_history_preserves_partial_startup_and_output_paths(
     )
     order.accept(_event("SESSION_ENDED", **terminal_fields(snapshot)))
     assert order.ended
+
+
+def test_protocol_strings_are_unicode_scalar_text() -> None:
+    # An escaped surrogate pair is one scalar value; only isolated halves are invalid.
+    assert (
+        decode_frame(b'{"version":1,"type":"T","value":"\\ud83d\\ude00"}\n')["value"]
+        == "\U0001f600"
+    )
+    for fields in ({"value": "\udc80"}, {"items": ["ok", "\ud800"]}, {"nested": {"\udfff": 1}}):
+        with pytest.raises(ProtocolError):
+            encode_frame("T", **fields)
 
 
 def test_frame_round_trip_accepts_json_whitespace_and_reserves_envelope_fields() -> None:

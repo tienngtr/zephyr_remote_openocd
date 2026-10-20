@@ -27,6 +27,11 @@ frame or nested object are required, including fields whose values may be null.
 Unknown fields,
 duplicate object keys, invalid types/values, non-finite numbers, and invalid
 state transitions are rejected. Integers below always exclude Booleans.
+Every decoded string, including object keys, is Unicode scalar text: a
+`\uXXXX` escape that leaves an isolated surrogate (U+D800 to U+DFFF) is
+rejected like malformed UTF-8, and senders reject such text before admission.
+Operating-system text that is not valid UTF-8, such as a surrogate-escaped file
+name, is therefore not representable in Protocol v1.
 Helper stdout contains protocol frames only. Child stdout/stderr are output
 events; helper stderr carries infrastructure diagnostics.
 
@@ -64,8 +69,8 @@ before reading START. The event contains exactly the envelope and:
 
 | Field | Constraint |
 | --- | --- |
-| `helper` | Non-empty helper identity string. |
-| `session_id` | Non-empty session identity string. |
+| `helper` | Non-empty helper identity string without NUL. |
+| `session_id` | Non-empty session identity string without NUL. |
 | `remote_workspace` | Non-empty workspace path string without NUL. |
 
 Creation failure may instead end with SESSION_ENDED without SESSION_CREATED if
@@ -129,8 +134,8 @@ START contains exactly the envelope and the following immutable request:
 | `required_paths` | List of exact `{kind, path}` objects. `kind` is `file` or `directory`; `path` is a non-empty literal string without NUL or an exact `{parts}` path template as defined below. |
 | `services` | List of exact `{name, remote_port}` objects. `name` is a non-empty string; `remote_port` is a non-Boolean integer in `1..65535`. Names and ports are unique within the request. |
 | `preferred_address` | Null, or a canonical dotted-decimal IPv4 string in `127.64.0.0/10`, excluding `127.64.0.0` and `127.127.255.255`. A hint, not an allocation or lease. |
-| `required_output_sentinels` | List of unique non-empty, trimmed startup output markers without `CR`, `LF`, or NUL; may be empty. |
-| `readiness_timeout` | Positive finite, non-Boolean number; used only for `live_server`. |
+| `required_output_sentinels` | List of unique non-empty, trimmed startup output markers without `CR`, `LF`, or NUL; may be empty. Trimmed means no leading or trailing whitespace, where whitespace is every character for which Python `str.isspace()` is true: Unicode `White_Space` characters plus the separators U+001C to U+001F. |
+| `readiness_timeout` | Positive, non-Boolean number whose conversion to the helper's IEEE 754 binary64 timeout type is finite and greater than zero. Used only for `live_server`. |
 | `literal_prefix` | Non-Boolean, non-negative integer no greater than the length of `argv`. Templates cannot target this many leading arguments. |
 | `argv_templates` | List of exact `{index, parts}` objects. Indices are unique non-Boolean integers at least `literal_prefix` and less than the length of `argv`. Each template replaces its indexed argv element. An empty list is valid and required when no templates are used. |
 
@@ -169,6 +174,10 @@ template is an exact `{parts}` object containing only literal strings and
 session references, and must resolve to a non-empty filesystem path; Tcl word
 quoting is invalid there. Unknown fields, invalid parts, repeated indices,
 prefix-targeting indices, and out-of-range indices are rejected before startup.
+Whether a template's resolved value is empty is not START validation: the
+helper checks it when it materializes templates, before ATTEMPT. A required-path
+template, or a template for the first argv element, that resolves to an empty
+string is a startup failure with no ATTEMPT, like a missing required path.
 
 For example, an argv template with
 `parts: ["bindto ", {"session": "address"}]` resolves the runner-owned bind
@@ -230,7 +239,8 @@ READY alone never authorizes GDB or RTT launch: the local operation also
 validates required forwarding, cancellation, and established failures at
 actual execution entry.
 
-Required markers are complete trimmed lines on either stream, matched exactly
+Required markers are complete lines on either stream, trimmed with the same
+whitespace definition as START markers and matched exactly
 and in any order using incremental UTF-8 decoding with replacement. Prefix
 fragments do not count. An actual stream EOF finalizes the decoder and its
 last unterminated line, which can satisfy a complete marker. For `live_server`
@@ -327,8 +337,11 @@ Intentional local closure uses RELEASE followed by controller EOF. Signals sent 
 owned child group for disposal are child cleanup, not native signals received
 by the helper, and do not by themselves establish this helper/session failure.
 
-Unconfirmed disposal requires a corresponding residual resource and a primary
-or secondary cleanup-failure diagnostic. Confirmed child disposal excludes child
+Unconfirmed disposal requires a corresponding residual resource and at least
+one failure Diagnostic, as the primary failure or a secondary diagnostic.
+Protocol v1 gives diagnostic codes no wire meaning, so receivers check only that
+such a Diagnostic is present; the helper records the cleanup failure there.
+Confirmed child disposal excludes child
 and address-lease residuals; confirmed workspace disposal excludes workspace residuals. An
 unconfirmed child/producer that may use staged inputs also requires unconfirmed
 workspace disposal and retained inputs. Leader exit, successful signal delivery,

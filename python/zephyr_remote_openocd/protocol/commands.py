@@ -73,12 +73,14 @@ def _validate_required_output_sentinels(sentinels: object) -> None:
 
 
 def _validate_timeout(timeout: object) -> None:
-    if (
-        not isinstance(timeout, (int, float))
-        or isinstance(timeout, bool)
-        or not math.isfinite(timeout)
-        or timeout <= 0
-    ):
+    if not isinstance(timeout, (int, float)) or isinstance(timeout, bool):
+        raise ValueError("START readiness options are invalid")
+    try:
+        seconds = float(timeout)
+    except OverflowError as error:
+        # A JSON integer can exceed the finite float timeout domain.
+        raise ValueError("START readiness timeout does not convert to a finite float") from error
+    if not math.isfinite(seconds) or seconds <= 0:
         raise ValueError("START readiness options are invalid")
 
 

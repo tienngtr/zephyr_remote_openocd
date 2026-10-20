@@ -63,6 +63,25 @@ def _float(value: str) -> float:
     return number
 
 
+def _require_scalar_text(text: str) -> None:
+    """Reject isolated surrogates, which JSON escapes express but UTF-8 cannot."""
+    if not text.isascii():
+        text.encode("utf-8")
+
+
+def _require_scalar_strings(value: object) -> None:
+    pending = [value]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, str):
+            _require_scalar_text(item)
+        elif isinstance(item, dict):
+            pending.extend(item)
+            pending.extend(item.values())
+        elif isinstance(item, list):
+            pending.extend(item)
+
+
 def decode_frame(frame: bytes | str) -> dict[str, Any]:
     """Decode one complete bounded frame without permissive JSON extensions."""
     try:
@@ -77,6 +96,7 @@ def decode_frame(frame: bytes | str) -> dict[str, Any]:
             parse_constant=_nonfinite,
             parse_float=_float,
         )
+        _require_scalar_strings(value)
     except (UnicodeError, ValueError, RecursionError) as error:
         raise ProtocolError(f"malformed protocol frame: {error}") from error
     if (
@@ -90,10 +110,11 @@ def decode_frame(frame: bytes | str) -> dict[str, Any]:
 
 
 def _check_render_values(value: object) -> None:
-    """Bound each JSON encoder fragment before rendering a large string."""
+    """Bound each JSON encoder fragment and require scalar text before rendering."""
     if isinstance(value, str):
         if len(value) > MAX_FRAME_SIZE:
             raise ProtocolError("protocol frame exceeds maximum size")
+        _require_scalar_text(value)
     elif isinstance(value, dict):
         for key, item in value.items():
             _check_render_values(key)
