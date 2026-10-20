@@ -5,13 +5,16 @@ from __future__ import annotations
 import hashlib
 import io
 import ipaddress
+import re
 import shlex
 import shutil
 import socket
 import tempfile
+import time
 import uuid
 import zipfile
-from contextlib import ExitStack
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack, contextmanager, suppress
 from pathlib import Path, PurePosixPath
 from typing import override
 
@@ -91,6 +94,41 @@ def assert_echo(port: int, payload: bytes) -> None:
         assert received == payload
 
 
+def wait_for_remote_absence(ssh: SshCommand, host: str, path: str, timeout: float = 60) -> None:
+    """Remote cleanup follows the helper's own loss observation, not local completion."""
+    deadline = time.monotonic() + timeout
+    while True:
+        result = ssh.run(host, f"test ! -e {shlex.quote(path)}", timeout=20)
+        if result.returncode == 0:
+            return
+        assert time.monotonic() < deadline, f"remote path was not removed: {path}"
+
+
+def shared_master_command(ssh: SshCommand, control_path: Path) -> SshCommand:
+    """Share one test-owned master; production sessions own only their slaves."""
+    return SshCommand(
+        (
+            ssh.argv_prefix[0],
+            "-o",
+            "ControlMaster=auto",
+            "-o",
+            "ControlPersist=no",
+            "-o",
+            f"ControlPath={control_path}",
+            *ssh.argv_prefix[1:],
+        )
+    )
+
+
+@contextmanager
+def external_master(ssh: SshCommand, host: str) -> Iterator[ManagedSshProcess]:
+    master = ssh.popen(host, "printf 'ZRO_MASTER_READY\\n'; cat >/dev/null")
+    with cleanup_on_exit(lambda: stop_and_close(master)):
+        assert master.stdout is not None
+        assert read_line(master.stdout).strip() == b"ZRO_MASTER_READY", master.stderr_tail()
+        yield master
+
+
 class ObservedSshCommand(SshCommand):
     """Borrow transport references for loss injection; sessions retain cleanup ownership."""
 
@@ -120,6 +158,12 @@ class ObservedSshCommand(SshCommand):
         elif remote_command.endswith(" control"):
             self.helper_processes.append(process)
         return process
+
+
+def suppress_session_error(close: Callable[[], None]) -> None:
+    """Close a session whose failure the test has already asserted."""
+    with suppress(SessionError):
+        close()
 
 
 class TestConfiguredSshIntegration:
@@ -424,18 +468,7 @@ class TestSshTransportIntegration:
         self, tmp_path: Path
     ) -> None:
         """The test owns the master; production sessions own only their slaves."""
-        ssh = SshCommand(
-            (
-                self.ssh.argv_prefix[0],
-                "-o",
-                "ControlMaster=auto",
-                "-o",
-                "ControlPersist=no",
-                "-o",
-                f"ControlPath={tmp_path / 'master'}",
-                *self.ssh.argv_prefix[1:],
-            )
-        )
+        ssh = shared_master_command(self.ssh, tmp_path / "master")
         local_port = free_loopback_port()
         request = SessionPlan(
             self.host,
@@ -493,12 +526,7 @@ class TestSshTransportIntegration:
             with pytest.raises(SessionError):
                 session.close()
         assert session.closed
-        result = self.ssh.run(
-            self.host,
-            f"test ! -e {shlex.quote(descriptor.remote_workspace)}",
-            timeout=20,
-        )
-        assert result.returncode == 0, result.stderr.decode(errors="replace")
+        wait_for_remote_absence(self.ssh, self.host, descriptor.remote_workspace)
 
     def test_owned_forward_loss_is_reported_and_session_cleans_up(self) -> None:
         """An established session reports loss of its own SSH forward."""
@@ -537,6 +565,119 @@ class TestSshTransportIntegration:
             timeout=20,
         )
         assert result.returncode == 0, result.stderr.decode(errors="replace")
+
+    def test_session_slave_loss_spares_shared_master_and_peer_session(self, tmp_path: Path) -> None:
+        """Only the master's channel close tells the remote helper its slave is gone."""
+        ssh = ObservedSshCommand(shared_master_command(self.ssh, tmp_path / "master").argv_prefix)
+        failed_port = free_loopback_port()
+        peer_port = free_loopback_port()
+        while peer_port == failed_port:
+            peer_port = free_loopback_port()
+        with external_master(ssh, self.host) as master, ExitStack() as resources:
+            failed = SessionController.prepare(
+                SessionPlan(
+                    self.host,
+                    ssh,
+                    session_echo_process(),
+                    forwards=(ForwardSpec("gdb", failed_port, 3333),),
+                )
+            )
+            resources.enter_context(cleanup_on_exit(lambda: suppress_session_error(failed.close)))
+            failed.acquire()
+            failed_transports = tuple(ssh.helper_processes + ssh.forwards)
+            peer = SessionController.prepare(
+                SessionPlan(
+                    self.host,
+                    ssh,
+                    session_echo_process(),
+                    forwards=(ForwardSpec("gdb", peer_port, 3333),),
+                )
+            )
+            resources.enter_context(cleanup_on_exit(peer.close))
+            peer.acquire()
+            assert failed.descriptor is not None and peer.descriptor is not None
+            workspace = failed.descriptor.remote_workspace
+
+            helper_process = ssh.helper_processes[0]
+            helper_process.terminate()
+            helper_process.wait(timeout=20)
+            with pytest.raises(SessionError):
+                failed.wait_for_openocd_exit(timeout=20)
+            with pytest.raises(SessionError):
+                failed.close()
+            # Transport loss never becomes an OpenOCD result.
+            assert failed.openocd_returncode is None
+            assert all(
+                transport.returncode is not None
+                and transport.stdin is not None
+                and transport.stdin.closed
+                and transport.stdout is not None
+                and transport.stdout.closed
+                for transport in failed_transports
+            )
+            # The live master's login keeps a per-user runtime directory, and
+            # this workspace, from being removed for an unrelated reason.
+            wait_for_remote_absence(self.ssh, self.host, workspace)
+
+            assert master.poll() is None
+            assert peer.poll_operation() is None
+            assert_echo(peer_port, b"peer_session_unaffected")
+            peer.close()
+            assert master.poll() is None
+            assert master.stdin is not None
+            master.stdin.close()
+            assert master.wait(timeout=20) == 0
+
+    def test_master_retained_forward_channel_does_not_fail_session_cleanup(
+        self, tmp_path: Path
+    ) -> None:
+        """A master keeps a slave's passed stderr until the remote channel closes.
+
+        A stopped remote forward command deterministically stands in for one
+        that has not yet exited after EOF, as on a slow link or loaded host.
+        """
+        ssh = ObservedSshCommand(shared_master_command(self.ssh, tmp_path / "master").argv_prefix)
+        local_port = free_loopback_port()
+        with external_master(ssh, self.host) as master:
+            session = SessionController.prepare(
+                SessionPlan(
+                    self.host,
+                    ssh,
+                    session_echo_process(),
+                    forwards=(ForwardSpec("gdb", local_port, 3333),),
+                )
+            )
+            with cleanup_on_exit(session.close):
+                session.acquire()
+                assert session.descriptor is not None
+                assert_echo(local_port, b"before_retained_channel")
+                forward_argv = ssh.forwards[0].args
+                assert isinstance(forward_argv, list)
+                sentinel = re.search(r"ZRO_FORWARD_[0-9a-f]+", forward_argv[-1])
+                assert sentinel is not None
+                # The bracket keeps pkill's own remote shell from matching.
+                pattern = shlex.quote("[" + sentinel[0][0] + "]" + sentinel[0][1:])
+
+                def release_remote_forward() -> None:
+                    # pkill/pgrep exit 1 when nothing matches; other statuses,
+                    # including SSH failure, leave the stopped process unconfirmed.
+                    killed = self.ssh.run(self.host, f"pkill -KILL -f {pattern}", timeout=20)
+                    assert killed.returncode in (0, 1), killed.stderr.decode(errors="replace")
+                    deadline = time.monotonic() + 60
+                    while True:
+                        found = self.ssh.run(self.host, f"pgrep -f {pattern}", timeout=20)
+                        if found.returncode == 1:
+                            return
+                        assert found.returncode == 0, found.stderr.decode(errors="replace")
+                        assert time.monotonic() < deadline, "stopped remote forward survived"
+
+                with cleanup_on_exit(release_remote_forward):
+                    stopped = self.ssh.run(self.host, f"pkill -STOP -f {pattern}", timeout=20)
+                    assert stopped.returncode == 0, stopped.stderr.decode(errors="replace")
+                    session.close()
+            assert session.closed
+            assert ssh.forwards[0].returncode is not None
+            assert master.poll() is None
 
     @pytest.mark.parametrize("mapped", (False, True), ids=("staged", "mapped"))
     def test_remote_openocd_config_consumes_forwarded_environment(self, mapped: bool) -> None:

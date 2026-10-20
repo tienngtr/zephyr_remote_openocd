@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import os
 import signal
 import subprocess
 import threading
@@ -15,6 +16,7 @@ from typing import IO, TYPE_CHECKING, BinaryIO, Protocol
 from zephyr_remote_openocd.controller._cleanup import add_failure_note, raise_cleanup_errors
 from zephyr_remote_openocd.controller._processes import run_finite, terminate_process
 from zephyr_remote_openocd.controller.cancellation import admit_effect
+from zephyr_remote_openocd.controller.waiting import Notifier, WaitSources, wait_for
 
 if TYPE_CHECKING:
     from _typeshed import StrOrBytesPath
@@ -47,6 +49,9 @@ class StderrDrain:
         self._tail = bytearray()
         self._lock = threading.Lock()
         self._finished = threading.Event()
+        self._stop = threading.Event()
+        # Resource-free until start(); close() owns it from then on.
+        self._wakeup = Notifier()
         self._thread = threading.Thread(
             target=self._run,
             name="zro-ssh-stderr",
@@ -57,18 +62,26 @@ class StderrDrain:
 
     def start(self) -> None:
         """Start consuming the owned stderr stream."""
+        self._wakeup.open()
         self._thread.start()
 
     def _run(self) -> None:
         try:
-            while True:
-                chunk = self._stream.read(_SSH_STDERR_READ_BYTES)
+            # Raw reads after readiness never hold the buffered stream's lock,
+            # and a stop request wakes the wait without waiting for EOF.
+            descriptor = self._stream.fileno()
+            while not self._stop.is_set():
+                ready = wait_for(
+                    readable=(descriptor,), sources=WaitSources(notifiers=(self._wakeup,))
+                )
+                if descriptor not in ready.readable:
+                    continue
+                chunk = os.read(descriptor, _SSH_STDERR_READ_BYTES)
                 if not chunk:
                     return
-                self._append(bytes(chunk))
+                self._append(chunk)
         except BaseException:
-            # Closing a pipe during process cleanup is an expected way to
-            # release a blocked reader.  Diagnostics are best effort.
+            # Diagnostics are best effort; a failed wait or read ends the drain.
             return
         finally:
             self._finished.set()
@@ -94,11 +107,12 @@ class StderrDrain:
     def close(self) -> None:
         """Close the pipe after its reader has stopped, within a finite budget.
 
-        Closing a buffered pipe from a different thread can wait for that
-        reader's internal lock.  If the process (or a descendant) still owns
-        the write side, waiting for the reader to finish is not safe to turn
-        into a synchronous ``close()``.  Report a bounded cleanup failure and
-        leave the stream alone when its reader has not reached EOF.
+        The reader first gets a bounded opportunity to reach EOF so final
+        diagnostics are retained. A writer outside the runner, such as a
+        connection-sharing master holding passed client stdio, can keep the
+        pipe open after the SSH process exits; the reader is then stopped
+        without EOF. Only a reader that does not stop retains the stream,
+        because closing it from this thread is not safe while it is in use.
         """
         with self._close_lock:
             if self._stream_closed:
@@ -106,14 +120,23 @@ class StderrDrain:
             # A started thread has an identity before start() returns, so a
             # failure at that return still leaves the reader's shutdown bounded.
             if self._thread.ident is not None:
+                if not self._finished.wait(_SSH_STDERR_JOIN_TIMEOUT):
+                    self._stop.set()
+                    self._wakeup.notify()
                 deadline = time.monotonic() + _SSH_STDERR_JOIN_TIMEOUT
                 if not self._finished.wait(max(0.0, deadline - time.monotonic())):
                     raise TimeoutError("SSH stderr reader did not stop; stream retained")
                 self._thread.join(max(0.0, deadline - time.monotonic()))
                 if self._thread.is_alive():
                     raise TimeoutError("SSH stderr reader did not stop; stream retained")
-            self._stream.close()
+            cleanup_errors: list[BaseException] = []
+            for release in (self._stream.close, self._wakeup.close):
+                try:
+                    release()
+                except BaseException as error:
+                    cleanup_errors.append(error)
             self._stream_closed = True
+            raise_cleanup_errors(cleanup_errors)
 
 
 class ManagedSshProcess:

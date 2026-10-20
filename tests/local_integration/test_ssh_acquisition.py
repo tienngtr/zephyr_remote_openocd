@@ -338,10 +338,10 @@ def test_stderr_reader_start_return_failure_keeps_bounded_drain_shutdown(tmp_pat
         finally:
             sys.settrace(previous_trace)
         assert raised.value is failure
-        # Rollback reported the unstoppable reader instead of closing a buffered
-        # stream that the reader may hold.
-        notes = getattr(failure, "__notes__", ())
-        assert any("stderr reader did not stop" in note for note in notes)
+        # Rollback stopped the reader without EOF and released the stream,
+        # although the descendant still holds the write side.
+        assert not getattr(failure, "__notes__", ())
+        assert drains[0]._stream.closed
     finally:
         sys.settrace(previous_trace)
         for pid in descendants:

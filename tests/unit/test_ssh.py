@@ -260,92 +260,79 @@ def test_run_stream_passes_file_as_stdin_and_captures_output(tmp_path: Path) -> 
     assert result.stderr == b"x" * 100000
 
 
+class _ObservedDrain:
+    """Own a real stderr pipe and report each chunk the drain has retained."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        read_fd, self.write_fd = os.pipe()
+        self.drain = ssh_module.StderrDrain(os.fdopen(read_fd, "rb"))
+        self.appended = threading.Semaphore(0)
+        append = self.drain._append
+
+        def observed_append(chunk: bytes) -> None:
+            append(chunk)
+            self.appended.release()
+
+        monkeypatch.setattr(self.drain, "_append", observed_append)
+
+    def write(self, data: bytes) -> None:
+        os.write(self.write_fd, data)
+
+    def close_writer(self) -> None:
+        if self.write_fd >= 0:
+            os.close(self.write_fd)
+            self.write_fd = -1
+
+    def close(self) -> None:
+        self.close_writer()
+        self.drain.close()
+        assert not self.drain._thread.is_alive()
+
+
 @pytest.mark.timeout(10)
 def test_stderr_tail_is_best_effort_when_drain_has_not_reached_eof(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    first_chunk_read = threading.Event()
-    release_eof = threading.Event()
-
-    class Stream(io.BytesIO):
-        def __init__(self) -> None:
-            super().__init__()
-            self.reads = 0
-
-        @override
-        def read(self, _size: int | None = -1, /) -> bytes:
-            self.reads += 1
-            if self.reads == 1:
-                return b"prefix"
-            # The previous read has been appended before the drain reads again.
-            first_chunk_read.set()
-            assert release_eof.wait(5)
-            return b""
-
-        @override
-        def close(self) -> None:
-            release_eof.set()
-
-    drain = ssh_module.StderrDrain(Stream())
+    observed = _ObservedDrain(monkeypatch)
+    drain = observed.drain
     original_wait = drain._finished.wait
     monkeypatch.setattr(drain._finished, "wait", lambda _timeout=None: False)
     drain.start()
     try:
-        assert first_chunk_read.wait(5)
+        observed.write(b"prefix")
+        assert observed.appended.acquire(timeout=5)
         assert drain.tail() == b"prefix"
         assert not drain._finished.is_set()
-        release_eof.set()
+        observed.close_writer()
         assert original_wait(5)
     finally:
-        release_eof.set()
-        drain._thread.join(timeout=5)
-        assert not drain._thread.is_alive()
+        monkeypatch.setattr(drain._finished, "wait", original_wait)
+        observed.close()
 
 
 @pytest.mark.timeout(10)
 def test_stderr_tail_waits_for_delayed_eof_with_a_bounded_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    first_chunk_read = threading.Event()
-    release_suffix = threading.Event()
-    suffix_read = threading.Event()
-
-    class Stream(io.BytesIO):
-        def __init__(self) -> None:
-            super().__init__()
-            self.reads = 0
-
-        @override
-        def read(self, _size: int | None = -1, /) -> bytes:
-            self.reads += 1
-            if self.reads == 1:
-                first_chunk_read.set()
-                return b"prefix"
-            if self.reads == 2:
-                assert release_suffix.wait(5)
-                suffix_read.set()
-                return b"suffix"
-            return b""
-
-        @override
-        def close(self) -> None:
-            release_suffix.set()
-
-    drain = ssh_module.StderrDrain(Stream())
+    observed = _ObservedDrain(monkeypatch)
+    drain = observed.drain
     wait_timeouts: list[float | None] = []
     original_wait = drain._finished.wait
 
     def wait(timeout: float | None = None) -> bool:
         wait_timeouts.append(timeout)
-        release_suffix.set()
+        # The suffix and EOF arrive only after the tail has begun waiting.
+        if observed.write_fd >= 0:
+            observed.write(b"suffix")
+            observed.close_writer()
         return original_wait(timeout)
 
     monkeypatch.setattr(drain._finished, "wait", wait)
     drain.start()
     try:
-        assert first_chunk_read.wait(5)
+        observed.write(b"prefix")
+        assert observed.appended.acquire(timeout=5)
         assert drain.tail() == b"prefixsuffix"
-        assert suffix_read.is_set()
         assert wait_timeouts
         assert all(
             timeout is not None
@@ -354,9 +341,8 @@ def test_stderr_tail_waits_for_delayed_eof_with_a_bounded_timeout(
             for timeout in wait_timeouts
         )
     finally:
-        release_suffix.set()
-        drain._thread.join(timeout=5)
-        assert not drain._thread.is_alive()
+        monkeypatch.setattr(drain._finished, "wait", original_wait)
+        observed.close()
 
 
 def test_process_cleanup_kills_after_graceful_termination_times_out() -> None:

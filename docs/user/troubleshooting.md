@@ -88,6 +88,16 @@ SSH client. The runner stops the subprocesses it launches but does not own or
 cancel forwarding state retained by an external sharing master. A retained
 listener after runner shutdown is not, by itself, failed runner cleanup.
 
+With OpenSSH `ControlMaster auto` and `ControlPersist no`, the first SSH
+process that finds no master becomes one. That can be an SSH subprocess the
+runner launched for a session, so the master is no longer external: other
+sessions to the same host multiplex through it. When that session ends, its
+SSH process waits for the other sessions' channels, the runner stops it after
+its shutdown budget, and the other sessions lose their transport. For
+concurrent sessions over a shared connection, establish the master outside the
+runner first (for example `ssh -MNf host`) or set `ControlPersist` to `yes` or
+a time, so the master runs as a separate background process.
+
 The runner keeps its best-effort local preferred address cache under
 `~/.cache/zephyr_remote_openocd/preferred-addresses/`, keyed by the configured SSH
 command prefix and host. It saves an address only after required forwarding

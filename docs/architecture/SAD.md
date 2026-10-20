@@ -1531,15 +1531,21 @@ while its stdout still carries protocol or readiness data. The drain retains
 only a bounded byte tail. A lock protects that tail because failure observation
 may read it while the drain thread is still appending data.
 
-Shutdown waits for drain completion and thread exit within one shared bounded
-budget before closing the stderr stream. Closing a buffered pipe while another
-thread is blocked in `read()` can itself block on the stream's internal lock.
-If the SSH process or a descendant still holds the write side and EOF does not
-arrive, cleanup therefore reports failure and retains the stream rather than
-turning stream cleanup into an unbounded wait. Close serialization and an
-explicit closed flag keep repeated cleanup attempts harmless. The drain thread
-is a daemon so an uncooperative inherited writer cannot hold local process
-shutdown open indefinitely.
+Shutdown first gives the drain a bounded opportunity to reach EOF, so final
+diagnostics are retained, and then closes the stderr stream. The reader waits
+for readiness on the raw descriptor together with a drain-owned wakeup and
+never holds the buffered stream's lock while blocked. EOF can be withheld by a
+writer the runner does not own: a connection-sharing master keeps the stdio
+passed by its client until the remote channel closes, and a descendant can
+inherit the pipe. When EOF does not arrive within the opportunity, cleanup
+stops the reader through its wakeup and closes the stream and wakeup without
+reporting failure; diagnostics are best effort. Only a reader that does not
+stop within a second bounded budget is reported as a cleanup failure, with its
+stream retained, because closing a buffered pipe while another thread uses it
+can block on the stream's internal lock. Close serialization and an explicit
+closed flag keep repeated cleanup attempts harmless. The drain thread is a
+daemon so an unresponsive reader cannot hold local process shutdown open
+indefinitely.
 
 This separation is intentional: `HelperConnection` and `ForwardManager`
 perform process cleanup within their own subsystem sequences,

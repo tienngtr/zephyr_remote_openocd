@@ -235,6 +235,11 @@ SSH connection sharing, including `ControlMaster`, remains managed by your SSH
 client. The runner does not disable it or issue client-specific cancellation
 commands. Cleanup stops the SSH subprocesses launched by the runner and their
 owned I/O resources; it does not remove forwards retained by a sharing master.
+With `ControlMaster auto` and `ControlPersist no` and no existing master, a
+runner-launched SSH process can itself become the master, coupling the
+lifetime of other sessions to the session that launched it. For concurrent
+sessions, use an already-established master or a nonzero `ControlPersist`; see
+[Troubleshooting](troubleshooting.md#ssh-connection-sharing).
 
 The runner remembers the last successfully required-forwarded remote address
 per SSH command prefix and host in
