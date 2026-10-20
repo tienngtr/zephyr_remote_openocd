@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import io
 import json
 import os
 import signal
@@ -14,7 +13,7 @@ from pathlib import Path
 
 import pytest
 from zephyr_remote_openocd.protocol.arguments import ArgumentTemplate
-from zephyr_remote_openocd.protocol.commands import write_start
+from zephyr_remote_openocd.protocol.commands import encode_start
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.protocol.wire import EventOrder, decode_frame
 
@@ -81,8 +80,7 @@ def test_empty_materialized_executable_fails_without_invalid_start_event(tmp_pat
         literal_prefix=0,
         argv_templates=((0, ArgumentTemplate(("",))),),
     )
-    wire = io.BytesIO()
-    write_start(wire, request, ())
+    start = encode_start(request, ())
     with managed_process(
         [sys.executable, str(ROOT / "python/zephyr_remote_openocd/helper/__main__.py"), "control"],
         env={**os.environ, "XDG_RUNTIME_DIR": str(tmp_path)},
@@ -90,7 +88,7 @@ def test_empty_materialized_executable_fails_without_invalid_start_event(tmp_pat
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     ) as owner:
-        stdout, _stderr = owner.process.communicate(input=wire.getvalue(), timeout=30)
+        stdout, _stderr = owner.process.communicate(input=start, timeout=30)
     events = [decode_frame(line) for line in stdout.splitlines(keepends=True)]
     order = EventOrder()
     for event in events:

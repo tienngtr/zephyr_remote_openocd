@@ -33,7 +33,7 @@ from zephyr_remote_openocd.controller.authority import SessionAuthority
 from zephyr_remote_openocd.controller.helper_connection import OutputHandler, ProcessStartHandler
 from zephyr_remote_openocd.controller.waiting import Notifier, WaitResult, WaitSources, wait_for
 from zephyr_remote_openocd.protocol.arguments import materialize_argv
-from zephyr_remote_openocd.protocol.commands import decode_command, write_start
+from zephyr_remote_openocd.protocol.commands import decode_command, encode_start
 from zephyr_remote_openocd.protocol.listeners import ListenerSpec
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.protocol.wire import encode_frame
@@ -113,9 +113,8 @@ class ControlledHelper:
     ) -> str:
         self.preferred_address = preferred_address
         if self.process_start_handler is not None:
-            stream = io.BytesIO()
-            write_start(stream, process, (), preferred_address=preferred_address)
-            request = decode_command(stream.getvalue())
+            start = encode_start(process, (), preferred_address=preferred_address)
+            request = decode_command(start)
             self.process_start_handler(
                 materialize_argv(
                     process.argv,

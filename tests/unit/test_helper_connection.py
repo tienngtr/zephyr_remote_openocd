@@ -42,7 +42,7 @@ from zephyr_remote_openocd.protocol.arguments import (
     materialize_argv,
     materialize_path,
 )
-from zephyr_remote_openocd.protocol.commands import decode_command, write_start
+from zephyr_remote_openocd.protocol.commands import decode_command, encode_start
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy, Trigger
 from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.protocol.wire import ProtocolError, decode_frame, encode_frame
@@ -232,9 +232,8 @@ def test_explicit_session_values_are_not_recursively_expanded() -> None:
             ),
         ),
     )
-    stream = io.BytesIO()
-    write_start(stream, process, ())
-    request = decode_command(stream.getvalue())
+    start = encode_start(process, ())
+    request = decode_command(start)
     argv = materialize_argv(
         request.argv,
         workspace=r'/runtime/[review] $value "quoted" \backslash {workspace} {address}/session',

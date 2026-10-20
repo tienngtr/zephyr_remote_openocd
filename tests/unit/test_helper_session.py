@@ -6,7 +6,6 @@ import asyncio
 import contextlib
 import errno
 import fcntl
-import io
 import json
 import os
 import signal
@@ -37,7 +36,7 @@ from zephyr_remote_openocd.helper._process import ChildAcquisition, SupervisedPr
 from zephyr_remote_openocd.helper._session import HelperSession
 from zephyr_remote_openocd.helper.lifecycle import Closed
 from zephyr_remote_openocd.protocol import commands as protocol_commands
-from zephyr_remote_openocd.protocol.commands import encode_release, write_start
+from zephyr_remote_openocd.protocol.commands import encode_release, encode_start
 from zephyr_remote_openocd.protocol.outcome import (
     ChildResult,
     CleanupReport,
@@ -258,9 +257,8 @@ def test_complete_invalid_post_start_input_fails_before_entry(
     coordinated_helper: CoordinatedHelper, suffix: bytes
 ) -> None:
     session, writer, events, _children = coordinated_helper
-    stream = io.BytesIO()
-    write_start(stream, ProcessSpec((sys.executable, "-c", "import signal;signal.pause()")), ())
-    writer.write(stream.getvalue() + suffix)
+    start = encode_start(ProcessSpec((sys.executable, "-c", "import signal;signal.pause()")), ())
+    writer.write(start + suffix)
     _run_terminated(session, fails=True)
     snapshot = _terminal_event(events)
     assert snapshot.outcome.trigger == Trigger.PROTOCOL_FAILURE
@@ -297,9 +295,8 @@ def test_controller_input_is_start_optional_release_eof(
     if fragmented:
         # Write boundaries are not frame boundaries: every frame arrives split.
         monkeypatch.setattr(os, "read", lambda fd, size: read(fd, 1 if fd == control else size))
-    stream = io.BytesIO()
-    write_start(stream, ProcessSpec(_idle_child()), ())
-    writer.write(stream.getvalue() + suffix)
+    start = encode_start(ProcessSpec(_idle_child()), ())
+    writer.write(start + suffix)
     writer.close()
     _run_terminated(session, fails=failure is not None)
     snapshot = _terminal_event(events)
@@ -320,11 +317,12 @@ def test_release_before_readiness_is_not_a_termination_request(
             writer.close()
 
     monkeypatch.setattr(helper_streams, 'emit', emit)
-    stream = io.BytesIO()
-    write_start(stream, ProcessSpec(_idle_child("ready"), required_output_sentinels=("ready",)), ())
+    start = encode_start(
+        ProcessSpec(_idle_child("ready"), required_output_sentinels=("ready",)), ()
+    )
     # RELEASE recognized with START only qualifies a later EOF; the session
     # stays live until that EOF, which is sent only after READY.
-    writer.write(stream.getvalue() + RELEASE)
+    writer.write(start + RELEASE)
     _run_terminated(session, fails=False)
     kinds = [kind for kind, _ in events]
     assert kinds.index("READY") < kinds.index("SESSION_ENDED")
@@ -369,7 +367,7 @@ def test_post_start_input_in_a_later_read_is_protocol_failure(
             writer.write(b"junk\n")
 
     monkeypatch.setattr(helper_streams, 'emit', emit)
-    write_start(writer, ProcessSpec(_idle_child()), ())
+    writer.write(encode_start(ProcessSpec(_idle_child()), ()))
     _run_terminated(session, fails=True)
     snapshot = _terminal_event(events)
     assert snapshot.outcome.trigger == Trigger.PROTOCOL_FAILURE
@@ -382,10 +380,11 @@ def test_missing_required_path_fails_before_attempt_admission(
 ) -> None:
     session, writer, events, children = coordinated_helper
     missing = session.work / "staged" / "missing"
-    write_start(
-        writer,
-        ProcessSpec((sys.executable,), required_paths=(RequiredPathSpec(str(missing), kind),)),
-        (),
+    writer.write(
+        encode_start(
+            ProcessSpec((sys.executable,), required_paths=(RequiredPathSpec(str(missing), kind),)),
+            (),
+        )
     )
     _run_terminated(session, fails=True)
     snapshot = _terminal_event(events)
@@ -413,7 +412,9 @@ def test_completion_policy_controls_readiness(
         if policy == CompletionPolicy.PROCESS_EXIT
         else "import signal;print('ready',flush=True);signal.pause()"
     )
-    write_start(writer, ProcessSpec((sys.executable, "-c", code), completion_policy=policy), ())
+    writer.write(
+        encode_start(ProcessSpec((sys.executable, "-c", code), completion_policy=policy), ())
+    )
     _run_terminated(session, fails=False)
     kinds = [kind for kind, _ in events]
     assert ("READY" in kinds) == (policy == CompletionPolicy.LIVE_SERVER)
@@ -447,7 +448,9 @@ def test_admission_failure_does_not_publish_success_or_repeat_terminal(
             _release(writer)
 
     monkeypatch.setattr(helper_streams, 'emit', emit)
-    write_start(writer, ProcessSpec((sys.executable, "-c", "import signal;signal.pause()")), ())
+    writer.write(
+        encode_start(ProcessSpec((sys.executable, "-c", "import signal;signal.pause()")), ())
+    )
     _run_terminated(session, fails=True)
     assert attempts.count("SESSION_ENDED") == 1
     assert len(children) == (0 if admission in ("SESSION_CREATED", "ATTEMPT") else 1)
@@ -477,7 +480,7 @@ def test_output_admission_failure_terminates_live_session_without_controller_eof
     monkeypatch.setattr(helper_streams, 'emit', emit)
     # The controller keeps its lease open: only the failed output admission
     # can end this live session.
-    write_start(writer, ProcessSpec(_idle_child("first", "second")), ())
+    writer.write(encode_start(ProcessSpec(_idle_child("first", "second")), ()))
     _run_terminated(session, fails=True)
     snapshot = _terminal_event(events)
     assert snapshot.outcome.trigger == Trigger.OUTPUT_FAILURE
@@ -506,18 +509,19 @@ def test_staging_admission_closes_before_child_disposal_signal(
             _release(writer)
 
     monkeypatch.setattr(helper_streams, 'emit', emit)
-    write_start(
-        writer,
-        ProcessSpec(
-            (
-                sys.executable,
-                str(ROOT / "tests/fixtures/closure_witness_child.py"),
-                str(workspace_module.closure_path(session.work)),
-                str(witness),
+    writer.write(
+        encode_start(
+            ProcessSpec(
+                (
+                    sys.executable,
+                    str(ROOT / "tests/fixtures/closure_witness_child.py"),
+                    str(workspace_module.closure_path(session.work)),
+                    str(witness),
+                ),
+                required_output_sentinels=("ZRO_ARMED",),
             ),
-            required_output_sentinels=("ZRO_ARMED",),
-        ),
-        (),
+            (),
+        )
     )
     _run_terminated(session, fails=False)
     assert _terminal_event(events).cleanup.confirmed
@@ -557,8 +561,8 @@ def test_live_readiness_is_published_without_waiting_for_its_deadline(
     monkeypatch.setattr(HelperSession, "_observe_deadline", deadline_after_evidence)
     monkeypatch.setattr(helper_streams, 'emit', emit)
     sentinels = ("ZRO_ARMED",) if evidence == "sentinel" else ()
-    write_start(
-        writer, ProcessSpec(_idle_child(*sentinels), required_output_sentinels=sentinels), ()
+    writer.write(
+        encode_start(ProcessSpec(_idle_child(*sentinels), required_output_sentinels=sentinels), ())
     )
     _run_terminated(session, fails=False)
     assert "READY" in [kind for kind, _ in events]
@@ -595,13 +599,18 @@ def test_output_held_after_group_disposal_ends_at_drain_deadline(
 
     monkeypatch.setattr(HelperSession, "_observe_deadline", expire_drain)
     monkeypatch.setattr(helper_streams, 'emit', emit)
-    write_start(
-        writer,
-        ProcessSpec(
-            (sys.executable, str(ROOT / "tests/fixtures/escaped_output_holder.py"), str(holder)),
-            required_output_sentinels=("ZRO_ARMED",),
-        ),
-        (),
+    writer.write(
+        encode_start(
+            ProcessSpec(
+                (
+                    sys.executable,
+                    str(ROOT / "tests/fixtures/escaped_output_holder.py"),
+                    str(holder),
+                ),
+                required_output_sentinels=("ZRO_ARMED",),
+            ),
+            (),
+        )
     )
     try:
         _run_terminated(session, fails=True)
@@ -666,7 +675,7 @@ def test_exit_observation_without_pidfd_keeps_genuine_status_and_ownership(
         )
     else:
         spec = ProcessSpec(_idle_child("ZRO_ARMED"), required_output_sentinels=("ZRO_ARMED",))
-    write_start(writer, spec, ())
+    writer.write(encode_start(spec, ()))
     _run_terminated(session, fails=completion == "natural-exit")
     snapshot = _terminal_event(events)
     result = snapshot.outcome.child_result
@@ -725,7 +734,9 @@ def test_signal_capture_and_spawn_handoff_keep_cleanup_reachable(
     monkeypatch.setattr(helper_process, 'spawn_child', acquire)
     if boundary == "wrapper_failure":
         monkeypatch.setattr(helper_process, 'SupervisedProcess', construct)
-    write_start(writer, ProcessSpec((sys.executable, "-c", "import signal;signal.pause()")), ())
+    writer.write(
+        encode_start(ProcessSpec((sys.executable, "-c", "import signal;signal.pause()")), ())
+    )
     _run_terminated(session, fails=True)
     snapshot = _terminal_event(events)
     assert snapshot.outcome.primary_failure is not None
@@ -756,7 +767,9 @@ def test_raw_child_return_failure_keeps_disposal_owned(
             raise failure
         return fail_at_return
 
-    write_start(writer, ProcessSpec((sys.executable, "-c", "import signal; signal.pause()")), ())
+    writer.write(
+        encode_start(ProcessSpec((sys.executable, "-c", "import signal; signal.pause()")), ())
+    )
     sys.settrace(fail_at_return)
     try:
         _run_terminated(session, fails=True)
@@ -825,7 +838,9 @@ def test_cleanup_task_setup_failure_still_disposes_child_and_independent_resourc
 
     monkeypatch.setattr(asyncio.TaskGroup, "create_task", create)
     monkeypatch.setattr(helper_streams, 'emit', emit)
-    write_start(writer, ProcessSpec((sys.executable, "-c", "import signal;signal.pause()")), ())
+    writer.write(
+        encode_start(ProcessSpec((sys.executable, "-c", "import signal;signal.pause()")), ())
+    )
     _run_terminated(session, fails=True)
 
     snapshot = _terminal_event(events)
@@ -890,7 +905,9 @@ def test_nested_failure_detail_survives_cleanup_and_wire(
                 _release(writer)
 
         monkeypatch.setattr(helper_streams, 'emit', emit)
-    write_start(writer, ProcessSpec((sys.executable, "-c", "import signal;signal.pause()")), ())
+    writer.write(
+        encode_start(ProcessSpec((sys.executable, "-c", "import signal;signal.pause()")), ())
+    )
     _run_terminated(session, fails=True)
     snapshot = _terminal_event(events)
     detail = snapshot.outcome.primary_failure
@@ -1149,7 +1166,7 @@ def test_child_observer_failure_is_accounted_once_without_blocking_disposal(
     if observer == "stdout" and established == "first":
         # The child ends its own output while it stays alive.
         argv = (sys.executable, str(ROOT / "tests/fixtures/output_closing_child.py"))
-    write_start(writer, ProcessSpec(argv, required_output_sentinels=sentinels), ())
+    writer.write(encode_start(ProcessSpec(argv, required_output_sentinels=sentinels), ()))
     _run_terminated(session, fails=True)
     snapshot = _terminal_event(events)
     outcome = snapshot.outcome
@@ -1201,7 +1218,7 @@ def test_group_cleanup_failure_fails_session_even_when_disposal_is_confirmed(
 
     monkeypatch.setattr(helper_process, "_group_exists", probe_once_failing)
     monkeypatch.setattr(helper_streams, 'emit', emit)
-    write_start(writer, ProcessSpec(_idle_child()), ())
+    writer.write(encode_start(ProcessSpec(_idle_child()), ()))
     _run_terminated(session, fails=True)
     snapshot = _terminal_event(events)
     assert snapshot.cleanup.confirmed and children[0].group_disposed
@@ -1237,7 +1254,9 @@ def test_observer_failure_recorded_before_ready_dispatch_prevents_ready(
         await observe_output(owner, child, name, stream)
 
     monkeypatch.setattr(HelperSession, "_observe_output", output)
-    write_start(writer, ProcessSpec(_idle_child(), required_output_sentinels=("ZRO_ARMED",)), ())
+    writer.write(
+        encode_start(ProcessSpec(_idle_child(), required_output_sentinels=("ZRO_ARMED",)), ())
+    )
     _run_terminated(session, fails=True)
     snapshot = _terminal_event(events)
     assert "READY" not in [kind for kind, _ in events]
@@ -1290,7 +1309,9 @@ def test_lease_loss_recognized_behind_readiness_evidence_prevents_ready(
         await observe_output(owner, child, name, stream)
 
     monkeypatch.setattr(HelperSession, "_observe_output", output)
-    write_start(writer, ProcessSpec(_idle_child(), required_output_sentinels=("ZRO_ARMED",)), ())
+    writer.write(
+        encode_start(ProcessSpec(_idle_child(), required_output_sentinels=("ZRO_ARMED",)), ())
+    )
     _run_terminated(session, fails=True)
     snapshot = _terminal_event(events)
     assert "READY" not in [kind for kind, _ in events]
@@ -1353,7 +1374,7 @@ def test_lease_loss_recognized_around_child_exit_fails_without_eof_dispatch(
         monkeypatch.setattr(HelperSession, "_record_exit", lose_lease_after_commit)
         monkeypatch.setattr(HelperSession, "_begin_child_cleanup", clean_after_recognition)
     child = (sys.executable, str(ROOT / "tests/fixtures/usr1_exit_child.py"), str(status))
-    write_start(writer, ProcessSpec(child, required_output_sentinels=("ZRO_ARMED",)), ())
+    writer.write(encode_start(ProcessSpec(child, required_output_sentinels=("ZRO_ARMED",)), ()))
     _run_terminated(session, fails=True)
     snapshot = _terminal_event(events)
     assert "READY" in [kind for kind, _ in events]
@@ -1595,13 +1616,14 @@ def test_coordinator_failure_with_live_child_still_disposes_it(
 
     monkeypatch.setattr(helper_process.SupervisedProcess, "poll", poll_after_marker)
     monkeypatch.setattr(helper_streams, 'emit', emit)
-    write_start(
-        writer,
-        ProcessSpec(
-            _idle_child("ZRO_ARMED"),
-            required_output_sentinels=("ZRO_ARMED",),
-        ),
-        (),
+    writer.write(
+        encode_start(
+            ProcessSpec(
+                _idle_child("ZRO_ARMED"),
+                required_output_sentinels=("ZRO_ARMED",),
+            ),
+            (),
+        )
     )
     _run_terminated(session, fails=True)
     snapshot = _terminal_event(events)
@@ -1647,7 +1669,9 @@ def test_unconfirmed_disposal_retains_inputs_but_settles_independent_owners(
         monkeypatch.setattr(helper_process.SupervisedProcess, "terminate", uncertain)
     elif cleanup_failure == "relays":
         monkeypatch.setattr(helper_process.SupervisedProcess, "close_streams", retain_streams)
-    write_start(writer, ProcessSpec((sys.executable, "-c", "import signal;signal.pause()")), ())
+    writer.write(
+        encode_start(ProcessSpec((sys.executable, "-c", "import signal;signal.pause()")), ())
+    )
     try:
         _run_terminated(session, fails=True)
         snapshot = _terminal_event(events)
@@ -1690,7 +1714,7 @@ def test_latched_signal_before_commit_is_accounted(
         monkeypatch.setattr(
             helper_session.addresses, "allocate_listener_address", allocate_then_signal
         )
-        write_start(writer, ProcessSpec(_idle_child()), ())
+        writer.write(encode_start(ProcessSpec(_idle_child()), ()))
     elif boundary == "ready":
         poll = helper_process.SupervisedProcess.poll
         injected = False
@@ -1704,7 +1728,9 @@ def test_latched_signal_before_commit_is_accounted(
             return result
 
         monkeypatch.setattr(helper_process.SupervisedProcess, "poll", poll_then_signal)
-        write_start(writer, ProcessSpec((sys.executable, "-c", "import signal;signal.pause()")), ())
+        writer.write(
+            encode_start(ProcessSpec((sys.executable, "-c", "import signal;signal.pause()")), ())
+        )
     else:
         cleanup_report = session._cleanup_report
 
@@ -1745,7 +1771,9 @@ def test_native_signal_delivery_linearizes_after_blocked_commit(
             emit(kind, **fields)
 
         monkeypatch.setattr(helper_streams, 'emit', signal_then_emit)
-        write_start(writer, ProcessSpec((sys.executable, "-c", "import signal;signal.pause()")), ())
+        writer.write(
+            encode_start(ProcessSpec((sys.executable, "-c", "import signal;signal.pause()")), ())
+        )
     else:
         freeze = session.lifecycle.freeze
 
@@ -1980,17 +2008,19 @@ def test_address_lease_cleanup_failure_preserves_startup_failure(
             monkeypatch.setattr(session, "_address_lease", FailedLease())
 
     monkeypatch.setattr(helper_streams, 'emit', emit)
-    write_start(
-        writer,
-        ProcessSpec(
-            (
-                sys.executable,
-                "-c",
-                "import sys;print('Address already in use',file=sys.stderr,flush=True);sys.exit(1)",
+    writer.write(
+        encode_start(
+            ProcessSpec(
+                (
+                    sys.executable,
+                    "-c",
+                    "import sys;print('Address already in use',file=sys.stderr,flush=True);"
+                    "sys.exit(1)",
+                ),
+                required_output_sentinels=("not-ready",),
             ),
-            required_output_sentinels=("not-ready",),
-        ),
-        (),
+            (),
+        )
     )
     try:
         _run_terminated(session, fails=True)

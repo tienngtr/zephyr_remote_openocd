@@ -12,7 +12,7 @@ import ipaddress
 import json
 import math
 from dataclasses import asdict
-from typing import Any, BinaryIO, TypeGuard
+from typing import Any, TypeGuard
 
 from zephyr_remote_openocd.protocol.addresses import LOOPBACK_RANGE
 from zephyr_remote_openocd.protocol.outcome import (
@@ -330,17 +330,6 @@ class EventOrder:
             ) and snapshot.cleanup.child_disposal == "not_acquired":
                 raise ProtocolError("observed child reported as not acquired")
             self.ended = True
-
-
-def is_protocol_version(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value == VERSION
-
-
-def read_message(stream: BinaryIO) -> dict[str, Any]:
-    line = stream.readline(MAX_FRAME_SIZE + 1)
-    if not line:
-        raise EOFError("helper control channel closed")
-    return decode_frame(line)
 
 
 class ControlFrameBuffer:

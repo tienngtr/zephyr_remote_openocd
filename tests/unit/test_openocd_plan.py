@@ -2,7 +2,6 @@
 
 """OpenOCD config lookup through real staged and mapped search trees."""
 
-import io
 import os
 from collections import Counter
 from pathlib import Path, PurePosixPath
@@ -13,7 +12,7 @@ from zephyr_remote_openocd.controller.paths import PathPlanner, PathPlanningErro
 from zephyr_remote_openocd.controller.staging_spec import StagedDirectory, StagedFile
 from zephyr_remote_openocd.openocd.command import plan_openocd_base, plan_support_paths
 from zephyr_remote_openocd.protocol.arguments import materialize_argv, materialize_path
-from zephyr_remote_openocd.protocol.commands import decode_command, write_start
+from zephyr_remote_openocd.protocol.commands import decode_command, encode_start
 from zephyr_remote_openocd.protocol.process import ProcessSpec, RequiredPathSpec
 
 
@@ -39,9 +38,7 @@ def test_search_tree_token_text_remains_literal_through_helper_materialization(
         planner,
         (),
     )
-    stream = io.BytesIO()
-    write_start(
-        stream,
+    start = encode_start(
         ProcessSpec(
             base.argv,
             required_paths=tuple(planner.remote_checks),
@@ -50,7 +47,7 @@ def test_search_tree_token_text_remains_literal_through_helper_materialization(
         ),
         (),
     )
-    request = decode_command(stream.getvalue())
+    request = decode_command(start)
     workspace = "/runtime/{address}/{workspace}/session"
     argv = materialize_argv(
         request.argv,

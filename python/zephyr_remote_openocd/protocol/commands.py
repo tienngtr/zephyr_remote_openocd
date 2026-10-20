@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable
-from typing import Any, BinaryIO, NamedTuple
+from typing import Any, NamedTuple
 
 from zephyr_remote_openocd.protocol.addresses import validate_preferred_address
 from zephyr_remote_openocd.protocol.arguments import ArgumentTemplate, SessionValue, TclWord
@@ -290,16 +290,3 @@ def encode_start(
             for index, template in process.argv_templates
         ],
     )
-
-
-def write_start(
-    stream: BinaryIO,
-    process: ProcessSpec,
-    listeners: Iterable[ListenerSpec],
-    *,
-    preferred_address: str | None = None,
-) -> None:
-    """Write the START frame for a validated process and listener model."""
-
-    stream.write(encode_start(process, listeners, preferred_address=preferred_address))
-    stream.flush()

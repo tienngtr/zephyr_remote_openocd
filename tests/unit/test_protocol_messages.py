@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import io
 from collections.abc import Callable
 
 import pytest
@@ -12,7 +11,7 @@ from zephyr_remote_openocd.protocol.arguments import (
     SessionValue,
     materialize_path,
 )
-from zephyr_remote_openocd.protocol.commands import decode_command, write_start
+from zephyr_remote_openocd.protocol.commands import decode_command, encode_start
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
 from zephyr_remote_openocd.protocol.process import ProcessSpec, RequiredPathSpec
 from zephyr_remote_openocd.protocol.responses import (
@@ -22,10 +21,10 @@ from zephyr_remote_openocd.protocol.responses import (
     validate_staged_response,
 )
 from zephyr_remote_openocd.protocol.wire import (
+    ControlFrameBuffer,
     ProtocolError,
     decode_frame,
     encode_frame,
-    read_message,
     validate_event,
 )
 
@@ -33,34 +32,22 @@ from zephyr_remote_openocd.protocol.wire import (
 class TestProtocol:
     @pytest.mark.parametrize("frame_size", (1_048_576, 1_048_577))
     def test_start_control_frame_size_includes_lf(self, frame_size: int) -> None:
-        template = io.BytesIO()
-        write_start(template, ProcessSpec(("child", "")), ())
-        argument = "x" * (frame_size - len(template.getvalue()))
+        template = encode_start(ProcessSpec(("child", "")), ())
+        argument = "x" * (frame_size - len(template))
         process = ProcessSpec(("child", argument))
-        stream = io.BytesIO()
 
         if frame_size == 1_048_576:
-            write_start(stream, process, ())
-            assert len(stream.getvalue()) == frame_size
-            assert stream.getvalue().endswith(b"\n")
-            assert decode_frame(stream.getvalue())["argv"] == ["child", argument]
+            frame = encode_start(process, ())
+            assert len(frame) == frame_size
+            assert frame.endswith(b"\n")
+            # The helper's incremental framing admits the same boundary frame.
+            frames = ControlFrameBuffer()
+            frames.feed(frame)
+            assert frames.pop_frame() == frame
+            assert decode_command(frame).argv == ("child", argument)
         else:
             with pytest.raises(ProtocolError):
-                write_start(stream, process, ())
-            assert stream.getvalue() == b""
-
-    def test_read_message_consumes_one_frame_at_a_time_and_reports_eof(self) -> None:
-        stream = io.BytesIO(encode_frame("HELLO", value=3) + encode_frame("HELLO", value=4))
-        assert read_message(stream)["value"] == 3
-        assert read_message(stream)["value"] == 4
-        with pytest.raises(EOFError):
-            read_message(stream)
-
-    def test_read_message_rejects_frame_without_lf(self) -> None:
-        frame = encode_frame("HELLO", value=3).rstrip(b"\n")
-
-        with pytest.raises(ProtocolError):
-            read_message(io.BytesIO(frame))
+                encode_start(process, ())
 
     @pytest.mark.parametrize(
         "argv", (None, [], [""], "openocd", ["openocd", None], [1], ["open\0ocd"])
@@ -76,7 +63,6 @@ class TestProtocol:
     def test_start_serializers_use_validated_domain_models(
         self, policy: CompletionPolicy, preferred_address: str | None
     ) -> None:
-        stream = io.BytesIO()
         path_template = ArgumentTemplate((SessionValue.WORKSPACE, "/staged"))
         process = ProcessSpec(
             ("openocd", "--fixed", ""),
@@ -91,13 +77,12 @@ class TestProtocol:
             completion_policy=policy,
         )
         forwards = (ForwardSpec("gdb", 12345, 1), ForwardSpec("rtt", 12346, 65535))
-        write_start(
-            stream,
+        frame = encode_start(
             process,
             (forward.listener for forward in forwards),
             preferred_address=preferred_address,
         )
-        request = decode_command(stream.getvalue())
+        request = decode_command(frame)
         assert request.argv == process.argv
         assert request.environment == process.environment
         assert [
@@ -119,11 +104,9 @@ class TestProtocol:
     @pytest.mark.parametrize(
         "address", ("127.0.0.1", "127.64.0.0", "127.127.255.255", "::1", "bad")
     )
-    def test_start_rejects_invalid_preference_before_writing(self, address: str) -> None:
-        stream = io.BytesIO()
+    def test_start_rejects_invalid_preference_before_encoding(self, address: str) -> None:
         with pytest.raises(ValueError):
-            write_start(stream, ProcessSpec(("child",)), (), preferred_address=address)
-        assert not stream.getvalue()
+            encode_start(ProcessSpec(("child",)), (), preferred_address=address)
 
     def test_helper_event_unknown_fields_are_rejected(self) -> None:
         with pytest.raises(ProtocolError):
