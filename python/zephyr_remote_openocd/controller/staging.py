@@ -52,9 +52,11 @@ def _validate_manifest(
         if destination in paths:
             raise StagingError("duplicate staged destination")
         paths[destination] = "directory" if isinstance(item, StagedDirectory) else "file"
-    for path, kind in paths.items():
-        if kind == "file" and any(path in other.parents for other in paths):
-            raise StagingError(f"staged file ancestor conflict: {path}")
+    files = {path for path, kind in paths.items() if kind == "file"}
+    for path in paths:
+        for parent in path.parents:
+            if parent in files:
+                raise StagingError(f"staged file ancestor conflict: {parent}")
     return (
         tuple(str(item.destination) for item in manifest if isinstance(item, StagedFile)),
         tuple(str(item.destination) for item in manifest if isinstance(item, StagedDirectory)),

@@ -68,10 +68,8 @@ def _validate_archive(
         if target_root.resolve() not in target.resolve().parents:
             raise ValueError(f"archive path escapes staging directory: {relative}")
         validated.append(_ValidatedArchiveMember(member, relative, target, kind))
-    if any(
-        kind == "file" and any(path in other.parents for other in kinds)
-        for path, kind in kinds.items()
-    ):
+    files = {path for path, kind in kinds.items() if kind == "file"}
+    if any(parent in files for path in kinds for parent in path.parents):
         raise ValueError("archive contains a file/directory ancestor conflict")
     return tuple(validated)
 
