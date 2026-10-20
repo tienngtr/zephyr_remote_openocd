@@ -39,22 +39,23 @@ class TestStaging:
             archive.stream.close()
 
     @pytest.mark.parametrize(
-        "entries",
+        "destinations",
         (
-            (
-                StagedFile(Path("a"), PurePosixPath("root")),
-                StagedFile(Path("b"), PurePosixPath("root/child")),
-            ),
-            (
-                StagedDirectory(Path("a"), PurePosixPath("root")),
-                StagedFile(Path("b"), PurePosixPath("root")),
-            ),
+            ((StagedFile, "root"), (StagedFile, "root/child")),
+            ((StagedFile, "root/child"), (StagedFile, "root")),
+            ((StagedDirectory, "root"), (StagedFile, "root")),
         ),
-        ids=("file-ancestor", "file-directory-duplicate"),
+        ids=("file-ancestor", "descendant-first", "file-directory-duplicate"),
     )
-    def test_build_archive_rejects_manifest_conflicts_before_reading_sources(
-        self, entries: tuple[StagedEntry, ...]
+    def test_build_archive_rejects_manifest_conflicts(
+        self, tmp_path: Path, destinations: tuple[tuple[type[StagedEntry], str], ...]
     ) -> None:
+        # Readable sources leave the manifest conflict as the only failure.
+        (tmp_path / "file").write_bytes(b"content")
+        entries = tuple(
+            kind(tmp_path / "file" if kind is StagedFile else tmp_path, PurePosixPath(destination))
+            for kind, destination in destinations
+        )
         with pytest.raises(StagingError):
             build_archive(entries)
 

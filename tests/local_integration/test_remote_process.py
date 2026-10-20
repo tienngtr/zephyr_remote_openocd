@@ -437,7 +437,7 @@ def archive_bytes(members: Iterable[tuple[str, bytes, str | None]]) -> bytes:
         for name, member_type, linkname in members:
             info = tarfile.TarInfo(name)
             info.type = member_type
-            if member_type == tarfile.SYMTYPE:
+            if member_type in (tarfile.SYMTYPE, tarfile.LNKTYPE):
                 assert linkname is not None
                 info.linkname = linkname
             if member_type == tarfile.REGTYPE:
@@ -1197,7 +1197,7 @@ class TestRealProcessHelper:
                     process.kill()
                     process.wait(timeout=10)
 
-    @pytest.mark.parametrize("pause", ("upload", "admission", "extraction"))
+    @pytest.mark.parametrize("pause", ("upload", "admission", "extraction", "report"))
     def test_staging_and_cleanup_share_workspace_lifetime(self, tmp_path: Path, pause: str) -> None:
         helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
         environment = os.environ.copy()
@@ -1209,6 +1209,8 @@ class TestRealProcessHelper:
             member = tarfile.TarInfo("nested/payload")
             member.size = 1
             contents.addfile(member, io.BytesIO(b"x"))
+        # Validation, extraction, and success reporting all run under the lease.
+        admitted = pause in ("extraction", "report")
         release_read, release_write = os.pipe()
         processes = []
         try:
@@ -1237,11 +1239,11 @@ class TestRealProcessHelper:
             staging.stdin.close()
             assert read_line(staging.stderr).strip() == b"PAUSED"
             control.stdin.close()
-            if pause != "extraction":
+            if not admitted:
                 assert control.wait(timeout=30) == 0
                 assert tuple(workspace.parent.iterdir()) == ()
             else:
-                assert read_line(control.stderr).strip() == b"CLEANUP"
+                assert read_line(control.stderr).strip() == b"CLEANUP_BLOCKED"
                 assert workspace.is_dir()
                 # Admission is closed even though the existing stage still owns a lease.
                 late = subprocess.run(
@@ -1255,11 +1257,11 @@ class TestRealProcessHelper:
                 assert late.returncode != 0
                 assert b'STAGED' not in late.stdout
             os.write(release_write, b"x")
-            assert staging.wait(timeout=30) == (0 if pause == "extraction" else 1)
+            assert staging.wait(timeout=30) == (0 if admitted else 1)
             assert control.wait(timeout=30) == 0
             assert staging.stdout is not None
             output = staging.stdout.read()
-            assert (b'STAGED' in output) == (pause == "extraction")
+            assert (b'STAGED' in output) == admitted
             assert tuple(workspace.parent.iterdir()) == ()
         finally:
             os.close(release_read)
@@ -1423,12 +1425,13 @@ class TestRealProcessHelper:
         second = nested / "a second.bin"
         first.write_bytes(b"first")
         second.write_bytes(b"second")
+        # Both manifests keep encounter order, which is deliberately unsorted.
         archive = build_archive(
             (
-                StagedDirectory(tree, PurePosixPath("trees/root")),
                 StagedFile(first, PurePosixPath("trees/root/z first.bin")),
                 StagedDirectory(nested, PurePosixPath("trees/root/nested directory")),
                 StagedFile(second, PurePosixPath("trees/root/nested directory/a second.bin")),
+                StagedDirectory(tree, PurePosixPath("trees/root")),
             )
         )
 
@@ -1453,7 +1456,7 @@ class TestRealProcessHelper:
             "byte_count": len(b"firstsecond"),
             "sha256": hashlib.sha256(b"firstsecond").hexdigest(),
             "files": ["trees/root/z first.bin", "trees/root/nested directory/a second.bin"],
-            "directories": ["trees/root", "trees/root/nested directory"],
+            "directories": ["trees/root/nested directory", "trees/root"],
         }
         assert archive.byte_count == response["byte_count"]
         assert archive.sha256 == response["sha256"]
@@ -1469,7 +1472,9 @@ class TestRealProcessHelper:
             (("../escape", tarfile.REGTYPE, None),),
             (("/absolute", tarfile.DIRTYPE, None),),
             (("../directory", tarfile.DIRTYPE, None),),
+            (("nested/../inside", tarfile.REGTYPE, None),),
             (("nested/link", tarfile.SYMTYPE, "target"),),
+            (("hard", tarfile.LNKTYPE, "valid/payload"),),
             (("fifo", tarfile.FIFOTYPE, None),),
             (
                 ("duplicate", tarfile.REGTYPE, None),
@@ -1478,6 +1483,10 @@ class TestRealProcessHelper:
             (
                 ("file", tarfile.REGTYPE, None),
                 ("file/child", tarfile.DIRTYPE, None),
+            ),
+            (
+                ("file/child", tarfile.REGTYPE, None),
+                ("file", tarfile.REGTYPE, None),
             ),
             (
                 ("directory", tarfile.REGTYPE, None),
@@ -1504,6 +1513,44 @@ class TestRealProcessHelper:
         assert json.loads(result.stdout)["type"] == "ERROR"
         assert tuple((workspace / "staged").iterdir()) == ()
 
+    def test_helper_rejects_destination_resolving_outside_staging_root(
+        self, tmp_path: Path, helper_workspace: Path
+    ) -> None:
+        helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (helper_workspace / "staged" / "valid").symlink_to(outside, target_is_directory=True)
+
+        result = subprocess.run(
+            [sys.executable, str(helper), "stage", str(helper_workspace)],
+            input=archive_bytes((("valid/payload", tarfile.REGTYPE, None),)),
+            capture_output=True,
+            check=False,
+        )
+
+        assert result.returncode != 0
+        assert json.loads(result.stdout)["type"] == "ERROR"
+        assert tuple(outside.iterdir()) == ()
+
+    def test_helper_extraction_failure_reports_no_staged(self, helper_workspace: Path) -> None:
+        helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
+        # The archive is valid; its second file target cannot be opened, so the
+        # failure occurs only after extraction has begun.
+        (helper_workspace / "staged" / "firmware.bin").mkdir()
+
+        result = subprocess.run(
+            [sys.executable, str(helper), "stage", str(helper_workspace)],
+            input=archive_bytes(
+                (("valid/payload", tarfile.REGTYPE, None), ("firmware.bin", tarfile.REGTYPE, None))
+            ),
+            capture_output=True,
+            check=False,
+        )
+
+        assert result.returncode != 0
+        assert json.loads(result.stdout)["type"] == "ERROR"
+        assert (helper_workspace / "staged" / "valid" / "payload").is_file()
+
     @pytest.mark.parametrize(
         "response",
         (
@@ -1513,6 +1560,20 @@ class TestRealProcessHelper:
                 sha256=hashlib.sha256(b"firmware").hexdigest(),
                 files=["firmware.bin"],
                 directories=[],
+            ),
+            encode_frame(
+                "STAGED",
+                byte_count=len(b"firmware"),
+                sha256=hashlib.sha256(b"firmware").hexdigest(),
+                files=[],
+                directories=[],
+            ),
+            encode_frame(
+                "STAGED",
+                byte_count=len(b"firmware"),
+                sha256=hashlib.sha256(b"firmware").hexdigest(),
+                files=["firmware.bin"],
+                directories=["extra"],
             ),
             json.dumps(
                 {
@@ -1526,7 +1587,7 @@ class TestRealProcessHelper:
             + b"\n",
             b"\xff",
         ),
-        ids=("wrong-byte-count", "missing-type", "invalid-utf8"),
+        ids=("wrong-byte-count", "missing-file", "extra-directory", "missing-type", "invalid-utf8"),
     )
     def test_controller_rejects_invalid_staging_confirmation(
         self, monkeypatch: pytest.MonkeyPatch, response: bytes

@@ -3,10 +3,11 @@
 """Run the real helper control or stage command paused at an I/O boundary.
 
 Hooks only pause real boundaries; both roles run the real helper. ``control``
-reports ``CLEANUP`` on stderr when cleanup first requests the exclusive lease.
-``stage WORKSPACE PAUSE RELEASE_FD`` reports ``PAUSED`` at the selected
-``upload``, ``admission``, or ``extraction`` boundary and continues after one
-byte arrives on the release descriptor.
+reports ``CLEANUP_BLOCKED`` on stderr when an active stage first refuses
+cleanup's exclusive lease request. ``stage WORKSPACE PAUSE RELEASE_FD`` reports
+``PAUSED`` at the selected ``upload``, ``admission``, ``extraction``, or
+``report`` boundary and continues after one byte arrives on the release
+descriptor.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from typing import IO, Any
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python"))
+from zephyr_remote_openocd.helper import _streams as streams
 from zephyr_remote_openocd.helper import _workspace as workspace
 from zephyr_remote_openocd.helper.control import control
 from zephyr_remote_openocd.helper.staging import stage
@@ -35,14 +37,17 @@ def run_control() -> None:
 
     def flock(stream: IO[bytes], operation: int) -> None:
         nonlocal announced
-        if (
-            not announced
-            and str(stream.name).endswith(".lease")
-            and operation == fcntl.LOCK_EX | fcntl.LOCK_NB
-        ):
-            announced = True
-            print("CLEANUP", file=sys.stderr, flush=True)
-        original_flock(stream, operation)
+        try:
+            original_flock(stream, operation)
+        except BlockingIOError:
+            if (
+                not announced
+                and str(stream.name).endswith(".lease")
+                and operation == fcntl.LOCK_EX | fcntl.LOCK_NB
+            ):
+                announced = True
+                print("CLEANUP_BLOCKED", file=sys.stderr, flush=True)
+            raise
 
     # Hold helper deadlines steady during the success handshake; OS/asyncio
     # clocks remain real, and process/pipe deadlines are generous backstops.
@@ -73,6 +78,14 @@ def run_stage(target: str, pause: str, release: int) -> None:
                 return open_archive(*args, **kwargs)
 
             patches.enter_context(patch.object(tarfile, "open", pause_then_open))
+        elif pause == "report":
+            emit = streams.emit
+
+            def pause_then_emit(*args: Any, **kwargs: Any) -> None:
+                paused()
+                emit(*args, **kwargs)
+
+            patches.enter_context(patch.object(streams, "emit", pause_then_emit))
         else:
             assert pause == "admission"
             original_flock = fcntl.flock
