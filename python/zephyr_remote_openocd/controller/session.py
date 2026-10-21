@@ -93,7 +93,12 @@ def query_remote_openocd_version(
     argv = executable if isinstance(executable, (tuple, list)) else (executable,)
     encoded = " ".join(shlex.quote(item) for item in argv)
     command = f"python3 {shlex.quote(deployment.path)} openocd-version -- {encoded}"
-    result = ssh_command.run(host, command, timeout=30)
+    try:
+        result = ssh_command.run(host, command, timeout=30)
+    except subprocess.TimeoutExpired as error:
+        raise SessionError(
+            f"remote OpenOCD version query timed out after {error.timeout:g} seconds"
+        ) from error
     if result.returncode:
         detail = _one_shot_failure_detail(result.stdout, result.stderr)
         raise SessionError(f"remote OpenOCD version query failed ({result.returncode}): " + detail)
@@ -234,9 +239,14 @@ class SessionController:
             # Staging writes into the helper's workspace: account facts the
             # reader recorded while the archive was built.
             self._authority.admit_helper_effect("staging", admit_effect)
-            result = self.plan.ssh_command.run_stream(
-                self.plan.host, command, archive.stream, timeout=60
-            )
+            try:
+                result = self.plan.ssh_command.run_stream(
+                    self.plan.host, command, archive.stream, timeout=60
+                )
+            except subprocess.TimeoutExpired as error:
+                raise SessionError(
+                    f"remote staging timed out after {error.timeout:g} seconds"
+                ) from error
         except BaseException as error:
             primary = error
             raise

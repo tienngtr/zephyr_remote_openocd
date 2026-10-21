@@ -148,6 +148,15 @@ Install a remote `python3` version 3.12 or newer that is available to non-intera
 SSH commands, then repeat the two remote prerequisite checks from the README
 with the same SSH options.
 
+**A preparation step reports that it timed out.** Remote-home resolution,
+helper deployment, and the OpenOCD version query each allow 30 seconds; staging
+allows 60 seconds. These limits are fixed. A timeout usually means SSH could
+not connect or authenticate promptly, for example an unreachable host or an
+unanswered prompt, so repeat the README's remote prerequisite checks with the
+same SSH options. For a staging timeout over a slow link, map large stable
+resources that already exist remotely, such as an OpenOCD scripts tree, through
+`path_mappings` so they are not copied. Use `west -v` to see the full traceback.
+
 **The runner reports `remote OpenOCD version query failed`.** Run the configured
 `openocd_command` with `--version` through the configured SSH command. Correct
 the executable path, permissions, fixed arguments, or remote shared-library

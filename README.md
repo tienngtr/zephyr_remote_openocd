@@ -4,8 +4,9 @@ This Zephyr module provides a west runner that runs OpenOCD on a remote Linux
 host while keeping west, GDB, and client tools on the local machine. It accesses
 the remote host through SSH.
 
-The project is under active development and has not produced a release. Its
-current integration target is the Zephyr 4.4 release series (4.4.x).
+The product version is recorded in [`VERSION`](VERSION), and releases are
+tagged `v<version>`, for example `v0.1.0`. Its integration target is the Zephyr
+4.4 release series (4.4.x).
 
 ## Prerequisites and support
 
@@ -28,6 +29,10 @@ the existing `~/zephyrproject` workspace:
 cd ~/zephyrproject
 git clone https://github.com/tienngtr/zephyr_remote_openocd.git
 ```
+
+To use a release, check out its tag in that clone, or extract its source
+archive from the repository's GitHub releases page in place of cloning. Git is
+not required at run time.
 
 Then run the setup script:
 

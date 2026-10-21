@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import io
 import shlex
+import subprocess
 import zipfile
 from dataclasses import dataclass
 from importlib.resources import files
@@ -69,7 +70,12 @@ def build_helper_bundle() -> bytes:
 def deploy_helper(ssh: SshCommand, host: str, *, source: bytes | None = None) -> DeploymentResult:
     content = build_helper_bundle() if source is None else source
     program = bootstrap_program()
-    result = ssh.run(host, "python3 -c " + shlex.quote(program), input_data=content, timeout=30)
+    try:
+        result = ssh.run(host, "python3 -c " + shlex.quote(program), input_data=content, timeout=30)
+    except subprocess.TimeoutExpired as error:
+        raise DeploymentError(
+            f"helper deployment timed out after {error.timeout:g} seconds"
+        ) from error
     if result.returncode:
         diagnostic = result.stderr.decode("utf-8", "replace").strip()
         raise DeploymentError(f"helper deployment failed ({result.returncode}): {diagnostic}")

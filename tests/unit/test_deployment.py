@@ -112,6 +112,27 @@ def test_deployment_reports_nonzero_ssh_status_and_diagnostic() -> None:
     assert "permission denied" in str(error.value)
 
 
+def test_deployment_timeout_reports_step_without_bootstrap_source() -> None:
+    class StalledDeployment(DeploymentReply):
+        @override
+        def run(
+            self,
+            host: str,
+            remote_command: str,
+            *,
+            input_data: bytes | None = None,
+            timeout: float = 15,
+        ) -> subprocess.CompletedProcess[bytes]:
+            raise subprocess.TimeoutExpired(("ssh", host, remote_command), timeout)
+
+    with pytest.raises(deploy_module.DeploymentError) as error:
+        deploy_module.deploy_helper(StalledDeployment(0, b"", b""), "host", source=b"helper")
+
+    assert "helper deployment timed out after 30 seconds" in str(error.value)
+    assert deploy_module.bootstrap_program() not in str(error.value)
+    assert isinstance(error.value.__cause__, subprocess.TimeoutExpired)
+
+
 def test_deployment_rejects_digest_that_differs_from_source() -> None:
     source = b"helper source"
     different_source_digest = hashlib.sha256(b"different helper source").hexdigest()

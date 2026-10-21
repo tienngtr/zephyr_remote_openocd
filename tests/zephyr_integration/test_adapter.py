@@ -425,6 +425,30 @@ def test_remote_home_resolution_reports_ssh_failure(
     assert "Permission denied" in message
 
 
+def test_remote_home_resolution_reports_timeout(
+    runner_api: RunnerApi, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from zephyr_remote_openocd.zephyr44 import _runner as runner_module
+
+    selected = ResolvedRemote(
+        "lab",
+        tmp_path / "config.yaml",
+        "host",
+        ("~/openocd",),
+        ("ssh",),
+        (),
+        (),
+    )
+    monkeypatch.setattr(
+        SshCommand,
+        "run",
+        Mock(side_effect=subprocess.TimeoutExpired(["ssh", "host"], 30)),
+    )
+
+    with pytest.raises(ConfigError, match="remote home for lab: timed out after 30 seconds"):
+        runner_module.prepare_remote_paths(selected)
+
+
 @pytest.mark.parametrize(
     "output", (b'"relative"\n', b"null\n", b"not-json\n", b'"/bad\\u0000path"')
 )

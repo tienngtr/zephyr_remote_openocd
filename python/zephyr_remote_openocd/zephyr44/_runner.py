@@ -487,7 +487,13 @@ def prepare_remote_paths(selected: ResolvedRemote) -> ResolvedRemote:
         return selected
     ssh = SshCommand(selected.ssh_command)
     code = "import json,pathlib; print(json.dumps(str(pathlib.Path.home())), flush=True)"
-    result = ssh.run(selected.ssh_host, "python3 -c " + shlex.quote(code), timeout=30)
+    try:
+        result = ssh.run(selected.ssh_host, "python3 -c " + shlex.quote(code), timeout=30)
+    except subprocess.TimeoutExpired as error:
+        raise ConfigError(
+            f"cannot resolve remote home for {selected.name}: "
+            f"timed out after {error.timeout:g} seconds"
+        ) from error
     if result.returncode:
         detail = (result.stderr or result.stdout).decode("utf-8", "replace").strip()
         raise ConfigError(f"cannot resolve remote home for {selected.name}: {detail}")

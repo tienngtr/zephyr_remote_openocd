@@ -1309,6 +1309,15 @@ helper validation. Concurrent sessions SHALL NOT share an active address lease.
 User documentation SHALL explain that externally retained forwards may require
 user cleanup.
 
+### REQ-FUNC-SSH-013
+
+When a finite SSH invocation used to prepare an operation, such as remote-home
+resolution, helper deployment, the standalone OpenOCD version query, or
+staging, exceeds its local timeout, the runner SHALL fail the operation with an
+actionable runner error identifying the step and the timeout rather than an
+unhandled exception traceback. The timeout SHALL NOT be reported as evidence of
+remote completion or cleanup.
+
 ---
 
 ## 21. Concurrent Users and Probe Contention

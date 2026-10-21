@@ -24,7 +24,9 @@ pull request:
   affected hardware tests when suitable hardware is available.
 - Before a release/tag, or when claiming full external validation, run all
   applicable external suites with `--require-external-tests`, confirm there are
-  no unexpected skips, and inspect cleanup before reusing targets.
+  no unexpected skips, and inspect cleanup before reusing targets. Tag the
+  release commit on `main` as `v` followed by the contents of `VERSION`, and
+  publish its GitHub release from that tag.
 - PR descriptions should state what validation was performed and explicitly
   mention relevant external tests that could not be run.
 - Never put credentials, SSH host identities, probe serials, serial-device

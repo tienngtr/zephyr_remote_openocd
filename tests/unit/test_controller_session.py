@@ -198,7 +198,33 @@ def test_version_query_rejects_failed_or_malformed_response(
     assert all(detail in str(raised.value) for detail in diagnostics)
 
 
-def test_staging_rejects_response_without_lf(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_version_query_timeout_is_a_session_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    class StalledCommand(SshCommand):
+        @override
+        def run(
+            self,
+            host: str,
+            remote_command: str,
+            *,
+            input_data: bytes | None = None,
+            timeout: float = 15,
+        ) -> subprocess.CompletedProcess[bytes]:
+            raise subprocess.TimeoutExpired(remote_command, timeout)
+
+    monkeypatch.setattr(
+        session_module,
+        "deploy_helper",
+        lambda _ssh_command, _host: DeploymentResult("/helper.py", "digest", False),
+    )
+    with pytest.raises(SessionError, match="version query timed out after 30 seconds") as raised:
+        query_remote_openocd_version(StalledCommand(), "target", ("openocd",))
+    assert isinstance(raised.value.__cause__, subprocess.TimeoutExpired)
+
+
+@pytest.mark.parametrize("failure", ("missing-lf", "timeout"))
+def test_invalid_or_timed_out_staging_prevents_start(
+    monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
     response = encode_frame(
         "STAGED", byte_count=0, sha256=hashlib.sha256(b"").hexdigest(), files=[], directories=[]
     ).rstrip(b"\n")
@@ -209,7 +235,9 @@ def test_staging_rejects_response_without_lf(monkeypatch: pytest.MonkeyPatch) ->
         def run_stream(
             self, host: str, remote_command: str, stream: BinaryIO, *, timeout: float = 60
         ) -> subprocess.CompletedProcess[bytes]:
-            del host, stream, timeout
+            del host, stream
+            if failure == "timeout":
+                raise subprocess.TimeoutExpired(remote_command, timeout)
             return subprocess.CompletedProcess(remote_command, 0, response, b"")
 
     class Helper(_PreparedHelper):
@@ -254,7 +282,11 @@ def test_staging_rejects_response_without_lf(monkeypatch: pytest.MonkeyPatch) ->
         session = SessionController.prepare(request)
         with cleanup_on_exit(session.close):
             session.acquire()
-    assert isinstance(raised.value.__cause__, ProtocolError)
+    if failure == "timeout":
+        assert isinstance(raised.value.__cause__, subprocess.TimeoutExpired)
+        assert "staging timed out after 60 seconds" in str(raised.value)
+    else:
+        assert isinstance(raised.value.__cause__, ProtocolError)
 
 
 def test_closed_session_exposes_only_cached_openocd_result(monkeypatch: pytest.MonkeyPatch) -> None:
