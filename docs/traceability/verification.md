@@ -4,13 +4,13 @@ This matrix maps SRS requirements to maintained verification evidence, including
 automated tests, hardware tests, documentation, and design review. A row may
 list several requirements, and a requirement may occur in several rows; this
 is intentional many-to-many traceability. Coverage statuses describe maintained
-evidence; the execution results below record selected-environment validation.
+evidence, not the results of any particular run.
 
 Every SRS requirement is listed in either the implementation coverage matrix or
 [controller-lease lifecycle](#controller-lease-lifecycle) matrix. Production
 implements Protocol v1. The matrices identify maintained evidence at the actual
 production boundaries; [integration qualification](#integration-qualification)
-records selected external execution.
+describes the external qualification boundaries.
 Passing a pure lifecycle test alone does not qualify its physical integration.
 **Documented** records user documentation, **Failing** a maintained test failing
 in this environment, and **Unverified** a lack of maintained evidence.
@@ -111,7 +111,7 @@ preservation. SSH and hardware callers consume these shared cleanup helpers.
 | `REQ-FUNC-OPT-007` | Reviewed | This is an explicit non-goal. [Literal/template design](../architecture/SAD.md) and [`plan_openocd_base()`](../../python/zephyr_remote_openocd/openocd/command.py) retain user-written Tcl as literal arguments, applying path translation only to structured runner-owned paths. [`test_runner_logs_effective_remote_argv`](../../tests/zephyr_integration/test_adapter.py) supplies user Tcl containing workspace/address token text and verifies it remains unchanged through planning and helper materialization. No arbitrary-Tcl path translation acceptance test is required. |
 | `REQ-FUNC-SCOPE-007` | Reviewed | [Zephyr compatibility boundary](../architecture/SAD.md#17-zephyr-compatibility-boundary) and production review of [controller](../../python/zephyr_remote_openocd/controller/), [helper](../../python/zephyr_remote_openocd/helper/), [protocol](../../python/zephyr_remote_openocd/protocol/), and [OpenOCD planning](../../python/zephyr_remote_openocd/openocd/) and [`zephyr44/_runner.py`](../../python/zephyr_remote_openocd/zephyr44/_runner.py) confirm generic command, path, service, and lifecycle behavior with Zephyr coupling confined to its adapter. Board recipes and serial observation reside in the external test inventory/harness. This absence-of-board-specific-policy constraint is design-review evidence, not a claim of exhaustive automated detection. |
 
-Selected-environment execution and board-facing hardware results are recorded in
+External and board-facing hardware qualification boundaries are described in
 [integration qualification](#integration-qualification). A maintained test alone
 does not establish a current acceptance result.
 
@@ -161,7 +161,8 @@ same-read post-START rejection; the general wire codec covers per-frame bounds.
 
 ### Integration qualification
 
-The selected external environments qualify these maintained physical boundaries:
+When executed under the qualification procedure below, the selected external
+environments exercise these maintained physical boundaries:
 
 | Boundary | Maintained qualification evidence |
 | --- | --- |
@@ -170,29 +171,16 @@ The selected external environments qualify these maintained physical boundaries:
 | Configured environment and path mapping | Both staged and mapped variants of [`test_remote_openocd_config_consumes_forwarded_environment`](../../tests/ssh_integration/test_ssh_integration.py) run configured OpenOCD against a Tcl configuration whose path contains spaces. It consumes an allow-listed variable, then exits under the explicit process-exit policy. `PathPlanner` supplies the real staging/template or mapped-path checks. |
 | Attach with simultaneous RTT | The debug and attach variants of [`test_gdb_rtt_server_keeps_gdb_active`](../../tests/hardware/test_real_rtt.py) retain a live GDB client while RTT completes a bidirectional round trip. Attach uses a separately programmed precondition image; the attach operation does not load firmware. The existing adapter regression checks that command distinction. |
 
-The most recent recorded selected-environment qualification results were
-captured on 2026-10-11 and last updated in commit `10d3731`. They are a
-historical execution record: test counts reflect the suite at that time and do
-not include tests added later.
+External qualification collects each selection first and runs it with
+`--require-external-tests`; an unexpected skip is a qualification failure. SSH
+and destructive hardware nodes run serially. Read-only local/remote process,
+forward, and workspace inspection at external layer boundaries must find no
+owned residue before target reuse. Test-owned revision and mapped-directory
+cleanup is also asserted by the maintained callers. Workspace reclamation is
+not an external profile; its protection of active and unconfirmed inputs is
+covered by the unit workspace tests.
 
-| Layer | Result |
-| --- | --- |
-| Ordinary unit and local-process suite, Python 3.14 | 798 passed |
-| Ordinary unit and local-process suite, Python 3.12 | 798 passed |
-| Zephyr 4.4 integration | 116 passed |
-| Configured SSH integration | 16 passed |
-| Board-facing hardware profiles | 15 passed |
-| Repository static checks | Passed |
-
-External selections were collected first and executed with
-`--require-external-tests`, with no skips. SSH and destructive hardware nodes
-ran serially. Read-only local/remote process, forward, and workspace inspection
-at external layer boundaries found no new owned residue before reuse. Test-owned revision
-and mapped-directory cleanup is also asserted by the maintained callers.
-Workspace reclamation is no longer an external profile; its protection of
-active and unconfirmed inputs is qualified by the unit workspace tests.
-
-Hardware execution covers fresh-output flash, debug load/continue/breakpoint and
+Hardware profiles cover fresh-output flash, debug load/continue/breakpoint and
 instruction inspection, attach without load, debugserver with independent GDB
 and configured auxiliary services, standalone and simultaneous RTT, and direct
 semihosting stdout/stderr relay with normal completion. Zephyr coverage includes
@@ -202,12 +190,12 @@ connection-sharing master survival, controller-channel loss, and forwarding
 failure. Required fault histories remain covered at the smallest production
 boundary by the ordinary tests listed above.
 
-Hardware results qualify board-facing operation semantics, not every
-content-addressed helper revision. The deployed wire and storage boundaries are
-qualified by the SSH and local-process tests.
+Executed hardware qualification covers board-facing operation semantics, not
+every content-addressed helper revision. The deployed wire and storage
+boundaries are covered by the SSH and local-process tests.
 
-These results qualify the selected environments and available profiles. They
-do not establish every board/operation combination, actual same-probe physical
+External qualification covers only the selected environments and available
+profiles. It does not establish every board/operation combination, actual same-probe physical
 channel acquisition/contention, or continued interactive hardware GDB use after
 Ctrl-C. Synthetic children and controlled adapter clients do not qualify those
 hardware interactions. The combined one-shot acquisition/full-writer/drain

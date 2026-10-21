@@ -3135,6 +3135,6 @@ cancellation ledger.
 
 Already-recorded fatal observation accounting, native-signal commit boundaries,
 physical settlement evidence, and local primary-failure arbitration require
-regression coverage at their production boundaries. Selected-profile results
-and remaining qualification limits are recorded in
+regression coverage at their production boundaries. External qualification
+boundaries and remaining limits are described in
 [verification.md](../traceability/verification.md#integration-qualification).
