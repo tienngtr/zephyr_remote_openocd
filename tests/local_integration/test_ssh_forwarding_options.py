@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 from zephyr_remote_openocd.controller._forwarding import ForwardManager
-from zephyr_remote_openocd.controller._ssh import ManagedSshProcess, SshCommand
+from zephyr_remote_openocd.controller._ssh import SshCommand
 from zephyr_remote_openocd.controller.authority import SessionError
 from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
 
@@ -31,9 +32,17 @@ def test_forward_manager_preserves_effective_forwarding_requirements(
     executable = shutil.which("ssh")
     if executable is None:
         pytest.skip("OpenSSH client is not installed")
-    # Exercise the configured executable path without assuming its basename.
+    # The configured client records the argv it is executed with, so capture
+    # happens at the real exec boundary after the production launcher.
+    recorded = tmp_path / "argv.json"
     alternate = tmp_path / "custom-ssh"
-    alternate.symlink_to(executable)
+    alternate.write_text(
+        f"#!{sys.executable}\n"
+        "import json, sys\n"
+        f"open({str(recorded)!r}, 'w').write(json.dumps(sys.argv[1:]))\n"
+        "sys.exit(255)\n"
+    )
+    alternate.chmod(0o755)
     config = tmp_path / "ssh_config"
     config.write_text(
         "Host *\n    ExitOnForwardFailure no\n    ClearAllForwardings yes\n    ConnectTimeout 17\n",
@@ -42,18 +51,12 @@ def test_forward_manager_preserves_effective_forwarding_requirements(
     ssh = SshCommand((str(alternate), "-F", str(config), *fixed_args))
     forward = ForwardSpec("gdb", 32100, 3333)
     manager = ForwardManager(ssh, "example.invalid")
-    # Capture the SSH argv the real manager and transport hand to acquisition.
-    # No process is acquired, so no lifecycle double or readiness bypass is needed.
-    with (
-        patch.object(
-            ManagedSshProcess, "acquire", autospec=True, side_effect=OSError("capture argv")
-        ) as acquire,
-        pytest.raises(SessionError),
-    ):
+    with pytest.raises(SessionError):
         manager.start((forward,), "127.64.0.1")
-    argv = acquire.call_args.args[1]
+    # Real OpenSSH evaluates the exact arguments the configured client received.
+    arguments = json.loads(recorded.read_text(encoding="utf-8"))
     result = subprocess.run(
-        [argv[0], "-G", *argv[1:]],
+        [executable, "-G", *arguments],
         capture_output=True,
         text=True,
         check=True,
