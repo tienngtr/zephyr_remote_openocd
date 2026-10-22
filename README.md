@@ -21,6 +21,13 @@ board-support files run remotely; west, GDB, and client tools remain local.
 
 ## Quick start
 
+> [!IMPORTANT]
+> Complete these steps in order. The `remote_openocd` runner is available only
+> in a build directory that was configured **after** the module was activated in
+> [step 3](#3-activate-the-module).
+
+### 1. Obtain the module
+
 Place a checkout, a filesystem copy, or an extracted archive of this module at
 any persistent, user-accessible path. For example, you can clone the module into
 the existing `~/zephyrproject` workspace:
@@ -34,14 +41,21 @@ To use a release, check out its tag in that clone, or extract its source
 archive from the repository's GitHub releases page in place of cloning. Git is
 not required at run time.
 
-Then run the setup script:
+### 2. Run the setup script
 
 ```sh
 python3 zephyr_remote_openocd/scripts/user/setup.py
 ```
 
-Activate the module by adding its path to the `EXTRA_ZEPHYR_MODULES` environment
-variable:
+Setup creates `~/.config/zephyr_remote_openocd/config.yaml` without overwriting
+an existing file. It also reports the module path and diagnoses required Python
+dependencies. If it reports a dependency warning, use the supported Zephyr
+4.4.x environment's configured Python environment; there is no separate
+product installation step.
+
+### 3. Activate the module
+
+Add the module path to the `EXTRA_ZEPHYR_MODULES` environment variable:
 
 ```sh
 export EXTRA_ZEPHYR_MODULES="${EXTRA_ZEPHYR_MODULES:+$EXTRA_ZEPHYR_MODULES;}$HOME/zephyrproject/zephyr_remote_openocd"
@@ -52,11 +66,10 @@ To avoid entering the command manually, put the `export` command above in
 [Using `zephyrrc` files](https://docs.zephyrproject.org/4.4.0/develop/env_vars.html#option-3-using-zephyrrc-files)
 in the Zephyr documentation for more details.
 
-Setup creates `~/.config/zephyr_remote_openocd/config.yaml` without overwriting
-an existing file. It also reports the module path and diagnoses required Python
-dependencies. If it reports a dependency warning, use the supported Zephyr
-4.4.x environment's configured Python environment; there is no separate
-product installation step.
+**Verify:** `echo "$EXTRA_ZEPHYR_MODULES"` includes the module path in the
+shell that will run `west`.
+
+### 4. Configure the remote
 
 The generated configuration contains a safe, unselected `lab` remote. Replace
 its SSH host and remote OpenOCD path:
@@ -75,6 +88,8 @@ remotes:
     path_mappings: {}
 ```
 
+### 5. Validate the configuration and remote prerequisites
+
 Validate syntax and effective settings without contacting the remote:
 
 ```sh
@@ -91,55 +106,49 @@ ssh replace-with-ssh-host-or-alias \
   --version
 ```
 
-Both commands must succeed, and the first must report Python 3.12 or newer. If
-your SSH command needs fixed options, configure `ssh_command` and run the
+**Verify:** both commands succeed, and the first reports Python 3.12 or newer.
+
+If your SSH command needs fixed options, configure `ssh_command` and run the
 equivalent check with those options. Custom wrappers must also support the
 [stdin half-close required for session cleanup](docs/user/configuration.md#custom-ssh-arguments).
 
+### 6. Configure the build
+
 The runner is board-agnostic and works with builds that expose Zephyr's built-in
-`openocd` runner. `stm32f746g_disco` is a board that supports the `openocd`
-runner and will be used together with `samples/hello_world` to provide a
-concrete example. From a Zephyr workspace, run:
+`openocd` runner. This example uses `samples/hello_world` on
+`stm32f746g_disco`, a board that supports the `openocd` runner. From a Zephyr
+workspace, build it:
 
 ```sh
 west build -b stm32f746g_disco samples/hello_world
 ```
 
-For this fresh build, the normal configuration step adds `remote_openocd` to
-the available runners. If the build directory was configured before this
-module was activated in `EXTRA_ZEPHYR_MODULES`, explicitly reconfigure it
-without making it pristine:
+Then reconfigure the build directory so that it registers `remote_openocd`:
 
 ```sh
 west build --cmake-only
 ```
 
-In either case, you should see both `openocd` and `remote_openocd` listed:
+> [!WARNING]
+> A build directory configured before step 3 does not register
+> `remote_openocd`, and an ordinary incremental `west build` does not add it.
+> Always run `west build --cmake-only` for an existing build directory. It is
+> harmless for a fresh build, and a pristine build is not required.
 
-```sh
-west flash --context
-```
+**Verify:** `west flash --context` lists both `openocd` and `remote_openocd`.
+If `remote_openocd` is missing, confirm step 3 in the current shell and repeat
+this step.
 
-Now run:
+### 7. Flash the board
 
 ```sh
 west flash -r remote_openocd --remote lab
 ```
 
-to flash the board through the remote OpenOCD. Uncomment `default_remote: lab`
-in the configuration if you want to omit `--remote lab` later.
-
-For OpenOCD-capable builds, activating this module makes `default_runner`
-select the default flash and debug runner. The generated configuration selects
-local `openocd`, which can override a board's original default runner, such as
-`jlink` or `stm32cubeprogrammer`. Other available runners remain selectable
-with `-r`. Once this module is already configured into the build, update
-`default_runner` and run `west flash` or
-`west debug` normally; their pre-run incremental build refreshes the generated
-runner configuration. An ordinary `west build` remains an explicit
-regeneration option. A pristine build or full firmware compile is not required
-solely for this change, while `--no-rebuild` intentionally consumes existing
-generated state.
+Uncomment `default_remote: lab` in the configuration if you want to omit
+`--remote lab` later. To make `remote_openocd` the default flash and debug
+runner, see the `default_runner` description in
+[Configuration](docs/user/configuration.md#quick-start).
 
 ## How it works
 
