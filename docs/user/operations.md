@@ -54,6 +54,9 @@ programming it. A remote OpenOCD flash failure fails the command.
 
 ### Erase and verify options
 
+`--erase` cannot be combined with `--verify-only`, because a verify-only run
+never erases. `remote_openocd` rejects that combination for any image type.
+
 Some erase and verify requests need an OpenOCD command for the image type.
 Supply it with `--cmd-erase` or `--cmd-verify`, or let the board provide it:
 
@@ -62,9 +65,10 @@ Supply it with `--cmd-erase` or `--cmd-verify`, or let the board provide it:
 | `--erase` | HEX or BIN | Erase command (`--cmd-erase`) |
 | `--verify` or `--verify-only` | BIN | Verify command (`--cmd-verify`) |
 
-If the required command is missing, `remote_openocd` fails before contacting
-the remote. The built-in `openocd` runner instead reports success without
-performing the request; for `--erase`, it does not program the target at all.
+In each of these cases, `remote_openocd` fails before contacting the remote.
+The built-in `openocd` runner instead reports success: it ignores `--erase`
+with `--verify-only`, skips a verification that has no verify command, and
+without an erase command does not program the target at all.
 
 ## Debug
 

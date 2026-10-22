@@ -98,6 +98,8 @@ def _image_source(inputs: FlashInputs, kind: str) -> str | None:
 
 
 def _validate_flash_options(inputs: FlashInputs, kind: str) -> None:
+    if inputs.erase and inputs.verify_only:
+        raise FlashPlanError("--erase cannot be combined with --verify-only")
     if kind == "bin" and (not inputs.load_command or inputs.flash_address is None):
         raise FlashPlanError("cannot flash BIN; load command and flash address are required")
     if kind == "bin" and (inputs.verify or inputs.verify_only) and not inputs.verify_command:
@@ -115,7 +117,7 @@ def validate_flash_inputs(inputs: FlashInputs) -> None:
 
 def _plan_erase_commands(inputs: FlashInputs, kind: str) -> tuple[str, ...]:
     """Resolve explicit erase commands only for operations that execute them."""
-    if not inputs.erase or inputs.verify_only or kind == "elf":
+    if not inputs.erase or kind == "elf":
         return ()
     if not inputs.erase_commands:
         raise FlashPlanError("erase requested but the target supplies no erase command")

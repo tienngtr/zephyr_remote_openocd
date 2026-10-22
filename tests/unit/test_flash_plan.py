@@ -87,6 +87,43 @@ class TestFlashPlanning:
         assert not planner.staged_files
         assert not planner.remote_checks
 
+    @pytest.mark.parametrize("kind", ("hex", "bin", "elf"))
+    @pytest.mark.parametrize("erase_commands", ((), ("target_erase",)))
+    def test_erase_with_verify_only_fails_before_planning_paths(
+        self, tmp_path: Path, kind: str, erase_commands: tuple[str, ...]
+    ) -> None:
+        image = tmp_path / f"firmware.{kind}"
+        image.write_bytes(
+            elf_memory_witness_bytes(entry_point=ELF_ENTRY_POINT)
+            if kind == "elf"
+            else b":00000001FF\n"
+        )
+        planner = PathPlanner(())
+        inputs = FlashInputs(
+            executable="openocd",
+            image_type=kind,
+            file=str(image),
+            elf_file=None,
+            hex_file=str(image),
+            bin_file=None,
+            search_paths=(),
+            config_files=(),
+            load_command="program",
+            verify_command="verify_image",
+            flash_address="0x8000000",
+            erase_commands=erase_commands,
+            verify_only=True,
+            erase=True,
+        )
+
+        with pytest.raises(flash_module.FlashPlanError) as error:
+            build_flash_plan(inputs, planner)
+
+        # Not the missing-erase-command failure: verify-only never erases.
+        assert "verify-only" in str(error.value).lower()
+        assert not planner.staged_files
+        assert not planner.remote_checks
+
     @pytest.mark.parametrize(("verify", "verify_only"), ((True, False), (False, True)))
     def test_bin_verification_without_verify_command_fails_before_planning_paths(
         self, tmp_path: Path, verify: bool, verify_only: bool
@@ -203,10 +240,7 @@ class TestFlashPlanning:
         assert not load_command.startswith("flash write_image erase ")
 
     @pytest.mark.parametrize("kind", ("hex", "bin", "elf"))
-    @pytest.mark.parametrize("erase_commands", ((), ("target_erase",)))
-    def test_verify_only_plan_omits_load_and_erase_and_keeps_verify(
-        self, tmp_path: Path, kind: str, erase_commands: tuple[str, ...]
-    ) -> None:
+    def test_verify_only_plan_omits_load_and_keeps_verify(self, tmp_path: Path, kind: str) -> None:
         image = tmp_path / f"firmware.{kind}"
         image.write_bytes(
             elf_memory_witness_bytes(entry_point=ELF_ENTRY_POINT)
@@ -228,8 +262,6 @@ class TestFlashPlanning:
                 verify_command="verify_image",
                 flash_address="0x8000000",
                 verify_only=True,
-                erase=True,
-                erase_commands=erase_commands,
             ),
             PathPlanner(()),
         )
@@ -242,7 +274,6 @@ class TestFlashPlanning:
         assert any(command.startswith("verify_image ") for command in commands)
         assert not any(command.startswith("flash write_image ") for command in commands)
         assert not any(command.startswith("load_image ") for command in commands)
-        assert "target_erase" not in commands
 
     @pytest.mark.parametrize("erase_commands", ((), ("target_erase",)))
     def test_elf_plan_ignores_erase_and_resumes_before_shutdown(

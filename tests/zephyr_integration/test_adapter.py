@@ -1707,6 +1707,17 @@ def test_commands_match_built_in_runner(
             ["--cmd-load=flash write_image", "--flash-address=0x20000000", "--verify-only"],
             id="bin-verify-without-verify-command",
         ),
+        pytest.param(
+            "HEX",
+            [
+                "--cmd-load=flash write_image erase",
+                "--cmd-verify=verify_image",
+                "--cmd-erase=flash erase_sector 0 0 last",
+                "--erase",
+                "--verify-only",
+            ],
+            id="erase-with-verify-only",
+        ),
     ),
 )
 def test_live_flash_with_unperformable_request_fails_without_remote_work(
@@ -1750,7 +1761,8 @@ def test_live_flash_with_unperformable_request_fails_without_remote_work(
     runner = remote.create(cfg, parser_for(remote).parse_args(argv))
 
     # Deliberately stricter than Zephyr 4.4 (REQ-FUNC-OPT-008), which returns
-    # success without performing the requested erase or verification.
+    # success without performing the requested erase or verification, and
+    # ignores --erase with --verify-only.
     with pytest.raises(RuntimeError) as raised:
         runner.run("flash")
     assert isinstance(raised.value.__cause__, FlashPlanError)
