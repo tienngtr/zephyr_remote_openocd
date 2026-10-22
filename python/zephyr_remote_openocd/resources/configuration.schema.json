@@ -118,7 +118,7 @@
       },
       "examples": [
         [
-          "OPENOCD_ADAPTER_SERIAL"
+          "FTDI_CHANNEL"
         ]
       ]
     },

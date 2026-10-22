@@ -14,7 +14,7 @@ default_runner: openocd
 #     ssh_command:
 #       - ssh
 #     forward_env:
-#       - OPENOCD_ADAPTER_SERIAL
+#       - FTDI_CHANNEL
 #     # Keys are local paths; values are normalized remote POSIX paths.
 #     path_mappings:
 #       /absolute/local/path: /absolute/remote/path

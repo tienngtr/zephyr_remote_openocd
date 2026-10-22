@@ -266,27 +266,63 @@ ssh_command: [/mnt/c/Windows/System32/OpenSSH/ssh.exe]
 This is generic executable selection; it does not select another product
 backend or claim compatibility with a particular client implementation.
 
-### Installed resources and environment
+### Installed resources
 
-Map a large resource only when it already exists on the remote. Forward an
-environment variable only when the remote OpenOCD configuration needs its
-local value:
+Map a large resource only when it already exists on the remote:
 
 ```yaml
 remotes:
   lab:
     openocd_command: [/opt/openocd/bin/openocd]
-    forward_env: [OPENOCD_ADAPTER_SERIAL]
     path_mappings:
       /path/to/local/openocd/scripts: /opt/openocd/share/openocd/scripts
 ```
 
-Here the mapping key is inspected locally, its value is used remotely, and
-`OPENOCD_ADAPTER_SERIAL` is sent only if it is set in the local environment.
-If it is absent locally, its name and value are omitted from the request, but a
-same-named value already present in the remote helper environment may remain
-available to OpenOCD. Unmapped required inputs continue to be staged
-automatically.
+Here the mapping key is inspected locally and its value is used remotely.
+Unmapped required inputs continue to be staged automatically.
+
+### Forwarded environment
+
+Forward an environment variable only when the remote OpenOCD configuration
+reads its local value. A typical use is selecting the channel of a
+multi-channel FTDI adapter, such as an FT2232H or FT4232H, so that one
+configuration file serves targets wired to different channels. Allow-list the
+name on the remote:
+
+```yaml
+remotes:
+  lab:
+    openocd_command: [/opt/openocd/bin/openocd]
+    forward_env: [FTDI_CHANNEL]
+```
+
+Read the value in the OpenOCD configuration file with the Jim Tcl `env`
+command:
+
+```tcl
+adapter driver ftdi
+ftdi channel [env FTDI_CHANNEL 0]
+```
+
+Then set it locally for each command:
+
+```sh
+FTDI_CHANNEL=1 west flash -r remote_openocd --remote lab
+```
+
+`FTDI_CHANNEL` is sent only if it is set in the local environment. If it is
+absent locally, the runner warns, and its name and value are omitted from the
+request, but a same-named value already present in the remote helper
+environment may remain available to OpenOCD. When no value is available,
+`[env FTDI_CHANNEL 0]` falls back to channel 0, so the file also works without
+the variable. Omit the default, as in `[env FTDI_CHANNEL]`, to make OpenOCD
+stop during configuration instead.
+
+Forwarding suits values chosen per shell or per user. A value fixed for a
+command line can instead be passed as an ordinary runner option, which needs
+no allow-list: `--cmd-pre-init='ftdi channel 1'` overrides the channel set by
+the configuration file, because Zephyr runs pre-init commands after
+configuration files and before `init`.
 
 ## Defaults and inheritance
 
