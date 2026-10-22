@@ -292,6 +292,9 @@ def commands(
                 "gfm",
                 "--enable",
                 "MD001,MD025,MD041,MD051,MD057",
+                # Agent definition files carry their title as front matter `name`.
+                "--config",
+                r"MD041.front-matter-title-pattern = '^\s*name\s*[:=]'",
                 *markdown_paths,
             ),
         ),
