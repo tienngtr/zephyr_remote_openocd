@@ -792,6 +792,8 @@ of the particular supported Zephyr 4.4.x environment in use as follows:
 - `west flash` of a BIN image with `--verify` or `--verify-only` but no verify
   command SHALL fail before remote work rather than succeed without verifying
   the target;
+- `west flash` with both `--erase` and `--verify-only` SHALL fail before remote
+  work rather than ignore the erase request, for any image type;
 - `west debugserver` SHALL apply an explicit `--serial` as for the other
   supported commands (REQ-FUNC-OPT-002), rather than ignore it.
 

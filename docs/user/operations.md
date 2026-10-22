@@ -113,7 +113,10 @@ Unlike the built-in `openocd` runner, `remote_openocd` fails instead of
 reporting success when it cannot perform a requested step: `--erase` on a HEX
 or BIN image needs an erase command (`--cmd-erase`), and `--verify` or
 `--verify-only` on a BIN image needs a verify command (`--cmd-verify`), whether
-supplied on the command line or by the board. Likewise, `debugserver` honors
+supplied on the command line or by the board. It also rejects `--erase`
+combined with `--verify-only` for any image type, because a verify-only run
+never erases; the built-in runner silently ignores `--erase` in that case.
+Likewise, `debugserver` honors
 `--serial`, which the built-in runner ignores for that command, so the
 requested probe is selected on a remote host with several probes.
 
