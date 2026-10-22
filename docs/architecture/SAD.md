@@ -1118,6 +1118,9 @@ or:
 The configured prefix separates the SSH executable from fixed user arguments.
 Helper and staging operations append the host and remote command unchanged.
 The resulting SSH argv is executed directly without inserting a local shell.
+Long-lived transports reach it through the non-shell exec launcher of
+[§38.1](#381-local-ssh-subprocess-ownership), which replaces itself with that
+unchanged argv in the same process.
 Forwarding operations pass an immutable `SshLocalForward` to `SshCommand.popen()`;
 the invocation boundary renders its loopback `-L` together with
 `ExitOnForwardFailure=yes` and `ClearAllForwardings=no` immediately after the
@@ -1446,7 +1449,7 @@ REQ-FUNC-HELP-013.
 ### 38.1 Local SSH subprocess ownership
 
 `SshCommand.popen()` starts each long-lived control or forwarding transport with
-SIGINT blocked, while preserving the caller's controlling terminal and
+SIGINT blocked and ignored, while preserving the caller's controlling terminal and
 foreground process group for interactive SSH authentication. The launch thread
 temporarily blocks SIGINT so the child inherits that mask across exec, then
 establishes managed ownership and starts the stderr drain before restoring its
@@ -1454,7 +1457,23 @@ exact previous mask. The drain inherits blocked SIGINT and stops through pipe EO
 and explicit cleanup. Existing threads' masks remain unchanged. Keeping the
 transports in the foreground group preserves terminal authentication without
 introducing background-group SIGTTIN reads. This mask is child signal topology:
-it is the one retained SIGINT mask, and it does not protect the parent. Runner
+it is the one retained SIGINT mask, and it does not protect the parent.
+
+The ignored disposition comes from a small exec launcher: the runner's own
+interpreter, started isolated (`-I -S`), sets SIGINT to `SIG_IGN` and then
+`execvp()`s the unchanged SSH argv, so the launched PID becomes the SSH client
+and cleanup signals it directly. A Python handler would reset to the default
+disposition at exec, and switching the runner's process-wide disposition around
+launch could discard a runner Ctrl-C, so the disposition is set only in the
+child. OpenSSH installs its terminating SIGINT handler only when SIGINT is not
+already ignored, but 9.6p1 and 9.7p1 unblock an inherited SIGINT mask; the
+ignored disposition covers those releases, and the mask still covers clients
+that replace the handler unconditionally. The managed process reports the
+configured SSH argv, not the launcher. An SSH executable that cannot be
+executed is reported asynchronously: the launcher writes a diagnostic naming
+the configured command to the transport's stderr and exits with status 127,
+which follows the existing transport-exit rules. Failure to start the launcher
+itself remains a synchronous launch error. Runner
 Ctrl-C delivered during launch only latches the operation's cancellation fact
 ([§39.1](#391-operation-cancellation-and-waits)); the launch first passes the
 operation's effect-admission check and then completes into its owner.
@@ -1499,15 +1518,16 @@ another acquisition API or lifecycle authority. Direct low-level callers that
 use the return value must provide registration when that handoff requires
 continuous cleanup ownership.
 
-The inherited mask is a launch-time mitigation, not unconditional SIGINT
-isolation. Terminal SIGINT intended for GDB leaves a transport unaffected
-while its client retains SIGINT blocking. The executed client or wrapper can
-change its mask, including unblocking a pending SIGINT, and may then terminate.
-SRS §2.8 does not require clients to preserve the inherited mask, and this
-behavior is not an additional SSH compatibility requirement. The terminal
-SIGINT integration test exercises a synthetic transport that resets the signal
-disposition but retains the blocked mask; it does not establish survival for
-all compatible SSH clients.
+The inherited mask and ignored disposition are launch-time mitigations, not
+unconditional SIGINT isolation. Terminal SIGINT intended for GDB leaves a
+transport unaffected while its client either retains SIGINT blocking or leaves
+the ignored disposition in place. The executed client or wrapper can install
+its own handler and unblock SIGINT, and may then terminate. SRS §2.8 does not
+require clients to preserve either, and this behavior is not an additional SSH
+compatibility requirement. The terminal SIGINT integration test exercises
+synthetic transports that reset the disposition while retaining the mask, and
+that unblock the mask unless SIGINT is ignored, as OpenSSH 9.6p1 and 9.7p1 do;
+it does not establish survival for all compatible SSH clients.
 
 If a client terminates on SIGINT, resulting control-transport or required-forward
 loss follows the existing session-failure and bounded-cleanup rules. Loss of a
@@ -2510,8 +2530,9 @@ never decoded into retrospective cancellation. RTT batch GDB setup is not an
 interactive interval.
 
 **Retained SSH mask.** The only remaining SIGINT mask is the long-lived SSH
-launch mask of [§38.1](#381-local-ssh-subprocess-ownership): child signal
-topology that keeps transports alive across terminal Ctrl-C intended for GDB.
+launch mask of [§38.1](#381-local-ssh-subprocess-ownership). Together with the
+ignored disposition set by its exec launcher, it is child signal topology that
+keeps transports alive across terminal Ctrl-C intended for GDB.
 
 ---
 

@@ -5,7 +5,13 @@
 The ``scenario`` role acquires a real controlling terminal from its argument
 descriptor. The outer test supplies prompt input and terminal-generated Ctrl-C
 through it. The ``transport`` and ``client`` roles are the synthetic SSH
-transport and the Zephyr-style client the scenario launches.
+transport and the Zephyr-style client the scenario launches. Each transport
+behavior models one SSH client signal pattern:
+
+- ``resets-disposition`` installs default SIGINT handling unconditionally but
+  retains the inherited mask, like clients that overwrite handlers;
+- ``unblocks-mask`` installs its terminating handling only when SIGINT is not
+  ignored, then unblocks SIGINT, like OpenSSH 9.6p1 and 9.7p1.
 """
 
 from __future__ import annotations
@@ -22,13 +28,19 @@ from zephyr_remote_openocd.controller._ssh import SshCommand
 from tests.process_support import read_line
 
 
-def transport() -> None:
-    # Reset disposition, but intentionally retain inherited SIGINT blocking.
-    signal.signal(signal.SIGINT, signal.SIG_DFL)
+def transport(behavior: str) -> None:
+    if behavior == "resets-disposition":
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+    else:
+        assert behavior == "unblocks-mask"
+        if signal.getsignal(signal.SIGINT) is not signal.SIG_IGN:
+            signal.signal(signal.SIGINT, signal.SIG_DFL)
     with open("/dev/tty", "r+b", buffering=0) as terminal:
         assert os.tcgetpgrp(terminal.fileno()) == os.getpgrp()
         terminal.write(b"auth-prompt\n")
         assert terminal.readline() == b"auth-response\n"
+    if behavior == "unblocks-mask":
+        signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGINT})
     print("ready", flush=True)
     for _line in sys.stdin:
         print("alive", flush=True)
@@ -40,7 +52,7 @@ def client() -> None:
     signal.pause()
 
 
-def scenario(terminal: int) -> None:
+def scenario(terminal: int, behavior: str) -> None:
     fcntl.ioctl(terminal, termios.TIOCSCTTY, 0)
     os.tcsetpgrp(terminal, os.getpgrp())
     attributes = termios.tcgetattr(terminal)
@@ -50,7 +62,7 @@ def scenario(terminal: int) -> None:
     termios.tcsetattr(terminal, termios.TCSANOW, attributes)
     os.close(terminal)
 
-    managed = SshCommand((sys.executable, __file__, "transport")).popen("host", "serve")
+    managed = SshCommand((sys.executable, __file__, "transport", behavior)).popen("host", "serve")
     launched: subprocess.Popen[bytes] | None = None
     assert managed.stdin is not None and managed.stdout is not None
     try:
@@ -86,12 +98,12 @@ def scenario(terminal: int) -> None:
 def main() -> None:
     role = sys.argv[1]
     if role == "transport":
-        transport()
+        transport(sys.argv[2])
     elif role == "client":
         client()
     else:
         assert role == "scenario"
-        scenario(int(sys.argv[2]))
+        scenario(int(sys.argv[2]), sys.argv[3])
 
 
 if __name__ == "__main__":

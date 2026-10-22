@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -28,6 +29,18 @@ if TYPE_CHECKING:
 SSH_STDERR_TAIL_BYTES = 64 * 1024
 _SSH_STDERR_READ_BYTES = 8192
 _SSH_STDERR_JOIN_TIMEOUT = 1.0
+# Ignored SIGINT survives exec; a handler would not. Some OpenSSH releases
+# unblock an inherited SIGINT mask, so long-lived transports start with both.
+# The configured argv is exec'd unchanged in this process, without a shell.
+_SIGINT_IGNORING_EXEC = (
+    "import os, signal, sys\n"
+    "signal.signal(signal.SIGINT, signal.SIG_IGN)\n"
+    "try:\n"
+    "    os.execvp(sys.argv[1], sys.argv[1:])\n"
+    "except OSError as error:\n"
+    "    sys.stderr.write(f'cannot execute SSH command {sys.argv[1]!r}: {error.strerror}\\n')\n"
+    "    sys.exit(127)\n"
+)
 
 
 class SshProcessStartError(RuntimeError):
@@ -145,10 +158,12 @@ class ManagedSshProcess:
     def __init__(self) -> None:
         self._process: subprocess.Popen[bytes] | None = None
         self._drain: StderrDrain | None = None
+        self._argv: list[str] = []
 
     def acquire(self, argv: list[str]) -> None:
         """Populate an already-owned transport; its caller owns rollback."""
         assert self._process is None
+        self._argv = argv
         self._process = _OwnedSshPopen(self, argv)
         assert self._process.stderr is not None
         self._drain = StderrDrain(self._process.stderr)
@@ -186,7 +201,9 @@ class ManagedSshProcess:
 
     @property
     def args(self) -> StrOrBytesPath | Sequence[StrOrBytesPath]:
-        return self._process_or_error().args
+        """The configured SSH argv, not its exec launcher."""
+        self._process_or_error()
+        return self._argv
 
     @property
     def pid(self) -> int:
@@ -235,7 +252,7 @@ class _OwnedSshPopen(subprocess.Popen[bytes]):
         # constructor's return cannot prevent rollback from finding this object.
         owner._process = self
         super().__init__(
-            argv,
+            [sys.executable, "-I", "-S", "-c", _SIGINT_IGNORING_EXEC, *argv],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -366,8 +383,9 @@ class SshCommand:
         argv = [self.argv_prefix[0], *forward_args, *self.argv_prefix[1:], host, remote_command]
         # Keep the controlling terminal and foreground group for SSH prompts.
         # The mask is child signal topology, not parent protection: the child
-        # inherits blocked SIGINT across exec, so terminal Ctrl-C meant for an
-        # interactive client does not end the long-lived transport.
+        # inherits blocked SIGINT across exec, and the exec launcher adds an
+        # ignored disposition, so terminal Ctrl-C meant for an interactive
+        # client does not end the long-lived transport.
         admit_effect()
         managed_process = ManagedSshProcess()
         previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})

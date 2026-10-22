@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Exercise terminal prompts and interrupts with inherited SIGINT blocking.
+"""Exercise terminal prompts and interrupts against SSH transport launch.
 
-The synthetic transport retains the inherited mask. This validates the launch
-mechanism under that assumption, not survival of every compatible SSH client.
-The scenario is isolated so terminal interrupts cannot signal pytest's group.
+Synthetic transports model a client that overwrites the SIGINT handler while
+retaining the inherited mask, and one that, like OpenSSH 9.6p1 and 9.7p1,
+unblocks SIGINT unless it is ignored. This validates the launch mechanism for
+those patterns, not survival of every compatible SSH client. The scenario is
+isolated so terminal interrupts cannot signal pytest's group.
 """
 
 from __future__ import annotations
@@ -27,7 +29,8 @@ pytestmark = [pytest.mark.local, pytest.mark.skipif(os.name != "posix", reason="
 SCENARIO = ROOT / "tests/fixtures/ssh_sigint.py"
 
 
-def test_long_lived_ssh_preserves_terminal_prompts_and_survives_ctrl_c() -> None:
+@pytest.mark.parametrize("behavior", ("resets-disposition", "unblocks-mask"))
+def test_long_lived_ssh_preserves_terminal_prompts_and_survives_ctrl_c(behavior: str) -> None:
     environment = os.environ.copy()
     production_root = str(Path(ssh.__file__).resolve().parents[2])
     repository_root = str(Path(__file__).resolve().parents[2])
@@ -39,7 +42,7 @@ def test_long_lived_ssh_preserves_terminal_prompts_and_survives_ctrl_c() -> None
         with (
             os.fdopen(master_fd, "r+b", buffering=0) as terminal,
             subprocess.Popen(
-                [sys.executable, str(SCENARIO), "scenario", str(slave_fd)],
+                [sys.executable, str(SCENARIO), "scenario", str(slave_fd), behavior],
                 start_new_session=True,
                 pass_fds=(slave_fd,),
                 stdout=subprocess.PIPE,

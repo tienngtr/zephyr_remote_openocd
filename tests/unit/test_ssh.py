@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import FrameType
 from typing import Any, BinaryIO, cast, override
-from unittest.mock import Mock, create_autospec, patch
+from unittest.mock import create_autospec
 
 import pytest
 from zephyr_remote_openocd.controller import _ssh as ssh_module
@@ -42,7 +42,7 @@ from zephyr_remote_openocd.protocol.process import ProcessSpec
 from zephyr_remote_openocd.protocol.wire import encode_frame
 
 from tests.control_support import HelperPeerProcess
-from tests.process_support import cleanup_on_exit
+from tests.process_support import cleanup_on_exit, read_line
 from tests.protocol_support import terminal_message
 
 STREAM_CHILD_EXIT_CODE = 4
@@ -93,17 +93,57 @@ def test_fixed_arguments_are_preserved_without_a_shell() -> None:
     ]
 
 
-@patch("subprocess.Popen.__init__", autospec=True, side_effect=OSError("capture argv"))
-def test_long_lived_process_preserves_explicit_path_and_fixed_arguments(popen: Mock) -> None:
-    with pytest.raises(OSError):
-        SshCommand(("/opt/client/custom-ssh", "-F", "/a file")).popen("host", "serve")
-    popen.assert_called_once_with(
-        popen.call_args.args[0],
-        ["/opt/client/custom-ssh", "-F", "/a file", "host", "serve"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+@pytest.mark.parametrize("search_path", (False, True), ids=("explicit-path", "bare-name"))
+def test_long_lived_process_execs_configured_argv_with_sigint_ignored_and_blocked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, search_path: bool
+) -> None:
+    executable = tmp_path / "custom-ssh"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, signal, sys\n"
+        "print(json.dumps({\n"
+        "    'argv': sys.argv[1:],\n"
+        "    'pid': os.getpid(),\n"
+        "    'ignored': signal.getsignal(signal.SIGINT) is signal.SIG_IGN,\n"
+        "    'blocked': signal.SIGINT in signal.pthread_sigmask(signal.SIG_BLOCK, ()),\n"
+        "}), flush=True)\n"
     )
+    executable.chmod(0o755)
+    if search_path:
+        monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    configured = "custom-ssh" if search_path else str(executable)
+
+    process = SshCommand((configured, "-F", "/a file")).popen("host", "serve")
+    try:
+        assert process.stdout is not None
+        report = json.loads(read_line(process.stdout))
+    finally:
+        stop_process(process)
+
+    # Exec in place keeps the managed PID on the SSH client for cleanup.
+    assert report == {
+        "argv": ["-F", "/a file", "host", "serve"],
+        "pid": process.pid,
+        "ignored": True,
+        "blocked": True,
+    }
+    assert process.args == [configured, "-F", "/a file", "host", "serve"]
+
+
+def test_missing_long_lived_executable_reports_configured_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PATH", str(tmp_path))
+
+    process = SshCommand(("missing-ssh", "-F", "/a file")).popen("host", "serve")
+    try:
+        returncode = process.wait(timeout=30)
+        diagnostic = process.stderr_tail()
+    finally:
+        stop_process(process)
+
+    assert returncode == 127
+    assert b"'missing-ssh'" in diagnostic
 
 
 def test_bare_alternate_executable_is_resolved_through_path(
@@ -122,27 +162,21 @@ def test_bare_alternate_executable_is_resolved_through_path(
     assert json.loads(result.stdout) == ["--fixed", "target", "remote command"]
 
 
-@pytest.mark.parametrize(
-    "start_failure, search_path",
-    ((False, False), (True, False), (True, True)),
-    ids=("success", "missing-executable", "missing-executable-search-path"),
-)
+@pytest.mark.parametrize("start_failure", (False, True), ids=("success", "launch-failure"))
 def test_long_lived_launch_restores_calling_thread_signal_mask(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, start_failure: bool, search_path: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, start_failure: bool
 ) -> None:
-    if search_path:
-        # A bare executable uses the real fork/exec search path even on newer
-        # runtimes whose absolute-path launches can use posix_spawn.
-        monkeypatch.setenv("PATH", str(tmp_path))
+    if start_failure:
+        # A missing exec launcher fails inside the real subprocess creation.
+        monkeypatch.setattr(ssh_module.sys, "executable", str(tmp_path / "missing-python"))
 
     def launch() -> None:
         original = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGUSR1})
         expected = signal.pthread_sigmask(signal.SIG_BLOCK, set())
         try:
             if start_failure:
-                executable = "missing-ssh" if search_path else str(tmp_path / "missing-ssh")
                 with pytest.raises(FileNotFoundError):
-                    SshCommand((executable,)).popen("host", "serve")
+                    SshCommand(("ssh",)).popen("host", "serve")
             else:
                 process = SshCommand((sys.executable, "-c", "pass")).popen("host", "serve")
                 stop_process(process)

@@ -1247,7 +1247,9 @@ discarded and local bind failure remains fatal.
 
 ### REQ-FUNC-SSH-006
 
-The runner SHALL invoke the SSH argv directly without inserting a shell.
+The runner SHALL invoke the SSH argv directly without inserting a shell. A
+non-shell launcher that only adjusts inherited process state and replaces
+itself with the unchanged SSH argv, without interpreting it, is permitted.
 
 ### REQ-FUNC-SSH-009
 

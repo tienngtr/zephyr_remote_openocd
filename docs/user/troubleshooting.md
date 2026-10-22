@@ -78,8 +78,11 @@ stopped. Age and helper exit alone do not establish safe removal.
 
 A remote helper terminated by SIGINT or SIGTERM reports session failure even
 when cleanup succeeds. This is separate from Ctrl-C used inside interactive
-GDB. A custom SSH client that exits on that Ctrl-C can still cause transport
-loss; the runner cannot guarantee that every wrapper preserves the connection.
+GDB. The runner starts its SSH transports with Ctrl-C ignored and blocked, so
+OpenSSH, including 9.6p1 and 9.7p1, keeps the connection. A custom SSH client
+or wrapper that installs its own Ctrl-C handling and exits on it can still
+cause transport loss; the runner cannot guarantee that every wrapper preserves
+the connection.
 
 ## SSH connection sharing
 
