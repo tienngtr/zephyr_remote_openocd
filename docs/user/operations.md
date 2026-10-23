@@ -3,40 +3,50 @@
 Use the `remote_openocd` runner with the usual west commands: `flash`, `debug`,
 `attach`, `debugserver`, and `rtt`. It reuses the applicable behavior and
 options of Zephyr's built-in `openocd` runner, but runs OpenOCD on the
-configured remote host over SSH. West, GDB, and RTT clients stay on your
-machine, OpenOCD output appears in your terminal, and OpenOCD services are
+configured remote host over SSH. West, GDB, and RTT clients stay on the local
+machine, OpenOCD output appears in the local terminal, and OpenOCD services are
 forwarded to local `127.0.0.1` ports. Any Zephyr 4.4.x build that supports the
 built-in `openocd` runner can use `remote_openocd`.
 
-## Before you start
+## Requirements
 
-- **The module is active in the build.** `west flash --context` must list
-  `remote_openocd`. If it does not, follow
+Before using the commands on this page, make sure that:
+
+- **`remote_openocd` is available in the build.** `west flash --context` must
+  list it. If it does not, follow
   [activate the module](../../README.md#3-activate-the-module) and
   [configure the build](../../README.md#6-configure-the-build) in the README.
-- **A remote is configured.** The examples on this page select the `lab`
-  remote with `--remote lab`. You can omit `--remote` when
-  `ZEPHYR_REMOTE_OPENOCD_REMOTE` or `default_remote` selects a remote; see
-  [defaults and inheritance](configuration.md#defaults-and-inheritance).
-- **The runner is selected.** The examples pass `-r remote_openocd`. To omit
-  it, set `default_runner: remote_openocd`; see the
-  [configuration quick start](configuration.md#quick-start). For
-  OpenOCD-capable builds, `default_runner` selects either `openocd` or
-  `remote_openocd` as the default flash and debug runner, even when the
-  board's own default is another runner. Select any other available runner
-  with `-r`, for example `west flash -r openocd` for local OpenOCD.
-- **Board and user Tcl leave service ports to the runner.** The runner sets the
-  remote bind address and OpenOCD service ports. Tcl that overrides them is
-  unsupported; see [Forwarded services](#forwarded-services).
+- **A remote is configured.** The configuration file defines the remote host
+  and its OpenOCD command; see the
+  [configuration quick start](configuration.md#quick-start).
 
-## Choose a command
+## Runner, remote, and probe options
+
+The examples on this page pass `-r remote_openocd --remote lab`, which selects
+this runner and the remote named `lab`. Either option can be omitted:
+
+- **Omit `--remote`** when `ZEPHYR_REMOTE_OPENOCD_REMOTE` or `default_remote`
+  selects a remote; see
+  [defaults and inheritance](configuration.md#defaults-and-inheritance).
+- **Omit `-r remote_openocd`** after setting `default_runner: remote_openocd`.
+  In OpenOCD-capable builds, this setting overrides the board's own default
+  runner; see the [configuration quick start](configuration.md#quick-start).
+
+Select any other available runner with `-r`, for example `west flash -r openocd`
+for local OpenOCD.
+
+On a remote host with several probes, pass `--serial` to select one.
+`remote_openocd` applies it to every command, including `debugserver`, for
+which the built-in `openocd` runner ignores it.
+
+## Commands at a glance
 
 | Task | Command | Local client |
 | --- | --- | --- |
 | [Program the target](#flash) | `west flash -r remote_openocd --remote lab` | None |
 | [Load and debug the application](#debug) | `west debug -r remote_openocd --remote lab` | GDB |
 | [Inspect the running target](#attach) | `west attach -r remote_openocd --remote lab` | GDB |
-| [Serve GDB to your own client](#debug-server) | `west debugserver -r remote_openocd --remote lab` | None; connect your own |
+| [Connect a separately started GDB](#debug-server) | `west debugserver -r remote_openocd --remote lab` | None; GDB is started separately |
 | [Open an RTT console](#rtt-console) | `west rtt -r remote_openocd --remote lab` | GDB for setup, then RTT client |
 | [Add an RTT endpoint to a GDB session](#rtt-alongside-gdb) | Add `--rtt-server` to `debug`, `attach`, or `debugserver` | Same as without the option |
 | [See semihosting output](#semihosting-output) | `west debug` with `--cmd-pre-init` setup commands | GDB |
@@ -48,14 +58,13 @@ west flash -r remote_openocd --remote lab
 ```
 
 The runner programs the selected image on the target through remote OpenOCD
-and starts it. The application should then produce its normal output. With
-`--verify-only`, the runner verifies the image on the target instead of
-programming it. A remote OpenOCD flash failure fails the command.
+and starts it. The application should then produce its normal output. A
+remote OpenOCD flash failure fails the command.
+
+With `--verify-only`, the runner verifies the image on the target instead of
+programming it.
 
 ### Erase and verify options
-
-`--erase` cannot be combined with `--verify-only`, because a verify-only run
-never erases. `remote_openocd` rejects that combination for any image type.
 
 Some erase and verify requests need an OpenOCD command for the image type.
 Supply it with `--cmd-erase` or `--cmd-verify`, or let the board provide it:
@@ -65,10 +74,22 @@ Supply it with `--cmd-erase` or `--cmd-verify`, or let the board provide it:
 | `--erase` | HEX or BIN | Erase command (`--cmd-erase`) |
 | `--verify` or `--verify-only` | BIN | Verify command (`--cmd-verify`) |
 
-In each of these cases, `remote_openocd` fails before contacting the remote.
-The built-in `openocd` runner instead reports success: it ignores `--erase`
-with `--verify-only`, skips a verification that has no verify command, and
-without an erase command does not program the target at all.
+If the required command is missing, `remote_openocd` fails before contacting
+the remote. When flashing an ELF image, `--erase` does not add an erase
+command.
+
+`remote_openocd` also fails before contacting the remote when `--erase` is
+combined with `--verify-only`, for any image type, because a verify-only run
+does not erase. Use `--verify-only` alone to check the image already on the
+target. For a HEX or BIN image, use `--erase` alone to erase and reprogram the
+target.
+
+The built-in `openocd` runner does not fail in these cases:
+
+- without an erase command, it logs an error and exits successfully without
+  programming the target;
+- without a verify command, it skips the verification;
+- with `--erase` and `--verify-only`, it ignores `--erase`.
 
 ## Debug
 
@@ -80,7 +101,9 @@ The runner starts remote OpenOCD and then local GDB, which loads the ELF. Set
 breakpoints and use GDB as usual. Exit GDB to end the operation; the runner
 then cleans up the remote session.
 
-`west debug` does not promise fresh application output.
+`remote_openocd` does not guarantee that the application produces fresh output
+during `west debug`. To have the application start and produce its normal
+output, run [`west flash`](#flash), which programs and starts the image.
 
 Ctrl-C inside GDB is handled by GDB as usual and does not end the runner
 operation; see [Stop or interrupt an operation](#stop-or-interrupt-an-operation).
@@ -97,16 +120,17 @@ the operation, and Ctrl-C inside GDB works as it does for [debug](#debug).
 
 ## Debug server
 
-Use `debugserver` to connect your own GDB client or IDE:
+Use `debugserver` to start GDB separately from the runner:
 
 ```sh
 west debugserver -r remote_openocd --remote lab
 ```
 
 The runner starts remote OpenOCD, forwards its GDB service, and prints the
-local GDB endpoint. It does not start GDB. Start a local GDB client with the
-build ELF, for example `<gdb> build/zephyr/zephyr.elf`, and connect it to the
-printed address:
+local GDB endpoint. It does not start GDB. Start a local GDB for the target
+architecture with the build ELF, for example
+`arm-zephyr-eabi-gdb build/zephyr/zephyr.elf` from the Zephyr SDK, and connect
+it to the printed address:
 
 ```text
 target extended-remote 127.0.0.1:<printed-gdb-port>
@@ -119,27 +143,27 @@ To use a different port, set `--gdb-port`. For example,
 `127.0.0.1:3334` as the GDB endpoint. See [GDB ports](#gdb-ports) for how this
 differs from the other commands.
 
-On a remote host with several probes, pass `--serial` to request a specific
-probe. Unlike the built-in `openocd` runner, which ignores `--serial` for
-`debugserver`, `remote_openocd` applies it as it does for the other commands.
-
 ## GDB ports
 
-To move a single-target `debug`, `attach`, or `rtt` session to port 3334, set
-both `--gdb-port=3334` and `--gdb-client-port=3334`. For `debugserver`,
-`--gdb-port=3334` alone is enough.
+GDB uses local port 3333 by default. To use another port, for example 3334:
 
-The two options do different jobs. `--gdb-port` sets the remote OpenOCD
-GDB-server base port. `--gdb-client-port` selects which OpenOCD GDB port GDB
-connects to. Both default to 3333. The local GDB port depends on the command:
+| Command | Options to set |
+| --- | --- |
+| `debugserver` | `--gdb-port=3334` |
+| `debug`, `attach`, `rtt` | `--gdb-port=3334 --gdb-client-port=3334` |
 
-| Command | Local GDB port | `--gdb-client-port` |
-| --- | --- | --- |
-| `debugserver` | Same as `--gdb-port` | Has no effect |
-| `debug`, `attach`, `rtt` (GDB setup) | Same as `--gdb-client-port`, forwarded to the same remote port | Selects the port GDB connects to |
+The local port is always forwarded to the same port number on the remote host.
 
-For example, with `debug`, `--gdb-port=3333 --gdb-client-port=3334` can select
-the second target of a multi-target OpenOCD configuration.
+`--gdb-port` sets the OpenOCD base GDB port, and `--gdb-client-port` selects
+the port that GDB connects to; both default to 3333. Their values can differ in
+a multi-target OpenOCD configuration, where each target can have its own GDB
+port: for example, `--gdb-port=3333 --gdb-client-port=3334` can connect `debug`
+to the second target. `debugserver` does not start GDB, so it ignores
+`--gdb-client-port`.
+
+If an OpenOCD configuration file or command changes the GDB port, the runner
+does not detect it and still forwards the port from its options; see
+[Forwarded services](#forwarded-services).
 
 ## RTT
 
@@ -169,9 +193,9 @@ endpoint during that session:
 west debugserver -r remote_openocd --remote lab --rtt-server
 ```
 
-`debug` and `attach` still start GDB, and `debugserver` still leaves GDB to you.
-No local RTT client is started: the runner prints the forwarded RTT endpoint,
-and you connect a client of your choice to the printed port, for example:
+`debug` and `attach` still start GDB, and `debugserver` still does not. No
+local RTT client is started: the runner prints the forwarded RTT endpoint.
+Connect any RTT client to the printed port, for example:
 
 ```sh
 telnet 127.0.0.1 5555
@@ -194,18 +218,20 @@ west debug -r remote_openocd --remote lab \
   --cmd-pre-init='lappend post_init_commands {arm semihosting_redirect disable}'
 ```
 
-Semihosting text appears in the relayed OpenOCD output. The `lappend` form
-registers the commands before initialization and runs them afterward, when the
-target is available.
+Semihosting text appears in the relayed OpenOCD output. The
+`semihosting_fileio disable` and `semihosting_redirect disable` commands keep
+semihosting I/O in OpenOCD rather than in GDB or a TCP connection. The
+`lappend` form registers the commands before initialization and runs them
+afterward, when the target is available.
 
 > [!NOTE]
 > Semihosting operations handled by OpenOCD, including file operations, run on
 > the **remote host**. If remote OpenOCD instead passes GDB File-I/O through to
-> a locally connected GDB, that GDB can access your **local** filesystem. The
-> target, OpenOCD, and GDB define this behavior without runner involvement: the
-> runner provides no semihosting proxy, filesystem virtualization, TCP
-> redirect, or path translation. Only the console output above is within the
-> runner's compatibility guarantees.
+> a locally connected GDB, that GDB can access the **local** filesystem. The
+> target, OpenOCD, and GDB define this behavior. `remote_openocd` does not proxy
+> semihosting, virtualize the filesystem for semihosting or GDB File-I/O,
+> forward a semihosting TCP redirect, or translate semihosting file paths. For
+> semihosting, it guarantees only the console output described above.
 
 ## Stop or interrupt an operation
 
@@ -214,37 +240,39 @@ Each command normally ends as follows:
 | Command | Ends when |
 | --- | --- |
 | `flash` | Flashing finishes |
-| `debug`, `attach` | You exit GDB |
-| `rtt` | You press Ctrl-C, or remote OpenOCD exits |
-| `debugserver` | You press Ctrl-C, or remote OpenOCD exits |
+| `debug`, `attach` | GDB exits |
+| `rtt` | Ctrl-C is pressed, or remote OpenOCD exits |
+| `debugserver` | Ctrl-C is pressed, or remote OpenOCD exits |
 
-To stop an operation, press Ctrl-C once and wait. Once a remote session
-exists, the runner prints
+To stop an operation, press Ctrl-C once and wait for cleanup to finish.
+Pressing Ctrl-C again does not skip or shorten the cleanup; let it finish so
+that remote OpenOCD releases the probe.
+
+Once a remote session exists, the runner prints
 `Interrupted; cleaning up the remote OpenOCD session`, stops OpenOCD and its
 SSH transports, and then exits as an interrupted command. If the operation had
-already failed, that failure is reported instead. This also applies when Ctrl-C
-ends `rtt` or `debugserver` normally: the command reports an interruption, not
-success.
+already failed, that failure is reported instead.
 
-Ctrl-C takes effect while the runner prepares the remote session, waits for
-OpenOCD, forwards services, flashes, serves `debugserver`, or relays RTT, with
-these exceptions:
+Because `rtt` and `debugserver` normally end with Ctrl-C, they also exit as
+interrupted commands, not successfully.
 
-- **During local work**, such as packaging build files for staging, Ctrl-C
-  takes effect when that work finishes.
+Ctrl-C takes effect during the operation, with these exceptions:
+
+- **During local preparation**, such as packaging build files to copy to the
+  remote host, Ctrl-C takes effect when that step finishes.
 - **Inside interactive GDB** for `debug` or `attach`, Ctrl-C belongs to GDB.
   Exit GDB to end the operation.
-
-Pressing Ctrl-C again does not skip or shorten the cleanup. Let it finish so
-that remote OpenOCD releases the probe.
 
 ## Uninstall
 
 1. Stop all active west operations that use the module.
 2. Remove the `EXTRA_ZEPHYR_MODULES` activation export from the current shell
-   and from `~/.zephyrrc` if you added it there.
-3. Delete the module copy and, if you no longer need it, the configuration
-   created by setup. Substitute the path where you placed the module:
+   and from `~/.zephyrrc` if it was added there.
+3. Delete the module directory and, if the configuration is no longer needed,
+   the configuration directory that the setup script created. The first
+   command uses the example module path from the README's
+   [Obtain the module](../../README.md#1-obtain-the-module) step; replace it
+   with the path where the module was placed:
 
    ```sh
    rm -rf "$HOME/zephyrproject/zephyr_remote_openocd"
@@ -253,8 +281,9 @@ that remote OpenOCD releases the probe.
 
 4. Optionally delete the local preferred-address cache at
    `~/.cache/zephyr_remote_openocd/preferred-addresses/`. This removes only
-   remembered addresses, not SSH forwards retained by a sharing master.
-5. After all sessions have stopped, you may remove these locations on the
+   remembered addresses, not SSH forwards retained by an
+   [SSH connection-sharing](#ssh-connection-sharing) master.
+5. After all sessions have stopped, optionally remove these locations on the
    remote host:
 
    ```text
@@ -269,15 +298,23 @@ that remote OpenOCD releases the probe.
 
 | Command | Required forwarding | Best-effort forwarding |
 | --- | --- | --- |
-| `debug`, `attach`, `debugserver` | GDB | Enabled Tcl and telnet |
-| `debug --rtt-server`, `attach --rtt-server`, `debugserver --rtt-server` | GDB and RTT | Enabled Tcl and telnet |
-| `rtt` | GDB during setup, then RTT | Enabled Tcl and telnet; GDB after setup |
+| `debug`, `attach`, `debugserver` | GDB | Enabled Tcl server and telnet |
+| `debug --rtt-server`, `attach --rtt-server`, `debugserver --rtt-server` | GDB and RTT | Enabled Tcl server and telnet |
+| `rtt` | GDB during setup, then RTT | Enabled Tcl server and telnet; GDB after setup |
 | `flash` | None | None |
 
-**Which services are forwarded.** Tcl is forwarded unless `--tcl-port` is
-`disabled`, and telnet unless `--telnet-port` is `disabled`. Forwarding follows
-the command and runner port options; the runner does not inspect board or user
-Tcl to discover which services are actually enabled.
+**Which services are forwarded.** The OpenOCD Tcl server is forwarded unless
+`--tcl-port` is `disabled`, and telnet unless `--telnet-port` is `disabled`.
+Forwarding follows the command and runner port options; the runner does not
+read OpenOCD configuration files or commands to discover which services are
+actually enabled.
+
+**Port numbers.** Each forwarded service uses the same port number locally and
+on the remote host: GDB at `--gdb-client-port` for `debug`, `attach`, and `rtt`
+and at `--gdb-port` for `debugserver`, the OpenOCD Tcl server at `--tcl-port`,
+telnet at `--telnet-port`, and RTT at `--rtt-port`. To move a service to
+another port, use these options; for GDB with `debug`, `attach`, or `rtt`, set
+both GDB port options as shown in [GDB ports](#gdb-ports).
 
 **How `rtt` changes forwarding.** The runner first configures RTT through batch
 GDB. It then makes GDB best-effort and adds the required RTT forward before
@@ -286,22 +323,26 @@ starting the local channel-0 client.
 **Required forwards.** If a required forward fails, the operation fails. An
 explicit `--rtt-server` makes RTT forwarding required from startup through the
 end of the operation: a startup failure aborts the command, and a later failure
-fails it at the next forwarding status check. The runner does not probe the
-remote RTT service.
+fails it at the runner's next status check, which can be after GDB exits. The
+runner does not probe the remote RTT service.
 
 **Best-effort forwards.** Each is attempted independently. An occupied local
 port, a startup failure, or a later forwarding exit produces a warning, and the
-required service remains usable. Runtime warnings appear at the next
-forwarding status check; during interactive GDB, this can be after GDB exits.
+required service remains usable. Runtime warnings appear at the runner's next
+status check; during interactive GDB, this can be after GDB exits.
 
 **Cleanup failures are fatal.** If the runner cannot clean up an SSH process it
 started, the operation fails, even when that process belonged to a failed
 best-effort forwarding attempt.
 
-**Ports and bind addresses belong to the runner.** The runner sets the remote
-bind address and service ports. Board or user Tcl that overrides `bindto`,
-`gdb_port`, `tcl_port`, `telnet_port`, or another runner-owned service port is
-unsupported.
+**`remote_openocd` does not support OpenOCD configuration that overrides its
+ports or bind address.** The runner binds remote OpenOCD services to a loopback
+address allocated for the session and sets their ports from its port options.
+Board or user OpenOCD configuration files or commands can still override
+`bindto`, `gdb_port`, `tcl_port`, `telnet_port`, or another service port that
+the runner sets. `remote_openocd` does not detect such overrides, still
+forwards the ports from its options, and does not guarantee correct operation
+of a session with such an override.
 
 **An established forward is not a listener.** A local forward confirms only
 that SSH accepted it, not that OpenOCD is listening behind it.
@@ -311,31 +352,33 @@ that SSH accepted it, not that OpenOCD is listening behind it.
 When the operation completes, the runner asks the remote side to clean up while
 it keeps reading final output and results:
 
-- **Disposing of the server does not fail successful work.** Stopping a live
-  OpenOCD server only to end the session does not turn successful client work
-  into a failure.
+- **Stopping OpenOCD to end the session does not fail successful work.** For
+  example, when GDB exits after a successful `debug` session, the runner stops
+  OpenOCD, and that stop alone does not fail the command.
 - **An earlier failure stays primary.** Later shutdown problems do not replace
   a failure the runner had already recorded.
 - **OpenOCD may finish first.** If OpenOCD exits on its own before the cleanup
-  request, its observed result is kept.
+  request, its observed result is kept, so a failing exit still fails the
+  operation.
 - **Unconfirmed results fail.** A missing final result or unconfirmed remote
   cleanup still fails the operation; see
   [shutdown troubleshooting](troubleshooting.md#shutdown-results).
 
 If the local SSH client detects a lost connection, the runner fails the
-operation and attempts local cleanup. The remote helper cleans up OpenOCD after
-it observes that its control channel is gone.
+operation and attempts local cleanup at the runner's next status check, which
+can be after GDB exits. The remote helper cleans up OpenOCD after it observes
+that its control channel is gone.
 
 ### SSH connection sharing
 
-If you use OpenSSH `ControlMaster` or another SSH connection-sharing mechanism,
-local forwards can outlive the runner command, and a stale forward can cause
-port conflicts that you clean up through your SSH client. Sharing state stays
-under your SSH client's control; see
+With OpenSSH `ControlMaster` or another SSH connection-sharing mechanism, local
+forwards can outlive the runner command, and a stale forward can cause port
+conflicts that must be cleaned up through the SSH client. Sharing state stays
+under the SSH client's control; see
 [connection-sharing troubleshooting](troubleshooting.md#ssh-connection-sharing),
 including how to run concurrent sessions over a shared connection.
 
-When a session closes, the runner cleans up what it started: its SSH
+When a session closes, the runner attempts to clean up what it started: its SSH
 subprocesses and their I/O, remote OpenOCD, the session's reserved remote
 address, and the remote session workspace. Forwards kept by an external sharing
 master are not included and may remain after those subprocesses exit.
@@ -343,4 +386,6 @@ master are not included and may remain after those subprocesses exit.
 To keep retained forwards usable, the runner asks to reuse a remote address
 remembered from an earlier session. It can receive a different address, for
 example when another session holds that address or its remote port is
-occupied.
+occupied. A forward retained from the earlier session can then occupy the
+local port; see
+[connection-sharing troubleshooting](troubleshooting.md#ssh-connection-sharing).
