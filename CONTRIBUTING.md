@@ -192,3 +192,36 @@ Submit focused commits. Describe behavior, validation performed, and fixture
 coverage in pull requests. Update the SRS
 or SAD when a lifecycle, protocol, compatibility, or other architectural
 decision changes.
+
+## User documentation
+
+User documentation (`README.md`, `docs/user/`) describes the contract defined
+by the SRS, SAD, Protocol v1, and configuration schema; it is not itself
+authoritative. When those sources agree that a user-facing claim is wrong,
+correct the claim. When the sources disagree, report the conflict instead of
+choosing between them.
+
+- **Canonical home.** Explain each concept once. Replace local text with a link
+  only when the local task stays actionable without following it and the
+  destination states the same claim, not a weaker or broader one.
+- **Scope.** State restrictions with the scope the sources give them, and do
+  not add consequences the sources do not state. For an unsupported case, name
+  the component that gives no guarantee and the affected behavior; do not imply
+  that the underlying tool forbids the action.
+- **Reader address.** Use imperatives or impersonal statements, not "you".
+  Use "users" only when a sentence needs a human subject.
+- **Order.** Open each section with the direct answer to its heading. State the
+  rule before its exceptions, and keep back-references adjacent and explicit.
+- **Wording.** Prefer the positive form when it is clearer or more direct;
+  negative form suits unsupported cases and scoping limits. Use full,
+  user-facing names ("the setup script", "OpenOCD commands") and standard
+  phrasing ("does not start GDB"). Leave out incidental examples that imply a
+  false distinction.
+- **Instructions.** Give a fix's purpose, and do not present it as the only or
+  best fix without support. A substitution instruction says what to replace
+  and with what. Phrase a heading as an instruction only when the section is a
+  procedure.
+- **Prerequisites.** Introduce them with "Before using …, make sure that:" and
+  list only genuine prerequisites.
+- **Visual structure.** Use headings, bold labels, tables, and GitHub alerts;
+  do not use emoji.

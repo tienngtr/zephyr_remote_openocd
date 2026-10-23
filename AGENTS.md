@@ -174,6 +174,15 @@ uses single-process Pylint in restricted sandboxes. Use `--collect-only` before
 external nodes and inspect cleanup before target reuse. See `CONTRIBUTING.md`
 for the full checklist.
 
+## Documentation
+
+Follow the user-documentation rules in `CONTRIBUTING.md`. Verify every
+reviewer or subagent finding against repository sources before applying it.
+Report newly found source inconsistencies separately from regressions in your
+own change. A per-document rewrite may update links, anchors, and traceability
+references that it directly breaks or retargets, but must not rewrite
+neighboring documents.
+
 ## Work and Git
 
 Follow task-specific `.agents/GOAL.md` and `.agents/PLAN.md` when present.
