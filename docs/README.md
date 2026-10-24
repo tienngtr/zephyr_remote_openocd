@@ -6,8 +6,7 @@
   module activation, and the first remote flash.
 - [User guides](user/): configuration, operations, and troubleshooting.
 
-**Specifications**, which define the contract that the user documentation
-describes:
+**Specifications**
 
 - [Software Requirements Specification (SRS)](requirements/SRS.md): normative
   product requirements.

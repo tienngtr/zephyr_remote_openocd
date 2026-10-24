@@ -199,7 +199,10 @@ User documentation (`README.md`, `docs/user/`) describes the contract defined
 by the SRS, SAD, Protocol v1, and configuration schema; it is not itself
 authoritative. When those sources agree that a user-facing claim is wrong,
 correct the claim. When the sources disagree, report the conflict instead of
-choosing between them.
+choosing between them. Where they are silent, production code is the evidence
+for current behavior, such as exact messages, printed output, and fixed
+limits; describe that behavior as what the runner does, not as a guarantee.
+Code never overrides a conflicting formal requirement; report the conflict.
 
 - **Canonical home.** Explain each concept once. Replace local text with a link
   only when the local task stays actionable without following it and the
@@ -208,8 +211,12 @@ choosing between them.
   not add consequences the sources do not state. For an unsupported case, name
   the component that gives no guarantee and the affected behavior; do not imply
   that the underlying tool forbids the action.
-- **Reader address.** Use imperatives or impersonal statements, not "you".
-  Use "users" only when a sentence needs a human subject.
+- **Reader address.** Prefer, in this order: an imperative ("Run the
+  validator."); a technical subject ("The validator does not contact the
+  remote host."); an explicit human subject when necessary ("Users of a custom
+  wrapper must ensure that it preserves the stdin half-close."). Use second
+  person only when avoiding it would make a sentence materially less clear or
+  more awkward.
 - **Order.** Open each section with the direct answer to its heading. State the
   rule before its exceptions, and keep back-references adjacent and explicit.
 - **Wording.** Prefer the positive form when it is clearer or more direct;
@@ -225,7 +232,7 @@ choosing between them.
   best fix without support. A substitution instruction says what to replace
   and with what. Phrase a heading as an instruction only when the section is a
   procedure.
-- **Prerequisites.** Introduce them with "Before using …, make sure that:" and
-  list only genuine prerequisites.
+- **Prerequisites.** State them before the task that needs them, and list
+  only genuine prerequisites.
 - **Visual structure.** Use headings, bold labels, tables, and GitHub alerts;
   do not use emoji.

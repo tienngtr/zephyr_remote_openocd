@@ -15,11 +15,3 @@ the details:
 - [Troubleshooting](troubleshooting.md): failures by stage, from setup and
   build through remote startup, a running operation, and session end, plus
   SSH connection sharing problems and remote session files.
-
-> [!NOTE]
-> Where the root README or a guide differs from the
-> [requirements](../requirements/SRS.md),
-> [architecture](../architecture/SAD.md),
-> [Protocol v1](../architecture/protocol.md), or
-> [configuration schema](../../python/zephyr_remote_openocd/resources/configuration.schema.json),
-> those sources take precedence.

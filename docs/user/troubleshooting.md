@@ -329,12 +329,10 @@ when cleanup succeeds. This is separate from Ctrl-C inside interactive GDB,
 which belongs to GDB; see
 [Stop or interrupt an operation](operations.md#stop-or-interrupt-an-operation).
 
-The runner starts the SSH processes that carry the session and its forwards
-with Ctrl-C ignored and blocked, so a Ctrl-C meant for interactive GDB does not
-end the OpenSSH connection, including releases such as 9.6p1 and 9.7p1 that
-unblock an inherited signal mask. A custom SSH client or wrapper that installs
-its own Ctrl-C handling and exits on it can still end the connection;
-`remote_openocd` does not guarantee that every wrapper preserves it.
+A Ctrl-C meant for interactive GDB does not end the OpenSSH connections that
+the runner starts. A custom SSH client or wrapper that installs its own Ctrl-C
+handling and exits on it can still end the connection; `remote_openocd` does
+not guarantee that every wrapper preserves it.
 
 ## SSH connection sharing
 
