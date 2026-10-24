@@ -34,11 +34,16 @@ The primary drivers are:
 - one Linux implementation;
 - Zephyr 4.4.x compatibility;
 - local GDB and remote OpenOCD;
+- preserve ordinary Zephyr west runner workflows;
 - reuse of existing board OpenOCD configuration;
 - concurrent remote sessions;
 - user-selectable SSH client;
 - minimal remote administration;
 - maintainable Zephyr-version isolation.
+
+The historical workflow behind several of these drivers is recorded in the
+[project background](../project_background.md). That background is
+non-normative and does not restrict supported deployment models.
 
 ---
 

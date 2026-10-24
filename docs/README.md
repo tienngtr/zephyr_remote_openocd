@@ -1,5 +1,10 @@
 # Documentation
 
+**Project context**
+
+- [Project background](project_background.md): historical motivation and the
+  development workflow that influenced the design.
+
 **Users**
 
 - Start with the root [README](../README.md), which covers installation,
