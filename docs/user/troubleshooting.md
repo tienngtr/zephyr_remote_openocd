@@ -58,8 +58,8 @@ built-in `openocd` runner. If `openocd` is also missing from the list, the
 board build does not provide the `openocd` runner that `remote_openocd`
 requires. Otherwise:
 
-1. Make sure the module path is in `EXTRA_ZEPHYR_MODULES`, for example in the
-   environment of the shell that runs west; see
+1. Make sure that `EXTRA_ZEPHYR_MODULES` includes the module path when west
+   runs, however the variable is set; see
    [Activate the module](../../README.md#3-activate-the-module).
 2. If the build directory was configured before the module was activated,
    reconfigure it with `west build --cmake-only -d <build>`, where `<build>` is
@@ -169,7 +169,7 @@ the
 and correct the executable path, permissions, fixed arguments, or remote
 shared-library environment before retrying.
 
-**`invalid remote OpenOCD version response`.** The helper response was
+**`invalid remote OpenOCD version response`.** The remote helper response was
 incomplete or incompatible.
 
 **`cannot parse remote OpenOCD version`.** The reported version could not be
@@ -288,7 +288,8 @@ OpenOCD result nor proof of remote cleanup.
 
 1. Keep the diagnostic output and any reported session workspace path, such as
    the `Remote session ID OpenOCD workspace=PATH` line that `debug`, `attach`,
-   `debugserver`, and `rtt` print once OpenOCD is ready.
+   `debugserver`, and `rtt` print once OpenOCD is ready and its forwards are
+   set up.
 2. Check that the configured SSH command supports the
    [stdin half-close](configuration.md#stdin-half-close), and inspect its
    connection and stderr diagnostics.
@@ -373,7 +374,11 @@ OpenSSH, run these commands with the executable and fixed options from
 replacing `HOST` with the remote's `ssh_host`. For example:
 
 - `ssh -O check HOST` reports whether a master is running;
-- `ssh -O cancel` with the forward's specification cancels a single forward;
+- `ssh -O cancel -L 127.0.0.1:PORT:ADDRESS:PORT HOST` cancels a single
+  forward, where `PORT` is the occupied local port and `ADDRESS` is the
+  `bindto=ADDRESS` value in the `Remote session` line printed by the session
+  that created the forward, or the `bindto` address in that session's
+  `west -v` OpenOCD command line if the line was not printed;
 - `ssh -O exit HOST` closes the master and every session that uses it, so use
   it only when no other active session uses that master.
 
@@ -383,9 +388,10 @@ The runner keeps a best-effort local preferred-address cache under
 `~/.cache/zephyr_remote_openocd/preferred-addresses/`, keyed by the configured
 SSH command prefix and host, so that later sessions can reuse retained
 forwards. It saves an address only after required forwarding succeeds. On a
-later session, the remote helper first tries that address with its normal
-address-lease and remote-port checks, and allocates another address if it
-cannot be reused. Concurrent sessions still receive separate address leases.
+later session, the remote helper first tries that address, checking as usual
+that no other session holds it and that its remote ports are available, and
+allocates another address if it cannot be reused. Concurrent sessions never
+share an address while both are active.
 Deleting or losing the cache discards remembered addresses without weakening
 the remote helper's checks or removing retained forwards. A later session may
 then receive another address and leave a retained forward stale; see

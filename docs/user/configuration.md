@@ -62,17 +62,16 @@ where the module was placed.
 
 ### Choose the default remote and runner
 
-After the explicit command works, uncomment `default_remote: lab` to omit
-`--remote lab`; see [Remote selection order](#remote-selection-order).
-
-`default_runner` selects the default flash and debug runner. Keep
-`default_runner: openocd` to use local OpenOCD by default, or change it to
-`remote_openocd`. In an OpenOCD-capable build, the configured value, or
-`openocd` when the key is omitted, replaces the board's original default flash
-and debug runner. Other runners remain available with `-r`. The build stores
-this default; see
+In an OpenOCD-capable build with this module active, `default_runner`
+replaces the board's original default flash and debug runner, even when the
+key is omitted; the omitted value is `openocd`. Keep `default_runner: openocd`
+to use local OpenOCD by default, or change it to `remote_openocd`. Other
+runners remain available with `-r`. The build stores this default; see
 [Apply configuration changes to a build](#apply-configuration-changes-to-a-build)
 for when a change takes effect.
+
+After the explicit command works, uncomment `default_remote: lab` to omit
+`--remote lab`; see [Remote selection order](#remote-selection-order).
 
 ## Configuration file
 
@@ -92,8 +91,9 @@ module is configured into a build, the pre-run incremental build of ordinary
 `west flash` and `west debug` commands detects changes to the contents,
 creation, or deletion of the configuration file that was selected when CMake
 last configured that build, and updates the stored default. To apply those
-changes without flashing or debugging, run `west build`. Neither needs a
-pristine build or a full firmware compile and link. A `--no-rebuild` runner
+changes without flashing or debugging, run `west build`. Neither the pre-run
+build nor `west build` needs a pristine build or a full firmware compile and
+link. A `--no-rebuild` runner
 command intentionally uses the stored default as it is.
 
 Reconfigure CMake with `west build --cmake-only -d <build>`, where `<build>` is
@@ -113,11 +113,10 @@ the build directory, when:
 
 ### Format
 
-The complete machine-readable contract is
-[`configuration.schema.json`](../../python/zephyr_remote_openocd/resources/configuration.schema.json),
-and the commented template is
-[`config.example.yaml`](../../resources/config.example.yaml). The schema is
-authoritative for structure and lexical rules.
+[`configuration.schema.json`](../../python/zephyr_remote_openocd/resources/configuration.schema.json)
+defines every key, its allowed values, and their lexical forms;
+[`config.example.yaml`](../../resources/config.example.yaml) is a commented
+template.
 
 - An empty YAML document is equivalent to `{}`.
 - Unknown keys, duplicate YAML mapping keys, null values, and type mismatches
@@ -187,7 +186,7 @@ Unlike runner commands, the validator requires its target file to exist,
 whichever way the file is selected. If the file is missing, it exits with
 guidance instead of reporting empty runtime defaults as a valid configuration.
 
-## Define remotes
+## Remotes
 
 A minimal usable remote needs only a name and an OpenOCD command:
 
@@ -320,22 +319,24 @@ arguments unchanged.
 
 SSH connection sharing, including `ControlMaster`, remains managed by the SSH
 client; the runner does not disable it or issue client-specific cancellation
-commands. With `ControlMaster auto`, `ControlPersist no`, and no existing
-master, a runner-launched SSH process can itself become the master and couple
-other sessions to its lifetime. For concurrent sessions over a shared
-connection, set `ControlPersist` to `yes` or a time so that the master runs as
-a separate background process, or establish the master outside the runner
-first, for example with `ssh -MNf HOST`. Run that command with the SSH
-executable and fixed options from `ssh_command`, replacing `HOST` with the
-remote's `ssh_host`. This guidance describes OpenSSH behavior; see
+commands.
+
+With OpenSSH `ControlMaster auto`, `ControlPersist no`, and no existing master,
+a runner-launched SSH process can itself become the master and couple other
+sessions to its lifetime; see
 [Other sessions disconnect when one session ends](troubleshooting.md#other-sessions-disconnect-when-one-session-ends).
+For concurrent sessions over a shared connection, set `ControlPersist` to
+`yes` or a time so that the master runs as a separate background process, or
+establish the master outside the runner first, for example with
+`ssh -MNf HOST`. Run that command with the SSH executable and fixed options
+from `ssh_command`, replacing `HOST` with the remote's `ssh_host`.
 
 Runner cleanup does not remove forwards retained by a sharing master, and a
 connection-sharing client may reuse an existing forward with matching
 endpoints. The runner's best-effort preferred-address cache, which has no YAML
 setting, can help that reuse; stale or unreadable cache data does not by itself
-fail an operation or bypass the remote helper's address-lease and remote-port
-checks. See
+fail an operation or bypass the remote helper's checks that no other session
+holds the address and that its remote ports are available. See
 [Preferred-address cache](troubleshooting.md#preferred-address-cache) and
 [A retained forward occupies the local port](troubleshooting.md#a-retained-forward-occupies-the-local-port).
 
@@ -343,19 +344,20 @@ checks. See
 
 Arguments after the executable in `openocd_command` are passed to remote
 OpenOCD before the runner's own arguments, with their exact values and order.
-They are an advanced escape hatch: the runner does not parse, classify,
-reorder, or validate their OpenOCD/Tcl semantics, does not substitute text in
-them (see [No placeholder substitution](#no-placeholder-substitution)), and
-does not stage files they name (see
+They are an advanced option: the runner does not parse, classify, reorder, or
+validate their OpenOCD/Tcl semantics, does not substitute text in them (see
+[No placeholder substitution](#no-placeholder-substitution)), and does not
+stage files they name (see
 [Files copied to the remote](#files-copied-to-the-remote)).
 
-Avoiding conflicts among fixed arguments, and between fixed arguments and
-runner-generated arguments, is the configuration author's responsibility. For
-example, `-c init`, `-f early.cfg`, or `-c 'source early.cfg'` can initialize
-OpenOCD or create listeners before the runner's bind and service settings take
-effect; avoid that unless it is intended. The runner's startup-ordering
-guarantees cover its generated arguments only; behavior introduced by fixed
-arguments is outside those guarantees.
+Avoid conflicts among fixed arguments, and between fixed arguments and
+runner-generated arguments; the runner does not inspect fixed arguments for
+conflicts. For example,
+`-c init`, `-f early.cfg`, or `-c 'source early.cfg'` can initialize OpenOCD or
+create listeners before the runner's bind and service settings take effect;
+avoid that unless it is intended. The runner's startup-ordering guarantees
+cover its generated arguments only; behavior introduced by fixed arguments is
+outside those guarantees.
 
 Run a remote runner operation with `west -v` to see the full shell-escaped
 effective remote OpenOCD argv, including fixed arguments, and runner-generated
@@ -366,15 +368,15 @@ west -v debugserver -r remote_openocd --remote lab
 ```
 
 This output is not redacted, so literal sensitive values in configured
-arguments appear in it. The helper reports each effective command before
+arguments appear in it. The remote helper reports each effective command before
 attempting to start OpenOCD, so the trace is normally available when OpenOCD
 fails to start or become ready, or when required forwarding fails, unless the
 connection is lost before the trace is delivered.
 
-The helper starts OpenOCD at most once per session start. If a service fails
-to bind after OpenOCD has started, the runner reports the failure and does not
-restart OpenOCD, because startup may already have changed target state or run
-user-supplied OpenOCD commands. An address conflict found before OpenOCD
+The remote helper starts OpenOCD at most once per session start. If a service
+fails to bind after OpenOCD has started, the runner reports the failure and
+does not restart OpenOCD, because startup may already have changed target state
+or run user-supplied OpenOCD commands. An address conflict found before OpenOCD
 starts can instead move the session to another address without repeating that
 work.
 
@@ -532,8 +534,8 @@ options or board runner arguments, or fixed command arguments.
 
 ### Checks beyond the schema
 
-The schema enforces the lexical forms on this page. Processing after the schema
-is limited to contextual checks that cannot be expressed as string syntax:
+The schema enforces the lexical forms on this page. Beyond the schema, only
+conditions that string syntax cannot express are checked:
 local home expansion and filesystem resolution, detection of colliding
 normalized local paths, selected remote and preset references, mandatory
 settings for the requested operation, and remote home expansion during a real

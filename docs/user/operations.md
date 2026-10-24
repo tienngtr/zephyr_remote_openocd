@@ -357,8 +357,8 @@ that SSH accepted it, not that OpenOCD is listening behind it.
 
 ### Exit status and connection loss
 
-When the operation completes, the runner asks the remote side to clean up while
-it keeps reading final output and results:
+When the operation completes, the runner asks the remote helper to clean up
+while it keeps reading final output and results:
 
 - **Stopping OpenOCD to end the session does not fail successful work.** For
   example, when GDB exits after a successful `debug` session, the runner stops
