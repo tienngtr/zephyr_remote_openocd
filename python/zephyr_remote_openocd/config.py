@@ -203,7 +203,9 @@ def _parse_yaml_document(text: str, config_path: Path) -> dict[str, object]:
     return document
 
 
-def _validate_schema(document: dict[str, object], config_path: Path) -> None:
+def _validate_schema(
+    document: dict[str, object], config_path: Path, *, selection_only: bool = False
+) -> None:
     try:
         schema_text = (
             files("zephyr_remote_openocd")
@@ -213,7 +215,12 @@ def _validate_schema(document: dict[str, object], config_path: Path) -> None:
         schema = json.loads(schema_text)
     except (OSError, json.JSONDecodeError) as error:
         raise ConfigError(f"cannot read configuration schema: {error}") from error
-    schema_error = next(Draft202012Validator(schema).iter_errors(document), None)
+    validator = Draft202012Validator(schema)
+    if selection_only:
+        errors = validator.evolve(schema={"$ref": "#/$defs/runnerSelection"}).iter_errors(document)
+    else:
+        errors = validator.iter_errors(document)
+    schema_error = next(errors, None)
     if schema_error is not None:
         location = ".".join(str(part) for part in schema_error.absolute_path)
         suffix = f" at {location}" if location else ""
@@ -288,6 +295,16 @@ def _definition(
     return RemoteDefinition(
         preset, ssh_host, openocd_command, ssh_command, forward_env, path_mappings
     )
+
+
+def load_default_runner(path: Path | None = None) -> str:
+    """Establish runner intent without validating or resolving remote settings."""
+    config_path = (path or default_config_path()).expanduser()
+    document = _load_yaml(config_path)
+    _validate_schema(document, config_path, selection_only=True)
+    default_runner = document.get("default_runner", "openocd")
+    assert isinstance(default_runner, str)
+    return default_runner
 
 
 def load_config(path: Path | None = None) -> RemoteOpenOcdConfig:

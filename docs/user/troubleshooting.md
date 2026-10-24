@@ -9,7 +9,7 @@ reported message or a symptom in the table below, or browse the sections. The
 | --- | --- |
 | Setup script `Error:` or dependency `Warning:` | [The setup script fails or warns](#the-setup-script-fails-or-warns) |
 | `remote_openocd` missing from `west flash --context` | [`remote_openocd` is not listed](#remote_openocd-is-not-listed-by-west-flash---context) |
-| CMake configuration fails after a configuration edit | [Apply configuration changes to a build](configuration.md#apply-configuration-changes-to-a-build) |
+| CMake configuration fails after a configuration edit | [CMake configuration errors](configuration.md#cmake-configuration-errors) |
 | `no remote selected for remote_openocd` | [No remote is selected](#no-remote-is-selected) |
 | `selected remote 'NAME' does not exist` | [No remote is selected](#no-remote-is-selected) |
 | The SSH executable cannot be started | [SSH works manually but the runner fails](#ssh-works-manually-but-the-runner-fails) |

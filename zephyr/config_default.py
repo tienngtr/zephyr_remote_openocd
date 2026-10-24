@@ -21,12 +21,12 @@ def find_module_root(start: Path) -> Path:
 MODULE_ROOT = find_module_root(Path(__file__))
 sys.path.insert(0, str(MODULE_ROOT / "python"))
 
-from zephyr_remote_openocd.config import ConfigError, load_config  # noqa: E402
+from zephyr_remote_openocd.config import ConfigError, load_default_runner  # noqa: E402
 
 
 def main() -> int:
     try:
-        print(load_config(Path(sys.argv[1])).default_runner)
+        print(load_default_runner(Path(sys.argv[1])))
     except ConfigError as error:
         print(error, file=sys.stderr)
         return 2

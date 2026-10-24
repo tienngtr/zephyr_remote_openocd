@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from zephyr_remote_openocd.config import ConfigError, load_config
 
 from tests.support import ROOT
 
@@ -83,6 +84,122 @@ def _build_module(build: Path, *, home: Path, override: str) -> subprocess.Compl
         check=False,
         timeout=30,
     )
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "default_runner: [\n",
+        "default_runner: remote_openocd\ndefault_runner: openocd\n",
+        "default_runner: openocd\nremotes:\n  lab:\n    ssh_host: a\n    ssh_host: b\n",
+        "default_runnner: remote_openocd\n",
+        "default_runner: openocd\nunknown: true\n",
+        "default_runner: elsewhere\n",
+        "default_runner: null\n",
+        "default_runner: true\n",
+        "default_runner: 1\n",
+        "default_runner: [remote_openocd]\n",
+        "default_runner: {runner: remote_openocd}\n",
+        "default_runner: openocd\n---\ndefault_runner: remote_openocd\n",
+        "null\n",
+        "[]\n",
+        "1: remote_openocd\n",
+    ),
+    ids=(
+        "malformed-yaml",
+        "duplicate-runner",
+        "duplicate-remote-key",
+        "misspelled-runner",
+        "unknown-key",
+        "invalid-runner",
+        "null-runner",
+        "bool-runner",
+        "number-runner",
+        "list-runner",
+        "mapping-runner",
+        "multiple-documents",
+        "null-root",
+        "list-root",
+        "non-string-key",
+    ),
+)
+def test_cmake_rejects_untrustworthy_runner_selection(tmp_path: Path, text: str) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(text)
+
+    result, _ = _configure_module(tmp_path, str(config))
+
+    assert result.returncode != 0
+    assert str(config) in result.stdout
+    assert "Traceback" not in result.stdout
+
+
+@pytest.mark.parametrize(
+    "runner", ("openocd", "remote_openocd", None), ids=("local", "remote", "omitted")
+)
+@pytest.mark.parametrize(
+    "remote_settings",
+    (
+        "default_remote: [invalid]\n",
+        "presets: null\n",
+        "remotes: false\n",
+        "remotes:\n  lab:\n    invalid_remote_field: value\n",
+        "remotes:\n  lab:\n    path_mappings:\n      /same: /one\n      /same/.: /two\n",
+    ),
+    ids=(
+        "default-remote-type",
+        "presets-type",
+        "remotes-type",
+        "remote-field",
+        "mapping-collision",
+    ),
+)
+def test_cmake_selects_runner_without_remote_validation(
+    tmp_path: Path, runner: str | None, remote_settings: str
+) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text((f"default_runner: {runner}\n" if runner else "") + remote_settings)
+
+    result, report = _configure_module(tmp_path, str(config))
+
+    assert result.returncode == 0, result.stdout
+    assert report.read_text().splitlines() == [str(config), runner or "openocd"]
+    with pytest.raises(ConfigError):
+        load_config(config)
+
+
+@pytest.mark.parametrize("initial_runner", ("openocd", "remote_openocd"))
+def test_cmake_selection_does_not_depend_on_previous_validity(
+    tmp_path: Path, initial_runner: str
+) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(f"default_runner: {initial_runner}\n")
+    result, report = _configure_module(tmp_path, str(config), generator="Ninja")
+    assert result.returncode == 0, result.stdout
+
+    for contents, expected in (
+        ("default_runnner: remote_openocd\n", None),
+        ("default_runner: openocd\nremotes: false\n", "openocd"),
+        ("default_runner: remote_openocd\nremotes: false\n", "remote_openocd"),
+    ):
+        config.write_text(contents)
+        result = _build_module(report.parent, home=tmp_path / "home", override=str(config))
+        if expected is None:
+            assert result.returncode != 0
+        else:
+            assert result.returncode == 0, result.stdout
+            assert report.read_text().splitlines() == [str(config), expected]
+
+
+@pytest.mark.parametrize("text", ("", "# no settings\n", "---\n", "{}\n"))
+def test_cmake_empty_configuration_uses_local_default(tmp_path: Path, text: str) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(text)
+
+    result, report = _configure_module(tmp_path, str(config))
+
+    assert result.returncode == 0, result.stdout
+    assert report.read_text().splitlines() == [str(config), "openocd"]
 
 
 @pytest.mark.parametrize(

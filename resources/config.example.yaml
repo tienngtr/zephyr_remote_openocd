@@ -1,4 +1,7 @@
 # Keep local OpenOCD as the default runner until remote operation is ready.
+# Even with this local default, YAML errors and invalid runner selection stop CMake.
+# Remote settings receive their complete check when remote_openocd runs.
+# Check them beforehand with scripts/user/validate_configuration.py.
 default_runner: openocd
 
 # After replacing the placeholders below, uncomment this to select lab whenever

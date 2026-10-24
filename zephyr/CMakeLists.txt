@@ -58,6 +58,8 @@ set_property(GLOBAL PROPERTY "BOARD_RUNNER_ARGS_${_zro_remote_id}"
              ${_zro_openocd_args})
 set_property(GLOBAL APPEND PROPERTY ZEPHYR_RUNNERS remote_openocd)
 
+# Establish runner intent from the current file. Remote-only validation belongs
+# to remote_openocd invocation; an ambiguous selection must fail configuration.
 execute_process(
   COMMAND "${PYTHON_EXECUTABLE}"
           "${ZEPHYR_CURRENT_CMAKE_DIR}/config_default.py"

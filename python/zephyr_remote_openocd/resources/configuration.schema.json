@@ -3,21 +3,12 @@
   "$id": "https://zephyr-remote-openocd.invalid/schema/configuration.json",
   "title": "zephyr_remote_openocd user configuration",
   "description": "User configuration for selecting the Zephyr runner and defining reusable remote OpenOCD connections.",
-  "type": "object",
-  "additionalProperties": false,
+  "allOf": [
+    {
+      "$ref": "#/$defs/runnerSelection"
+    }
+  ],
   "properties": {
-    "default_runner": {
-      "type": "string",
-      "enum": [
-        "openocd",
-        "remote_openocd"
-      ],
-      "description": "Runner selected when no other runner is requested. Use remote_openocd to run OpenOCD through a configured remote.",
-      "default": "openocd",
-      "examples": [
-        "remote_openocd"
-      ]
-    },
     "default_remote": {
       "type": "string",
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
@@ -52,6 +43,29 @@
     }
   },
   "$defs": {
+    "runnerSelection": {
+      "title": "Default runner selection",
+      "description": "Validates runner intent and known top-level keys without validating remote-only settings. Full configuration validation incorporates this fragment and validates those settings separately.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "default_runner": {
+          "type": "string",
+          "enum": [
+            "openocd",
+            "remote_openocd"
+          ],
+          "description": "Runner selected when no other runner is requested. Use remote_openocd to run OpenOCD through a configured remote.",
+          "default": "openocd",
+          "examples": [
+            "remote_openocd"
+          ]
+        },
+        "default_remote": true,
+        "presets": true,
+        "remotes": true
+      }
+    },
     "command": {
       "title": "Command",
       "description": "An argv sequence passed without shell splitting; the first item is the executable and later items are fixed arguments.",

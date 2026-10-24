@@ -1353,6 +1353,42 @@ def forbid_external_io(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         guard.assert_not_called()  # Also catch accidentally suppressed I/O failures.
 
 
+@pytest.mark.parametrize("default_runner", ("openocd", "remote_openocd"))
+@pytest.mark.parametrize("recording", (False, True), ids=("live", "recording"))
+@pytest.mark.parametrize(
+    "invalid_settings",
+    (
+        "remotes:\n  chosen:\n    openocd_command: [~/openocd]\n"
+        "  unused:\n    invalid_remote_field: value\n",
+        "remotes:\n  chosen:\n    openocd_command: [~/openocd]\n"
+        "presets:\n  unused:\n    openocd_command: [null]\n",
+    ),
+    ids=("unused-remote", "unused-preset"),
+)
+def test_remote_invocation_fully_validates_before_external_io(
+    runner_api: RunnerApi,
+    runner_config: RunnerConfig,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    forbid_external_io: None,
+    default_runner: str,
+    recording: bool,
+    invalid_settings: str,
+) -> None:
+    _, _, remote = runner_api
+    config = tmp_path / "config.yaml"
+    config.write_text(f"default_runner: {default_runner}\n" + invalid_settings)
+    monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", str(config))
+    monkeypatch.setenv("ZRO_RECORD", "1" if recording else "0")
+    runner = remote.create(runner_config, parser_for(remote).parse_args(["--remote=chosen"]))
+
+    with pytest.raises(RuntimeError) as error:
+        runner.run("debugserver")
+
+    assert isinstance(error.value.__cause__, ConfigError)
+    assert str(config) in str(error.value)
+
+
 @pytest.mark.parametrize(
     "command",
     (

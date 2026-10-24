@@ -126,8 +126,8 @@ creation, or deletion of the configuration file that was selected when CMake
 last configured that build, and updates the stored default. To apply those
 changes without flashing or debugging, run `west build`. Neither the pre-run
 build nor `west build` needs a pristine build or a full firmware compile and
-link. A `--no-rebuild` runner
-command intentionally uses the stored default as it is.
+link. A `--no-rebuild` runner command intentionally uses the stored default as
+it is.
 
 Reconfigure CMake with `west build --cmake-only -d <build>`, where `<build>` is
 the build directory, when:
@@ -138,11 +138,31 @@ the build directory, when:
   reconfigured, the stored default can still come from the previous file while
   runner commands read the new one.
 
+### CMake configuration errors
+
 > [!IMPORTANT]
-> Because CMake reads the configuration file, an invalid file makes CMake
-> configuration fail for an OpenOCD-capable build with this module active, even
-> when the build uses the `openocd` runner. To find the error, run the
-> [validator](#validate-the-configuration) on that file.
+> CMake configuration stops with an error for an OpenOCD-capable build with
+> this module active, even with `default_runner: openocd`, if the YAML file
+> contains:
+>
+> - malformed YAML;
+> - an invalid document structure, such as multiple YAML documents;
+> - duplicate mapping keys, including inside remote settings;
+> - unknown top-level keys, such as the misspelling `default_runnner`;
+> - an invalid type or value for `default_runner`.
+>
+> CMake prints the error and does not substitute local OpenOCD or a previous
+> valid default. Run the [validator](#validate-the-configuration) to find errors
+> in the file before building.
+
+CMake checks only what it needs to choose the default runner; success does not
+mean the remote settings are valid. After YAML parsing succeeds, invalid
+`default_remote`, `presets`, or `remotes` values do not stop CMake when
+`default_runner` selects either `openocd` or `remote_openocd`.
+
+Run the [validator](#validate-the-configuration) to check the complete file
+before using the remote settings. A `remote_openocd` command also checks the
+whole file before contacting the remote host.
 
 ### Format
 
@@ -152,8 +172,9 @@ defines every key, its allowed values, and their lexical forms;
 template.
 
 - An empty YAML document is equivalent to `{}`.
-- Unknown keys, duplicate YAML mapping keys, null values, and type mismatches
-  are errors.
+- A `remote_openocd` command and the validator reject unknown keys, duplicate
+  YAML mapping keys, null values, and type mismatches. See
+  [CMake configuration errors](#cmake-configuration-errors) for CMake's checks.
 - A missing configuration file uses the defaults. The validator is stricter;
   see [Validate the configuration](#validate-the-configuration).
 - A dangling symbolic link or another existing path that cannot be read as a
@@ -570,8 +591,9 @@ options or board runner arguments, or fixed command arguments.
 
 ### Checks beyond the schema
 
-The schema enforces the lexical forms on this page. Beyond the schema, only
-conditions that string syntax cannot express are checked:
+`remote_openocd` commands and the [validator](#validate-the-configuration)
+apply the complete schema, which enforces the lexical forms on this page.
+Beyond the schema, only conditions that string syntax cannot express are checked:
 local home expansion and filesystem resolution, detection of colliding
 normalized local paths, selected remote and preset references, mandatory
 settings for the requested operation, and remote home expansion during a real

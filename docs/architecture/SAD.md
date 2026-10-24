@@ -34,7 +34,8 @@ The primary drivers are:
 - one Linux implementation;
 - Zephyr 4.4.x compatibility;
 - local GDB and remote OpenOCD;
-- preserve ordinary Zephyr west runner workflows;
+- preserve ordinary Zephyr west runner workflows, including configurable
+  `remote_openocd` default selection;
 - reuse of existing board OpenOCD configuration;
 - concurrent remote sessions;
 - user-selectable SSH client;
@@ -270,11 +271,15 @@ operation.
 configuration's structure and lexical rules. The loader reads it by package
 identity through `importlib.resources`, independently of repository depth. The
 loader safely parses YAML with duplicate-key rejection, then uses `jsonschema`
-at runtime to validate the parsed document against that canonical schema. The
+to validate the parsed document against that canonical schema. CMake default
+selection and full runtime loading share this parsing implementation and all
+its safeguards. The schema's reusable `$defs.runnerSelection` fragment owns
+the allowed top-level keys and `default_runner` rules; the full schema
+incorporates it and adds validation of remote-only settings. The
 schema is the sole source for the structural and lexical rules it expresses;
-those rules are not duplicated in handwritten validators. It rejects explicit
-nulls and other structural and lexical violations, including invalid command
-and path spelling, NULs, and invalid normalized remote paths. Code then
+those rules are not duplicated in handwritten validators. Full loading rejects
+explicit nulls and other structural and lexical violations, including invalid
+command and path spelling, NULs, and invalid normalized remote paths. Code then
 expands and resolves local mapping keys and detects collisions because those
 operations depend on the local filesystem. Remote references and required
 `openocd_command` are checked only when the selected remote is used, allowing
@@ -482,6 +487,43 @@ The product's `default_runner` setting has two supported values:
 openocd
 remote_openocd
 ```
+
+CMake calls `zephyr/config_default.py`, which uses `load_default_runner()` to
+answer only what default is configured and whether that choice is safe to
+trust. It parses the current file with the shared strict YAML loader and
+validates the selection fragment of the packaged schema. Malformed YAML,
+duplicate keys anywhere in the document, invalid document/root forms, unknown
+top-level keys, and invalid runner types or values fail CMake configuration
+with an actionable diagnostic. In particular, a misspelled `default_runner`
+cannot silently become the omitted-key `openocd` default. A missing file,
+empty document, or genuinely omitted key retains that documented default.
+
+The fragment deliberately accepts `default_remote`, `presets`, and `remotes`
+without validating their values. Once shared YAML parsing and selection-level
+validation succeed, remote-only schema or contextual validation errors do not
+block generation of either default. Parser safeguards still apply throughout
+the document, including inside unused remotes and presets. This preserves
+ordinary west workflows while keeping untrustworthy runner intent from
+redirecting an intended remote operation to local OpenOCD. `load_config()`
+continues validating the entire schema and
+contextual loading rules on every `remote_openocd` invocation, including an
+explicit `-r remote_openocd`, before remote effects. Build default selection
+does not certify operational configuration validity or remote reachability.
+
+Selection depends solely on the current file and normal current build inputs.
+No configuration-validity history, last-known-good runner, fallback state, or
+user opt-in is stored or consulted. The existing build-cache entry identifying
+the selected configuration path (§15) tracks an input's identity, not its
+validity or a fallback runner. Regeneration re-evaluates the current file even
+after a failed configuration attempt.
+
+This layering preserves the full configuration contract and its accepted keys
+and values. Existing valid configuration files need no migration or new
+setting. The compatibility change is limited to build selection: a file that
+passes shared YAML parsing and selection-level validation can now configure a
+build despite remote-only schema or contextual errors. Remote operations still
+perform full configuration loading and validate the selected remote's required
+settings and references.
 
 ---
 

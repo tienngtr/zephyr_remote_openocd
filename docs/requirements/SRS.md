@@ -468,7 +468,9 @@ empty or comment-only YAML document SHALL also be accepted as the empty mapping
 but cannot be read as a file, or a document that fails YAML parsing, document
 or root validation, or schema validation, SHALL result in an actionable
 configuration error rather than silently using empty configuration or defaults
-or exposing an unhandled parser traceback.
+or exposing an unhandled parser traceback. Schema validation SHALL use the
+selection-level contract for CMake default selection (REQ-FUNC-SELECT-011)
+and the complete contract for runtime configuration loading.
 
 ### REQ-FUNC-CONFIG-009
 
@@ -476,10 +478,10 @@ Module upgrades SHALL NOT automatically rewrite an existing user configuration m
 
 ### REQ-FUNC-CONFIG-011
 
-Unknown keys, explicit nulls, duplicate YAML keys, invalid types, disallowed
-empty command executables, SSH hosts containing NUL, duplicate environment
-names, invalid paths, duplicate mappings, and conflicting mappings SHALL
-produce actionable configuration errors.
+During full configuration loading, unknown keys, explicit nulls, duplicate
+YAML keys, invalid types, disallowed empty command executables, SSH hosts
+containing NUL, duplicate environment names, invalid paths, duplicate mappings,
+and conflicting mappings SHALL produce actionable configuration errors.
 
 For path mappings, a duplicate mapping has a local key that normalizes to an
 already defined local root with the same destination. A conflicting mapping has
@@ -489,10 +491,14 @@ mappings and SHALL NOT be treated as conflicts.
 
 ### REQ-FUNC-CONFIG-012
 
-Configuration documents SHALL be accepted or rejected according to the
-canonical machine-readable schema for every structural and lexical rule that
-the schema expresses. The implementation SHALL additionally enforce the
-contextual semantics required by this specification where the schema cannot
+Full runtime configuration loading SHALL accept or reject documents according
+to the canonical machine-readable schema for every structural and lexical rule
+that the schema expresses. CMake selection validation SHALL use a reusable
+fragment of that same schema, also incorporated by the full configuration schema;
+selection rules SHALL NOT be duplicated in handwritten validators. Both layers
+SHALL share the YAML parsing implementation and its safeguards. The
+implementation SHALL additionally enforce the contextual semantics required
+by this specification where the schema cannot
 express them, including local path resolution and collision detection,
 selected-definition references, operationally required settings, and
 remote-home expansion.
@@ -693,6 +699,28 @@ state is expected to reflect that path.
 If rebuilding or CMake regeneration is explicitly disabled, such as by a
 `--no-rebuild` runner option, the implementation SHALL NOT be required to
 update existing generated state until a later regeneration.
+
+### REQ-FUNC-SELECT-011
+
+For OpenOCD-capable builds with the module active, CMake SHALL validate only
+whether the configured default runner can be safely established. Malformed
+YAML, duplicate mapping keys, invalid document or root forms, unknown top-level
+keys, and an invalid type or value for `default_runner` SHALL fail CMake
+configuration with an actionable error. Such failures SHALL NOT implicitly
+select local OpenOCD or reuse a previously valid default.
+
+Once shared YAML parsing and selection-level validation succeed, errors that
+would be found only by full validation of `default_remote`, `presets`, or
+`remotes` SHALL NOT prevent generation of either supported default.
+An absent configuration, an empty document, or an omitted `default_runner`
+SHALL select the documented `openocd` default. The decision SHALL depend only
+on the current configuration and normal current build inputs, never previous
+configuration validity, a last-known-good value, or fallback state.
+
+Every actual `remote_openocd` invocation SHALL still load and validate the
+complete configuration contract before remote effects, regardless of the
+configured default or prior CMake selection success. Selection validation
+SHALL NOT replace full runtime validation.
 
 ---
 
