@@ -192,12 +192,12 @@ and debug runner, see
 
 For each operation, the runner uses the configured SSH command to:
 
-1. deploy a helper program to the remote host, which runs with the remote
+1. deploy the remote helper, a Python program that runs with the remote
    `python3`;
 2. copy the required build output and board-support files to the remote host,
    unless a path mapping supplies them; see
    [Files copied to the remote](docs/user/configuration.md#files-copied-to-the-remote);
-3. start OpenOCD through the helper and relay its output to the local
+3. start OpenOCD through the remote helper and relay its output to the local
    terminal;
 4. forward the OpenOCD services selected by the command and its port options
    to local loopback ports; see

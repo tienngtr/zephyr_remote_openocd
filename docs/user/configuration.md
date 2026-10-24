@@ -12,7 +12,8 @@ In the commands below, replace `/path/to/zephyr_remote_openocd` with the path
 where the module was placed.
 
 1. Create the configuration file with the
-   [setup script](../../README.md#2-run-the-setup-script):
+   [setup script](../../README.md#2-run-the-setup-script), using the Python
+   environment configured for Zephyr 4.4.x:
 
    ```sh
    python3 /path/to/zephyr_remote_openocd/scripts/user/setup.py
@@ -68,7 +69,10 @@ After the explicit command works, uncomment `default_remote: lab` to omit
 `default_runner: openocd` to use local OpenOCD by default, or change it to
 `remote_openocd`. In an OpenOCD-capable build, the configured value, or
 `openocd` when the key is omitted, replaces the board's original default flash
-and debug runner. Other runners remain available with `-r`.
+and debug runner. Other runners remain available with `-r`. The build stores
+this default; see
+[Apply configuration changes to a build](#apply-configuration-changes-to-a-build)
+for when a change takes effect.
 
 ## Configuration file
 
@@ -88,8 +92,9 @@ module is configured into a build, the pre-run incremental build of ordinary
 `west flash` and `west debug` commands detects changes to the contents,
 creation, or deletion of the configuration file that was selected when CMake
 last configured that build, and updates the stored default. To apply those
-changes without flashing or debugging, run `west build`. A `--no-rebuild`
-runner command intentionally uses the stored default as it is.
+changes without flashing or debugging, run `west build`. Neither needs a
+pristine build or a full firmware compile and link. A `--no-rebuild` runner
+command intentionally uses the stored default as it is.
 
 Reconfigure CMake with `west build --cmake-only -d <build>`, where `<build>` is
 the build directory, when:
@@ -103,7 +108,8 @@ the build directory, when:
 > [!IMPORTANT]
 > Because CMake reads the configuration file, an invalid file makes CMake
 > configuration fail for an OpenOCD-capable build with this module active, even
-> when the build uses the `openocd` runner.
+> when the build uses the `openocd` runner. To find the error, run the
+> [validator](#validate-the-configuration).
 
 ### Format
 
@@ -229,11 +235,11 @@ remotes:
 
 `ssh_command` is an argv sequence executed on the local machine to start SSH.
 `openocd_command` is an argv sequence sent through SSH and executed on the
-remote host. West and GDB remain local. The runner also deploys a helper
-program to the remote host, which runs with the remote `python3`.
+remote host. West and GDB remain local. The runner also deploys the remote
+helper, a Python program that runs with the remote `python3`.
 
-Keep the local runner and the deployed helper from the same module copy, and
-update the module copy as a whole. The deployed helper always matches the
+Keep the local runner and the deployed remote helper from the same module copy,
+and update the module copy as a whole. The deployed helper always matches the
 local runner's revision; the runner does not negotiate compatibility with other
 helper revisions, so `remote_openocd` does not support pairing the local runner
 with a helper from another revision.
@@ -316,16 +322,22 @@ SSH connection sharing, including `ControlMaster`, remains managed by the SSH
 client; the runner does not disable it or issue client-specific cancellation
 commands. With `ControlMaster auto`, `ControlPersist no`, and no existing
 master, a runner-launched SSH process can itself become the master and couple
-other sessions to its lifetime. To avoid that, establish the master first or
-set `ControlPersist` to `yes` or a time.
+other sessions to its lifetime. For concurrent sessions over a shared
+connection, set `ControlPersist` to `yes` or a time so that the master runs as
+a separate background process, or establish the master outside the runner
+first, for example with `ssh -MNf HOST`. Run that command with the SSH
+executable and fixed options from `ssh_command`, replacing `HOST` with the
+remote's `ssh_host`. This guidance describes OpenSSH behavior; see
+[Other sessions disconnect when one session ends](troubleshooting.md#other-sessions-disconnect-when-one-session-ends).
 
 Runner cleanup does not remove forwards retained by a sharing master, and a
 connection-sharing client may reuse an existing forward with matching
 endpoints. The runner's best-effort preferred-address cache, which has no YAML
 setting, can help that reuse; stale or unreadable cache data does not by itself
-fail an operation or bypass the helper's address-lease and remote-port checks.
-See [connection-sharing troubleshooting](troubleshooting.md#ssh-connection-sharing)
-for the cache and for stale forwards.
+fail an operation or bypass the remote helper's address-lease and remote-port
+checks. See
+[Preferred-address cache](troubleshooting.md#preferred-address-cache) and
+[A retained forward occupies the local port](troubleshooting.md#a-retained-forward-occupies-the-local-port).
 
 ### Fixed OpenOCD arguments
 
@@ -368,12 +380,13 @@ work.
 
 ### Files copied to the remote
 
-The runner stages the required local files and directories for each session
-automatically, unless a path mapping supplies an existing remote resource.
-Local Zephyr board-support and configuration directories are normally staged,
-so local changes are used. A file referenced only by fixed `openocd_command`
-arguments or by OpenOCD commands is not identified as a required input, so the
-runner does not stage, map, or translate it because of that reference.
+The runner copies (stages) the required local files and directories for each
+session automatically, unless a path mapping supplies an existing remote
+resource. Local Zephyr board-support and configuration directories are normally
+staged, so local changes are used. A file referenced only by fixed
+`openocd_command` arguments or by OpenOCD commands is not identified as a
+required input, so the runner does not stage, map, or translate it because of
+that reference.
 
 Map a large, stable resource only when it already exists on the remote host,
 such as an OpenOCD scripts tree. Mapped resources are not copied:

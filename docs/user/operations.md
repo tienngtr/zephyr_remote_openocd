@@ -17,8 +17,8 @@ Before using the commands on this page, make sure that:
   [activate the module](../../README.md#3-activate-the-module) and
   [configure the build](../../README.md#6-configure-the-build) in the README.
 - **A remote is configured.** The configuration file defines the remote host
-  and its OpenOCD command; see the
-  [configuration quick start](configuration.md#quick-start).
+  and its OpenOCD command; see
+  [Configure the remote](../../README.md#4-configure-the-remote) in the README.
 
 ## Runner, remote, and probe options
 
@@ -27,10 +27,11 @@ this runner and the remote named `lab`. Either option can be omitted:
 
 - **Omit `--remote`** when `ZEPHYR_REMOTE_OPENOCD_REMOTE` or `default_remote`
   selects a remote; see
-  [defaults and inheritance](configuration.md#defaults-and-inheritance).
+  [Remote selection order](configuration.md#remote-selection-order).
 - **Omit `-r remote_openocd`** after setting `default_runner: remote_openocd`.
-  In OpenOCD-capable builds, this setting overrides the board's own default
-  runner; see the [configuration quick start](configuration.md#quick-start).
+  In OpenOCD-capable builds, this setting overrides the board's default flash
+  and debug runner; see
+  [Choose the default remote and runner](configuration.md#choose-the-default-remote-and-runner).
 
 Select any other available runner with `-r`, for example `west flash -r openocd`
 for local OpenOCD.
@@ -127,13 +128,16 @@ west debugserver -r remote_openocd --remote lab
 ```
 
 The runner starts remote OpenOCD, forwards its GDB service, and prints the
-local GDB endpoint. It does not start GDB. Start a local GDB for the target
+local GDB endpoint as
+`Remote OpenOCD GDB forwarding established at 127.0.0.1:PORT`. It does not
+start GDB. Start a local GDB for the target
 architecture with the build ELF, for example
 `arm-zephyr-eabi-gdb build/zephyr/zephyr.elf` from the Zephyr SDK, and connect
-it to the printed address:
+it to the printed address, replacing `PORT` with the port from the printed
+line:
 
 ```text
-target extended-remote 127.0.0.1:<printed-gdb-port>
+target extended-remote 127.0.0.1:PORT
 ```
 
 After the client detaches, stop `debugserver` with Ctrl-C.
@@ -194,7 +198,8 @@ west debugserver -r remote_openocd --remote lab --rtt-server
 ```
 
 `debug` and `attach` still start GDB, and `debugserver` still does not. No
-local RTT client is started: the runner prints the forwarded RTT endpoint.
+local RTT client is started: the runner prints the forwarded RTT endpoint as
+`Remote OpenOCD RTT forwarding established at 127.0.0.1:PORT`.
 Connect any RTT client to the printed port, for example:
 
 ```sh
@@ -282,9 +287,12 @@ Ctrl-C takes effect during the operation, with these exceptions:
 4. Optionally delete the local preferred-address cache at
    `~/.cache/zephyr_remote_openocd/preferred-addresses/`. This removes only
    remembered addresses, not SSH forwards retained by an
-   [SSH connection-sharing](#ssh-connection-sharing) master.
+   [SSH connection-sharing](#ssh-connection-sharing) master; to remove those,
+   see
+   [A retained forward occupies the local port](troubleshooting.md#a-retained-forward-occupies-the-local-port).
 5. After all sessions have stopped, optionally remove these locations on the
-   remote host:
+   remote host. Before removing session workspaces, follow
+   [Retained session data](troubleshooting.md#retained-session-data):
 
    ```text
    ~/.local/libexec/zephyr_remote_openocd/
@@ -366,17 +374,20 @@ it keeps reading final output and results:
 
 If the local SSH client detects a lost connection, the runner fails the
 operation and attempts local cleanup at the runner's next status check, which
-can be after GDB exits. The remote helper cleans up OpenOCD after it observes
-that its control channel is gone.
+can be after GDB exits. The remote helper begins a bounded cleanup of OpenOCD
+and the session only after it observes that its control channel is gone; local
+detection does not show when that happens. See
+[The SSH connection is lost](troubleshooting.md#the-ssh-connection-is-lost).
 
 ### SSH connection sharing
 
 With OpenSSH `ControlMaster` or another SSH connection-sharing mechanism, local
 forwards can outlive the runner command, and a stale forward can cause port
 conflicts that must be cleaned up through the SSH client. Sharing state stays
-under the SSH client's control; see
-[connection-sharing troubleshooting](troubleshooting.md#ssh-connection-sharing),
-including how to run concurrent sessions over a shared connection.
+under the SSH client's control. To run concurrent sessions over a shared
+connection, see [Connection sharing](configuration.md#connection-sharing); for
+problems, see
+[SSH connection sharing](troubleshooting.md#ssh-connection-sharing).
 
 When a session closes, the runner attempts to clean up what it started: its SSH
 subprocesses and their I/O, remote OpenOCD, the session's reserved remote
@@ -388,4 +399,4 @@ remembered from an earlier session. It can receive a different address, for
 example when another session holds that address or its remote port is
 occupied. A forward retained from the earlier session can then occupy the
 local port; see
-[connection-sharing troubleshooting](troubleshooting.md#ssh-connection-sharing).
+[A retained forward occupies the local port](troubleshooting.md#a-retained-forward-occupies-the-local-port).

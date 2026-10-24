@@ -14,7 +14,7 @@ reported message or a symptom in the table below, or browse the sections. The
 | `selected remote 'NAME' does not exist` | [No remote is selected](#no-remote-is-selected) |
 | The SSH executable cannot be started | [SSH works manually but the runner fails](#ssh-works-manually-but-the-runner-fails) |
 | `cannot resolve remote home for NAME` | [A remote `python3` error](#remote-helper-deployment-or-startup-fails-with-a-python3-error) |
-| `... timed out after N seconds` | [A preparation step times out](#a-preparation-step-times-out) |
+| `remote staging timed out`, `helper deployment timed out`, `remote OpenOCD version query timed out`, `... timed out after N seconds` | [A preparation step times out](#a-preparation-step-times-out) |
 | `remote OpenOCD version query failed` | [The OpenOCD version query fails](#the-openocd-version-query-fails) |
 | `invalid remote OpenOCD version response` | [The OpenOCD version query fails](#the-openocd-version-query-fails) |
 | `cannot parse remote OpenOCD version` | [The OpenOCD version query fails](#the-openocd-version-query-fails) |
@@ -105,7 +105,8 @@ options, and the remote environment of non-interactive SSH commands. Check
 that:
 
 - the [remote prerequisite checks](../../README.md#5-validate-the-configuration-and-remote-prerequisites)
-  succeed with the same SSH options, so remote `python3` and the configured
+  succeed with the executable and fixed options from `ssh_command`, so remote
+  `python3` and the configured
   OpenOCD executable are available in that environment;
 - `ssh_command` is an argv list of fixed options without shell pipelines or
   redirections; see [Custom SSH arguments](configuration.md#custom-ssh-arguments);
@@ -120,7 +121,7 @@ the executable path in `ssh_command`.
 Install remote `python3` version 3.12 or newer so that it is available to
 non-interactive SSH commands, then repeat the
 [remote prerequisite checks](../../README.md#5-validate-the-configuration-and-remote-prerequisites)
-with the same SSH options.
+with the executable and fixed options from `ssh_command`.
 
 The runner deploys the remote helper, a Python program, and starts it with the
 remote `python3` through the configured SSH command. The runner does not check
@@ -130,25 +131,31 @@ error.
 
 When `openocd_command` or a path-mapping destination starts with `~`, the
 runner also uses remote `python3` to find the remote home directory, and a
-failure is reported as `cannot resolve remote home for NAME`.
+failure is reported as `cannot resolve remote home for NAME`. If the message
+ends with `timed out after 30 seconds`, see
+[A preparation step times out](#a-preparation-step-times-out).
 
 ### A preparation step times out
 
-A timeout usually means SSH could not connect or authenticate promptly, for
-example because the host is unreachable or a prompt went unanswered. Repeat the
+The error names the step and its timeout:
+`cannot resolve remote home for NAME: timed out after 30 seconds`,
+`helper deployment timed out after 30 seconds`,
+`remote OpenOCD version query timed out after 30 seconds`, or
+`remote staging timed out after 60 seconds`. These limits have no
+configuration setting. A timeout does not show whether the remote step
+completed or was cleaned up.
+
+**Any step.** A timeout usually means SSH could not connect or authenticate
+promptly, for example because the host is unreachable or a prompt went
+unanswered. Repeat the
 [remote prerequisite checks](../../README.md#5-validate-the-configuration-and-remote-prerequisites)
-with the same SSH options, and run the command with `west -v` to see the full
-traceback.
+with the executable and fixed options from `ssh_command`, and run the command
+with `west -v` to see the full traceback.
 
 **Staging over a slow link.** Map large, stable resources that already exist on
 the remote host, such as an OpenOCD scripts tree, through `path_mappings` so
 that they are not copied; see
 [Files copied to the remote](configuration.md#files-copied-to-the-remote).
-
-**Time limits.** Remote-home resolution, helper deployment, and the OpenOCD
-version query each allow 30 seconds; staging allows 60 seconds. These limits
-have no configuration setting. The error names the step and its timeout. A
-timeout does not show whether the remote step completed or was cleaned up.
 
 ### The OpenOCD version query fails
 
@@ -237,7 +244,8 @@ If a required local service port is occupied and its forward cannot be
 established, the operation fails rather than choosing another port, and the
 error names the service and port. Stop the program using the port, or move the
 service with the runner port options described in
-[Forwarded services](operations.md#forwarded-services). With SSH connection
+[Forwarded services](operations.md#forwarded-services) and, for GDB,
+[GDB ports](operations.md#gdb-ports). With SSH connection
 sharing, the listener can be a
 [forward retained from an earlier session](#a-retained-forward-occupies-the-local-port).
 
@@ -294,8 +302,8 @@ OpenOCD result nor proof of remote cleanup.
 `CONTROLLER_LEASE_LOST` means the remote helper's input ended before the runner
 released the session, typically because the SSH connection or a wrapper ended
 remote stdin without the local runner closing it. The operation fails even if
-the helper's final result arrives after local shutdown begins. Check the SSH
-connection and confirm that `ssh_command` supports the
+the remote helper's final result arrives after local shutdown begins. Check the
+SSH connection and confirm that `ssh_command` supports the
 [stdin half-close](configuration.md#stdin-half-close).
 
 ### The SSH connection is lost
@@ -332,8 +340,9 @@ its own Ctrl-C handling and exits on it can still end the connection;
 
 `ControlMaster` and other SSH connection-sharing mechanisms are managed by the
 SSH client, including forwards that an external sharing master keeps after
-the runner exits. Runner cleanup covers the processes the runner started, so a
-listener kept by such a master is not, by itself, a failed runner cleanup.
+the runner exits. Runner cleanup covers the processes and remote session
+resources the runner started, so a listener kept by such a master is not, by
+itself, a failed runner cleanup.
 
 ### Other sessions disconnect when one session ends
 
@@ -346,11 +355,9 @@ session ends, its SSH process waits for the other sessions' channels, the
 runner stops it after its shutdown budget, and the other sessions lose their
 transport.
 
-For concurrent sessions over a shared connection, set `ControlPersist` to `yes`
-or a time so that the master runs as a separate background process, or
-establish the master outside the runner first, for example with
-`ssh -MNf HOST`. Run that command with the SSH executable and fixed options
-from `ssh_command`, replacing `HOST` with the remote's `ssh_host`.
+To avoid it, set `ControlPersist` to `yes` or a time, or establish the master
+outside the runner first; see
+[Connection sharing](configuration.md#connection-sharing) for the command.
 
 ### A retained forward occupies the local port
 
@@ -363,7 +370,8 @@ forward occupies the requested local port and either:
 
 Inspect and remove the stale state through the SSH client's normal controls,
 then retry. The runner does not perform this cleanup automatically. For
-OpenSSH, run these commands with the same SSH options as `ssh_command`,
+OpenSSH, run these commands with the executable and fixed options from
+`ssh_command` in place of `ssh`,
 replacing `HOST` with the remote's `ssh_host`. For example:
 
 - `ssh -O check HOST` reports whether a master is running;
@@ -400,9 +408,9 @@ remote SSH environment does not identify an existing directory.
 At the end of each session, after confirmed process and staging cleanup, the
 remote helper attempts to remove the session workspace and its session
 metadata. This applies on normal exit, failure, interruption, or loss of the
-SSH control connection once the helper observes that loss. Failure to remove
-any of these is reported as a cleanup failure while the connection can still
-deliver the report; after SSH loss, the report may not arrive.
+SSH control connection once the remote helper observes that loss. Failure to
+remove any of these is reported as a cleanup failure while the connection can
+still deliver the report; after SSH loss, the report may not arrive.
 
 Orphaned session metadata older than 24 hours whose workspace is absent can be
 removed during a later session's setup. This does not guarantee a maximum
