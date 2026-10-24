@@ -217,6 +217,10 @@ choosing between them.
   user-facing names ("the setup script", "OpenOCD commands") and standard
   phrasing ("does not start GDB"). Leave out incidental examples that imply a
   false distinction.
+- **Examples.** Keep user documentation board- and vendor-agnostic. An
+  example may name a concrete board that is publicly available in upstream
+  Zephyr, provided the text makes clear that it is only an example and says
+  what to replace it with.
 - **Instructions.** Give a fix's purpose, and do not present it as the only or
   best fix without support. A substitution instruction says what to replace
   and with what. Phrase a heading as an instruction only when the section is a
