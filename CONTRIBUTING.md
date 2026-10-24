@@ -234,5 +234,7 @@ Code never overrides a conflicting formal requirement; report the conflict.
   procedure.
 - **Prerequisites.** State them before the task that needs them, and list
   only genuine prerequisites.
-- **Visual structure.** Use headings, bold labels, tables, and GitHub alerts;
-  do not use emoji.
+- **Visual structure.** Use headings, lists, tables, bold labels, and GitHub
+  alerts when they improve scanability. Reserve alerts for consequences or
+  constraints that readers are likely to miss. Do not use emoji as structural
+  decoration.
