@@ -1,16 +1,27 @@
 # Documentation
 
-Documentation is grouped by audience:
+**Users**
 
-- [`user/`](user/): installation, configuration, operations, and troubleshooting.
-- [`requirements/SRS.md`](requirements/SRS.md): normative product requirements.
-- [`architecture/SAD.md`](architecture/SAD.md): current design and rationale.
-- [`architecture/protocol.md`](architecture/protocol.md): Protocol v1 wire
-  format and behavior.
-- [`development/`](development/): contributor test and fixture guidance.
-- [`traceability/verification.md`](traceability/verification.md): direct
-  requirement-to-maintained-test mapping.
+- Start with the root [README](../README.md), which covers installation,
+  module activation, and the first remote flash.
+- [User guides](user/): configuration, operations, and troubleshooting.
 
-The root [`README.md`](../README.md) is the quickest user entry point. Human
-contribution guidance is in [`CONTRIBUTING.md`](../CONTRIBUTING.md), while
-durable coding-agent guidance is in [`AGENTS.md`](../AGENTS.md).
+**Specifications**, which define the contract that the user documentation
+describes:
+
+- [Software Requirements Specification (SRS)](requirements/SRS.md): normative
+  product requirements.
+- [Software Architecture Document (SAD)](architecture/SAD.md): current design
+  and rationale.
+- [Protocol v1](architecture/protocol.md): wire format and behavior of the
+  remote helper protocol.
+
+**Contributors and maintainers**
+
+- [Development guides](development/): testing, test design, and
+  hardware-inventory guidance.
+- [Traceability](traceability/): mapping from requirements to maintained
+  verification evidence.
+- [Contributing](../CONTRIBUTING.md): developer setup, checks, and
+  contribution rules.
+- [Agent guidelines](../AGENTS.md): durable coding-agent guidance.
