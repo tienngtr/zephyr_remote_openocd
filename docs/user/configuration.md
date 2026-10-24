@@ -291,8 +291,9 @@ does not support wrappers that:
 
 When the remote helper recognizes that its input ended without the release
 message, it reports `CONTROLLER_LEASE_LOST` and the operation fails; see
-[Troubleshooting](troubleshooting.md). There is no alternate shutdown mode or
-YAML option, so replace or reconfigure an incompatible wrapper.
+[`CONTROLLER_LEASE_LOST`](troubleshooting.md#controller_lease_lost). There is
+no alternate shutdown mode or YAML option, so replace or reconfigure an
+incompatible wrapper.
 
 #### Forwarding options
 
