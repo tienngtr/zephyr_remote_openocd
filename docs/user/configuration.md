@@ -1,102 +1,131 @@
 # Configuration
 
+The `remote_openocd` runner reads one YAML configuration file that defines the
+remote hosts and how to reach them. By default the file is
+`~/.config/zephyr_remote_openocd/config.yaml`. This page covers creating and
+validating the file, defining remotes, and the rules the runner applies to
+each setting.
+
 ## Quick start
 
-Create the canonical configuration:
+In the commands below, replace `/path/to/zephyr_remote_openocd` with the path
+where the module was placed.
 
-```sh
-python3 /path/to/zephyr_remote_openocd/scripts/user/setup.py
-```
+1. Create the configuration file with the
+   [setup script](../../README.md#2-run-the-setup-script):
 
-Setup creates `~/.config/zephyr_remote_openocd/config.yaml` and never
-overwrites an existing file. The generated file contains a safe, unselected
-`lab` remote. Edit it and replace these two placeholders:
+   ```sh
+   python3 /path/to/zephyr_remote_openocd/scripts/user/setup.py
+   ```
 
-```yaml
-remotes:
-  lab:
-    ssh_host: replace-with-ssh-host-or-alias
-    openocd_command:
-      - /opt/zephyr-sdk-1.0.1/hosttools/sysroots/x86_64-pokysdk-linux/usr/bin/openocd
-```
+   The setup script creates `~/.config/zephyr_remote_openocd/config.yaml` and
+   never overwrites an existing file. The generated file contains a `lab`
+   remote that is safe to keep: nothing uses it until `--remote lab`,
+   `ZEPHYR_REMOTE_OPENOCD_REMOTE=lab`, or `default_remote: lab` selects it.
 
-The SSH host may be a host name or an alias from your normal SSH configuration.
-The OpenOCD path is interpreted on that remote host. Validate the file and show
-the effective settings without contacting SSH, OpenOCD, GDB, or hardware:
+2. In the `lab` remote, replace the `ssh_host` value with the remote host name
+   or an alias from the normal SSH configuration, and replace the
+   `openocd_command` path with the path of the OpenOCD executable on that
+   remote host:
 
-```sh
-python3 /path/to/zephyr_remote_openocd/scripts/user/validate_configuration.py \
-  --remote lab
-```
+   ```yaml
+   remotes:
+     lab:
+       ssh_host: replace-with-ssh-host-or-alias
+       openocd_command:
+         - /opt/zephyr-sdk-1.0.1/hosttools/sysroots/x86_64-pokysdk-linux/usr/bin/openocd
+   ```
 
-Validation always checks syntax and schema rules. When a remote is selected, it
-also checks that remote's preset reference, applies its defaults, and checks its
-required settings. Broken references or missing operational settings in
-unselected remotes remain allowed. Validation does not verify connectivity or
-that the configured executable exists. Check those prerequisites separately:
+3. [Validate the configuration](#validate-the-configuration) without
+   contacting SSH, OpenOCD, GDB, or hardware:
 
-```sh
-ssh replace-with-ssh-host-or-alias python3 --version
-ssh replace-with-ssh-host-or-alias \
-  /opt/zephyr-sdk-1.0.1/hosttools/sysroots/x86_64-pokysdk-linux/usr/bin/openocd \
-  --version
-```
+   ```sh
+   python3 /path/to/zephyr_remote_openocd/scripts/user/validate_configuration.py \
+     --remote lab
+   ```
 
-Then use the remote explicitly:
+4. Check the remote prerequisites that validation does not cover: that the
+   configured SSH command reaches the host, that the remote `python3` is
+   version 3.12 or newer, and that the configured OpenOCD executable runs
+   there. The commands are in the README's
+   [validation step](../../README.md#5-validate-the-configuration-and-remote-prerequisites).
 
-```sh
-west flash -r remote_openocd --remote lab
-```
+5. Use the remote explicitly. This requires the module to be
+   [activated](../../README.md#3-activate-the-module) and the build
+   [configured](../../README.md#6-configure-the-build) so that
+   `west flash --context` lists `remote_openocd`:
 
-After that works, uncomment `default_remote: lab` if desired. Keep
-`default_runner: openocd` to select local OpenOCD as the default, or change it
-to `remote_openocd`. For OpenOCD-capable builds, either value replaces the
-board's original default flash and debug runner; other runners remain available
-with `-r`. Once this module is already configured into the build,
-changes to the contents, creation, or deletion of the configuration file selected
-when CMake last configured that build are detected by the pre-run incremental
-build of ordinary `west flash` or `west debug` commands. Run `west build` to apply
-these file changes explicitly, or run `west build --cmake-only -d <build>` first
-if the build directory predates activation of this module. A `--no-rebuild`
-runner command intentionally consumes existing generated state.
+   ```sh
+   west flash -r remote_openocd --remote lab
+   ```
 
-Set a non-empty `ZEPHYR_REMOTE_OPENOCD_CONFIG` to read a different file; a
-leading current-user `~` is expanded, and the file contents are YAML regardless
-of the filename extension. The validator uses the same override when no
-configuration path is passed. An explicit validator `--remote` takes precedence
-over `default_remote`; unlike a real runner operation, validation deliberately
-ignores `ZEPHYR_REMOTE_OPENOCD_REMOTE` so its result is deterministic.
+### Choose the default remote and runner
 
-After changing `ZEPHYR_REMOTE_OPENOCD_CONFIG` for an existing build directory,
-run a CMake reconfiguration such as `west build --cmake-only -d <build>` before
-relying on the generated default runner. Each process still reads the
-configuration selected by its current environment; changing the override alone
-does not update the existing build's generated default.
+After the explicit command works, uncomment `default_remote: lab` to omit
+`--remote lab`; see [Remote selection order](#remote-selection-order).
 
-The validator lists `forward_env` names without collecting or displaying their
-current values as forwarded-environment settings. It still reads variables
-independently needed for configuration discovery and path resolution, even
-when those names also appear in `forward_env`. Resolved paths may appear in the
-summary; this is not general secret redaction.
+`default_runner` selects the default flash and debug runner. Keep
+`default_runner: openocd` to use local OpenOCD by default, or change it to
+`remote_openocd`. In an OpenOCD-capable build, the configured value, or
+`openocd` when the key is omitted, replaces the board's original default flash
+and debug runner. Other runners remain available with `-r`.
+
+## Configuration file
+
+### Location
+
+Set a non-empty `ZEPHYR_REMOTE_OPENOCD_CONFIG` to read a file other than
+`~/.config/zephyr_remote_openocd/config.yaml`. A leading current-user `~` is
+expanded, and the contents are read as YAML regardless of the filename
+extension. After changing the variable for an existing build, reconfigure it;
+see [Apply configuration changes to a build](#apply-configuration-changes-to-a-build).
+
+### Apply configuration changes to a build
+
+The build stores only the default runner derived from `default_runner`; runner
+commands read the rest of the configuration each time they run. Once this
+module is configured into a build, the pre-run incremental build of ordinary
+`west flash` and `west debug` commands detects changes to the contents,
+creation, or deletion of the configuration file that was selected when CMake
+last configured that build, and updates the stored default. To apply those
+changes without flashing or debugging, run `west build`. A `--no-rebuild`
+runner command intentionally uses the stored default as it is.
+
+Reconfigure CMake with `west build --cmake-only -d <build>`, where `<build>` is
+the build directory, when:
+
+- the build directory predates activation of this module;
+- `ZEPHYR_REMOTE_OPENOCD_CONFIG` now selects a different file. An ordinary
+  incremental build does not detect that change, so until CMake is
+  reconfigured, the stored default can still come from the previous file while
+  runner commands read the new one.
+
+> [!IMPORTANT]
+> Because CMake reads the configuration file, an invalid file makes CMake
+> configuration fail for an OpenOCD-capable build with this module active, even
+> when the build uses the `openocd` runner.
+
+### Format
 
 The complete machine-readable contract is
-[`configuration.schema.json`](../../python/zephyr_remote_openocd/resources/configuration.schema.json), and
-the commented template is [`config.example.yaml`](../../resources/config.example.yaml).
-An empty YAML document is equivalent to `{}`. Unknown keys, duplicate YAML
-mapping keys, null values, and type mismatches are errors.
-A genuinely absent configuration file uses the defaults. A dangling symbolic
-link or another existing path that cannot be read as a file is an error; valid
-symbolic links to configuration files are supported.
+[`configuration.schema.json`](../../python/zephyr_remote_openocd/resources/configuration.schema.json),
+and the commented template is
+[`config.example.yaml`](../../resources/config.example.yaml). The schema is
+authoritative for structure and lexical rules.
 
-The user-facing validator requires its target file to exist. If setup has not
-created the default file, it exits with guidance instead of reporting empty
-runtime defaults as a valid user configuration.
+- An empty YAML document is equivalent to `{}`.
+- Unknown keys, duplicate YAML mapping keys, null values, and type mismatches
+  are errors.
+- A missing configuration file uses the defaults. The validator is stricter;
+  see [Validate the configuration](#validate-the-configuration).
+- A dangling symbolic link or another existing path that cannot be read as a
+  file is an error. Valid symbolic links to configuration files are supported.
 
-## Editor assistance
+### Editor assistance
 
 The JSON Schema provides hover text, defaults, examples, completion choices,
 and unknown-key validation. With the Red Hat YAML extension for VS Code, add an
-association like this to user settings, replacing both absolute paths:
+association like this to user settings:
 
 ```json
 {
@@ -108,54 +137,51 @@ association like this to user settings, replacing both absolute paths:
 }
 ```
 
-The schema is authoritative for structure and lexical rules. The validator
-also resolves preset references and settings required by the selected remote.
+Replace `/path/to/zephyr_remote_openocd` with the absolute path of the module,
+and `/home/USER/.config/zephyr_remote_openocd/config.yaml` with the absolute
+path of the configuration file.
 
-## What runs where
-
-`ssh_command` is an argv sequence executed on the local machine to start SSH.
-`openocd_command` is an argv sequence sent through SSH and executed on the
-remote machine. West and GDB remain local.
-
-Fixed arguments after the executable in `openocd_command` are an advanced
-escape hatch. They form an opaque argv prefix before runner-generated OpenOCD
-arguments and retain their exact values and order, including literal
-`{workspace}` and `{address}` text. The runner does not parse, classify,
-reorder, or validate their OpenOCD/Tcl semantics.
-
-You are responsible for avoiding conflicts between fixed arguments and with
-runner-generated arguments. For example, `-c init`, `-f early.cfg`, or
-`-c 'source early.cfg'` can initialize OpenOCD or create listeners before the
-runner's bind/service settings take effect. Avoid that behavior unless you
-intentionally accept it. Startup-ordering guarantees cover runner-generated
-arguments only; arbitrary behavior introduced by fixed arguments is outside
-those guarantees.
-
-Use `west -v` with a remote runner operation to see the full shell-escaped
-effective remote OpenOCD argv, including fixed arguments and runner-generated
-arguments with the session workspace and address resolved. For example:
+## Validate the configuration
 
 ```sh
-west -v debugserver -r remote_openocd --remote lab
+python3 /path/to/zephyr_remote_openocd/scripts/user/validate_configuration.py \
+  [CONFIG] [--remote NAME]
 ```
 
-The helper reports each effective command before attempting to spawn OpenOCD,
-so the trace remains available if spawning, startup readiness, or required
-forwarding fails. Startup executes once: a post-spawn bind failure is reported
-without restarting OpenOCD, because startup may already have changed target state
-or executed user Tcl. Address conflicts found before spawn can select another
-candidate without repeating that work.
+`/path/to/zephyr_remote_openocd` is the module path, as in the
+[Quick start](#quick-start). `CONFIG` is an optional configuration file path;
+without it, the validator reads the file selected by
+`ZEPHYR_REMOTE_OPENOCD_CONFIG` or the default path. `NAME` is the remote to
+check.
 
-## What is copied to the remote
+Validation checks:
 
-Required local files and directories are staged automatically unless a path
-mapping supplies an existing remote resource. Local Zephyr board-support and
-configuration directories are normally staged, so local changes are retained.
-Use a mapping for large, stable resources already installed remotely, such as
-an OpenOCD scripts tree; mapped resources are not copied. Paths with spaces are
-supported when quoted as required by YAML.
+- **The whole file:** syntax and schema rules, and the local paths of every
+  path mapping, which are resolved and checked for collisions.
+- **The selected remote:** its preset reference and, after applying its
+  defaults, its required settings.
+- **Not checked:** broken references or missing operational settings in
+  unselected remotes, SSH connectivity, and whether the configured executable
+  exists.
 
-## Top-level settings
+The validator selects the remote from `--remote`, then `default_remote`. Unlike
+a runner command, it ignores `ZEPHYR_REMOTE_OPENOCD_REMOTE`; when that variable
+is non-empty, pass `--remote "$ZEPHYR_REMOTE_OPENOCD_REMOTE"` to check the
+remote it selects. With no remote selected, the validator reports that the
+file is structurally valid and lists the available definitions.
+
+For a selected remote, the validator prints the effective settings without
+redaction: SSH and OpenOCD argv, hosts, path mappings, and resolved paths. It
+lists `forward_env` names but does not collect or display their current
+values. It still reads variables independently needed for configuration
+discovery and path resolution, even when those names also appear in
+`forward_env`.
+
+Unlike runner commands, the validator requires its target file to exist,
+whichever way the file is selected. If the file is missing, it exits with
+guidance instead of reporting empty runtime defaults as a valid configuration.
+
+## Define remotes
 
 A minimal usable remote needs only a name and an OpenOCD command:
 
@@ -166,7 +192,8 @@ remotes:
 ```
 
 Select it with `--remote lab`. Because the remote is named `lab`, omitting its
-other fields gives the equivalent effective settings:
+other fields gives these effective settings, so the SSH client must resolve
+`lab`:
 
 ```yaml
 ssh_host: lab
@@ -175,7 +202,9 @@ forward_env: []
 path_mappings: {}
 ```
 
-The complete top-level example below shows default selection and preset reuse:
+A preset holds settings that several remotes share; see
+[Defaults and inheritance](#defaults-and-inheritance). This example shows
+default selection and preset reuse:
 
 ```yaml
 default_runner: openocd
@@ -196,10 +225,23 @@ remotes:
     ssh_host: lab_alias
 ```
 
+### What runs where
+
+`ssh_command` is an argv sequence executed on the local machine to start SSH.
+`openocd_command` is an argv sequence sent through SSH and executed on the
+remote host. West and GDB remain local. The runner also deploys a helper
+program to the remote host, which runs with the remote `python3`.
+
+Keep the local runner and the deployed helper from the same module copy, and
+update the module copy as a whole. The deployed helper always matches the
+local runner's revision; the runner does not negotiate compatibility with other
+helper revisions, so `remote_openocd` does not support pairing the local runner
+with a helper from another revision.
+
 ### Custom SSH arguments
 
 `ssh_command` is a local argv list. Put fixed client options before the host;
-the runner appends the selected `ssh_host` and remote command:
+the runner appends the selected `ssh_host` and the remote command:
 
 ```yaml
 remotes:
@@ -208,67 +250,132 @@ remotes:
     ssh_command: [custom-ssh, -F, /path/to/ssh_config]
 ```
 
-Do not use shell pipelines, redirections, or a command string. SSH
-authentication remains the configured client's responsibility.
+The runner executes this argv directly, without a shell, so shell pipelines,
+redirections, and command strings do not work. SSH authentication remains the
+configured client's responsibility.
 
-The command must pass local stdin to the remote command, preserving byte order,
-and closing local stdin must deliver remote EOF while leaving stdout and stderr
-readable until the remote command exits. For normal session cleanup the runner
-writes a short release message on stdin, then uses this half-close and receives
-its final result. Remote input that ends without that release is reported as
-controller-lease loss and fails the operation. Wrappers that suppress stdin,
-close both directions together, require remote pseudo-terminal behavior that
-prevents this half-close, or detach the remote helper from the controller
-channel are unsupported. Replace or reconfigure an incompatible wrapper; there
-is no alternate shutdown mode or YAML option for it.
+#### SSH client requirements
 
-For local service forwards, the runner places `ExitOnForwardFailure=yes` and
-`ClearAllForwardings=no` before your fixed arguments. These mandatory settings
-override conflicting command options and SSH configuration, ensuring that the
-requested forward is accepted and a conflicting local bind fails startup. A
-connection-sharing client may reuse an existing forward with matching
-endpoints. Other fixed
-arguments retain their order and meaning; helper and staging commands use your
-configured arguments unchanged.
+The configured command must:
 
-SSH connection sharing, including `ControlMaster`, remains managed by your SSH
-client. The runner does not disable it or issue client-specific cancellation
-commands. Cleanup stops the SSH subprocesses launched by the runner and their
-owned I/O resources; it does not remove forwards retained by a sharing master.
-With `ControlMaster auto` and `ControlPersist no` and no existing master, a
-runner-launched SSH process can itself become the master, coupling the
-lifetime of other sessions to the session that launched it. For concurrent
-sessions, use an already-established master or a nonzero `ControlPersist`; see
-[Troubleshooting](troubleshooting.md#ssh-connection-sharing).
+- run a remote command while passing local stdin to it in byte order, relaying
+  its stdout and stderr, and returning its exit status;
+- support the [stdin half-close](#stdin-half-close);
+- support local TCP forwarding with an OpenSSH-compatible `-L` option;
+- honor the runner's `ExitOnForwardFailure=yes` and `ClearAllForwardings=no`
+  forwarding options as OpenSSH does.
 
-The runner remembers the last successfully required-forwarded remote address
-per SSH command prefix and host in
-`~/.cache/zephyr_remote_openocd/preferred-addresses/`. No YAML setting is needed.
-The helper tries the hint first, checks its address lease and all selected
-remote ports, and otherwise chooses a random address. Cache loss, stale data,
-or inaccessible storage is harmless to the allocation contract. Reuse may help
-a sharing client accept an already retained forward, but it is not guaranteed.
-See [connection-sharing troubleshooting](troubleshooting.md#ssh-connection-sharing).
-
-Automatic deployment supplies the helper matching the local runner revision.
-Update the module as a unit; manually mixing client and helper revisions is
-unsupported.
-
-The executable need not be named `ssh`. A bare name is found through `PATH`,
-and an explicit path is preserved. For example, a Linux environment with an
-SSH client satisfying the required transport and forwarding capabilities at a
-mounted path may use:
+The executable need not be OpenSSH's `ssh`. A bare name is found through
+`PATH`, and an explicit path is preserved. For example, a Linux environment
+with an SSH client at a mounted path may use:
 
 ```yaml
 ssh_command: [/mnt/c/Windows/System32/OpenSSH/ssh.exe]
 ```
 
-This is generic executable selection; it does not select another product
-backend or claim compatibility with a particular client implementation.
+The example does not imply that this client meets the requirements; naming an
+executable only selects that program.
 
-### Installed resources
+#### Stdin half-close
 
-Map a large resource only when it already exists on the remote:
+Closing local stdin must deliver EOF to the remote command while leaving
+stdout and stderr readable until the remote command exits; session cleanup
+depends on this. For normal cleanup the runner writes a short release message
+on stdin, closes stdin, and then receives the final result. `remote_openocd`
+does not support wrappers that:
+
+- suppress stdin;
+- close both directions together;
+- require remote pseudo-terminal behavior that prevents the half-close;
+- detach the remote helper from the controlling SSH channel.
+
+When the remote helper recognizes that its input ended without the release
+message, it reports `CONTROLLER_LEASE_LOST` and the operation fails; see
+[Troubleshooting](troubleshooting.md). There is no alternate shutdown mode or
+YAML option, so replace or reconfigure an incompatible wrapper.
+
+#### Forwarding options
+
+The runner adds `ExitOnForwardFailure=yes` and `ClearAllForwardings=no` so that
+a local service forward cannot be silently discarded and a conflicting local
+bind fails that forward's startup. A required forward that fails this way fails
+the operation, and a best-effort forward normally produces a warning. See
+[Forwarded services](operations.md#forwarded-services).
+
+SSH commands that create local service forwards get these options before the
+configured fixed arguments. With a client that honors OpenSSH's first-value
+precedence, the options take precedence over conflicting fixed arguments and
+SSH configuration. The configured fixed arguments are otherwise preserved
+exactly and in order, and the runner's other SSH commands use the configured
+arguments unchanged.
+
+#### Connection sharing
+
+SSH connection sharing, including `ControlMaster`, remains managed by the SSH
+client; the runner does not disable it or issue client-specific cancellation
+commands. With `ControlMaster auto`, `ControlPersist no`, and no existing
+master, a runner-launched SSH process can itself become the master and couple
+other sessions to its lifetime. To avoid that, establish the master first or
+set `ControlPersist` to `yes` or a time.
+
+Runner cleanup does not remove forwards retained by a sharing master, and a
+connection-sharing client may reuse an existing forward with matching
+endpoints. The runner's best-effort preferred-address cache, which has no YAML
+setting, can help that reuse; stale or unreadable cache data does not by itself
+fail an operation or bypass the helper's address-lease and remote-port checks.
+See [connection-sharing troubleshooting](troubleshooting.md#ssh-connection-sharing)
+for the cache and for stale forwards.
+
+### Fixed OpenOCD arguments
+
+Arguments after the executable in `openocd_command` are passed to remote
+OpenOCD before the runner's own arguments, with their exact values and order.
+They are an advanced escape hatch: the runner does not parse, classify,
+reorder, or validate their OpenOCD/Tcl semantics, does not substitute text in
+them (see [No placeholder substitution](#no-placeholder-substitution)), and
+does not stage files they name (see
+[Files copied to the remote](#files-copied-to-the-remote)).
+
+Avoiding conflicts among fixed arguments, and between fixed arguments and
+runner-generated arguments, is the configuration author's responsibility. For
+example, `-c init`, `-f early.cfg`, or `-c 'source early.cfg'` can initialize
+OpenOCD or create listeners before the runner's bind and service settings take
+effect; avoid that unless it is intended. The runner's startup-ordering
+guarantees cover its generated arguments only; behavior introduced by fixed
+arguments is outside those guarantees.
+
+Run a remote runner operation with `west -v` to see the full shell-escaped
+effective remote OpenOCD argv, including fixed arguments, and runner-generated
+arguments with the session workspace and address resolved:
+
+```sh
+west -v debugserver -r remote_openocd --remote lab
+```
+
+This output is not redacted, so literal sensitive values in configured
+arguments appear in it. The helper reports each effective command before
+attempting to start OpenOCD, so the trace is normally available when OpenOCD
+fails to start or become ready, or when required forwarding fails, unless the
+connection is lost before the trace is delivered.
+
+The helper starts OpenOCD at most once per session start. If a service fails
+to bind after OpenOCD has started, the runner reports the failure and does not
+restart OpenOCD, because startup may already have changed target state or run
+user-supplied OpenOCD commands. An address conflict found before OpenOCD
+starts can instead move the session to another address without repeating that
+work.
+
+### Files copied to the remote
+
+The runner stages the required local files and directories for each session
+automatically, unless a path mapping supplies an existing remote resource.
+Local Zephyr board-support and configuration directories are normally staged,
+so local changes are used. A file referenced only by fixed `openocd_command`
+arguments or by OpenOCD commands is not identified as a required input, so the
+runner does not stage, map, or translate it because of that reference.
+
+Map a large, stable resource only when it already exists on the remote host,
+such as an OpenOCD scripts tree. Mapped resources are not copied:
 
 ```yaml
 remotes:
@@ -278,16 +385,19 @@ remotes:
       /path/to/local/openocd/scripts: /opt/openocd/share/openocd/scripts
 ```
 
-Here the mapping key is inspected locally and its value is used remotely.
-Unmapped required inputs continue to be staged automatically.
+The mapping key is resolved locally and its value is used remotely. The runner
+assumes the remote contents are equivalent to the local ones and does not
+compare or verify them. When mappings overlap, the most specific local path
+applies. Unmapped required inputs continue to be staged automatically. See
+[Path mappings](#path-mappings) for the path rules.
 
 ### Forwarded environment
 
-Forward an environment variable only when the remote OpenOCD configuration
-reads its local value. A typical use is selecting the channel of a
+Forward an environment variable when remote OpenOCD needs its local value, for
+example in a configuration file. A typical use is selecting the channel of a
 multi-channel FTDI adapter, such as an FT2232H or FT4232H, so that one
 configuration file serves targets wired to different channels. Allow-list the
-name on the remote:
+name in the remote definition or its preset:
 
 ```yaml
 remotes:
@@ -296,7 +406,8 @@ remotes:
     forward_env: [FTDI_CHANNEL]
 ```
 
-Read the value in the OpenOCD configuration file with the Jim Tcl `env`
+The value is available to remote OpenOCD before it processes its configuration
+files. Read it in the OpenOCD configuration file with the Jim Tcl `env`
 command:
 
 ```tcl
@@ -310,16 +421,18 @@ Then set it locally for each command:
 FTDI_CHANNEL=1 west flash -r remote_openocd --remote lab
 ```
 
-`FTDI_CHANNEL` is sent only if it is set in the local environment. If it is
-absent locally, the runner warns, and its name and value are omitted from the
-request, but a same-named value already present in the remote helper
-environment may remain available to OpenOCD. When no value is available,
-`[env FTDI_CHANNEL 0]` falls back to channel 0, so the file also works without
-the variable. Omit the default, as in `[env FTDI_CHANNEL]`, to make OpenOCD
-stop during configuration instead.
+- **Only set variables are sent.** `FTDI_CHANNEL` is sent only if it is set in
+  the local environment. Values are never stored in the configuration.
+- **A missing local variable produces a warning.** The runner omits its name
+  and value from the request, but a same-named value already present in the
+  remote helper environment may remain available to OpenOCD.
+- **The Tcl default decides the fallback.** When no value is available,
+  `[env FTDI_CHANNEL 0]` falls back to channel 0, so the file also works
+  without the variable. Omit the default, as in `[env FTDI_CHANNEL]`, to make
+  OpenOCD stop during configuration instead.
 
-Forwarding suits values chosen per shell or per user. A value fixed for a
-command line can instead be passed as an ordinary runner option, which needs
+Forwarding suits values chosen per shell or per user. For a value that one
+command line always uses, pass an ordinary runner option instead, which needs
 no allow-list: `--cmd-pre-init='ftdi channel 1'` overrides the channel set by
 the configuration file, because Zephyr runs pre-init commands after
 configuration files and before `init`.
@@ -334,64 +447,80 @@ configuration files and before `init`.
 | `remotes` | Use an empty remote mapping; no remote operation can be selected. |
 | Remote `preset` | Do not inherit a preset. |
 | Remote `ssh_host` | Use the selected remote's name. |
-| `openocd_command` | Inherit it from the selected preset; without one, a production remote operation fails. |
+| `openocd_command` | Inherit it from the selected preset; without one, a real remote operation fails. |
 | `ssh_command` | Inherit it from the selected preset, then use `[ssh]`. |
 | `forward_env` | Inherit it from the selected preset, then use `[]`. |
 | `path_mappings` | Inherit it from the selected preset, then use `{}`. |
 
-Preset fields have no independent runtime defaults. A selected remote first
-inherits fields from its preset. Each field present directly on the remote then
-replaces the corresponding preset field as a whole; lists and mappings are
-never merged. Finally, the defaults in the table apply to values that remain
-unset. Use `forward_env: []` or `path_mappings: {}` on the remote to erase an
-inherited collection.
+A selected remote first inherits fields from its preset; preset fields have
+no independent runtime defaults. Each field set directly in the remote
+definition then replaces the corresponding preset field as a whole; lists and
+mappings are never merged. Finally, the defaults in the table apply to values
+that remain unset. Set `forward_env: []` or `path_mappings: {}` in the remote
+definition to erase an inherited collection.
 
 Preset and remote names are case-sensitive and must match
 `[A-Za-z0-9][A-Za-z0-9._-]*`.
 
-Remote selection uses `--remote NAME`, then the non-empty
-`ZEPHYR_REMOTE_OPENOCD_REMOTE` environment variable, then `default_remote`.
-An empty environment variable is treated as unset. A selected remote and its
-named preset must exist, and a production operation must provide
-`openocd_command`; unused incomplete definitions are allowed.
+### Remote selection order
 
-## Commands and paths
+A runner command selects the remote from the first of these that is set:
+
+1. `--remote NAME`;
+2. the `ZEPHYR_REMOTE_OPENOCD_REMOTE` environment variable, when non-empty (an
+   empty value is treated as unset);
+3. `default_remote`.
+
+A selected remote and its named preset must exist, and a real remote operation
+must provide `openocd_command`; unused incomplete definitions are allowed.
+
+## Reference
+
+### Commands
 
 Commands are argv sequences, not shell strings. The first element must be a
 bare executable name, an absolute path, or `~/path`; later elements are literal
-strings and may be empty. NUL is forbidden in every element. These lexical
-rules are enforced by the schema. Runner-generated OpenOCD arguments are
-appended after the configured command. Only `ssh_command[0]` expands `~`
-locally. OpenOCD's first argument and remote mapping destinations expand `~`
-using the SSH user's actual home, queried once only when needed during a real
-operation. Recording mode leaves these remote paths unresolved and performs no
-SSH.
+strings and may be empty. NUL is forbidden in every element. The schema
+enforces these lexical rules. Runner-generated OpenOCD arguments are appended
+after the configured command.
+
+Among command elements, only `ssh_command[0]` expands `~` locally. The
+`openocd_command` executable and remote mapping destinations expand `~` using
+the SSH user's actual home, queried once only when needed during a real
+operation. The runner passes fixed arguments literally, without `~`
+expansion.
+
+### Path mappings
 
 Path mappings are YAML mappings from local to remote paths. Both sides must be
-absolute or use `~` (only the current user form is supported), and neither may
-contain NUL. Local paths may contain `.` and `..`; they are expanded and
-resolved on the local machine before duplicate detection. Duplicate normalized
-local keys are errors even when their remote destinations match. Remote paths
-must already be normalized: repeated or trailing separators and `.` or `..`
-components are rejected. They cannot be resolved safely while loading the
-configuration because remote components may be symbolic links and loading does
-not contact the remote host. Mappings refer to resources already present on the
-remote host and do not stage local contents. Local and remote paths may contain
-spaces; quote them as required by YAML syntax.
+absolute or start with `~`, and neither may contain NUL. Only the current-user
+`~` form is accepted.
+
+- **Local paths** may contain `.` and `..`. They are expanded and resolved on
+  the local machine before duplicate detection. Duplicate normalized local keys
+  are errors even when their remote destinations match.
+- **Remote paths** must already be normalized: repeated or trailing separators
+  and `.` or `..` components are rejected. They cannot be resolved safely while
+  loading the configuration, because remote components may be symbolic links
+  and loading does not contact the remote host.
+
+Mappings refer to resources already present on the remote host and do not
+stage local contents. Local and remote paths may contain spaces; quote them as
+required by YAML syntax.
+
+### No placeholder substitution
 
 Mapping destinations and filenames are literal paths. `{workspace}` and
-`{address}` are not configuration placeholders or reserved spellings. The runner
-resolves its own session references separately, without substituting matching
-text in your paths, inherited Tcl commands, or fixed command arguments.
+`{address}` are not configuration placeholders or reserved spellings. The
+runner resolves its own session references separately, without substituting
+matching text in configured paths, OpenOCD commands supplied through runner
+options or board runner arguments, or fixed command arguments.
 
-The schema enforces the lexical forms above. Post-schema processing is limited
-to contextual semantics that cannot be expressed truthfully as string syntax:
-local home expansion and filesystem resolution, normalized-local-path collision
-detection, selected remote and preset references, mandatory settings for the
-requested operation, and remote home expansion during a real operation.
+### Checks beyond the schema
 
-`forward_env` contains names whose current local values may be sent to remote
-OpenOCD. Values are never stored in configuration. Missing local variables are
-warned about and omitted from the request when the remote is used. This does
-not unset a same-named variable already present in the remote helper
-environment; that remote value may remain available to OpenOCD.
+The schema enforces the lexical forms on this page. Processing after the schema
+is limited to contextual checks that cannot be expressed as string syntax:
+local home expansion and filesystem resolution, detection of colliding
+normalized local paths, selected remote and preset references, mandatory
+settings for the requested operation, and remote home expansion during a real
+operation.
