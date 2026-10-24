@@ -1,23 +1,30 @@
 # Zephyr west runner for remote OpenOCD
 
-This Zephyr module provides a west runner that runs OpenOCD on a remote Linux
-host while keeping west, GDB, and client tools on the local machine. It accesses
-the remote host through SSH.
-
-The product version is recorded in [`VERSION`](VERSION), and releases are
-tagged `v<version>`, for example `v0.1.0`. Its integration target is the Zephyr
-4.4 release series (4.4.x).
+This Zephyr module provides a west runner, `remote_openocd`, for boards
+attached to a remote Linux host. OpenOCD runs on the remote host, which the
+runner accesses through SSH; west, GDB, and client tools stay on the local
+machine. The runner supports the Zephyr 4.4 release series (4.4.x) on Linux
+with Python 3.12 or newer.
 
 ## Prerequisites and support
 
-The supported integration boundary is the Zephyr 4.4 release series (4.4.x) on
-Linux with Python 3.12 or newer.
+Before using the runner, make sure that:
 
-The local machine needs a Zephyr 4.4.x workspace, its configured Python
-environment, west, and a board build that supports Zephyr's built-in `openocd`
-runner. The remote machine needs Linux, SSH access, `python3` version 3.12 or
-newer, and an OpenOCD executable compatible with the board. OpenOCD and its
-board-support files run remotely; west, GDB, and client tools remain local.
+- **The local machine** runs Linux with Python 3.12 or newer, a Zephyr 4.4.x
+  workspace with its configured Python environment, and west.
+- **The board build** supports Zephyr's built-in `openocd` runner.
+- **The local SSH client** meets the
+  [SSH client requirements](docs/user/configuration.md#ssh-client-requirements),
+  including the
+  [stdin half-close](docs/user/configuration.md#stdin-half-close) that session
+  cleanup depends on. The default SSH command is `ssh`.
+- **The remote host** runs Linux, accepts SSH access, and provides `python3`
+  version 3.12 or newer and an OpenOCD executable compatible with the board.
+- **The board's debug probe** is connected to the remote host, and the remote
+  SSH account has permission to use it.
+
+Routine runner use and cleanup do not require root privileges on either
+machine.
 
 ## Quick start
 
@@ -29,29 +36,50 @@ board-support files run remotely; west, GDB, and client tools remain local.
 ### 1. Obtain the module
 
 Place a checkout, a filesystem copy, or an extracted archive of this module at
-any persistent, user-accessible path. For example, you can clone the module into
-the existing `~/zephyrproject` workspace:
+any persistent, user-accessible path. For example, clone the module into the
+existing `~/zephyrproject` workspace:
 
 ```sh
 cd ~/zephyrproject
 git clone https://github.com/tienngtr/zephyr_remote_openocd.git
 ```
 
-To use a release, check out its tag in that clone, or extract its source
-archive from the repository's GitHub releases page in place of cloning. Git is
-not required at run time.
+The module version is recorded in [`VERSION`](VERSION), and releases are
+tagged `v<version>`, for example `v0.1.0`. To use a release, check out its tag
+in that clone, or extract its source archive from the repository's
+[GitHub releases page](https://github.com/tienngtr/zephyr_remote_openocd/releases)
+in place of cloning. Git is not required at run time.
+
+The remaining steps run from the Zephyr workspace, `~/zephyrproject` in this
+example, and use this example module location. For another module location,
+replace `zephyr_remote_openocd` and `$HOME/zephyrproject/zephyr_remote_openocd`
+in the commands with the module path.
 
 ### 2. Run the setup script
+
+Run the setup script with the Python environment configured for Zephyr 4.4.x:
 
 ```sh
 python3 zephyr_remote_openocd/scripts/user/setup.py
 ```
 
-Setup creates `~/.config/zephyr_remote_openocd/config.yaml` without overwriting
-an existing file. It also reports the module path and diagnoses required Python
-dependencies. If it reports a dependency warning, use the supported Zephyr
-4.4.x environment's configured Python environment; there is no separate
-product installation step.
+The setup script creates `~/.config/zephyr_remote_openocd/config.yaml` without
+overwriting an existing file, and prints:
+
+- the configuration path;
+- the module path;
+- the activation command for step 3, with the module path filled in;
+- a validator command for step 5, with `NAME` in place of the remote name;
+- whether the required Python dependencies are available.
+
+**Verify:** the output starts with `Configuration (created)` or
+`Configuration (already exists)`, followed by the configuration path.
+
+A dependency warning does not stop the setup script from creating the
+configuration. Use the Python environment configured for Zephyr 4.4.x; the
+module has no separate dependency installation step. If the setup script
+fails, see
+[Troubleshooting](docs/user/troubleshooting.md#the-setup-script-fails-or-warns).
 
 ### 3. Activate the module
 
@@ -71,8 +99,11 @@ shell that will run `west`.
 
 ### 4. Configure the remote
 
-The generated configuration contains a safe, unselected `lab` remote. Replace
-its SSH host and remote OpenOCD path:
+Open the configuration file created by the setup script. In the `lab` remote,
+replace the `ssh_host` value with the remote host name or an alias from the
+normal SSH configuration, and replace the `openocd_command` path with the path
+of the OpenOCD executable on the remote host. Without its comments, the
+generated file contains:
 
 ```yaml
 default_runner: openocd
@@ -88,6 +119,10 @@ remotes:
     path_mappings: {}
 ```
 
+Nothing uses the generated `lab` remote until a runner command selects it,
+so leaving it unedited is safe; see
+[Remote selection order](docs/user/configuration.md#remote-selection-order).
+
 ### 5. Validate the configuration and remote prerequisites
 
 Validate syntax and effective settings without contacting the remote:
@@ -96,8 +131,12 @@ Validate syntax and effective settings without contacting the remote:
 python3 zephyr_remote_openocd/scripts/user/validate_configuration.py --remote lab
 ```
 
-Then verify the remote prerequisites using the configured host and OpenOCD
-path:
+Then verify the remote prerequisites. In these commands, replace
+`replace-with-ssh-host-or-alias` and the OpenOCD path with the values entered
+in step 4. If `ssh_command` uses another executable or fixed options, see
+[Custom SSH arguments](docs/user/configuration.md#custom-ssh-arguments), and
+run these checks with the executable and fixed options from `ssh_command` in
+place of `ssh`:
 
 ```sh
 ssh replace-with-ssh-host-or-alias python3 --version
@@ -108,36 +147,30 @@ ssh replace-with-ssh-host-or-alias \
 
 **Verify:** both commands succeed, and the first reports Python 3.12 or newer.
 
-If your SSH command needs fixed options, configure `ssh_command` and run the
-equivalent check with those options. Custom wrappers must also support the
-[stdin half-close required for session cleanup](docs/user/configuration.md#custom-ssh-arguments).
-
 ### 6. Configure the build
 
-The runner is board-agnostic and works with builds that expose Zephyr's built-in
-`openocd` runner. This example uses `samples/hello_world` on
-`stm32f746g_disco`, a board that supports the `openocd` runner. From a Zephyr
-workspace, build it:
+This example builds `zephyr/samples/hello_world` for `stm32f746g_disco`, a
+board that supports the `openocd` runner. Replace `stm32f746g_disco` and
+`zephyr/samples/hello_world` with the board and application to use:
 
 ```sh
-west build -b stm32f746g_disco samples/hello_world
+west build -b stm32f746g_disco zephyr/samples/hello_world
 ```
 
-Then reconfigure the build directory so that it registers `remote_openocd`:
+Then reconfigure the build directory. This registers `remote_openocd` in a
+build directory configured before step 3, which an ordinary incremental
+`west build` does not do, and is harmless for a fresh build such as the one
+above. Always run it for an existing build directory; a pristine build is not
+required:
 
 ```sh
 west build --cmake-only
 ```
 
-> [!WARNING]
-> A build directory configured before step 3 does not register
-> `remote_openocd`, and an ordinary incremental `west build` does not add it.
-> Always run `west build --cmake-only` for an existing build directory. It is
-> harmless for a fresh build, and a pristine build is not required.
-
 **Verify:** `west flash --context` lists both `openocd` and `remote_openocd`.
 If `remote_openocd` is missing, confirm step 3 in the current shell and repeat
-this step.
+this step. If `openocd` is also missing, see
+[Troubleshooting](docs/user/troubleshooting.md#remote_openocd-is-not-listed-by-west-flash---context).
 
 ### 7. Flash the board
 
@@ -145,41 +178,48 @@ this step.
 west flash -r remote_openocd --remote lab
 ```
 
-Uncomment `default_remote: lab` in the configuration if you want to omit
-`--remote lab` later. To make `remote_openocd` the default flash and debug
-runner, see the `default_runner` description in
-[Configuration](docs/user/configuration.md#quick-start).
+The runner programs the image through remote OpenOCD and starts it.
+
+**Verify:** the command succeeds, and OpenOCD output appears in the local
+terminal. For failures, see [Troubleshooting](docs/user/troubleshooting.md).
+
+To omit `--remote lab` later, uncomment the `# default_remote: lab` line near
+the top of the configuration file. To make `remote_openocd` the default flash
+and debug runner, see
+[Choose the default remote and runner](docs/user/configuration.md#choose-the-default-remote-and-runner).
 
 ## How it works
 
-1. West and the Zephyr build remain on the local machine.
-2. The runner uses the configured SSH command to deploy a remote helper and
-   create an isolated session.
-3. The local runner communicates with the helper over SSH to stage the build
-   and board-support files and start OpenOCD; the helper supervises the remote
-   process and emits structured lifecycle and output events.
-4. SSH forwarding exposes required OpenOCD services on local loopback ports
-   and independently attempts best-effort forwarding for Tcl and telnet.
-   Explicitly requested RTT forwarding is required. Best-effort availability
-   failures produce warnings; cleanup failures remain fatal.
-5. The runner relays output and cleans up the remote session when it exits, is
-   interrupted, or detects that SSH connectivity was lost. The remote helper
-   starts its own cleanup after it detects control-channel loss.
+For each operation, the runner uses the configured SSH command to:
 
-SSH connection sharing remains managed by your client. The runner cleans up
-its launched SSH subprocesses and owned I/O resources; an external sharing
-master may retain forwards. A best-effort local preferred address cache helps
-reuse matching endpoints without bypassing helper leases or remote-port checks.
-Stale retained forwards may still need
-[user cleanup](docs/user/troubleshooting.md#ssh-connection-sharing).
+1. deploy a helper program to the remote host, which runs with the remote
+   `python3`;
+2. copy the required build output and board-support files to the remote host,
+   unless a path mapping supplies them; see
+   [Files copied to the remote](docs/user/configuration.md#files-copied-to-the-remote);
+3. start OpenOCD through the helper and relay its output to the local
+   terminal;
+4. forward the OpenOCD services selected by the command and its port options
+   to local loopback ports; see
+   [Forwarded services](docs/user/operations.md#forwarded-services);
+5. ask the remote helper to clean up the session when the operation ends or is
+   interrupted.
+
+If the local SSH client reports that the connection was lost, the runner fails
+the operation and attempts local cleanup, and the remote helper begins cleaning
+up the session after it observes the loss; see
+[Exit status and connection loss](docs/user/operations.md#exit-status-and-connection-loss).
+Forwards kept by SSH connection sharing can outlive a session and may need
+cleanup through the SSH client; see
+[SSH connection sharing](docs/user/troubleshooting.md#ssh-connection-sharing).
 
 ## Next steps
 
-- [`Configuration`](docs/user/configuration.md): defaults, presets, SSH
+- [Configuration](docs/user/configuration.md): defaults, presets, SSH
   arguments, environment forwarding, path mappings, and validation rules.
-- [`Operations`](docs/user/operations.md): flash, debug, attach, debugserver,
+- [Operations](docs/user/operations.md): flash, debug, attach, debugserver,
   RTT, semihosting, cleanup, and uninstall.
-- [`Troubleshooting`](docs/user/troubleshooting.md): common setup, SSH,
-  staging, endpoint, and lifecycle failures.
-- [`Contributing`](CONTRIBUTING.md): developer setup, repository structure,
+- [Troubleshooting](docs/user/troubleshooting.md): common setup, SSH, file
+  copy, port, and session-end failures.
+- [Contributing](CONTRIBUTING.md): developer setup, repository structure,
   tests, and contribution rules.
