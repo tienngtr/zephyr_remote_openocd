@@ -64,12 +64,22 @@ python3 zephyr_remote_openocd/scripts/user/setup.py
 ```
 
 The setup script creates `~/.config/zephyr_remote_openocd/config.yaml` without
-overwriting an existing file, and prints:
+overwriting an existing file. To create the file at another path, pass that
+path as an argument; see [Location](docs/user/configuration.md#location).
+
+> [!NOTE]
+> If `ZEPHYR_REMOTE_OPENOCD_CONFIG` is already set in the shell, pass that path
+> to the setup script here and to the validator in step 5; see
+> [Location](docs/user/configuration.md#location).
+
+The setup script prints:
 
 - the configuration path;
 - the module path;
 - the activation command for step 3, with the module path filled in;
 - a validator command for step 5, with `NAME` in place of the remote name;
+- for a path other than the default, the command that points runner commands
+  and the build at that file;
 - whether the required Python dependencies are available.
 
 **Verify:** the output starts with `Configuration (created)` or
@@ -130,6 +140,9 @@ Validate syntax and effective settings without contacting the remote:
 ```sh
 python3 zephyr_remote_openocd/scripts/user/validate_configuration.py --remote lab
 ```
+
+For a configuration file at another path, put that path before `--remote`,
+as in the validator command that the setup script printed.
 
 Then verify the remote prerequisites. In these commands, replace
 `replace-with-ssh-host-or-alias` and the OpenOCD path with the values entered

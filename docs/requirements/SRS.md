@@ -391,9 +391,11 @@ guidance.
 
 ### REQ-FUNC-INSTALL-010
 
-The setup program SHALL create the configuration directory with mode `0700` and
-the configuration file with mode `0600`, without changing permissions on any
-pre-existing parent, directory, or file.
+The setup program SHALL create the default configuration directory with mode
+`0700` and the configuration file with mode `0600`, without changing
+permissions on any pre-existing parent, directory, or file. For a configuration
+path other than the default, the setup program SHALL require the path's parent
+directory to exist and SHALL create only the file, with mode `0600`.
 
 ### REQ-FUNC-INSTALL-011
 
@@ -427,7 +429,10 @@ SHALL be rejected before schema validation.
 
 ### REQ-FUNC-CONFIG-003
 
-The setup operation SHALL create the configuration file if it does not already exist.
+The setup operation SHALL create the configuration file if it does not already
+exist, at the path given as its optional argument or otherwise at the default
+path of REQ-FUNC-CONFIG-001. It SHALL NOT consult
+`ZEPHYR_REMOTE_OPENOCD_CONFIG`.
 
 ### REQ-FUNC-CONFIG-004
 
@@ -514,15 +519,20 @@ contain values that are sensitive to the user.
 The command SHALL resolve an explicitly named remote, otherwise
 `default_remote`, while deliberately ignoring
 `ZEPHYR_REMOTE_OPENOCD_REMOTE`. When neither is selected, it SHALL report
-structural success and the available definitions. A missing target file SHALL
-be an actionable validation failure rather than being treated as empty runtime
-configuration.
+structural success and the available definitions. The command SHALL validate
+the file named by its optional path argument, otherwise the default path of
+REQ-FUNC-CONFIG-001, and SHALL NOT consult `ZEPHYR_REMOTE_OPENOCD_CONFIG`. A
+missing target file SHALL be an actionable validation failure rather than
+being treated as empty runtime configuration.
 
 ### REQ-FUNC-CONFIG-014
 
 A non-empty `ZEPHYR_REMOTE_OPENOCD_CONFIG` environment variable SHALL override
-the default configuration path. A leading current-user `~` in the override
-SHALL be expanded before the configuration is read.
+the default configuration path for runner commands and build integration. A
+leading current-user `~` in the override SHALL be expanded before the
+configuration is read. The setup operation and the configuration validator
+take an explicit path argument instead (REQ-FUNC-CONFIG-003,
+REQ-FUNC-CONFIG-013).
 
 ### REQ-FUNC-CONFIG-015
 

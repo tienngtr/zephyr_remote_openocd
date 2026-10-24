@@ -38,11 +38,13 @@ reported message or a symptom in the table below, or browse the sections. The
 
 The setup script stops with an error when it cannot find the module root, read
 the shipped configuration template, or create the configuration directory or
-file, and when an existing configuration path is not a regular file. Check
-that:
+file, and when an existing configuration path is not a regular file. For a
+path other than the default, it also stops when the path's parent directory
+does not exist. Check that:
 
 - the module copy is complete and readable;
-- the parent of the configuration directory is writable;
+- the parent of the configuration directory is writable, or, for a path other
+  than the default, the path's parent directory exists and is writable;
 - the command runs with Python 3.12 or newer.
 
 A dependency warning for `pyelftools`, PyYAML, or jsonschema does not stop the

@@ -139,13 +139,13 @@ if _IMPORT_ERROR is None:
             return result
 
 
+def canonical_config_path() -> Path:
+    return Path.home() / ".config" / "zephyr_remote_openocd" / "config.yaml"
+
+
 def default_config_path() -> Path:
     override = os.environ.get("ZEPHYR_REMOTE_OPENOCD_CONFIG")
-    return (
-        Path(override).expanduser()
-        if override
-        else Path.home() / ".config" / "zephyr_remote_openocd" / "config.yaml"
-    )
+    return Path(override).expanduser() if override else canonical_config_path()
 
 
 def _load_yaml(config_path: Path) -> dict[str, object]:

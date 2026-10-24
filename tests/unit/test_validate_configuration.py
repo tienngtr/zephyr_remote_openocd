@@ -100,36 +100,74 @@ def test_no_selected_remote_reports_structural_success(
     assert validator.main([str(path)]) == 0
 
 
-def test_summary_allows_independent_configuration_and_home_environment_reads(
+def test_summary_allows_independent_home_environment_reads(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    path = tmp_path / "custom.yaml"
+    path = tmp_path / ".config" / "zephyr_remote_openocd" / "config.yaml"
+    path.parent.mkdir(parents=True)
     path.write_text(
         "default_remote: lab\n"
         "remotes:\n  lab:\n    openocd_command: [openocd]\n"
         "    forward_env: [HOME, ZEPHYR_REMOTE_OPENOCD_CONFIG]\n"
     )
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", "~/custom.yaml")
+    monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", "~/ignored.yaml")
     assert validator.main([]) == 0
     output = capsys.readouterr()
     assert output.err == ""
     assert str(path) in output.out
     assert "HOME" in output.out
     assert "ZEPHYR_REMOTE_OPENOCD_CONFIG" in output.out
-    assert "~/custom.yaml" not in output.out
+    assert "ignored.yaml" not in output.out
 
 
-def test_missing_file_fails_with_setup_guidance(
+def test_validator_ignores_configuration_path_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    override = tmp_path / "override.yaml"
+    override.write_text("remotes: {}\n")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", str(override))
+    assert validator.main([]) == 1
+    output = capsys.readouterr()
+    canonical = tmp_path / ".config" / "zephyr_remote_openocd" / "config.yaml"
+    assert f"{canonical} does not exist" in output.err
+    assert str(override) not in output.err
+
+
+def test_missing_default_file_fails_with_setup_guidance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert validator.main([]) == 1
+    output = capsys.readouterr()
+    assert output.out == ""
+    setup = ROOT / "scripts" / "user" / "setup.py"
+    assert f"create it with python3 {setup} or provide CONFIG" in output.err
+
+
+def test_missing_explicit_file_suggests_setup_with_that_path(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     path = tmp_path / "missing.yaml"
     assert validator.main([str(path)]) == 1
     output = capsys.readouterr()
     assert output.out == ""
-    assert str(path) in output.err
-    assert "python3 scripts/user/setup.py" in output.err
-    assert "provide CONFIG" in output.err
+    setup = ROOT / "scripts" / "user" / "setup.py"
+    assert f"create it with python3 {setup} {path} or provide another CONFIG" in output.err
+
+
+def test_missing_explicit_file_in_missing_directory_names_prerequisite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    path = tmp_path / "new-directory" / "config.yaml"
+    assert validator.main([str(path)]) == 1
+    output = capsys.readouterr()
+    setup = ROOT / "scripts" / "user" / "setup.py"
+    assert (
+        f"create directory {path.parent}, then create it with python3 {setup} {path}" in output.err
+    )
 
 
 def test_inspection_failure_is_not_reported_as_missing(

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import sys
 from collections.abc import Iterable
 from pathlib import Path
@@ -19,7 +20,7 @@ from zephyr_remote_openocd.config import (  # noqa: E402
     ConfigError,
     RemoteOpenOcdConfig,
     ResolvedRemote,
-    default_config_path,
+    canonical_config_path,
     load_config,
     resolve_remote,
 )
@@ -71,15 +72,26 @@ def argument_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = argument_parser().parse_args(argv)
-    path = (args.config or default_config_path()).expanduser()
+    # The configuration override is for runner commands; the validator checks
+    # only its explicit CONFIG argument or the canonical path.
+    path = (args.config or canonical_config_path()).expanduser()
     try:
         path.lstat()
     except FileNotFoundError:
-        print(
-            f"Configuration invalid: {path} does not exist; run "
-            "python3 scripts/user/setup.py or provide CONFIG",
-            file=sys.stderr,
-        )
+        setup = f"python3 {shlex.quote(str(ROOT / 'scripts' / 'user' / 'setup.py'))}"
+        if args.config is None:
+            guidance = f"create it with {setup} or provide CONFIG"
+        else:
+            target = path.absolute()
+            # Setup creates the parent directory only for the canonical path.
+            prerequisite = ""
+            if target.resolve() != canonical_config_path().resolve() and not target.parent.is_dir():
+                prerequisite = f"create directory {shlex.quote(str(target.parent))}, then "
+            guidance = (
+                f"{prerequisite}create it with {setup} {shlex.quote(str(target))} "
+                "or provide another CONFIG"
+            )
+        print(f"Configuration invalid: {path} does not exist; {guidance}", file=sys.stderr)
         return 1
     except OSError:
         # Let load_config preserve the actionable inspection or read failure.

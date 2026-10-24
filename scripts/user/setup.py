@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import importlib.util
 import os
@@ -66,8 +67,12 @@ def _ensure_config_directory(path: Path) -> None:
             raise SetupError(f"cannot set permissions on new directory {path}: {error}") from error
 
 
-def initialize_config(root: Path, destination: Path) -> bool:
-    """Create ``destination`` from the shipped template when absent."""
+def initialize_config(root: Path, destination: Path, *, owned_directory: bool = True) -> bool:
+    """Create ``destination`` from the shipped template when absent.
+
+    Only the product-owned default directory is created; any other destination
+    must already have its parent directory.
+    """
     template = root / "resources" / "config.example.yaml"
     try:
         contents = template.read_bytes()
@@ -76,7 +81,12 @@ def initialize_config(root: Path, destination: Path) -> bool:
             f"cannot read shipped configuration template {template}: {error}"
         ) from error
 
-    _ensure_config_directory(destination.parent)
+    if owned_directory:
+        _ensure_config_directory(destination.parent)
+    elif not destination.parent.is_dir():
+        raise SetupError(
+            f"configuration directory {destination.parent} does not exist; create it first"
+        )
     if os.path.lexists(destination):
         if not destination.is_file():
             raise SetupError(f"existing configuration path {destination} is not a regular file")
@@ -122,11 +132,27 @@ def _print_dependency_status(
         print("Use the Python environment configured for Zephyr 4.4.")
 
 
-def main() -> int:
+def argument_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Create the remote OpenOCD runner configuration from the shipped template."
+    )
+    parser.add_argument(
+        "config",
+        nargs="?",
+        type=Path,
+        help="configuration path (default: ~/.config/zephyr_remote_openocd/config.yaml)",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = argument_parser().parse_args(argv)
     try:
         root = module_root()
-        destination = config_path()
-        created = initialize_config(root, destination)
+        default = config_path()
+        destination = default if args.config is None else args.config.expanduser().absolute()
+        custom = destination.resolve() != default.resolve()
+        created = initialize_config(root, destination, owned_directory=not custom)
     except (OSError, RuntimeError) as error:
         print(f"Error: {error}", file=sys.stderr)
         return 1
@@ -143,7 +169,14 @@ def main() -> int:
     print("Next, edit the configuration and validate a remote:")
     print(f"  {destination}")
     validator = shlex.quote(str(root / "scripts" / "user" / "validate_configuration.py"))
-    print(f"  python3 {validator} --remote NAME")
+    config_argument = f" {shlex.quote(str(destination))}" if custom else ""
+    print(f"  python3 {validator}{config_argument} --remote NAME")
+    if custom:
+        print(
+            "Runner commands and the build read this file only when "
+            "ZEPHYR_REMOTE_OPENOCD_CONFIG names it; set it before configuring the build:"
+        )
+        print(f"  export ZEPHYR_REMOTE_OPENOCD_CONFIG={shlex.quote(str(destination))}")
     _print_dependency_status()
     return 0
 

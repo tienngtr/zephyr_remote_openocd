@@ -271,10 +271,13 @@ Ctrl-C takes effect during the operation, with these exceptions:
 ## Uninstall
 
 1. Stop all active west operations that use the module.
-2. Remove the `EXTRA_ZEPHYR_MODULES` activation export from the current shell
-   and from `~/.zephyrrc` if it was added there.
+2. Remove the `EXTRA_ZEPHYR_MODULES` activation export, and any
+   `ZEPHYR_REMOTE_OPENOCD_CONFIG` export, from the current shell and from
+   `~/.zephyrrc` if they were added there.
 3. Delete the module directory and, if the configuration is no longer needed,
-   the configuration directory that the setup script created. The first
+   the configuration directory that the setup script created. A configuration
+   file that the setup script created at another path is not in that
+   directory; delete it separately. The first
    command uses the example module path from the README's
    [Obtain the module](../../README.md#1-obtain-the-module) step; replace it
    with the path where the module was placed:

@@ -20,8 +20,10 @@ where the module was placed.
    ```
 
    The setup script creates `~/.config/zephyr_remote_openocd/config.yaml` and
-   never overwrites an existing file. The generated file contains a `lab`
-   remote that is safe to keep: nothing uses it until `--remote lab`,
+   never overwrites an existing file. To create the file elsewhere, or if
+   `ZEPHYR_REMOTE_OPENOCD_CONFIG` is already set, pass its path as an argument;
+   see [Location](#location). The generated file contains a `lab` remote that
+   is safe to keep: nothing uses it until `--remote lab`,
    `ZEPHYR_REMOTE_OPENOCD_REMOTE=lab`, or `default_remote: lab` selects it.
 
 2. In the `lab` remote, replace the `ssh_host` value with the remote host name
@@ -44,6 +46,9 @@ where the module was placed.
    python3 /path/to/zephyr_remote_openocd/scripts/user/validate_configuration.py \
      --remote lab
    ```
+
+   For a configuration file at another path, put that path before `--remote`,
+   as in the validator command that the setup script printed.
 
 4. Check the remote prerequisites that validation does not cover: that the
    configured SSH command reaches the host, that the remote `python3` is
@@ -77,11 +82,39 @@ After the explicit command works, uncomment `default_remote: lab` to omit
 
 ### Location
 
-Set a non-empty `ZEPHYR_REMOTE_OPENOCD_CONFIG` to read a file other than
-`~/.config/zephyr_remote_openocd/config.yaml`. A leading current-user `~` is
-expanded, and the contents are read as YAML regardless of the filename
-extension. After changing the variable for an existing build, reconfigure it;
-see [Apply configuration changes to a build](#apply-configuration-changes-to-a-build).
+Runner commands and the build read
+`~/.config/zephyr_remote_openocd/config.yaml`, or the file named by a non-empty
+`ZEPHYR_REMOTE_OPENOCD_CONFIG`. A leading current-user `~` is expanded, and the
+contents are read as YAML regardless of the filename extension.
+
+The setup script and the validator ignore `ZEPHYR_REMOTE_OPENOCD_CONFIG` and
+take the path as an argument instead. If the variable is already set, pass
+`"$ZEPHYR_REMOTE_OPENOCD_CONFIG"` to both scripts so that they use the file that
+runner commands read.
+
+Use an absolute path, or one starting with `~/`, for the variable, so that
+setup, the validator, runner commands, and the build all read the same file;
+the `export` line that the setup script prints already uses an absolute path.
+A relative value can name different files, because each command resolves it
+against its own current directory, and the build resolves it against the
+directory from which CMake first configured it.
+
+To keep the configuration at another path, first make sure that the path's
+parent directory exists; the setup script creates only the file there. Create
+the file, point runner commands and the build at it, and validate it:
+
+```sh
+python3 /path/to/zephyr_remote_openocd/scripts/user/setup.py ~/lab/config.yaml
+export ZEPHYR_REMOTE_OPENOCD_CONFIG=~/lab/config.yaml
+python3 /path/to/zephyr_remote_openocd/scripts/user/validate_configuration.py \
+  ~/lab/config.yaml --remote lab
+```
+
+Set the variable in every shell that runs west, for example in `~/.zephyrrc`
+as in the README's [Activate the module](../../README.md#3-activate-the-module)
+step, and before configuring the build. After changing the variable for an
+existing build, reconfigure it; see
+[Apply configuration changes to a build](#apply-configuration-changes-to-a-build).
 
 ### Apply configuration changes to a build
 
@@ -109,7 +142,7 @@ the build directory, when:
 > Because CMake reads the configuration file, an invalid file makes CMake
 > configuration fail for an OpenOCD-capable build with this module active, even
 > when the build uses the `openocd` runner. To find the error, run the
-> [validator](#validate-the-configuration).
+> [validator](#validate-the-configuration) on that file.
 
 ### Format
 
@@ -155,9 +188,10 @@ python3 /path/to/zephyr_remote_openocd/scripts/user/validate_configuration.py \
 
 `/path/to/zephyr_remote_openocd` is the module path, as in the
 [Quick start](#quick-start). `CONFIG` is an optional configuration file path;
-without it, the validator reads the file selected by
-`ZEPHYR_REMOTE_OPENOCD_CONFIG` or the default path. `NAME` is the remote to
-check.
+without it, the validator reads the default path. Unlike a runner command, the
+validator ignores `ZEPHYR_REMOTE_OPENOCD_CONFIG`; when that variable is
+non-empty, pass `"$ZEPHYR_REMOTE_OPENOCD_CONFIG"` as `CONFIG` to check the file
+that runner commands read. `NAME` is the remote to check.
 
 Validation checks:
 
@@ -182,9 +216,11 @@ values. It still reads variables independently needed for configuration
 discovery and path resolution, even when those names also appear in
 `forward_env`.
 
-Unlike runner commands, the validator requires its target file to exist,
-whichever way the file is selected. If the file is missing, it exits with
-guidance instead of reporting empty runtime defaults as a valid configuration.
+Unlike runner commands, the validator requires its target file to exist. If
+the file is missing, it exits with an error that suggests the setup command
+for that path, and first the directory to create when the path's parent
+directory is also missing, instead of reporting empty runtime defaults as a
+valid configuration.
 
 ## Remotes
 

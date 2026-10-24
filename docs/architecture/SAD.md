@@ -217,13 +217,25 @@ User setup is a separate, non-invasive operation:
 python3 scripts/user/setup.py
 ```
 
-The setup script copies `resources/config.example.yaml` only when the canonical
-per-user configuration is absent, reports the created/reused status and both
-absolute paths, and prints guidance for `EXTRA_ZEPHYR_MODULES`, editing the
-configuration, and running the configuration validator. It creates the
-`zephyr_remote_openocd` configuration directory with mode `0700` and the file
-with mode `0600`; existing parents, directories, and files are never chmodded.
-It does not edit shell startup files, repositories, or `.zephyrrc`.
+The setup script copies `resources/config.example.yaml` only when the target
+configuration file (its path argument, otherwise the default path) is absent,
+reports the created/reused status and both absolute paths, and prints guidance
+for `EXTRA_ZEPHYR_MODULES`, editing the configuration, and running the
+configuration validator. For the default path it creates the
+`zephyr_remote_openocd` configuration directory with mode `0700`; it creates the
+file with mode `0600`. Existing parents, directories, and files are never
+chmodded. It does not edit shell startup files, repositories, or `.zephyrrc`.
+
+Setup takes an optional configuration path and never consults
+`ZEPHYR_REMOTE_OPENOCD_CONFIG`. Only the default path's product-owned directory
+is created with mode `0700`; for any other path the parent directory must
+already exist, and setup creates only the file with mode `0600`. For such a
+path, setup prints the validator command with that path and the
+`ZEPHYR_REMOTE_OPENOCD_CONFIG` export that makes runner commands and build
+integration read it.
+Keeping environment-variable selection out of setup and validation leaves one
+rule: the scripts act on their arguments, while runner commands and build
+integration honor the override (§15).
 
 ---
 
@@ -286,12 +298,13 @@ policy. It resolves explicit `--remote`, otherwise the file's
 `default_remote`, and ignores `ZEPHYR_REMOTE_OPENOCD_REMOTE`; its target file
 must exist so that validation cannot silently summarize an absent file.
 
-`scripts/user/validate_configuration.py` is an offline front end to this loader and
-resolver. A non-empty `ZEPHYR_REMOTE_OPENOCD_CONFIG` overrides the product
-default configuration path, and a leading current-user `~` is expanded before
-the file is read. With no selected remote it reports structural validity and
-available definitions. It prints commands as argv and forwarded environment
-names without values, and does not test local or remote resource existence.
+`scripts/user/validate_configuration.py` is an offline front end to this loader
+and resolver. It validates its optional path argument, otherwise the product
+default configuration path, and ignores `ZEPHYR_REMOTE_OPENOCD_CONFIG`; a
+leading current-user `~` in the argument is expanded before the file is read.
+With no selected remote it reports structural validity and available
+definitions. It prints commands as argv and forwarded environment names without
+values, and does not test local or remote resource existence.
 
 The SSH command is represented as an argv list rather than a shell command string.
 An argv representation:
@@ -480,7 +493,8 @@ compile and link. By default, the configuration path is:
 ```
 
 A non-empty `ZEPHYR_REMOTE_OPENOCD_CONFIG` selects the configuration file used by
-each process that loads configuration. During CMake configuration, that path is
+runner commands; the setup script and the validator take a path argument
+instead (§7, §8). During CMake configuration, that path is
 also selected for build-time change detection and generation of runner defaults.
 Relative selections are resolved against the initial CMake invocation directory.
 The absolute file identity is retained in the build cache while the selection

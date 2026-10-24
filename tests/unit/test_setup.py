@@ -21,11 +21,17 @@ CONFIG_DEFAULT = ROOT / "zephyr" / "config_default.py"
 TEMPLATE = ROOT / "resources" / "config.example.yaml"
 
 
-def run_setup(home: Path, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+def run_setup(
+    home: Path,
+    *arguments: str,
+    cwd: Path | None = None,
+    environment_override: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     environment["HOME"] = str(home)
+    environment.update(environment_override or {})
     return subprocess.run(
-        [sys.executable, str(SETUP)],
+        [sys.executable, str(SETUP), *arguments],
         cwd=cwd or home,
         env=environment,
         capture_output=True,
@@ -35,7 +41,7 @@ def run_setup(home: Path, cwd: Path | None = None) -> subprocess.CompletedProces
 
 
 def test_creates_template_and_reports_activation(tmp_path: Path) -> None:
-    result = run_setup(tmp_path, tmp_path.parent)
+    result = run_setup(tmp_path, cwd=tmp_path.parent)
     config = tmp_path / ".config" / "zephyr_remote_openocd" / "config.yaml"
     assert result.returncode == 0, result.stderr
     assert config.read_bytes() == TEMPLATE.read_bytes()
@@ -47,6 +53,49 @@ def test_creates_template_and_reports_activation(tmp_path: Path) -> None:
     assert "--remote" in result.stdout
     assert stat.S_IMODE(config.parent.stat().st_mode) == 0o700
     assert stat.S_IMODE(config.stat().st_mode) == 0o600
+
+
+def test_creates_template_at_explicit_path_without_chmodding_parent(tmp_path: Path) -> None:
+    parent = tmp_path / "configs"
+    parent.mkdir(mode=0o755)
+    parent.chmod(0o755)
+    config = parent / "lab.yaml"
+    result = run_setup(tmp_path, str(config))
+    assert result.returncode == 0, result.stderr
+    assert config.read_bytes() == TEMPLATE.read_bytes()
+    assert stat.S_IMODE(config.stat().st_mode) == 0o600
+    assert stat.S_IMODE(parent.stat().st_mode) == 0o755
+    assert not (tmp_path / ".config").exists()
+    validator = ROOT / "scripts" / "user" / "validate_configuration.py"
+    assert f"python3 {validator} {config} --remote NAME" in result.stdout
+    assert f"export ZEPHYR_REMOTE_OPENOCD_CONFIG={config}" in result.stdout
+
+
+def test_explicit_path_requires_existing_parent(tmp_path: Path) -> None:
+    config = tmp_path / "missing" / "config.yaml"
+    result = run_setup(tmp_path, str(config))
+    assert result.returncode != 0
+    assert "does not exist; create it first" in result.stderr
+    assert not config.parent.exists()
+
+
+def test_explicit_default_path_uses_default_rules(tmp_path: Path) -> None:
+    config = tmp_path / ".config" / "zephyr_remote_openocd" / "config.yaml"
+    result = run_setup(tmp_path, str(config))
+    assert result.returncode == 0, result.stderr
+    assert stat.S_IMODE(config.parent.stat().st_mode) == 0o700
+    assert "ZEPHYR_REMOTE_OPENOCD_CONFIG" not in result.stdout
+
+
+def test_setup_ignores_configuration_path_override(tmp_path: Path) -> None:
+    override = tmp_path / "custom" / "config.yaml"
+    result = run_setup(
+        tmp_path, environment_override={"ZEPHYR_REMOTE_OPENOCD_CONFIG": str(override)}
+    )
+    config = tmp_path / ".config" / "zephyr_remote_openocd" / "config.yaml"
+    assert result.returncode == 0, result.stderr
+    assert config.read_bytes() == TEMPLATE.read_bytes()
+    assert not override.parent.exists()
 
 
 def test_existing_configuration_is_preserved_and_not_chmodded(tmp_path: Path) -> None:
@@ -170,7 +219,7 @@ def test_missing_dependency_warns_without_blocking_initialization(
 
     output = io.StringIO()
     with contextlib.redirect_stdout(output):
-        assert setup.main() == 0
+        assert setup.main([]) == 0
 
     text = output.getvalue()
     assert destination.is_file()
@@ -191,10 +240,10 @@ def test_activation_command_preserves_module_path_with_spaces(
     destination = tmp_path / "user home" / ".config/zro/config.yaml"
     monkeypatch.setattr(setup, "module_root", lambda: root)
     monkeypatch.setattr(setup, "config_path", lambda: destination)
-    monkeypatch.setattr(setup, "initialize_config", lambda *_: True)
+    monkeypatch.setattr(setup, "initialize_config", lambda *_, **__: True)
     output = io.StringIO()
     with contextlib.redirect_stdout(output):
-        assert setup.main() == 0
+        assert setup.main([]) == 0
     activation = next(
         line.strip()
         for line in output.getvalue().splitlines()
