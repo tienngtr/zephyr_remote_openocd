@@ -258,14 +258,23 @@ def test_cmake_config_presence_changes_regenerate_default_runner(
 
 
 @pytest.mark.parametrize("generator", ("Ninja", "Unix Makefiles"))
-def test_absolute_config_regenerates_from_different_cwd(tmp_path: Path, generator: str) -> None:
+@pytest.mark.parametrize(
+    "config_relative",
+    ("selected[*?].yaml", "lab;debug.yaml", "lab;debug/config.yaml"),
+    ids=("glob-characters", "semicolon-filename", "semicolon-directory"),
+)
+def test_absolute_config_regenerates_from_different_cwd(
+    tmp_path: Path, generator: str, config_relative: str
+) -> None:
     invocation = tmp_path / "invocation"
     invocation.mkdir()
     target = tmp_path / "target"
     target.mkdir()
     (invocation / "~").symlink_to(target, target_is_directory=True)
-    config = target / "selected[*?].yaml"
-    override = f"{invocation}/~/./{config.name}"
+    config = target / config_relative
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text("default_runner: openocd\n")
+    override = f"{invocation}/~/./{config_relative}"
     result, report = _configure_module(tmp_path, override, generator=generator, cwd=invocation)
     assert result.returncode == 0, result.stdout
     assert report.read_text().splitlines()[-1] == "openocd"
@@ -277,6 +286,7 @@ def test_absolute_config_regenerates_from_different_cwd(tmp_path: Path, generato
         ("default_runner: openocd\n", "openocd"),
         ("default_runner: remote_openocd\n", "remote_openocd"),
         (None, "openocd"),
+        ("default_runner: remote_openocd\n", "remote_openocd"),
     ):
         if contents is None:
             config.unlink()

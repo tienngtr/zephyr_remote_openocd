@@ -22,7 +22,9 @@ string(JSON _zro_config GET "${_zro_selection}" path)
 
 # Python rejects parent components, so dependencies can use the selected path
 # directly without changing symlink traversal during generator normalization.
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_zro_config}")
+# Encode literal semicolons only for this list-valued property.
+string(REPLACE ";" "\\;" _zro_config_dependency "${_zro_config}")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_zro_config_dependency}")
 
 # Track creation and deletion without interpreting glob characters in the path.
 set(_zro_config_glob "${_zro_config}")

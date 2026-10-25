@@ -557,8 +557,10 @@ For unchanged filesystem/environment inputs, selection and runtime therefore
 consume the same file regardless of initial CMake, regeneration, or runner cwd.
 
 `zephyr/config_default.py` performs selection-level validation and reports the
-runner plus the selected pathname as JSON. Content dependencies and escaped
-path presence tracking use that pathname directly. Rejecting `..` components
+runner plus the selected pathname as JSON. Content dependency paths escape
+literal semicolons for CMake's list-valued directory property. Python reads and
+glob-based presence tracking retain the selected pathname, with glob syntax
+escaped only for the presence pattern. Rejecting `..` components
 avoids changing symlink traversal when CMake generators normalize dependencies
 lexically; `.` does not change directory traversal.
 

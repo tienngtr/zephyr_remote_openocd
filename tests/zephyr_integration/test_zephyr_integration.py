@@ -325,7 +325,7 @@ class TestZephyrIntegration:
             directory.mkdir(parents=True)
         # A caller-relative interpretation would select this local decoy.
         (initial / "config.yaml").write_text("default_runner: openocd\n")
-        config = target / "config.yaml"
+        config = target / "lab;debug.yaml"
         override = f"{target}/./{config.name}"
         environment = {"ZEPHYR_REMOTE_OPENOCD_CONFIG": override}
         build = root / "build"
