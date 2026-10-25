@@ -153,6 +153,11 @@ def main(argv: list[str] | None = None) -> int:
         destination = default if args.config is None else args.config.expanduser().absolute()
         custom = destination.resolve() != default.resolve()
         created = initialize_config(root, destination, owned_directory=not custom)
+        export_path = destination
+        if custom and ".." in destination.parts:
+            # Resolve only the export's parent, preserving the requested
+            # creation path and any final configuration-file symlink.
+            export_path = destination.parent.resolve() / destination.name
     except (OSError, RuntimeError) as error:
         print(f"Error: {error}", file=sys.stderr)
         return 1
@@ -173,10 +178,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  python3 {validator}{config_argument} --remote NAME")
     if custom:
         print(
-            "Runner commands and the build read this file only when "
-            "ZEPHYR_REMOTE_OPENOCD_CONFIG names it; set it before configuring the build:"
+            "The build and remote_openocd commands read this file only when "
+            "ZEPHYR_REMOTE_OPENOCD_CONFIG names it. Set it before configuring the build, "
+            "or reconfigure an existing build after setting it:"
         )
-        print(f"  export ZEPHYR_REMOTE_OPENOCD_CONFIG={shlex.quote(str(destination))}")
+        print(f"  export ZEPHYR_REMOTE_OPENOCD_CONFIG={shlex.quote(str(export_path))}")
     _print_dependency_status()
     return 0
 

@@ -1353,6 +1353,39 @@ def forbid_external_io(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         guard.assert_not_called()  # Also catch accidentally suppressed I/O failures.
 
 
+@pytest.mark.parametrize(
+    "override",
+    (
+        "config.yaml",
+        "./config.yaml",
+        "../config.yaml",
+        "~",
+        "~/config.yaml",
+        "~otheruser/config.yaml",
+        "/configuration/../config.yaml",
+    ),
+)
+@pytest.mark.parametrize("recording", (False, True), ids=("live", "recording"))
+def test_remote_invocation_rejects_override_before_external_io(
+    runner_api: RunnerApi,
+    runner_config: RunnerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    forbid_external_io: None,
+    override: str,
+    recording: bool,
+) -> None:
+    _, _, remote = runner_api
+    monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", override)
+    monkeypatch.setenv("ZRO_RECORD", "1" if recording else "0")
+    runner = remote.create(runner_config, parser_for(remote).parse_args(["--remote=chosen"]))
+
+    with pytest.raises(RuntimeError) as error:
+        runner.run("debugserver")
+
+    assert isinstance(error.value.__cause__, ConfigError)
+    assert "absolute" in str(error.value)
+
+
 @pytest.mark.parametrize("default_runner", ("openocd", "remote_openocd"))
 @pytest.mark.parametrize("recording", (False, True), ids=("live", "recording"))
 @pytest.mark.parametrize(

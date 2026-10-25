@@ -37,12 +37,10 @@ def _configure_module(
         f'  set(ZEPHYR_CURRENT_CMAKE_DIR "{module_directory}")\n'
         "  set_property(GLOBAL PROPERTY ZEPHYR_RUNNERS openocd)\n"
         f'  include("{module_cmake}")\n'
-        "  get_property(zro_dependencies DIRECTORY PROPERTY CMAKE_CONFIGURE_DEPENDS)\n"
-        '  set(ZRO_DEPENDENCIES "${zro_dependencies}" PARENT_SCOPE)\n'
         "endfunction()\n"
         "load_zro_module()\n"
         'file(WRITE "${CMAKE_BINARY_DIR}/zro-result.txt" '
-        '"${ZRO_DEPENDENCIES}\\n${BOARD_FLASH_RUNNER}\\n")\n'
+        '"${BOARD_FLASH_RUNNER}\\n")\n'
     )
     environment = os.environ.copy()
     environment.update(
@@ -163,7 +161,7 @@ def test_cmake_selects_runner_without_remote_validation(
     result, report = _configure_module(tmp_path, str(config))
 
     assert result.returncode == 0, result.stdout
-    assert report.read_text().splitlines() == [str(config), runner or "openocd"]
+    assert report.read_text().splitlines() == [runner or "openocd"]
     with pytest.raises(ConfigError):
         load_config(config)
 
@@ -188,7 +186,7 @@ def test_cmake_selection_does_not_depend_on_previous_validity(
             assert result.returncode != 0
         else:
             assert result.returncode == 0, result.stdout
-            assert report.read_text().splitlines() == [str(config), expected]
+            assert report.read_text().splitlines() == [expected]
 
 
 @pytest.mark.parametrize("text", ("", "# no settings\n", "---\n", "{}\n"))
@@ -199,29 +197,28 @@ def test_cmake_empty_configuration_uses_local_default(tmp_path: Path, text: str)
     result, report = _configure_module(tmp_path, str(config))
 
     assert result.returncode == 0, result.stdout
-    assert report.read_text().splitlines() == [str(config), "openocd"]
+    assert report.read_text().splitlines() == ["openocd"]
 
 
 @pytest.mark.parametrize(
-    "override, home_name, relative_path",
+    "override",
     (
-        ("", "home", ".config/zephyr_remote_openocd/config.yaml"),
-        ("~/custom.yaml", "home", "custom.yaml"),
-        ("~/custom.yaml", r"home\1", "custom.yaml"),
+        "config.yaml",
+        "./config.yaml",
+        "../config.yaml",
+        "~",
+        "~/config.yaml",
+        "~otheruser/config.yaml",
+        "/configuration/../config.yaml",
     ),
-    ids=("default-location", "tilde-expansion", "literal-home"),
 )
-def test_cmake_configuration_path_resolution(
-    tmp_path: Path, override: str, home_name: str, relative_path: str
-) -> None:
-    selected = tmp_path / home_name / relative_path
-    selected.parent.mkdir(parents=True)
-    selected.write_text("default_runner: remote_openocd\n")
+def test_cmake_rejects_unsupported_configuration_override(tmp_path: Path, override: str) -> None:
+    result, _ = _configure_module(tmp_path, override)
 
-    result, report = _configure_module(tmp_path, override, home_name=home_name)
-
-    assert result.returncode == 0, result.stdout
-    assert report.read_text().splitlines() == [str(selected), "remote_openocd"]
+    assert result.returncode != 0
+    assert "ZEPHYR_REMOTE_OPENOCD_CONFIG" in result.stdout
+    assert "absolute" in result.stdout
+    assert "Traceback" not in result.stdout
 
 
 @pytest.mark.parametrize("generator", ("Ninja", "Unix Makefiles"))
@@ -244,30 +241,31 @@ def test_cmake_config_presence_changes_regenerate_default_runner(
     result, report = _configure_module(tmp_path, override, generator=generator)
 
     assert result.returncode == 0, result.stdout
-    assert report.read_text().splitlines() == [str(config), "openocd"]
+    assert report.read_text().splitlines() == ["openocd"]
 
     config.parent.mkdir(parents=True, exist_ok=True)
     config.write_text("default_runner: remote_openocd\n")
     result = _build_module(report.parent, home=home, override=override)
 
     assert result.returncode == 0, result.stdout
-    assert report.read_text().splitlines() == [str(config), "remote_openocd"]
+    assert report.read_text().splitlines() == ["remote_openocd"]
 
     config.unlink()
     result = _build_module(report.parent, home=home, override=override)
 
     assert result.returncode == 0, result.stdout
-    assert report.read_text().splitlines() == [str(config), "openocd"]
+    assert report.read_text().splitlines() == ["openocd"]
 
 
 @pytest.mark.parametrize("generator", ("Ninja", "Unix Makefiles"))
-def test_relative_config_identity_survives_incremental_regeneration(
-    tmp_path: Path, generator: str
-) -> None:
+def test_absolute_config_regenerates_from_different_cwd(tmp_path: Path, generator: str) -> None:
     invocation = tmp_path / "invocation"
     invocation.mkdir()
-    config = invocation / "selected[*?].yaml"
-    override = config.name
+    target = tmp_path / "target"
+    target.mkdir()
+    (invocation / "~").symlink_to(target, target_is_directory=True)
+    config = target / "selected[*?].yaml"
+    override = f"{invocation}/~/./{config.name}"
     result, report = _configure_module(tmp_path, override, generator=generator, cwd=invocation)
     assert result.returncode == 0, result.stdout
     assert report.read_text().splitlines()[-1] == "openocd"
@@ -286,4 +284,15 @@ def test_relative_config_identity_survives_incremental_regeneration(
             config.write_text(contents)
         result = _build_module(report.parent, home=tmp_path / "home", override=override)
         assert result.returncode == 0, result.stdout
-        assert report.read_text().splitlines() == [str(config), expected]
+        assert report.read_text().splitlines() == [expected]
+
+
+def test_cmake_rejects_dangling_configuration_symlink(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    config.symlink_to(tmp_path / "missing.yaml")
+
+    result, _ = _configure_module(tmp_path, str(config))
+
+    assert result.returncode != 0
+    assert str(config) in result.stdout
+    assert "does not resolve to an existing file" in result.stdout

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 
-"""Print the configured runner default for CMake."""
+"""Report selection-level runner intent and its configuration path to CMake."""
 
+import json
 import sys
 from pathlib import Path
 
@@ -21,12 +22,16 @@ def find_module_root(start: Path) -> Path:
 MODULE_ROOT = find_module_root(Path(__file__))
 sys.path.insert(0, str(MODULE_ROOT / "python"))
 
-from zephyr_remote_openocd.config import ConfigError, load_default_runner  # noqa: E402
+from zephyr_remote_openocd.config import (  # noqa: E402
+    ConfigError,
+    default_config_path,
+    load_default_runner,
+)
 
 
 def main() -> int:
     try:
-        print(load_default_runner(Path(sys.argv[1])))
+        print(json.dumps({"path": str(default_config_path()), "runner": load_default_runner()}))
     except ConfigError as error:
         print(error, file=sys.stderr)
         return 2

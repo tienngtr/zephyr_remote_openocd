@@ -8,6 +8,7 @@ from zephyr_remote_openocd.config import (
     RemoteOpenOcdConfig,
     default_config_path,
     load_config,
+    load_default_runner,
     resolve_remote,
 )
 from zephyr_remote_openocd.controller._ssh import SshCommand
@@ -21,11 +22,18 @@ def load_text(tmp_path: Path, text: str) -> RemoteOpenOcdConfig:
     return load_config(path)
 
 
-def test_defaults_when_file_is_absent(tmp_path: Path) -> None:
-    config = load_config(tmp_path / "missing.yaml")
+@pytest.mark.parametrize("override", (False, True), ids=("explicit", "override"))
+def test_defaults_when_file_is_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, override: bool
+) -> None:
+    path = tmp_path / "missing.yaml"
+    if override:
+        monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", str(path))
+    config = load_config(None if override else path)
     assert config.default_runner == "openocd"
     assert config.presets == {}
     assert config.remotes == {}
+    assert load_default_runner(None if override else path) == "openocd"
 
 
 def test_invalid_utf8_configuration_is_actionable(tmp_path: Path) -> None:
@@ -59,13 +67,98 @@ def test_configuration_symlink_to_file_is_supported(tmp_path: Path) -> None:
     assert load_config(config_path).default_runner == "remote_openocd"
 
 
-def test_default_path_uses_yaml_and_override(
+@pytest.mark.parametrize("override", (None, ""))
+def test_default_path_uses_yaml_when_override_is_empty(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, override: str | None
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    if override is not None:
+        monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", override)
+    assert default_config_path() == tmp_path / ".config/zephyr_remote_openocd/config.yaml"
+
+
+@pytest.mark.parametrize(
+    "override",
+    (
+        "config.yaml",
+        "./config.yaml",
+        "../config.yaml",
+        "~",
+        "~/config.yaml",
+        "~otheruser/config.yaml",
+    ),
+)
+def test_configuration_override_requires_absolute_path(
+    monkeypatch: pytest.MonkeyPatch, override: str
+) -> None:
+    monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", override)
+    for loader in (load_config, load_default_runner):
+        with pytest.raises(ConfigError) as error:
+            loader()
+        assert "ZEPHYR_REMOTE_OPENOCD_CONFIG" in str(error.value)
+        assert "absolute" in str(error.value)
+
+
+@pytest.mark.parametrize("suffix", ("../config.yaml", "./../config.yaml"))
+def test_absolute_override_rejects_parent_components(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, suffix: str
+) -> None:
+    target = tmp_path / "target"
+    (target / "inner").mkdir(parents=True)
+    (tmp_path / "link").symlink_to(target / "inner", target_is_directory=True)
+    (tmp_path / "config.yaml").write_text("default_runner: openocd\n")
+    (target / "config.yaml").write_text("default_runner: remote_openocd\n")
+    override = f"{tmp_path}/link/{suffix}"
+    monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", override)
+
+    for loader in (load_config, load_default_runner):
+        with pytest.raises(ConfigError, match="components"):
+            loader()
+
+
+def test_override_preserves_terminal_current_directory_component(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.delenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", raising=False)
-    assert default_config_path().name == "config.yaml"
-    monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", "~/custom.conf")
-    assert default_config_path() == Path.home() / "custom.conf"
+    path = tmp_path / "config.yaml"
+    path.write_text("{}\n")
+    monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", f"{path}/.")
+    for loader in (load_config, load_default_runner):
+        with pytest.raises(ConfigError) as error:
+            loader()
+        assert isinstance(error.value.__cause__, NotADirectoryError)
+
+
+@pytest.mark.parametrize("suffix", ("./config.yaml", "././config.yaml"))
+def test_absolute_override_preserves_current_directory_components(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, suffix: str
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "config.yaml").write_text("default_runner: remote_openocd\n")
+    (tmp_path / "link").symlink_to(target, target_is_directory=True)
+    override = f"{tmp_path}/link/{suffix}"
+    monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", override)
+
+    assert load_default_runner() == "remote_openocd"
+    document = load_config()
+    assert document.default_runner == "remote_openocd"
+    assert document.path == override
+
+
+@pytest.mark.parametrize("directory_name", (".config", "~", "~otheruser"))
+def test_absolute_override_accepts_literal_names_and_symlinks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, directory_name: str
+) -> None:
+    directory = tmp_path / directory_name
+    directory.mkdir()
+    config = directory / "config..yaml"
+    config.write_text("default_runner: remote_openocd\n")
+    link = directory / "current.yaml"
+    link.symlink_to(config)
+    monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", str(link))
+
+    assert load_default_runner() == "remote_openocd"
+    assert load_config().default_runner == "remote_openocd"
 
 
 @pytest.mark.parametrize("text", ("", "\n# no settings\n", "---\n", "---\n...\n", "--- # empty\n"))

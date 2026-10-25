@@ -5,42 +5,26 @@ if(NOT "openocd" IN_LIST _zro_runners)
   return()
 endif()
 
-set(_zro_config "$ENV{HOME}/.config/zephyr_remote_openocd/config.yaml")
-if(NOT "$ENV{ZEPHYR_REMOTE_OPENOCD_CONFIG}" STREQUAL "")
-  set(_zro_config "$ENV{ZEPHYR_REMOTE_OPENOCD_CONFIG}")
-  if(_zro_config STREQUAL "~")
-    set(_zro_config "$ENV{HOME}")
-  elseif(_zro_config MATCHES "^~/")
-    string(SUBSTRING "${_zro_config}" 1 -1 _zro_config_suffix)
-    set(_zro_config "$ENV{HOME}${_zro_config_suffix}")
-  endif()
+# Python owns override validation and reads the unchanged pathname. Selection
+# validation deliberately leaves remote-only settings to actual runner execution.
+execute_process(
+  COMMAND "${PYTHON_EXECUTABLE}" "${ZEPHYR_CURRENT_CMAKE_DIR}/config_default.py"
+  RESULT_VARIABLE _zro_config_result
+  OUTPUT_VARIABLE _zro_selection
+  ERROR_VARIABLE _zro_config_error
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+if(NOT _zro_config_result EQUAL 0)
+  message(FATAL_ERROR "${_zro_config_error}")
 endif()
+string(JSON _zro_default GET "${_zro_selection}" runner)
+string(JSON _zro_config GET "${_zro_selection}" path)
 
-# Resolve relative selections in the initial invocation directory, just as the
-# Python loader does. Incremental regeneration runs from the build directory;
-# retain the selected identity while the configuration input is unchanged.
-if(NOT DEFINED _ZRO_CONFIG_INPUT OR NOT "${_ZRO_CONFIG_INPUT}" STREQUAL "${_zro_config}")
-  execute_process(
-    COMMAND "${PYTHON_EXECUTABLE}" -c
-            "import os, sys; print(os.path.abspath(sys.argv[1]))" "${_zro_config}"
-    RESULT_VARIABLE _zro_path_result
-    OUTPUT_VARIABLE _zro_config_path
-    ERROR_VARIABLE _zro_path_error
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-  )
-  if(NOT _zro_path_result EQUAL 0)
-    message(FATAL_ERROR "${_zro_path_error}")
-  endif()
-  set(_ZRO_CONFIG_INPUT "${_zro_config}" CACHE INTERNAL "Selected configuration input" FORCE)
-  set(_ZRO_CONFIG_PATH "${_zro_config_path}" CACHE INTERNAL "Selected configuration path" FORCE)
-endif()
-set(_zro_config "${_ZRO_CONFIG_PATH}")
-
-# A normal incremental build asks CMake to reconfigure when this file changes.
+# Python rejects parent components, so dependencies can use the selected path
+# directly without changing symlink traversal during generator normalization.
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_zro_config}")
 
-# Track creation and deletion without treating glob characters in the
-# user-selected path as patterns.
+# Track creation and deletion without interpreting glob characters in the path.
 set(_zro_config_glob "${_zro_config}")
 string(REPLACE "[" "[[]" _zro_config_glob "${_zro_config_glob}")
 string(REPLACE "*" "[*]" _zro_config_glob "${_zro_config_glob}")
@@ -57,21 +41,6 @@ get_property(_zro_openocd_args GLOBAL PROPERTY
 set_property(GLOBAL PROPERTY "BOARD_RUNNER_ARGS_${_zro_remote_id}"
              ${_zro_openocd_args})
 set_property(GLOBAL APPEND PROPERTY ZEPHYR_RUNNERS remote_openocd)
-
-# Establish runner intent from the current file. Remote-only validation belongs
-# to remote_openocd invocation; an ambiguous selection must fail configuration.
-execute_process(
-  COMMAND "${PYTHON_EXECUTABLE}"
-          "${ZEPHYR_CURRENT_CMAKE_DIR}/config_default.py"
-          "${_zro_config}"
-  RESULT_VARIABLE _zro_config_result
-  OUTPUT_VARIABLE _zro_default
-  ERROR_VARIABLE _zro_config_error
-  OUTPUT_STRIP_TRAILING_WHITESPACE
-)
-if(NOT _zro_config_result EQUAL 0)
-  message(FATAL_ERROR "${_zro_config_error}")
-endif()
 
 if(_zro_default STREQUAL "remote_openocd")
   set(BOARD_FLASH_RUNNER remote_openocd PARENT_SCOPE)

@@ -238,7 +238,12 @@ is created with mode `0700`; for any other path the parent directory must
 already exist, and setup creates only the file with mode `0600`. For such a
 path, setup prints the validator command with that path and the
 `ZEPHYR_REMOTE_OPENOCD_CONFIG` export that makes runner commands and build
-integration read it.
+integration read it. If the requested custom path contains `..`, the printed
+export uses its filesystem-resolved parent and preserves the final filename,
+including a configuration-file symlink. Creation/reuse and the validator
+command use the requested path; guidance resolution does not reinterpret the
+setup argument. Custom paths without `..` keep their absolute spelling in the
+export.
 Keeping environment-variable selection out of setup and validation leaves one
 rule: the scripts act on their arguments, while runner commands and build
 integration honor the override (§15).
@@ -505,25 +510,16 @@ block generation of either default. Parser safeguards still apply throughout
 the document, including inside unused remotes and presets. This preserves
 ordinary west workflows while keeping untrustworthy runner intent from
 redirecting an intended remote operation to local OpenOCD. `load_config()`
-continues validating the entire schema and
-contextual loading rules on every `remote_openocd` invocation, including an
+validates the entire schema and contextual loading rules on every
+`remote_openocd` invocation, including an
 explicit `-r remote_openocd`, before remote effects. Build default selection
 does not certify operational configuration validity or remote reachability.
 
 Selection depends solely on the current file and normal current build inputs.
 No configuration-validity history, last-known-good runner, fallback state, or
-user opt-in is stored or consulted. The existing build-cache entry identifying
-the selected configuration path (§15) tracks an input's identity, not its
-validity or a fallback runner. Regeneration re-evaluates the current file even
-after a failed configuration attempt.
-
-This layering preserves the full configuration contract and its accepted keys
-and values. Existing valid configuration files need no migration or new
-setting. The compatibility change is limited to build selection: a file that
-passes shared YAML parsing and selection-level validation can now configure a
-build despite remote-only schema or contextual errors. Remote operations still
-perform full configuration loading and validate the selected remote's required
-settings and references.
+user opt-in is stored or consulted. Path selection uses the current environment
+(§15). Regeneration re-evaluates the current file even after a failed
+configuration attempt.
 
 ---
 
@@ -539,15 +535,33 @@ compile and link. By default, the configuration path is:
 ~/.config/zephyr_remote_openocd/config.yaml
 ```
 
-A non-empty `ZEPHYR_REMOTE_OPENOCD_CONFIG` selects the configuration file used by
-runner commands; the setup script and the validator take a path argument
-instead (§7, §8). During CMake configuration, that path is
-also selected for build-time change detection and generation of runner defaults.
-Relative selections are resolved against the initial CMake invocation directory.
-The absolute file identity is retained in the build cache while the selection
-input is unchanged, so regeneration from the build directory watches and loads
-the same file. Content dependencies, presence tracking, and the Python loader
-all use that identity.
+A non-empty `ZEPHYR_REMOTE_OPENOCD_CONFIG` must be an absolute pathname
+without `..` components. Unset or empty selects the canonical default.
+Python's `default_config_path()` owns this policy for both CMake integration
+and runtime loading. Relative, tilde-valued, and parent-component overrides
+fail with guidance to run the setup script with the unchanged value, from the
+directory where a relative value names the intended file, and to verify the
+reported file before using its printed export.
+The setup script and validator retain their explicit-path argument semantics
+(§7, §8).
+
+Accepted absolute pathnames reach Python filesystem reads unchanged. The
+policy rejects `/directory/link/../config.yaml` instead of attempting to
+normalize it. `.` components, names such as `.config` and `config..yaml`, and
+ordinary symlinks remain valid. Within absolute pathnames, `~` and `~user`
+are literal names. Neither layer expands tilde overrides or resolves symlinks
+independently. Python retains the original string through reads so that
+`/file.yaml/.` still fails normal filesystem traversal rather than becoming
+`/file.yaml` through `Path` construction.
+For unchanged filesystem/environment inputs, selection and runtime therefore
+consume the same file regardless of initial CMake, regeneration, or runner cwd.
+
+`zephyr/config_default.py` performs selection-level validation and reports the
+runner plus the selected pathname as JSON. Content dependencies and escaped
+path presence tracking use that pathname directly. Rejecting `..` components
+avoids changing symlink traversal when CMake generators normalize dependencies
+lexically; `.` does not change directory traversal.
+
 Changing the override to select another file is a configuration-input change:
 CMake must be reconfigured before generated runner state is expected to reflect
 that path. An ordinary incremental build does not detect an environment-only
@@ -1108,9 +1122,9 @@ auxiliary and GDB plus explicitly requested RTT as required.
 Immutable `ForwardSpec`, `ListenerSpec`, and `SessionPlan` construction validates
 locally knowable names, ports, duplicates, listener conflicts, and auxiliary-set
 relationships. Reserved listeners have no local port to validate. The helper
-independently validates the serialized listener contract. Recording retains its
-historical `reserved_services` JSON shape, with the remote port shown in its
-legacy `local_port` field; no product configuration or wire key changes.
+independently validates the serialized listener contract. Recording serializes
+reserved listeners under `reserved_services`, with each listener's remote port
+shown in its `local_port` field.
 
 The session starts required forwards in one batch, then attempts each
 best-effort forward in its own one-forward batch. Each manager call rolls back

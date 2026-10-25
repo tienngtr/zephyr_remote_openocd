@@ -9,7 +9,9 @@ reported message or a symptom in the table below, or browse the sections. The
 | --- | --- |
 | Setup script `Error:` or dependency `Warning:` | [The setup script fails or warns](#the-setup-script-fails-or-warns) |
 | `remote_openocd` missing from `west flash --context` | [`remote_openocd` is not listed](#remote_openocd-is-not-listed-by-west-flash---context) |
-| CMake configuration fails after a configuration edit | [CMake configuration errors](configuration.md#cmake-configuration-errors) |
+| CMake configuration or regeneration fails with a configuration error | [CMake configuration errors](configuration.md#cmake-configuration-errors) |
+| `ZEPHYR_REMOTE_OPENOCD_CONFIG must be an absolute pathname` | [The configuration path is rejected](#the-configuration-path-is-rejected) |
+| A changed default runner has no effect | [A changed default runner has no effect](#a-changed-default-runner-has-no-effect) |
 | `no remote selected for remote_openocd` | [No remote is selected](#no-remote-is-selected) |
 | `selected remote 'NAME' does not exist` | [No remote is selected](#no-remote-is-selected) |
 | The SSH executable cannot be started | [SSH works manually but the runner fails](#ssh-works-manually-but-the-runner-fails) |
@@ -53,6 +55,72 @@ configured for Zephyr 4.4.x; the runner has no separate product
 dependency-installation step. See
 [Run the setup script](../../README.md#2-run-the-setup-script).
 
+### The configuration path is rejected
+
+CMake or a `remote_openocd` command reports an error that begins with:
+
+```text
+ZEPHYR_REMOTE_OPENOCD_CONFIG must be an absolute pathname without '..' path components
+```
+
+The variable must hold an absolute path without `..` components; see
+[Configuration path rules](configuration.md#configuration-path-rules). To
+convert the rejected value, use the setup script: it resolves the value through
+the filesystem and, for a file other than the default, prints an equivalent
+accepted `export` line.
+
+> [!CAUTION]
+> Do not remove `..` from the value by hand. When the component before `..` is
+> a symbolic link, the shortened path can name a different file.
+
+1. For a relative value, change to the directory from which the value names
+   the intended file. Skip this step for an absolute value.
+
+2. Run the setup script with the unchanged value. If no file exists at the
+   resolved path, the script creates a template there:
+
+   ```sh
+   python3 /path/to/zephyr_remote_openocd/scripts/user/setup.py \
+     "$ZEPHYR_REMOTE_OPENOCD_CONFIG"
+   ```
+
+3. Check the result before running any printed `export` line. The first output
+   line is `Configuration (created)` or `Configuration (already exists)`,
+   followed by the configuration path:
+
+   - **`(already exists)`:** check that the path and the file's contents are
+     the intended configuration, then continue with step 4. If they are not,
+     repeat from step 1 with the correct directory or value.
+   - **`(created)`, new file intended:** edit the template, then continue with
+     step 4.
+   - **`(created)`, existing file expected:** the value or the starting
+     directory is wrong. Do not run the printed `export` line. Delete the
+     template that this run created, then repeat from step 1 with the correct
+     directory or value.
+   - **`Error: configuration directory ... does not exist`:** the directory
+     named in the error cannot be reached through the value. Repeat from step 1
+     with the correct directory or value. Create a directory only if a new
+     configuration file is intended there.
+   - **Any other `Error:`:** see
+     [The setup script fails or warns](#the-setup-script-fails-or-warns).
+
+4. Update the variable:
+
+   - If the output contains an `export ZEPHYR_REMOTE_OPENOCD_CONFIG=` line, run
+     that line in the shell, and replace the old assignment in any startup
+     file, such as `~/.zephyrrc`, with it.
+   - If the output contains no such line, the value names the default
+     configuration file. Unset the variable and remove its assignment from any
+     startup file:
+
+     ```sh
+     unset ZEPHYR_REMOTE_OPENOCD_CONFIG
+     ```
+
+5. [Reconfigure CMake](configuration.md#apply-configuration-changes-to-a-build)
+   for each existing build, so that its stored default runner comes from the
+   selected file.
+
 ### `remote_openocd` is not listed by `west flash --context`
 
 `remote_openocd` is registered only for a build that registers Zephyr's
@@ -73,8 +141,8 @@ requires. Otherwise:
 Run `west flash` or `west debug` normally, or run `west build`: the pre-run
 incremental build updates the default runner stored in the build. A pristine
 build or full firmware compile is not required solely to update it. Only the
-default runner chosen by `default_runner` is stored; runner commands read the
-rest of the configuration each time they run.
+default runner chosen by `default_runner` is stored; `remote_openocd` commands
+read the rest of the configuration each time they run.
 
 The stored default stays unchanged when:
 

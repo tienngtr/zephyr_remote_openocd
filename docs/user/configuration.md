@@ -20,11 +20,16 @@ where the module was placed.
    ```
 
    The setup script creates `~/.config/zephyr_remote_openocd/config.yaml` and
-   never overwrites an existing file. To create the file elsewhere, or if
-   `ZEPHYR_REMOTE_OPENOCD_CONFIG` is already set, pass its path as an argument;
-   see [Location](#location). The generated file contains a `lab` remote that
-   is safe to keep: nothing uses it until `--remote lab`,
-   `ZEPHYR_REMOTE_OPENOCD_REMOTE=lab`, or `default_remote: lab` selects it.
+   never overwrites an existing file.
+
+   To create the file at another location, pass its path as the script's
+   argument, then set `ZEPHYR_REMOTE_OPENOCD_CONFIG` as described in
+   [Location](#location) so that the build and `remote_openocd` commands read
+   that file.
+
+   The generated file contains a `lab` remote that is safe to keep. Nothing
+   uses it until `--remote lab`, `ZEPHYR_REMOTE_OPENOCD_REMOTE=lab`, or
+   `default_remote: lab` selects it.
 
 2. In the `lab` remote, replace the `ssh_host` value with the remote host name
    or an alias from the normal SSH configuration, and replace the
@@ -67,11 +72,14 @@ where the module was placed.
 
 ### Choose the default remote and runner
 
-In an OpenOCD-capable build with this module active, `default_runner`
-replaces the board's original default flash and debug runner, even when the
-key is omitted; the omitted value is `openocd`. Keep `default_runner: openocd`
-to use local OpenOCD by default, or change it to `remote_openocd`. Other
-runners remain available with `-r`. The build stores this default; see
+For an OpenOCD-capable build, one whose board supports Zephyr's `openocd`
+runner, activating this module replaces the board's
+default flash and debug runner when CMake configures the build.
+`default_runner` chooses the replacement; omitting the key selects `openocd`.
+
+Keep `default_runner: openocd` to use local OpenOCD by default, or change it to
+`remote_openocd`. Other runners remain available with `-r`. The build stores
+this default; see
 [Apply configuration changes to a build](#apply-configuration-changes-to-a-build)
 for when a change takes effect.
 
@@ -82,78 +90,94 @@ After the explicit command works, uncomment `default_remote: lab` to omit
 
 ### Location
 
-Runner commands and the build read
-`~/.config/zephyr_remote_openocd/config.yaml`, or the file named by a non-empty
-`ZEPHYR_REMOTE_OPENOCD_CONFIG`. A leading current-user `~` is expanded, and the
-contents are read as YAML regardless of the filename extension.
+The build and `remote_openocd` commands read
+`~/.config/zephyr_remote_openocd/config.yaml`. To use another file, set
+`ZEPHYR_REMOTE_OPENOCD_CONFIG` to its absolute path, without `..` components,
+before configuring the build and in every shell that runs west. An unset or
+empty variable selects the default path. See
+[Configuration path rules](#configuration-path-rules) for the accepted values.
 
-The setup script and the validator ignore `ZEPHYR_REMOTE_OPENOCD_CONFIG` and
-take the path as an argument instead. If the variable is already set, pass
-`"$ZEPHYR_REMOTE_OPENOCD_CONFIG"` to both scripts so that they use the file that
-runner commands read.
-
-Use an absolute path, or one starting with `~/`, for the variable, so that
-setup, the validator, runner commands, and the build all read the same file;
-the `export` line that the setup script prints already uses an absolute path.
-A relative value can name different files, because each command resolves it
-against its own current directory, and the build resolves it against the
-directory from which CMake first configured it.
-
-To keep the configuration at another path, first make sure that the path's
-parent directory exists; the setup script creates only the file there. Create
-the file, point runner commands and the build at it, and validate it:
+The example below creates and selects `$HOME/lab/config.yaml`. To use another
+file, replace `$HOME/lab/config.yaml` with that file's absolute path, and
+replace `$HOME/lab` in the `mkdir` command with its parent directory. The
+`mkdir` command creates the parent directory, which the setup script requires
+for a file other than the default.
 
 ```sh
-python3 /path/to/zephyr_remote_openocd/scripts/user/setup.py ~/lab/config.yaml
-export ZEPHYR_REMOTE_OPENOCD_CONFIG=~/lab/config.yaml
+mkdir -p "$HOME/lab"
+python3 /path/to/zephyr_remote_openocd/scripts/user/setup.py "$HOME/lab/config.yaml"
+export ZEPHYR_REMOTE_OPENOCD_CONFIG="$HOME/lab/config.yaml"
 python3 /path/to/zephyr_remote_openocd/scripts/user/validate_configuration.py \
-  ~/lab/config.yaml --remote lab
+  "$ZEPHYR_REMOTE_OPENOCD_CONFIG" --remote lab
 ```
 
-Set the variable in every shell that runs west, for example in `~/.zephyrrc`
-as in the README's [Activate the module](../../README.md#3-activate-the-module)
-step, and before configuring the build. After changing the variable for an
-existing build, reconfigure it; see
-[Apply configuration changes to a build](#apply-configuration-changes-to-a-build).
+If the setup argument is relative, starts with `~/`, or contains `..`, run the
+`export ZEPHYR_REMOTE_OPENOCD_CONFIG=...` line that the setup script prints
+instead of writing the assignment by hand; the printed path is absolute and
+has no `..` components.
+
+After changing the variable for an existing build,
+[reconfigure CMake](#apply-configuration-changes-to-a-build) so that the build's
+stored default runner comes from the new file.
+
+To set the variable in shells that source Zephyr's `zephyr-env.sh`, add the
+`export` line to `~/.zephyrrc`, as the README's
+[Activate the module](../../README.md#3-activate-the-module) step does for
+`EXTRA_ZEPHYR_MODULES`.
 
 ### Apply configuration changes to a build
 
-The build stores only the default runner derived from `default_runner`; runner
-commands read the rest of the configuration each time they run. Once this
-module is configured into a build, the pre-run incremental build of ordinary
-`west flash` and `west debug` commands detects changes to the contents,
-creation, or deletion of the configuration file that was selected when CMake
-last configured that build, and updates the stored default. To apply those
-changes without flashing or debugging, run `west build`. Neither the pre-run
-build nor `west build` needs a pristine build or a full firmware compile and
-link. A `--no-rebuild` runner command intentionally uses the stored default as
-it is.
+The build stores only the default runner derived from `default_runner`.
+`remote_openocd` commands read the rest of the configuration each time they run.
 
-Reconfigure CMake with `west build --cmake-only -d <build>`, where `<build>` is
-the build directory, when:
+Once this module is configured into a build, ordinary `west flash` and
+`west debug` commands run an incremental build before selecting the runner.
+That build detects content changes, creation, or deletion of the configuration
+file selected when CMake last configured the build, and updates the stored
+default. Run `west build` to apply these changes without flashing or debugging.
+Applying configuration changes requires neither a pristine build nor a full
+firmware compile and link.
+
+A `--no-rebuild` runner command skips this refresh and uses the stored default
+as it is.
+
+Replace `<build>` with the existing Zephyr build directory. To select the
+configuration file again and refresh the stored default runner, run
+`west build --cmake-only -d <build>` when:
 
 - the build directory predates activation of this module;
-- `ZEPHYR_REMOTE_OPENOCD_CONFIG` now selects a different file. An ordinary
-  incremental build does not detect that change, so until CMake is
-  reconfigured, the stored default can still come from the previous file while
-  runner commands read the new one.
+- `ZEPHYR_REMOTE_OPENOCD_CONFIG` selects a different file. An ordinary
+  incremental build does not detect an environment-only path change. Until
+  CMake is reconfigured, the stored default can still come from the previous
+  file while `remote_openocd` commands read the new one.
 
 ### CMake configuration errors
 
 > [!IMPORTANT]
 > CMake configuration stops with an error for an OpenOCD-capable build with
-> this module active, even with `default_runner: openocd`, if the YAML file
-> contains:
+> this module active, even with `default_runner: openocd`, if any of these
+> conditions applies:
 >
-> - malformed YAML;
-> - an invalid document structure, such as multiple YAML documents;
-> - duplicate mapping keys, including inside remote settings;
-> - unknown top-level keys, such as the misspelling `default_runnner`;
-> - an invalid type or value for `default_runner`.
+> - `ZEPHYR_REMOTE_OPENOCD_CONFIG` is non-empty but is not absolute or contains
+>   a `..` path component;
+> - PyYAML or jsonschema is unavailable in the Python environment that CMake
+>   uses;
+> - the selected path exists but cannot be read as a file, such as a dangling
+>   symbolic link, or the file is not valid UTF-8;
+> - the file contains malformed YAML;
+> - the file has an invalid document structure, such as multiple YAML documents;
+> - the file contains duplicate mapping keys, including inside remote settings;
+> - the file contains unknown top-level keys, such as `default_runnner`;
+> - `default_runner` has an invalid type or value.
 >
 > CMake prints the error and does not substitute local OpenOCD or a previous
-> valid default. Run the [validator](#validate-the-configuration) to find errors
-> in the file before building.
+> valid default. For a rejected path, see
+> [The configuration path is rejected](troubleshooting.md#the-configuration-path-is-rejected).
+> Run the [validator](#validate-the-configuration) to find
+> errors in the file; it does not check the environment variable's path rules.
+
+See [Apply configuration changes to a build](#apply-configuration-changes-to-a-build)
+for when changes cause CMake to rerun and when manual reconfiguration is needed.
 
 CMake checks only what it needs to choose the default runner; success does not
 mean the remote settings are valid. After YAML parsing succeeds, invalid
@@ -165,6 +189,8 @@ before using the remote settings. A `remote_openocd` command also checks the
 whole file before contacting the remote host.
 
 ### Format
+
+The file is read as YAML regardless of its filename extension.
 
 [`configuration.schema.json`](../../python/zephyr_remote_openocd/resources/configuration.schema.json)
 defines every key, its allowed values, and their lexical forms;
@@ -207,12 +233,18 @@ python3 /path/to/zephyr_remote_openocd/scripts/user/validate_configuration.py \
   [CONFIG] [--remote NAME]
 ```
 
-`/path/to/zephyr_remote_openocd` is the module path, as in the
-[Quick start](#quick-start). `CONFIG` is an optional configuration file path;
-without it, the validator reads the default path. Unlike a runner command, the
-validator ignores `ZEPHYR_REMOTE_OPENOCD_CONFIG`; when that variable is
+Replace `/path/to/zephyr_remote_openocd` with the module path, as in the
+[Quick start](#quick-start).
+
+- `CONFIG` is the configuration file path. Omit it to read
+  `~/.config/zephyr_remote_openocd/config.yaml`.
+- `--remote NAME` selects the remote to check.
+
+The validator ignores `ZEPHYR_REMOTE_OPENOCD_CONFIG`. When that variable is
 non-empty, pass `"$ZEPHYR_REMOTE_OPENOCD_CONFIG"` as `CONFIG` to check the file
-that runner commands read. `NAME` is the remote to check.
+that `remote_openocd` commands read. The validator checks the file's contents;
+it does not check whether the variable meets the
+[path rules](#configuration-path-rules).
 
 Validation checks:
 
@@ -237,11 +269,12 @@ values. It still reads variables independently needed for configuration
 discovery and path resolution, even when those names also appear in
 `forward_env`.
 
-Unlike runner commands, the validator requires its target file to exist. If
-the file is missing, it exits with an error that suggests the setup command
-for that path, and first the directory to create when the path's parent
-directory is also missing, instead of reporting empty runtime defaults as a
-valid configuration.
+The validator requires its target file to exist. It does not treat a missing
+file as an empty configuration.
+
+For a missing file, the error suggests a setup command for that path. If a
+custom path's parent directory is also missing, the error names the directory
+to create before running the setup script.
 
 ## Remotes
 
@@ -546,6 +579,46 @@ A selected remote and its named preset must exist, and a real remote operation
 must provide `openocd_command`; unused incomplete definitions are allowed.
 
 ## Reference
+
+### Configuration path rules
+
+When non-empty, `ZEPHYR_REMOTE_OPENOCD_CONFIG` must contain an absolute path
+with no `..` component. This keeps the build and `remote_openocd` commands
+reading the same file when they run from different directories. `.`
+components and symbolic links in the path are allowed.
+
+The rule applies to the value after shell expansion. In the shell,
+`export ZEPHYR_REMOTE_OPENOCD_CONFIG="$HOME/lab/config.yaml"` stores an
+absolute path. So does an unquoted assignment such as
+`ZEPHYR_REMOTE_OPENOCD_CONFIG=~/lab/config.yaml` followed by
+`export ZEPHYR_REMOTE_OPENOCD_CONFIG`, because the shell expands the `~` before
+storing the value. Both `'~/lab/config.yaml'` and `"~/lab/config.yaml"` keep a
+literal leading `~` and are rejected.
+
+| Path stored in the variable | Result |
+| --- | --- |
+| `/directory/config.yaml` | Accepted |
+| `/directory/./config.yaml` | Accepted; `.` leaves the directory unchanged |
+| `/directory/../config.yaml` | Rejected |
+| `config.yaml`, `./config.yaml`, or `../config.yaml` | Rejected |
+| `~`, `~/config.yaml`, or `~user/config.yaml` | Rejected; CMake and `remote_openocd` do not expand a leading `~` |
+| `/directory/~/config.yaml` or `/directory/~user/config.yaml` | Accepted; tilde names are literal |
+
+Names such as `.config` and `config..yaml` are ordinary names, not `..`
+components. For a configuration in another account's home, supply its absolute
+path instead of a value beginning with `~user/`.
+
+A rejected value stops CMake configuration or regeneration of an
+OpenOCD-capable build, even when the default runner is local OpenOCD, and a
+`remote_openocd` command rejects it before contacting the remote host. Other
+runners do not read the variable. To fix a rejected value, see
+[The configuration path is rejected](troubleshooting.md#the-configuration-path-is-rejected).
+
+The setup script and validator take the file path as an argument and ignore
+`ZEPHYR_REMOTE_OPENOCD_CONFIG`; if that variable is non-empty, pass
+`"$ZEPHYR_REMOTE_OPENOCD_CONFIG"` as the argument to use the file it selects.
+Their argument may be relative to the current directory or start with `~/`,
+and the variable's restrictions do not apply to it.
 
 ### Commands
 

@@ -59,7 +59,7 @@ class RemoteDefinition:
 @dataclass(frozen=True)
 class ResolvedRemote:
     name: str
-    path: Path
+    path: str | Path
     ssh_host: str
     openocd_command: tuple[str, ...]
     ssh_command: tuple[str, ...]
@@ -93,14 +93,14 @@ class ResolvedRemote:
 class RemoteOpenOcdConfig:
     """Parsed YAML document; remotes resolve only when selected."""
 
-    path: Path
+    path: str | Path
     default_runner: str
     default_remote: str | None
     presets: Mapping[str, Preset]
     remotes: Mapping[str, RemoteDefinition]
 
 
-def _require_dependencies(config_path: Path) -> None:
+def _require_dependencies(config_path: str | Path) -> None:
     if _IMPORT_ERROR is not None:
         raise ConfigError(
             f"cannot load YAML configuration {config_path}: PyYAML and jsonschema are "
@@ -143,23 +143,39 @@ def canonical_config_path() -> Path:
     return Path.home() / ".config" / "zephyr_remote_openocd" / "config.yaml"
 
 
-def default_config_path() -> Path:
+def default_config_path() -> str | Path:
+    """Select the override verbatim; only explicit path arguments expand home."""
     override = os.environ.get("ZEPHYR_REMOTE_OPENOCD_CONFIG")
-    return Path(override).expanduser() if override else canonical_config_path()
+    if not override:
+        return canonical_config_path()
+    if not os.path.isabs(override) or ".." in override.split(os.sep):
+        raise ConfigError(
+            "ZEPHYR_REMOTE_OPENOCD_CONFIG must be an absolute pathname "
+            "without '..' path components.\n"
+            "Run scripts/user/setup.py from the zephyr_remote_openocd module with the "
+            "unchanged value; for a relative value, run it from the directory where the "
+            "value names the intended file.\n"
+            "Check the file it reports before using its printed export.\n"
+            "See docs/user/troubleshooting.md#the-configuration-path-is-rejected in that module."
+        )
+    return override
 
 
-def _load_yaml(config_path: Path) -> dict[str, object]:
+def _load_yaml(config_path: str | Path) -> dict[str, object]:
     _require_dependencies(config_path)
     text = _read_config_text(config_path)
     return _parse_yaml_document(text, config_path)
 
 
-def _read_config_text(config_path: Path) -> str:
+def _read_config_text(config_path: str | Path) -> str:
     try:
-        text = config_path.read_text(encoding="utf-8")
+        # Path construction itself removes syntax such as a trailing slash.
+        # Preserve environment overrides through the actual filesystem call.
+        with open(config_path, encoding="utf-8") as stream:
+            text = stream.read()
     except FileNotFoundError as error:
         try:
-            config_path.lstat()
+            os.lstat(config_path)
         except FileNotFoundError:
             return ""
         except OSError as inspection_error:
@@ -178,7 +194,7 @@ def _read_config_text(config_path: Path) -> str:
     return text
 
 
-def _parse_yaml_document(text: str, config_path: Path) -> dict[str, object]:
+def _parse_yaml_document(text: str, config_path: str | Path) -> dict[str, object]:
     try:
         nodes = list(yaml.compose_all(text, Loader=_StrictLoader))
         documents = list(yaml.load_all(text, Loader=_StrictLoader))
@@ -204,7 +220,7 @@ def _parse_yaml_document(text: str, config_path: Path) -> dict[str, object]:
 
 
 def _validate_schema(
-    document: dict[str, object], config_path: Path, *, selection_only: bool = False
+    document: dict[str, object], config_path: str | Path, *, selection_only: bool = False
 ) -> None:
     try:
         schema_text = (
@@ -235,7 +251,7 @@ def _as_command(value: object) -> tuple[str, ...] | None:
 
 
 def _path_mappings(
-    value: object, location: str, config_path: Path
+    value: object, location: str, config_path: str | Path
 ) -> tuple[PathMapping, ...] | None:
     if value is None:
         return None
@@ -262,18 +278,18 @@ def _path_mappings(
 
 @overload
 def _definition(
-    raw: dict[str, object], config_path: Path, location: str, *, remote: Literal[True]
+    raw: dict[str, object], config_path: str | Path, location: str, *, remote: Literal[True]
 ) -> RemoteDefinition: ...
 
 
 @overload
 def _definition(
-    raw: dict[str, object], config_path: Path, location: str, *, remote: Literal[False]
+    raw: dict[str, object], config_path: str | Path, location: str, *, remote: Literal[False]
 ) -> Preset: ...
 
 
 def _definition(
-    raw: dict[str, object], config_path: Path, location: str, *, remote: bool
+    raw: dict[str, object], config_path: str | Path, location: str, *, remote: bool
 ) -> RemoteDefinition | Preset:
     openocd_command = _as_command(raw.get("openocd_command"))
     ssh_command = _as_command(raw.get("ssh_command"))
@@ -299,7 +315,7 @@ def _definition(
 
 def load_default_runner(path: Path | None = None) -> str:
     """Establish runner intent without validating or resolving remote settings."""
-    config_path = (path or default_config_path()).expanduser()
+    config_path = path.expanduser() if path is not None else default_config_path()
     document = _load_yaml(config_path)
     _validate_schema(document, config_path, selection_only=True)
     default_runner = document.get("default_runner", "openocd")
@@ -308,7 +324,7 @@ def load_default_runner(path: Path | None = None) -> str:
 
 
 def load_config(path: Path | None = None) -> RemoteOpenOcdConfig:
-    config_path = (path or default_config_path()).expanduser()
+    config_path = path.expanduser() if path is not None else default_config_path()
     document = _load_yaml(config_path)
     _validate_schema(document, config_path)
     default_runner = document.get("default_runner", "openocd")

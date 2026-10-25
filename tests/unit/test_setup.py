@@ -13,6 +13,7 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+from zephyr_remote_openocd.config import load_config
 
 from tests.support import ROOT
 
@@ -77,6 +78,81 @@ def test_explicit_path_requires_existing_parent(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert "does not exist; create it first" in result.stderr
     assert not config.parent.exists()
+
+
+@pytest.mark.parametrize("spelling", ("relative", "absolute", "symlink-parent"))
+@pytest.mark.parametrize("existing", (False, True), ids=("created", "reused"))
+def test_parent_path_setup_exports_the_selected_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spelling: str, existing: bool
+) -> None:
+    caller = tmp_path / "caller"
+    caller.mkdir()
+    target = tmp_path / "target"
+    (target / "inner").mkdir(parents=True)
+    config = target / "config with spaces.yaml"
+    contents = "default_runner: remote_openocd\n" if existing else TEMPLATE.read_text()
+    if existing:
+        config.write_text(contents)
+        config.chmod(0o644)
+    if spelling == "symlink-parent":
+        (caller / "link").symlink_to(target / "inner", target_is_directory=True)
+        argument = f"link/../{config.name}"
+    elif spelling == "absolute":
+        argument = f"{caller}/../target/{config.name}"
+    else:
+        argument = f"../target/{config.name}"
+    decoy = caller / config.name
+    decoy.write_text("unrelated configuration\n")
+
+    result = run_setup(tmp_path, argument, cwd=caller)
+
+    assert result.returncode == 0, result.stderr
+    assert config.read_text() == contents
+    assert decoy.read_text() == "unrelated configuration\n"
+    assert stat.S_IMODE(config.stat().st_mode) == (0o644 if existing else 0o600)
+    exported = _exported_configuration(result.stdout)
+    monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", exported)
+    document = load_config()
+    assert Path(document.path).samefile(config)
+    assert document.default_runner == ("remote_openocd" if existing else "openocd")
+
+
+def test_parent_path_export_preserves_final_configuration_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    caller = tmp_path / "caller"
+    caller.mkdir()
+    directory = tmp_path / "configs"
+    directory.mkdir()
+    config = directory / "actual.yaml"
+    config.write_text("default_runner: remote_openocd\n")
+    link = directory / "selected.yaml"
+    link.symlink_to(config)
+
+    result = run_setup(tmp_path, "../configs/selected.yaml", cwd=caller)
+
+    assert result.returncode == 0, result.stderr
+    exported = _exported_configuration(result.stdout)
+    assert Path(exported).is_symlink()
+    assert Path(exported).samefile(link)
+    monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", exported)
+    assert load_config().default_runner == "remote_openocd"
+
+
+def _exported_configuration(output: str) -> str:
+    command = next(
+        line.strip()
+        for line in output.splitlines()
+        if line.strip().startswith("export ZEPHYR_REMOTE_OPENOCD_CONFIG=")
+    )
+    result = subprocess.run(
+        ["bash", "-c", 'set -e\n' + command + '\nprintf "%s" "$ZEPHYR_REMOTE_OPENOCD_CONFIG"'],
+        env=os.environ.copy(),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout
 
 
 def test_explicit_default_path_uses_default_rules(tmp_path: Path) -> None:
@@ -182,12 +258,15 @@ def test_config_default_finds_module_by_markers(tmp_path: Path) -> None:
         module.find_module_root(tmp_path / "missing")
 
 
-def test_config_default_reports_invalid_configuration_to_cmake(tmp_path: Path) -> None:
+def test_config_default_reports_invalid_configuration_to_cmake(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     config = tmp_path / "invalid.yaml"
     config.write_text("unknown: true\n", encoding="utf-8")
 
+    monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", str(config))
     result = subprocess.run(
-        [sys.executable, str(CONFIG_DEFAULT), str(config)],
+        [sys.executable, str(CONFIG_DEFAULT)],
         capture_output=True,
         text=True,
         check=False,

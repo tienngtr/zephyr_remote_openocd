@@ -64,13 +64,11 @@ python3 zephyr_remote_openocd/scripts/user/setup.py
 ```
 
 The setup script creates `~/.config/zephyr_remote_openocd/config.yaml` without
-overwriting an existing file. To create the file at another path, pass that
-path as an argument; see [Location](docs/user/configuration.md#location).
-
-> [!NOTE]
-> If `ZEPHYR_REMOTE_OPENOCD_CONFIG` is already set in the shell, pass that path
-> to the setup script here and to the validator in step 5; see
-> [Location](docs/user/configuration.md#location).
+overwriting an existing file. To use a configuration file at another path,
+pass that path as an argument, then set `ZEPHYR_REMOTE_OPENOCD_CONFIG` with the
+`export` command that the setup script prints so that the build and
+`remote_openocd` commands read that file; see
+[Location](docs/user/configuration.md#location).
 
 The setup script prints:
 
@@ -78,8 +76,8 @@ The setup script prints:
 - the module path;
 - the activation command for step 3, with the module path filled in;
 - a validator command for step 5, with `NAME` in place of the remote name;
-- for a path other than the default, the command that points runner commands
-  and the build at that file;
+- for a path other than the default, the command that points the build and
+  `remote_openocd` commands at that file;
 - whether the required Python dependencies are available.
 
 **Verify:** the output starts with `Configuration (created)` or

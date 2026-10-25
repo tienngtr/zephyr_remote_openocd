@@ -533,12 +533,31 @@ being treated as empty runtime configuration.
 
 ### REQ-FUNC-CONFIG-014
 
-A non-empty `ZEPHYR_REMOTE_OPENOCD_CONFIG` environment variable SHALL override
-the default configuration path for runner commands and build integration. A
-leading current-user `~` in the override SHALL be expanded before the
-configuration is read. The setup operation and the configuration validator
-take an explicit path argument instead (REQ-FUNC-CONFIG-003,
-REQ-FUNC-CONFIG-013).
+An unset or empty `ZEPHYR_REMOTE_OPENOCD_CONFIG` environment variable SHALL
+select the canonical per-user configuration path. A non-empty value SHALL
+override that path for runner commands and build integration and SHALL be an
+absolute pathname without `..` path components. Relative values,
+including `./...`, `../...`, `~`, `~/...`, and `~user/...`, and absolute
+values containing a `..` component SHALL fail with an actionable
+configuration error; the application SHALL NOT expand tilde-valued overrides.
+`.` components SHALL remain valid. Only complete `..` components are
+disallowed; names such as `.config` and `config..yaml` SHALL remain valid.
+Tilde characters within an absolute pathname SHALL be treated literally,
+including directory names such as `~` or `~user`.
+
+For accepted absolute overrides, the supplied pathname SHALL reach filesystem
+reads unchanged, without lexical or physical path normalization. For the same
+non-empty override and unchanged filesystem and environment inputs, build-time
+selection and runtime `remote_openocd`
+SHALL use the same pathname semantics and SHALL NOT silently consume different
+configuration files. Build change detection SHALL observe the file selected
+by those semantics.
+
+Shell expressions such as `"$PWD/config.yaml"` or
+`"$HOME/lab/config.yaml"` can construct absolute values before invoking the
+application. The setup operation and configuration validator retain their
+explicit-path argument semantics
+(REQ-FUNC-CONFIG-003, REQ-FUNC-CONFIG-013).
 
 ### REQ-FUNC-CONFIG-015
 
@@ -717,7 +736,7 @@ SHALL select the documented `openocd` default. The decision SHALL depend only
 on the current configuration and normal current build inputs, never previous
 configuration validity, a last-known-good value, or fallback state.
 
-Every actual `remote_openocd` invocation SHALL still load and validate the
+Every actual `remote_openocd` invocation SHALL load and validate the
 complete configuration contract before remote effects, regardless of the
 configured default or prior CMake selection success. Selection validation
 SHALL NOT replace full runtime validation.

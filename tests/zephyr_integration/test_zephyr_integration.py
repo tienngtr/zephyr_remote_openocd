@@ -103,13 +103,15 @@ class TestZephyrIntegration:
             scratch.cleanup()
 
     @classmethod
-    def _write_config(cls, default_runner: str, *, path: Path | None = None) -> None:
+    def _write_config(
+        cls, default_runner: str, *, path: Path | None = None, host: str = "record_only"
+    ) -> None:
         content = (
             f"default_runner: {default_runner}\n"
             "default_remote: record_only\n"
             "remotes:\n"
             "  record_only:\n"
-            "    ssh_host: record_only\n"
+            f"    ssh_host: {host}\n"
             "    openocd_command: [/remote/openocd]\n"
             "    ssh_command: [ssh]\n"
             "    path_mappings:\n"
@@ -119,7 +121,11 @@ class TestZephyrIntegration:
 
     @classmethod
     def _west(
-        cls, *args: str, check: bool = True, extra_env: Mapping[str, str] | None = None
+        cls,
+        *args: str,
+        check: bool = True,
+        extra_env: Mapping[str, str] | None = None,
+        cwd: Path | None = None,
     ) -> subprocess.CompletedProcess[str]:
         env = os.environ.copy()
         env.pop("ZEPHYR_REMOTE_OPENOCD_REMOTE", None)
@@ -134,7 +140,7 @@ class TestZephyrIntegration:
         env.update(extra_env or {})
         result = subprocess.run(
             [str(cls.west), *args],
-            cwd=cls.zephyr_base.parent,
+            cwd=cwd if cwd is not None else cls.zephyr_base.parent,
             env=env,
             text=True,
             stdout=subprocess.PIPE,
@@ -161,7 +167,12 @@ class TestZephyrIntegration:
 
     @classmethod
     def _configure_recording_build(
-        cls, application: Path, build: Path, *, extra_env: Mapping[str, str] | None = None
+        cls,
+        application: Path,
+        build: Path,
+        *,
+        extra_env: Mapping[str, str] | None = None,
+        cwd: Path | None = None,
     ) -> None:
         """Configure real runner metadata and supply the no-build flash artifact."""
         cls._west(
@@ -176,6 +187,7 @@ class TestZephyrIntegration:
             f"-DUSER_CACHE_DIR={cls.cache}",
             f"-DOPENOCD={cls.fake_openocd}",
             extra_env=extra_env,
+            cwd=cwd,
         )
         cls._create_recording_flash_artifact(build)
 
@@ -274,6 +286,123 @@ class TestZephyrIntegration:
 
             assert self._runner_state(build)["flash-runner"] == "remote_openocd"
             assert self._recording(result.stdout)["command"] == "flash"
+
+    @pytest.mark.parametrize(
+        "override",
+        (
+            "config.yaml",
+            "./config.yaml",
+            "../config.yaml",
+            "~",
+            "~/config.yaml",
+            "~otheruser/config.yaml",
+            "/configuration/../config.yaml",
+        ),
+    )
+    def test_no_rebuild_runner_rejects_unsupported_override(self, override: str) -> None:
+        result = self._west(
+            "flash",
+            "-d",
+            str(self.build_out_tree),
+            "-r",
+            "remote_openocd",
+            "--no-rebuild",
+            extra_env={"ZEPHYR_REMOTE_OPENOCD_CONFIG": override},
+            check=False,
+            cwd=self.scratch,
+        )
+
+        assert result.returncode != 0
+        assert "ZEPHYR_REMOTE_OPENOCD_CONFIG" in result.stdout
+        assert "absolute" in result.stdout
+
+    def test_absolute_override_is_independent_of_cwd_and_regeneration(self) -> None:
+        root = self.scratch / "override-resolution"
+        initial = root / "initial"
+        runtime = root / "runtime"
+        target = root / "~"
+        for directory in (initial, runtime, target):
+            directory.mkdir(parents=True)
+        # A caller-relative interpretation would select this local decoy.
+        (initial / "config.yaml").write_text("default_runner: openocd\n")
+        config = target / "config.yaml"
+        override = f"{target}/./{config.name}"
+        environment = {"ZEPHYR_REMOTE_OPENOCD_CONFIG": override}
+        build = root / "build"
+        self._write_config("remote_openocd", path=config)
+        self._configure_recording_build(
+            self.app_out_tree,
+            build,
+            extra_env=environment,
+            cwd=initial,
+        )
+        assert self._runner_state(build)["flash-runner"] == "remote_openocd"
+
+        def invoke() -> dict[str, Any]:
+            result = self._west(
+                "flash",
+                "-d",
+                str(build),
+                "-r",
+                "remote_openocd",
+                "--no-rebuild",
+                extra_env=environment,
+                cwd=runtime,
+            )
+            return self._recording(result.stdout)
+
+        assert invoke()["selected_config"]["path"] == override
+        # --no-rebuild reads current settings but deliberately keeps old defaults.
+        self._write_config("openocd", path=config, host="updated_record_only")
+        assert invoke()["remote_session_request"]["host"] == "updated_record_only"
+        assert self._runner_state(build)["flash-runner"] == "remote_openocd"
+
+        for contents, expected in (
+            ("openocd", "openocd"),
+            (None, "openocd"),
+            ("remote_openocd", "remote_openocd"),
+        ):
+            if contents is None:
+                config.unlink()
+            else:
+                self._write_config(contents, path=config)
+            self._west("build", "-d", str(build), "-t", "help", extra_env=environment, cwd=runtime)
+            assert self._runner_state(build)["flash-runner"] == expected
+
+        result = self._west(
+            "flash",
+            "-d",
+            str(build),
+            "--no-rebuild",
+            extra_env=environment,
+            cwd=runtime,
+        )
+        assert self._recording(result.stdout)["remote_session_request"]["host"] == "record_only"
+
+        config.unlink()
+        config.symlink_to(root / "missing.yaml")
+        result = self._west(
+            "flash",
+            "-d",
+            str(build),
+            "--no-rebuild",
+            extra_env=environment,
+            cwd=runtime,
+            check=False,
+        )
+        assert result.returncode != 0
+        assert "does not resolve to an existing file" in result.stdout
+        result = self._west(
+            "build",
+            "-d",
+            str(build),
+            "--cmake-only",
+            extra_env=environment,
+            cwd=initial,
+            check=False,
+        )
+        assert result.returncode != 0
+        assert "does not resolve to an existing file" in result.stdout
 
     def test_clean_install_acceptance_from_git_free_distribution(self) -> None:
         """A copied module works through EXTRA_ZEPHYR_MODULES alone."""
