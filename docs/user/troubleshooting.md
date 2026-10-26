@@ -12,6 +12,7 @@ reported message or a symptom in the table below, or browse the sections. The
 | CMake configuration or regeneration fails with a configuration error | [CMake configuration errors](configuration.md#cmake-configuration-errors) |
 | `ZEPHYR_REMOTE_OPENOCD_CONFIG must be an absolute pathname` | [The configuration path is rejected](#the-configuration-path-is-rejected) |
 | A changed default runner has no effect | [A changed default runner has no effect](#a-changed-default-runner-has-no-effect) |
+| `Zephyr Remote OpenOCD configuration PATH changed after CMake last configured this build` | [Apply configuration changes to a build](configuration.md#apply-configuration-changes-to-a-build) |
 | `no remote selected for remote_openocd` | [No remote is selected](#no-remote-is-selected) |
 | `selected remote 'NAME' does not exist` | [No remote is selected](#no-remote-is-selected) |
 | The SSH executable cannot be started | [SSH works manually but the runner fails](#ssh-works-manually-but-the-runner-fails) |

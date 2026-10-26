@@ -65,7 +65,9 @@ def _configure_module(
     return result, build / "zro-result.txt"
 
 
-def _build_module(build: Path, *, home: Path, override: str) -> subprocess.CompletedProcess[str]:
+def _build_module(
+    build: Path, *, home: Path, override: str, target: str | None = None
+) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     environment.update(
         {
@@ -73,8 +75,11 @@ def _build_module(build: Path, *, home: Path, override: str) -> subprocess.Compl
             "ZEPHYR_REMOTE_OPENOCD_CONFIG": override,
         }
     )
+    command = ["cmake", "--build", str(build)]
+    if target is not None:
+        command.extend(("--target", target))
     return subprocess.run(
-        ["cmake", "--build", str(build)],
+        command,
         env=environment,
         text=True,
         stdout=subprocess.PIPE,
@@ -295,6 +300,123 @@ def test_absolute_config_regenerates_from_different_cwd(
         result = _build_module(report.parent, home=tmp_path / "home", override=override)
         assert result.returncode == 0, result.stdout
         assert report.read_text().splitlines() == [expected]
+
+
+def _age(path: Path, build: Path) -> None:
+    """Make path older than the generated build system, as preserved timestamps can."""
+    older = (build / "CMakeCache.txt").stat().st_mtime_ns - 3_600_000_000_000
+    os.utime(path, ns=(older, older))
+
+
+def _replace_symlink(link: Path, target: Path) -> None:
+    replacement = link.with_name(link.name + ".new")
+    replacement.symlink_to(target, target_is_directory=target.is_dir())
+    replacement.replace(link)
+
+
+@pytest.mark.parametrize("generator", ("Ninja", "Unix Makefiles"))
+@pytest.mark.parametrize(
+    "replacement", ("move-older-file", "retarget-file-symlink", "retarget-directory-symlink")
+)
+def test_older_configuration_replacement_never_leaves_stale_runner(
+    tmp_path: Path, generator: str, replacement: str
+) -> None:
+    local = tmp_path / "local"
+    remote = tmp_path / "remote"
+    for directory, runner in ((local, "openocd"), (remote, "remote_openocd")):
+        directory.mkdir()
+        (directory / "config.yaml").write_text(f"default_runner: {runner}\n")
+    if replacement == "retarget-directory-symlink":
+        (tmp_path / "current").symlink_to(local, target_is_directory=True)
+        config = tmp_path / "current" / "config.yaml"
+    else:
+        config = tmp_path / "config.yaml"
+        if replacement == "move-older-file":
+            config.write_text("default_runner: openocd\n")
+        else:
+            config.symlink_to(local / "config.yaml")
+    result, report = _configure_module(tmp_path, str(config), generator=generator)
+    assert result.returncode == 0, result.stdout
+    assert report.read_text().splitlines() == ["openocd"]
+
+    build = report.parent
+    _age(remote / "config.yaml", build)
+    _age(remote, build)
+    if replacement == "move-older-file":
+        (remote / "config.yaml").replace(config)
+    elif replacement == "retarget-file-symlink":
+        _replace_symlink(config, remote / "config.yaml")
+    else:
+        _replace_symlink(tmp_path / "current", remote)
+
+    result = _build_module(build, home=tmp_path / "home", override=str(config))
+    if generator != "Ninja":
+        # This generator cannot rerun CMake within the invocation that sees the
+        # change, so that build must fail rather than leave the stale default.
+        assert result.returncode != 0
+        assert str(config) in result.stdout
+        result = _build_module(build, home=tmp_path / "home", override=str(config))
+    assert result.returncode == 0, result.stdout
+    assert report.read_text().splitlines() == ["remote_openocd"]
+
+    configured = report.stat().st_mtime_ns
+    result = _build_module(build, home=tmp_path / "home", override=str(config))
+    assert result.returncode == 0, result.stdout
+    assert report.stat().st_mtime_ns == configured
+
+
+@pytest.mark.parametrize("generator", ("Ninja", "Unix Makefiles"))
+def test_clean_build_detects_older_configuration_replacement(
+    tmp_path: Path, generator: str
+) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text("default_runner: openocd\n")
+    result, report = _configure_module(tmp_path, str(config), generator=generator)
+    assert result.returncode == 0, result.stdout
+    build = report.parent
+    result = _build_module(build, home=tmp_path / "home", override=str(config), target="clean")
+    assert result.returncode == 0, result.stdout
+
+    replacement = tmp_path / "remote.yaml"
+    replacement.write_text("default_runner: remote_openocd\n")
+    _age(replacement, build)
+    replacement.replace(config)
+    result = _build_module(build, home=tmp_path / "home", override=str(config))
+    if generator != "Ninja":
+        assert result.returncode != 0
+        result = _build_module(build, home=tmp_path / "home", override=str(config))
+    assert result.returncode == 0, result.stdout
+    assert report.read_text().splitlines() == ["remote_openocd"]
+
+
+@pytest.mark.parametrize("generator", ("Ninja", "Unix Makefiles"))
+def test_unreadable_configuration_fails_closed_without_timestamp_change(
+    tmp_path: Path, generator: str
+) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text("default_runner: remote_openocd\n")
+    result, report = _configure_module(tmp_path, str(config), generator=generator)
+    assert result.returncode == 0, result.stdout
+
+    config.chmod(0)
+    try:
+        config.read_bytes()
+    except PermissionError:
+        pass
+    else:
+        pytest.skip("file permissions do not restrict this user")
+    result = _build_module(report.parent, home=tmp_path / "home", override=str(config))
+    if generator != "Ninja":
+        assert result.returncode != 0
+        result = _build_module(report.parent, home=tmp_path / "home", override=str(config))
+    # CMake configuration reports the authoritative diagnostic.
+    assert result.returncode != 0
+    assert "cannot read configuration" in result.stdout
+
+    config.chmod(0o600)
+    result = _build_module(report.parent, home=tmp_path / "home", override=str(config))
+    assert result.returncode == 0, result.stdout
+    assert report.read_text().splitlines() == ["remote_openocd"]
 
 
 def test_cmake_rejects_dangling_configuration_symlink(tmp_path: Path) -> None:

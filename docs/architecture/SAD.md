@@ -127,6 +127,7 @@ zephyr_remote_openocd/
         module.yml
         CMakeLists.txt
         config_default.py
+        config_signature.py
 
     runners/
         remote_openocd.py
@@ -163,7 +164,8 @@ The implementation is intentionally self-contained in the module tree. Apart
 from the discovery markers described below, exact filenames are not
 architectural contracts. User setup is implemented by `scripts/user/setup.py`; pip
 packaging is not required. `zephyr/config_default.py` is invoked by the adjacent
-`CMakeLists.txt` during build configuration; it is not a user command.
+`CMakeLists.txt` during build configuration, and `zephyr/config_signature.py`
+during builds (§15); neither is a user command.
 
 ---
 
@@ -521,7 +523,9 @@ does not certify operational configuration validity or remote reachability.
 
 Selection depends solely on the current file and normal current build inputs.
 No configuration-validity history, last-known-good runner, fallback state, or
-user opt-in is stored or consulted. Path selection uses the current environment
+user opt-in is stored or consulted. The configuration state record (§15) keeps
+only the last observed read outcome; it decides when CMake reruns, never what
+CMake selects. Path selection uses the current environment
 (§15). Regeneration re-evaluates the current file even after a failed
 configuration attempt.
 
@@ -531,9 +535,11 @@ configuration attempt.
 
 Changes to the contents, creation, or deletion of the configuration file at the
 path selected when CMake last configured the build are detected by the normal
-incremental build and reconfiguration machinery. Changes affecting generated
-runner state are applied without requiring a pristine build or a full firmware
-compile and link. By default, the configuration path is:
+incremental build and reconfiguration machinery, including a replacement or
+symbolic link retargeting whose timestamps are not newer than the generated
+build files. Changes affecting generated runner state are applied without
+requiring a pristine build or a full firmware compile and link. By default, the
+configuration path is:
 
 ```text
 ~/.config/zephyr_remote_openocd/config.yaml
@@ -568,18 +574,87 @@ escaped only for the presence pattern. Rejecting `..` components
 avoids changing symlink traversal when CMake generators normalize dependencies
 lexically; `.` does not change directory traversal.
 
+### 15.1 Change detection
+
+Detection has two layers. The first is the cheap common path: the selected
+pathname is a CMake configure dependency and the subject of a
+`file(GLOB CONFIGURE_DEPENDS)` presence check. Generators rerun CMake before
+building when a dependency's modification time is newer than the generated
+build system or the glob's matched names change. This detects ordinary edits,
+creation, and deletion, including a dangling symbolic link in place of an
+absent file, and lets every supported generator regenerate within the invoking
+build. It misses a replacement that is not newer than the generated files, such
+as moving an older file into place, copying with preserved timestamps, or
+retargeting a symbolic link in the path to an older file or directory.
+
+The second layer is a safety net for those cases: a configuration state record
+in the module's binary directory. It holds the selected pathname and the
+outcome of reading it, either a SHA-256 digest of the bytes or the read error
+number. `zephyr/config_signature.py` owns this observation and uses only the
+standard library. `config_default.py` records the state at configuration before
+parsing, so a change between the two reads causes another regeneration rather
+than a missed one. The record is itself a configure dependency, and each check
+rewrites it only when the observed state differs or the record is missing,
+leaving the timestamp of an unchanged record alone. Configuration also writes
+the selected pathname to a separate selection record that is never a build
+output, so the check can recreate a state record that cleaning removed. The
+state record answers only whether the observable selected-file state changed. It carries no YAML or default-runner semantics,
+never selects a runner, and is never a fallback; CMake configuration remains
+the sole authority for runner selection and its diagnostics.
+
+How a rewritten record reaches the build depends on the generator:
+
+- **Ninja.** The record is the output of a custom command whose target is not
+  in `ALL` and which runs on every invocation because it depends on a phony
+  statement without inputs. Ninja documents that when `build.ninja` is an
+  output of a build statement and is out of date, Ninja rebuilds and reloads
+  it before building the requested targets. CMake gives that statement every
+  configure dependency as an input and uses the same pattern for its own
+  `file(GLOB CONFIGURE_DEPENDS)` check.
+  CMake's Ninja generator also declares a phony statement that makes missing
+  configure dependencies not an error, but omits custom command outputs from
+  it. That omission is undocumented, so the local CMake integration tests run
+  on both CMake 3.20.5, the minimum Zephyr 4.4 supports, and the current
+  environment. The check therefore runs once per invocation before Ninja
+  decides whether `build.ninja` is stale, whatever target is requested. A
+  rewritten record reruns CMake in the same invocation; CMake marks the
+  command `restat`, so an unchanged record does not. Because the record is a
+  custom command output, the `clean` target removes it, and the next build
+  recreates it and reruns CMake.
+- **Other generators.** Makefile generators check configure dependencies
+  before building, without running build commands, so a record rewritten
+  during the build cannot rerun CMake in that invocation. The check instead
+  runs as part of `ALL` and fails the build with an actionable diagnostic when
+  the state changed; the rewritten record makes the next build rerun CMake.
+  Ordinary edits still regenerate in the same invocation through the first
+  layer.
+
+The check fails closed. A read error is a recorded state, so a change to it
+reruns or fails as above, and configuration then fails with the normal
+`config_default.py` diagnostic. If the check cannot run, cannot read the
+selection record, or cannot read or write the state record, the build fails.
+
+Invariant: after a change to the selected file's state that timestamps do not
+reveal, stale generated runner selection is never consumed silently. The
+invoking build regenerates it or fails. Each build observes the file once, so a
+change made after that observation is detected by the next build.
+
+### 15.2 Selected path changes
+
 Changing the override to select another file is a configuration-input change:
 CMake must be reconfigured before generated runner state is expected to reflect
 that path. An ordinary incremental build does not detect an environment-only
 path switch. The runner may therefore load configuration from the new path while
 the generated default still reflects the previous CMake configuration.
 
+### 15.3 Runner command flow
+
 Expected flow:
 
 ```text
-selected file contents/creation/deletion changes
+selected file contents/creation/deletion/replacement changes
       -> ordinary incremental build or CMake reconfiguration
-      -> updated runners.yaml
+      -> updated runners.yaml, or a failed build that the next build updates
 
 selected path changes via ZEPHYR_REMOTE_OPENOCD_CONFIG
       -> explicit CMake reconfiguration

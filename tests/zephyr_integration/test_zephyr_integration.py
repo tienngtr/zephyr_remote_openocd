@@ -287,6 +287,36 @@ class TestZephyrIntegration:
             assert self._runner_state(build)["flash-runner"] == "remote_openocd"
             assert self._recording(result.stdout)["command"] == "flash"
 
+    def test_older_config_replacement_regenerates_default_runner(self) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="zro_older_config_", dir=ROOT / ".scratch"
+        ) as directory:
+            root = Path(directory)
+            build = root / "build"
+            config = root / "config.yaml"
+            remote = root / "remote.yaml"
+            self._write_config("openocd", path=root / "local.yaml")
+            self._write_config("remote_openocd", path=remote)
+            config.symlink_to(root / "local.yaml")
+            config_environment = {"ZEPHYR_REMOTE_OPENOCD_CONFIG": str(config)}
+            sample = self.zephyr_base / "samples" / "hello_world"
+            self._configure_recording_build(sample, build, extra_env=config_environment)
+            assert self._runner_state(build)["flash-runner"] == "openocd"
+
+            # Switch profiles to a file older than the generated build system.
+            older = (build / "CMakeCache.txt").stat().st_mtime_ns - 3_600_000_000_000
+            os.utime(remote, ns=(older, older))
+            replacement = root / "config.yaml.new"
+            replacement.symlink_to(remote)
+            replacement.replace(config)
+            self._west("build", "-d", str(build), "-t", "help", extra_env=config_environment)
+            result = self._west(
+                "flash", "-d", str(build), "--no-rebuild", extra_env=config_environment
+            )
+
+            assert self._runner_state(build)["flash-runner"] == "remote_openocd"
+            assert self._recording(result.stdout)["command"] == "flash"
+
     @pytest.mark.parametrize(
         "override",
         (

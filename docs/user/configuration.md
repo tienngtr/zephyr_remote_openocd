@@ -132,11 +132,34 @@ The build stores only the default runner derived from `default_runner`.
 
 Once this module is configured into a build, ordinary `west flash` and
 `west debug` commands run an incremental build before selecting the runner.
-That build detects content changes, creation, or deletion of the configuration
-file selected when CMake last configured the build, and updates the stored
-default. Run `west build` to apply these changes without flashing or debugging.
+That build updates the stored default after any of these changes to the
+configuration file selected when CMake last configured the build:
+
+- its content is edited;
+- it is created or deleted;
+- another file is moved or copied into place, even one with an older
+  timestamp;
+- a symbolic link in its path is switched to another file or directory.
+
+Run `west build` to apply these changes without flashing or debugging.
 Applying configuration changes requires neither a pristine build nor a full
 firmware compile and link.
+
+**Generators other than Ninja.** A build directory generated for another
+generator, such as Unix Makefiles, instead of Zephyr's default generator,
+Ninja, applies edits, creation, and deletion in the same incremental build. A
+moved or copied file or a switched symbolic link whose timestamp is not newer
+than the build's generated files is detected but not applied in that
+invocation. The incremental build stops with an error before flashing or
+debugging:
+
+```text
+Zephyr Remote OpenOCD configuration PATH changed after CMake last configured this build, so its stored default runner may be stale.
+```
+
+Run the same `west flash`, `west debug`, or `west build` command again. Its
+incremental build reconfigures CMake and updates the stored default runner
+before continuing.
 
 A `--no-rebuild` runner command skips this refresh and uses the stored default
 as it is.

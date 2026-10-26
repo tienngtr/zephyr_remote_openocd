@@ -703,11 +703,22 @@ Changes to user configuration at the configuration path selected when the build
 was last configured that affect generated Zephyr runner state SHALL be detected
 by the normal Zephyr build and reconfiguration machinery for builds using the
 module. This includes changes to the contents, creation, or deletion of the
-selected configuration file. After such a change, a normal build or reconfiguration
-operation SHALL regenerate the affected runner state before a subsequent west
-runner command consumes it. This SHALL be possible without a pristine build or
-a full firmware compile and link. A runner command is not required to perform
-a full firmware build solely to apply that configuration change.
+selected configuration file, replacement of that file, and retargeting of a
+symbolic link in the selected path. Detection SHALL NOT depend on the selected
+file, or a symbolic link target, having a newer modification time than the
+generated build files.
+
+After such a change, and before stale generated runner state can be consumed,
+a normal build SHALL either regenerate that state within the same invocation or
+fail with an actionable diagnostic requiring another build or reconfiguration.
+A reconfiguration operation SHALL regenerate that state. Neither outcome SHALL
+require a pristine build or a full firmware compile and link. A runner command
+is not required to perform a full firmware build solely to apply that
+configuration change.
+
+If the current state of the selected configuration file cannot be established,
+such as when the file cannot be read, a normal build SHALL NOT proceed with the
+previously generated default runner.
 
 Changing `ZEPHYR_REMOTE_OPENOCD_CONFIG` so that it selects a different
 configuration path SHALL require CMake reconfiguration before generated runner

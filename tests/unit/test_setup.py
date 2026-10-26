@@ -247,7 +247,9 @@ def load_setup_module() -> ModuleType:
     return module
 
 
-def load_config_default_module() -> ModuleType:
+def load_config_default_module(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+    # Running the script puts its directory, and its sibling helper, on sys.path.
+    monkeypatch.syspath_prepend(CONFIG_DEFAULT.parent)
     spec = importlib.util.spec_from_file_location("zro_config_default", CONFIG_DEFAULT)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -255,8 +257,10 @@ def load_config_default_module() -> ModuleType:
     return module
 
 
-def test_config_default_finds_module_by_markers(tmp_path: Path) -> None:
-    module = load_config_default_module()
+def test_config_default_finds_module_by_markers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = load_config_default_module(monkeypatch)
     root = tmp_path / "module"
     nested = root / "changed" / "layout"
     (root / "zephyr").mkdir(parents=True)
@@ -278,7 +282,12 @@ def test_config_default_reports_invalid_configuration_to_cmake(
 
     monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", str(config))
     result = subprocess.run(
-        [sys.executable, str(CONFIG_DEFAULT)],
+        [
+            sys.executable,
+            str(CONFIG_DEFAULT),
+            str(tmp_path / "selection.json"),
+            str(tmp_path / "state.json"),
+        ],
         capture_output=True,
         text=True,
         check=False,

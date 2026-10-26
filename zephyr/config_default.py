@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 
-"""Report selection-level runner intent and its configuration path to CMake."""
+"""Report selection-level runner intent and its configuration path to CMake.
+
+The arguments name the selection and state records that config_signature.py
+later uses on every build.
+"""
 
 import json
 import sys
@@ -22,6 +26,7 @@ def find_module_root(start: Path) -> Path:
 MODULE_ROOT = find_module_root(Path(__file__))
 sys.path.insert(0, str(MODULE_ROOT / "python"))
 
+from config_signature import record_selection  # noqa: E402
 from zephyr_remote_openocd.config import (  # noqa: E402
     ConfigError,
     default_config_path,
@@ -31,7 +36,11 @@ from zephyr_remote_openocd.config import (  # noqa: E402
 
 def main() -> int:
     try:
-        print(json.dumps({"path": str(default_config_path()), "runner": load_default_runner()}))
+        config_path = str(default_config_path())
+        # Record the observed state before parsing, so that a concurrent change
+        # causes another regeneration rather than a missed one.
+        record_selection(Path(sys.argv[1]), Path(sys.argv[2]), config_path)
+        print(json.dumps({"path": config_path, "runner": load_default_runner()}))
     except ConfigError as error:
         print(error, file=sys.stderr)
         return 2

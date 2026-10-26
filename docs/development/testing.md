@@ -27,6 +27,20 @@ are skipped when no `gdb` executable is on `PATH`. Generated firmware
 Tcl regressions assert the exact escaping syntax through planning, client
 serialization, and explicit helper template materialization; no Tcl interpreter
 is required.
+
+The local CMake configuration tests use the `cmake` on `PATH` with Ninja and
+Unix Makefiles. Configuration change detection relies on CMake generator
+behavior, so when changing the module's CMake integration, also run them with
+CMake 3.20.5, the minimum that Zephyr 4.4 supports; GitHub Actions does so on
+Python 3.12:
+
+```sh
+python3 -m venv .scratch/cmake-3.20.5
+.scratch/cmake-3.20.5/bin/python -m pip install cmake==3.20.5
+PATH="$(.scratch/cmake-3.20.5/bin/python -c 'import cmake; print(cmake.CMAKE_BIN_DIR)'):$PATH" \
+.venv/bin/python -m pytest tests/local_integration/test_cmake_configuration.py
+```
+
 GitHub Actions runs four independent validation jobs: the self-contained suite
 on Python 3.12, 3.13, 3.14, and 3.15, static checks, the SSH suite against an isolated SSH server container, and the full
 Zephyr 4.4.x integration suite with a real workspace and SDK. That suite runs
