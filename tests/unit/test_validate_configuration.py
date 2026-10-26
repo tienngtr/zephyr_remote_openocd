@@ -170,6 +170,16 @@ def test_missing_explicit_file_in_missing_directory_names_prerequisite(
     )
 
 
+def test_parent_component_after_missing_directory_names_prerequisite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Lexically this names the canonical file; setup treats it as a custom path.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    path = tmp_path / "ghost" / ".." / ".config" / "zephyr_remote_openocd" / "config.yaml"
+    assert validator.main([str(path)]) == 1
+    assert f"create directory {path.parent}, then" in capsys.readouterr().err
+
+
 def test_inspection_failure_is_not_reported_as_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

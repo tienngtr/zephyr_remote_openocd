@@ -155,6 +155,18 @@ def _exported_configuration(output: str) -> str:
     return result.stdout
 
 
+def test_parent_component_after_missing_directory_is_not_the_default(tmp_path: Path) -> None:
+    # Lexically this names the default file; filesystem traversal cannot reach it.
+    work = tmp_path / "work"
+    work.mkdir()
+    spelled = Path("ghost", "..", "..", ".config", "zephyr_remote_openocd", "config.yaml")
+    result = run_setup(tmp_path, str(spelled), cwd=work)
+    assert result.returncode != 0
+    assert "does not exist; create it first" in result.stderr
+    assert not (work / "ghost").exists()
+    assert not (tmp_path / ".config").exists()
+
+
 def test_explicit_default_path_uses_default_rules(tmp_path: Path) -> None:
     config = tmp_path / ".config" / "zephyr_remote_openocd" / "config.yaml"
     result = run_setup(tmp_path, str(config))

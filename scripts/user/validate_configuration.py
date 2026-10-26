@@ -83,9 +83,10 @@ def main(argv: list[str] | None = None) -> int:
             guidance = f"create it with {setup} or provide CONFIG"
         else:
             target = path.absolute()
-            # Setup creates the parent directory only for the canonical path.
+            # Setup creates the parent directory only for the canonical path. A
+            # missing parent can reach the canonical file only by spelling it.
             prerequisite = ""
-            if target.resolve() != canonical_config_path().resolve() and not target.parent.is_dir():
+            if target != canonical_config_path() and not target.parent.is_dir():
                 prerequisite = f"create directory {shlex.quote(str(target.parent))}, then "
             guidance = (
                 f"{prerequisite}create it with {setup} {shlex.quote(str(target))} "

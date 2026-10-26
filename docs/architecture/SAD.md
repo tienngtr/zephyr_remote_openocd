@@ -233,7 +233,11 @@ file with mode `0600`. Existing parents, directories, and files are never
 chmodded. It does not edit shell startup files, repositories, or `.zephyrrc`.
 
 Setup takes an optional configuration path and never consults
-`ZEPHYR_REMOTE_OPENOCD_CONFIG`. Only the default path's product-owned directory
+`ZEPHYR_REMOTE_OPENOCD_CONFIG`. An argument is the default path when it spells
+that path or reaches the same file through filesystem traversal of existing
+components; setup does not apply `..` after a missing component lexically, so
+it never creates directories to make such an argument reach the default path.
+Only the default path's product-owned directory
 is created with mode `0700`; for any other path the parent directory must
 already exist, and setup creates only the file with mode `0600`. For such a
 path, setup prints the validator command with that path and the

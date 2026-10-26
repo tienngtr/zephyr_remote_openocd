@@ -37,6 +37,17 @@ def config_path(home: str | os.PathLike[str] | None = None) -> Path:
     return home_path / ".config" / "zephyr_remote_openocd" / "config.yaml"
 
 
+def _filesystem_path(path: Path) -> Path | None:
+    """Resolve as filesystem calls do, or return None when the parent is unreachable."""
+    # Non-strict resolution handles '..' after a missing component lexically,
+    # which names a file that open() could not reach.
+    with contextlib.suppress(FileNotFoundError):
+        return path.resolve(strict=True)
+    with contextlib.suppress(FileNotFoundError):
+        return path.parent.resolve(strict=True) / path.name
+    return None
+
+
 def _dependency_available(
     module_name: str,
     finder: Callable[[str], object | None],
@@ -151,13 +162,16 @@ def main(argv: list[str] | None = None) -> int:
         root = module_root()
         default = config_path()
         destination = default if args.config is None else args.config.expanduser().absolute()
-        custom = destination.resolve() != default.resolve()
+        resolved = _filesystem_path(destination)
+        custom = destination != default and (
+            resolved is None or resolved != _filesystem_path(default)
+        )
         created = initialize_config(root, destination, owned_directory=not custom)
         export_path = destination
         if custom and ".." in destination.parts:
             # Resolve only the export's parent, preserving the requested
             # creation path and any final configuration-file symlink.
-            export_path = destination.parent.resolve() / destination.name
+            export_path = destination.parent.resolve(strict=True) / destination.name
     except (OSError, RuntimeError) as error:
         print(f"Error: {error}", file=sys.stderr)
         return 1
