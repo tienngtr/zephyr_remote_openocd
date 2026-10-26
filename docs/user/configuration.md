@@ -224,11 +224,11 @@ Validation checks:
   unselected remotes, SSH connectivity, and whether the configured executable
   exists.
 
-The validator selects the remote from `--remote`, then `default_remote`. Unlike
-a runner command, it ignores `ZEPHYR_REMOTE_OPENOCD_REMOTE`; when that variable
-is non-empty, pass `--remote "$ZEPHYR_REMOTE_OPENOCD_REMOTE"` to check the
-remote it selects. With no remote selected, the validator reports that the
-file is structurally valid and lists the available definitions.
+The validator selects the remote from `--remote`, then `default_remote`.
+It ignores `ZEPHYR_REMOTE_OPENOCD_REMOTE`; when that variable is non-empty,
+pass `--remote "$ZEPHYR_REMOTE_OPENOCD_REMOTE"` to check the remote that
+`remote_openocd` would select. With no remote selected, the validator reports
+that the file is structurally valid and lists the available definitions.
 
 For a selected remote, the validator prints the effective settings without
 redaction: SSH and OpenOCD argv, hosts, path mappings, and resolved paths. It
@@ -294,11 +294,8 @@ remotes:
 remote host. West and GDB remain local. The runner also deploys the remote
 helper, a Python program that runs with the remote `python3`.
 
-Keep the local runner and the deployed remote helper from the same module copy,
-and update the module copy as a whole. The deployed helper always matches the
-local runner's revision; the runner does not negotiate compatibility with other
-helper revisions, so `remote_openocd` does not support pairing the local runner
-with a helper from another revision.
+The runner deploys the helper from its own module copy. Update that copy as a
+whole; the runner does not support using a helper from another revision.
 
 ### Custom SSH arguments
 
@@ -388,12 +385,13 @@ establish the master outside the runner first, for example with
 `ssh -MNf HOST`. Run that command with the SSH executable and fixed options
 from `ssh_command`, replacing `HOST` with the remote's `ssh_host`.
 
-Runner cleanup does not remove forwards retained by a sharing master, and a
-connection-sharing client may reuse an existing forward with matching
-endpoints. The runner's best-effort preferred-address cache, which has no YAML
-setting, can help that reuse; stale or unreadable cache data does not by itself
-fail an operation or bypass the remote helper's checks that no other session
-holds the address and that its remote ports are available. See
+Runner cleanup does not remove forwards retained by a sharing master. A
+connection-sharing client may reuse an existing forward with matching endpoints.
+
+The runner's best-effort preferred-address cache can help that reuse. It has no
+YAML setting. Stale or unreadable cache data does not by itself fail an operation
+or bypass the remote helper's checks that no other session holds the address
+and that its remote ports are available. See
 [Preferred-address cache](troubleshooting.md#preferred-address-cache) and
 [A retained forward occupies the local port](troubleshooting.md#a-retained-forward-occupies-the-local-port).
 
@@ -537,7 +535,7 @@ Preset and remote names are case-sensitive and must match
 
 ### Remote selection order
 
-A runner command selects the remote from the first of these that is set:
+A `remote_openocd` command selects the remote from the first of these that is set:
 
 1. `--remote NAME`;
 2. the `ZEPHYR_REMOTE_OPENOCD_REMOTE` environment variable, when non-empty (an
