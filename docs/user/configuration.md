@@ -77,6 +77,13 @@ runner, activating this module replaces the board's
 default flash and debug runner when CMake configures the build.
 `default_runner` chooses the replacement; omitting the key selects `openocd`.
 
+Zephyr's build-time runner overrides take precedence over `default_runner`. A
+build configured with `-DBOARD_FLASH_RUNNER=<runner>` uses `<runner>` as its
+default flash runner, and one configured with `-DBOARD_DEBUG_RUNNER=<runner>`
+uses it as its default debug runner; `default_runner` still chooses the other.
+CMake keeps an override in the build directory until it is removed, for
+example with `west build --cmake-only -d <build> -- -UBOARD_FLASH_RUNNER`.
+
 Keep `default_runner: openocd` to use local OpenOCD by default, or change it to
 `remote_openocd`. Other runners remain available with `-r`. The build stores
 this default; see

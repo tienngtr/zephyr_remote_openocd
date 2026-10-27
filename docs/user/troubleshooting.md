@@ -149,6 +149,10 @@ The stored default stays unchanged when:
 
 - the command uses `--no-rebuild`, which intentionally uses the stored default
   as it is;
+- the build was configured with `-DBOARD_FLASH_RUNNER` or
+  `-DBOARD_DEBUG_RUNNER`, which takes precedence over `default_runner` for that
+  runner; see
+  [Choose the default remote and runner](configuration.md#choose-the-default-remote-and-runner);
 - `ZEPHYR_REMOTE_OPENOCD_CONFIG` now selects a different file; reconfigure
   CMake with `west build --cmake-only -d <build>`;
 - the build directory was configured before the module was activated; see

@@ -30,7 +30,8 @@ this runner and the remote named `lab`. Either option can be omitted:
   [Remote selection order](configuration.md#remote-selection-order).
 - **Omit `-r remote_openocd`** after setting `default_runner: remote_openocd`.
   In OpenOCD-capable builds, this setting overrides the board's default flash
-  and debug runner; see
+  and debug runner, but not a `BOARD_FLASH_RUNNER` or `BOARD_DEBUG_RUNNER`
+  override given when the build was configured; see
   [Choose the default remote and runner](configuration.md#choose-the-default-remote-and-runner).
 
 Select any other available runner with `-r`, for example `west flash -r openocd`

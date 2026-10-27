@@ -490,6 +490,13 @@ is written into generated flash/debug runner defaults. These defaults are
 generated runner-selection metadata; they do not claim that a target, probe,
 or OpenOCD service is reachable.
 
+The module sets the flash and debug defaults independently. A board sets its
+defaults as normal CMake variables, which the module replaces. Zephyr's
+build-time override for one of them is a `BOARD_FLASH_RUNNER` or
+`BOARD_DEBUG_RUNNER` cache variable; as in Zephyr's
+`board_set_runner_ifnset()`, a value that `set_ifndef()` treats as set leaves
+that default unchanged.
+
 The generated setting is only the default. Normal west `-r openocd` or
 `-r remote_openocd` selection remains available and takes precedence when
 explicitly supplied.

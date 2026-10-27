@@ -317,6 +317,35 @@ class TestZephyrIntegration:
             assert self._runner_state(build)["flash-runner"] == "remote_openocd"
             assert self._recording(result.stdout)["command"] == "flash"
 
+    @pytest.mark.parametrize("command", ("flash", "debug"))
+    def test_user_board_runner_overrides_default_runner(self, command: str) -> None:
+        """A -DBOARD_<TYPE>_RUNNER value wins only for its own runner type."""
+        with tempfile.TemporaryDirectory(
+            prefix="zro_board_runner_", dir=ROOT / ".scratch"
+        ) as directory:
+            root = Path(directory)
+            build = root / "build"
+            config = root / "config.yaml"
+            self._write_config("remote_openocd", path=config)
+            self._west(
+                "build",
+                "--cmake-only",
+                "-b",
+                self.openocd_board,
+                str(self.zephyr_base / "samples" / "hello_world"),
+                "-d",
+                str(build),
+                "--",
+                f"-DUSER_CACHE_DIR={self.cache}",
+                f"-DBOARD_{command.upper()}_RUNNER=jlink",
+                extra_env={"ZEPHYR_REMOTE_OPENOCD_CONFIG": str(config)},
+            )
+
+            state = self._runner_state(build)
+            other = "debug" if command == "flash" else "flash"
+            assert state[f"{command}-runner"] == "jlink"
+            assert state[f"{other}-runner"] == "remote_openocd"
+
     @pytest.mark.parametrize(
         "override",
         (

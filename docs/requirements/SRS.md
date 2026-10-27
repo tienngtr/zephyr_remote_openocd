@@ -758,6 +758,22 @@ complete configuration contract before remote effects, regardless of the
 configured default or prior CMake selection success. Selection validation
 SHALL NOT replace full runtime validation.
 
+### REQ-FUNC-SELECT-012
+
+For OpenOCD-capable builds with the module active, the generated default flash
+runner and the generated default debug runner SHALL each be determined
+independently, using this precedence from highest to lowest:
+
+1. the developer's build-time Zephyr override for that runner type, given as a
+   `BOARD_FLASH_RUNNER` or `BOARD_DEBUG_RUNNER` CMake cache variable, such as
+   with `-DBOARD_FLASH_RUNNER=<runner>`;
+2. the default runner chosen by per-user configuration (REQ-FUNC-SELECT-005);
+3. the board's default runner.
+
+An override for one runner type SHALL NOT affect the other. A cache value that
+Zephyr's board runner defaults treat as unset, such as an empty value, SHALL
+NOT count as an override.
+
 ---
 
 ## 10. Board Configuration Reuse

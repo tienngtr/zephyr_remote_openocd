@@ -95,12 +95,18 @@ set_property(GLOBAL PROPERTY "BOARD_RUNNER_ARGS_${_zro_remote_id}"
              ${_zro_openocd_args})
 set_property(GLOBAL APPEND PROPERTY ZEPHYR_RUNNERS remote_openocd)
 
-if(_zro_default STREQUAL "remote_openocd")
-  set(BOARD_FLASH_RUNNER remote_openocd PARENT_SCOPE)
-  set(BOARD_DEBUG_RUNNER remote_openocd PARENT_SCOPE)
-elseif(_zro_default STREQUAL "openocd")
-  set(BOARD_FLASH_RUNNER openocd PARENT_SCOPE)
-  set(BOARD_DEBUG_RUNNER openocd PARENT_SCOPE)
-else()
+if(NOT _zro_default STREQUAL "remote_openocd" AND NOT _zro_default STREQUAL "openocd")
   message(FATAL_ERROR "Unexpected Zephyr Remote OpenOCD default: ${_zro_default}")
 endif()
+
+# Zephyr's build-time runner override is a BOARD_<TYPE>_RUNNER cache variable.
+# board_set_runner_ifnset() keeps it, and so does the module, so it takes
+# precedence over default_runner. Without one, the board default is a normal
+# variable that the module replaces. As in set_ifndef(), an empty or false
+# cache value is not an override.
+foreach(_zro_type FLASH DEBUG)
+  set(_zro_override "$CACHE{BOARD_${_zro_type}_RUNNER}")
+  if(NOT _zro_override)
+    set(BOARD_${_zro_type}_RUNNER ${_zro_default} PARENT_SCOPE)
+  endif()
+endforeach()
