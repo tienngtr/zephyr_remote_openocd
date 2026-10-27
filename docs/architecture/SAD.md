@@ -360,6 +360,26 @@ The project does not prescribe how the user stores this setting.
 
 Documentation shall show at least one convenient repository-independent approach.
 
+A build directory that CMake configured before activation contains no reference
+to the module. Its generated build system has no configure dependency on the
+module or on `EXTRA_ZEPHYR_MODULES`, so an ordinary incremental build does not
+rerun CMake to discover it. A CMake reconfiguration, such as
+`west build --cmake-only -d <build>`, runs module discovery again. The module's
+CMake integration then registers the runner and generates its defaults
+(§11, §14) in the existing build directory, without a pristine build.
+
+For runner commands other than `--context`, west imports module runners from
+the current activation before its pre-run rebuild, so the runner module is the
+only product code that runs for such a build before reconfiguration. Its import
+deliberately has no build-directory effect. Forcing reconfiguration from it
+would require resolving the build directory outside west's command flow, would
+affect commands that do not select `remote_openocd`, and would change a user's
+build without an explicit request. Until the build is reconfigured, west
+rejects `remote_openocd` as a runner that the board does not support. A
+`--context` command instead performs its rebuild and reads the generated
+`runners.yaml` without importing module runners, so no product code runs and
+its listing omits `remote_openocd` until reconfiguration.
+
 ---
 
 ## 10. External Runner Registration

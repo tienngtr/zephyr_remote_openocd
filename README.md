@@ -168,15 +168,18 @@ board that supports the `openocd` runner. Replace `stm32f746g_disco` and
 west build -b stm32f746g_disco zephyr/samples/hello_world
 ```
 
-Then reconfigure the build directory. This registers `remote_openocd` in a
-build directory configured before step 3, which an ordinary incremental
-`west build` does not do, and is harmless for a fresh build such as the one
-above. Always run it for an existing build directory; a pristine build is not
-required:
+Then reconfigure the build directory:
 
 ```sh
 west build --cmake-only
 ```
+
+A build directory registers `remote_openocd` only when CMake configures it with
+the module active. Reconfiguring registers it in a build directory configured
+before step 3 without a pristine build, and is harmless for a fresh build such
+as the one above. An ordinary `west build`, `west flash`, or `west debug` is not
+guaranteed to reconfigure an existing build directory, so run this step once for
+each build directory configured before step 3.
 
 **Verify:** `west flash --context` lists both `openocd` and `remote_openocd`.
 If `remote_openocd` is missing, confirm step 3 in the current shell and repeat

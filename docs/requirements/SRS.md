@@ -774,6 +774,16 @@ An override for one runner type SHALL NOT affect the other. A cache value that
 Zephyr's board runner defaults treat as unset, such as an empty value, SHALL
 NOT count as an override.
 
+### REQ-FUNC-SELECT-013
+
+For a build directory that CMake configured before the module was activated, a
+CMake reconfiguration of that build directory with the module active SHALL
+register `remote_openocd` under REQ-FUNC-SELECT-001 and generate its default
+runners under REQ-FUNC-SELECT-012. Neither SHALL require a pristine build or a
+full firmware compile and link. Before that reconfiguration, an ordinary
+incremental build or runner command is not required to register
+`remote_openocd` or apply its configured default.
+
 ---
 
 ## 10. Board Configuration Reuse

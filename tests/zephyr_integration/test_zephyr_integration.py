@@ -317,6 +317,38 @@ class TestZephyrIntegration:
             assert self._runner_state(build)["flash-runner"] == "remote_openocd"
             assert self._recording(result.stdout)["command"] == "flash"
 
+    def test_late_activation_registers_runner_on_reconfiguration(self) -> None:
+        """Reconfiguring a build made before activation registers the runner in place."""
+        with tempfile.TemporaryDirectory(
+            prefix="zro_late_activation_", dir=ROOT / ".scratch"
+        ) as directory:
+            root = Path(directory)
+            build = root / "build"
+            config = root / "config.yaml"
+            self._write_config("remote_openocd", path=config)
+            config_environment = {"ZEPHYR_REMOTE_OPENOCD_CONFIG": str(config)}
+            sample = self.zephyr_base / "samples" / "hello_world"
+            self._configure_recording_build(
+                sample, build, extra_env={**config_environment, "EXTRA_ZEPHYR_MODULES": ""}
+            )
+            runners = self._runner_state(build)["runners"]
+            assert "openocd" in runners
+            assert "remote_openocd" not in runners
+            # A pristine build would remove this file with the rest of the build directory.
+            retained = build / "retained"
+            retained.touch()
+
+            self._west("build", "--cmake-only", "-d", str(build), extra_env=config_environment)
+            result = self._west(
+                "flash", "-d", str(build), "--no-rebuild", extra_env=config_environment
+            )
+
+            state = self._runner_state(build)
+            assert state["runners"].count("remote_openocd") == 1
+            assert state["flash-runner"] == state["debug-runner"] == "remote_openocd"
+            assert self._recording(result.stdout)["command"] == "flash"
+            assert retained.exists()
+
     @pytest.mark.parametrize("command", ("flash", "debug"))
     @pytest.mark.parametrize(
         ("override", "expected"),

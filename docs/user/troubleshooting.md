@@ -9,6 +9,7 @@ reported message or a symptom in the table below, or browse the sections. The
 | --- | --- |
 | Setup script `Error:` or dependency `Warning:` | [The setup script fails or warns](#the-setup-script-fails-or-warns) |
 | `remote_openocd` missing from `west flash --context` | [`remote_openocd` is not listed](#remote_openocd-is-not-listed-by-west-flash---context) |
+| `board BOARD does not support runner remote_openocd` | [West reports that the board does not support runner `remote_openocd`](#west-reports-that-the-board-does-not-support-runner-remote_openocd) |
 | CMake configuration or regeneration fails with a configuration error | [CMake configuration errors](configuration.md#cmake-configuration-errors) |
 | `ZEPHYR_REMOTE_OPENOCD_CONFIG must be an absolute pathname` | [The configuration path is rejected](#the-configuration-path-is-rejected) |
 | A changed default runner has no effect | [A changed default runner has no effect](#a-changed-default-runner-has-no-effect) |
@@ -136,6 +137,15 @@ requires. Otherwise:
    reconfigure it with `west build --cmake-only -d <build>`, where `<build>` is
    the build directory. A pristine build is not required; see
    [Configure the build](../../README.md#6-configure-the-build).
+
+### West reports that the board does not support runner `remote_openocd`
+
+The build directory does not register `remote_openocd`, so west rejects it
+before the runner starts. West's suggestion to configure the runner in the
+board's `board.cmake` file does not apply to this module. Find the cause in
+[`remote_openocd` is not listed](#remote_openocd-is-not-listed-by-west-flash---context);
+a build directory configured before the module was activated produces this
+error until it is reconfigured.
 
 ### A changed default runner has no effect
 
