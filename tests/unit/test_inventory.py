@@ -69,7 +69,7 @@ def test_rendered_inventory_round_trips_through_product_schema(tmp_path: Path, n
     assert selected.openocd_command == host.openocd_command
     assert selected.ssh_command == host.ssh_command
     assert selected.forward_env == host.forward_env
-    assert [(item.local, item.remote) for item in selected.path_mappings] == [
+    assert [(Path(item.local), item.remote) for item in selected.path_mappings] == [
         (item.local, item.remote) for item in host.path_mappings
     ]
 

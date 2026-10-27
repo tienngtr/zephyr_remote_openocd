@@ -514,8 +514,8 @@ remotes:
 
 The mapping key is resolved locally and its value is used remotely. The runner
 assumes the remote contents are equivalent to the local ones and does not
-compare or verify them. When mappings overlap, the most specific local path
-applies. Unmapped required inputs continue to be staged automatically. See
+compare or verify them. When mappings overlap, the mapping whose local path is
+closest to the required file applies. Unmapped required inputs continue to be staged automatically. See
 [Path mappings](#path-mappings) for the path rules.
 
 ### Forwarded environment
@@ -664,8 +664,12 @@ absolute or start with `~`, and neither may contain NUL. Only the current-user
 `~` form is accepted.
 
 - **Local paths** may contain `.` and `..`. They are expanded and resolved on
-  the local machine before duplicate detection. Duplicate normalized local keys
-  are errors even when their remote destinations match.
+  the local machine exactly as the filesystem reaches them, following symbolic
+  links, each time the runner plans paths. A local path does not need to exist.
+  While it does not exist or the filesystem cannot reach it, for example because
+  of `..` after a missing directory, the mapping does not apply. Local keys that
+  reach the same existing file or directory, including through hard links or
+  bind mounts, are errors even when their remote destinations match.
 - **Remote paths** must already be normalized: repeated or trailing separators
   and `.` or `..` components are rejected. They cannot be resolved safely while
   loading the configuration, because remote components may be symbolic links

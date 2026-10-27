@@ -34,7 +34,9 @@ _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 @dataclass(frozen=True)
 class PathMapping:
-    local: Path
+    # The local root as spelled, after home expansion. Filesystem traversal of
+    # the spelling decides which root it names whenever the mapping is used.
+    local: str | os.PathLike[str]
     remote: PurePosixPath
 
 
@@ -250,6 +252,32 @@ def _as_command(value: object) -> tuple[str, ...] | None:
     return tuple(value)
 
 
+def file_identity(path: str | os.PathLike[str]) -> tuple[int, int]:
+    """Identify the filesystem object a spelling reaches, independent of its name."""
+    status = os.stat(path)
+    return status.st_dev, status.st_ino
+
+
+def resolve_mapping_roots(
+    mappings: tuple[PathMapping, ...],
+) -> dict[tuple[int, int], PurePosixPath]:
+    """Map each existing root's identity to its destination; reject colliding roots."""
+    roots: dict[tuple[int, int], PurePosixPath] = {}
+    for mapping in mappings:
+        try:
+            # stat() honors '..', '.', and trailing separators as filesystem
+            # calls do; Path construction discards the last two.
+            identity = file_identity(mapping.local)
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        previous = roots.get(identity)
+        if previous is not None:
+            kind = "duplicate" if previous == mapping.remote else "conflicting"
+            raise ConfigError(f"{kind} mappings for {os.fspath(mapping.local)}")
+        roots[identity] = mapping.remote
+    return roots
+
+
 def _path_mappings(
     value: object, location: str, config_path: str | Path
 ) -> tuple[PathMapping, ...] | None:
@@ -257,22 +285,21 @@ def _path_mappings(
         return None
     assert isinstance(value, dict)
     mappings: list[PathMapping] = []
-    seen: dict[Path, PurePosixPath] = {}
     for local_value, remote_value in value.items():
         assert isinstance(local_value, str) and isinstance(remote_value, str)
-        try:
-            local = Path(local_value).expanduser().resolve()
-        except (OSError, RuntimeError) as error:
+        local = os.path.expanduser(local_value)
+        if local.startswith("~"):
             raise ConfigError(
-                f"invalid configuration {config_path} at {location}: {error}"
-            ) from error
-        remote = PurePosixPath(remote_value)
-        previous = seen.get(local)
-        if previous is not None:
-            kind = "duplicate" if previous == remote else "conflicting"
-            raise ConfigError(f"{kind} mappings for {local} in {config_path}")
-        seen[local] = remote
-        mappings.append(PathMapping(local, remote))
+                f"invalid configuration {config_path} at {location}: "
+                "could not determine home directory"
+            )
+        mappings.append(PathMapping(local, PurePosixPath(remote_value)))
+    try:
+        resolve_mapping_roots(tuple(mappings))
+    except ConfigError as error:
+        raise ConfigError(f"{error} in {config_path}") from None
+    except (OSError, RuntimeError) as error:
+        raise ConfigError(f"invalid configuration {config_path} at {location}: {error}") from error
     return tuple(mappings)
 
 

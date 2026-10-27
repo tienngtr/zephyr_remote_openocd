@@ -147,7 +147,7 @@ def test_cmake_rejects_untrustworthy_runner_selection(tmp_path: Path, text: str)
         "presets: null\n",
         "remotes: false\n",
         "remotes:\n  lab:\n    invalid_remote_field: value\n",
-        "remotes:\n  lab:\n    path_mappings:\n      /same: /one\n      /same/.: /two\n",
+        "remotes:\n  lab:\n    path_mappings:\n      /: /one\n      /.: /two\n",
     ),
     ids=(
         "default-remote-type",

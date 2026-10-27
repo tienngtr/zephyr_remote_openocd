@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from zephyr_remote_openocd.config import (
     ConfigError,
+    PathMapping,
     RemoteOpenOcdConfig,
     default_config_path,
     load_config,
@@ -12,6 +13,7 @@ from zephyr_remote_openocd.config import (
     resolve_remote,
 )
 from zephyr_remote_openocd.controller._ssh import SshCommand
+from zephyr_remote_openocd.controller.paths import PathPlanner
 
 from tests.support import ROOT
 
@@ -365,7 +367,7 @@ def test_local_and_remote_mapping_paths_preserve_spaces(tmp_path: Path) -> None:
 """,
     )
     mapping = resolve_remote(config, "lab", require_openocd=False).path_mappings[0]
-    assert mapping.local == local.resolve()
+    assert mapping.local == str(local)
     assert str(mapping.remote) == "/remote tree"
 
 
@@ -437,10 +439,71 @@ def test_local_mapping_duplicates_are_rejected(tmp_path: Path) -> None:
         )
 
 
-def test_local_dot_components_are_normalized(tmp_path: Path) -> None:
-    config = load_text(
-        tmp_path,
-        "remotes:\n  r:\n    path_mappings:\n      /tmp/parent/../mapped: /remote\n",
+def load_mappings(tmp_path: Path, *spellings: str) -> tuple[PathMapping, ...]:
+    keys = "".join(
+        f"      {tmp_path}/{spelling}: /remote{index}\n" for index, spelling in enumerate(spellings)
     )
-    mapping = resolve_remote(config, "r", require_openocd=False).path_mappings[0]
-    assert mapping.local == Path("/tmp/mapped")
+    config = load_text(tmp_path, f"remotes:\n  r:\n    path_mappings:\n{keys}")
+    return resolve_remote(config, "r", require_openocd=False).path_mappings
+
+
+@pytest.mark.parametrize("parent", ("directory", "symlink"))
+def test_local_parent_components_follow_filesystem_traversal(tmp_path: Path, parent: str) -> None:
+    real = tmp_path / "real"
+    (real / "inner").mkdir(parents=True)
+    (tmp_path / "mapped").mkdir()
+    (real / "mapped").mkdir()
+    if parent == "directory":
+        (tmp_path / "parent").mkdir()
+        expected, decoy = tmp_path / "mapped", real / "mapped"
+    else:
+        (tmp_path / "parent").symlink_to(real / "inner", target_is_directory=True)
+        expected, decoy = real / "mapped", tmp_path / "mapped"
+    planner = PathPlanner(load_mappings(tmp_path, "parent/../mapped"))
+
+    assert planner.plan_directory(expected, "search_0").remote == "/remote0"
+    assert planner.plan_directory(decoy, "search_1").template is not None
+
+
+@pytest.mark.parametrize("change", ("created", "retargeted"))
+def test_local_mapping_symlink_uses_target_at_planning_time(tmp_path: Path, change: str) -> None:
+    (tmp_path / "old").mkdir()
+    (tmp_path / "link").symlink_to(tmp_path / ("old" if change == "retargeted" else "new"))
+    mappings = load_mappings(tmp_path, "link")
+    (tmp_path / "new").mkdir()
+    if change == "retargeted":
+        (tmp_path / "link").unlink()
+        (tmp_path / "link").symlink_to(tmp_path / "new")
+    planner = PathPlanner(mappings)
+
+    assert planner.plan_directory(tmp_path / "new", "search_0").remote == "/remote0"
+    assert planner.plan_directory(tmp_path / "old", "search_1").template is not None
+
+
+def test_local_mapping_roots_compare_filesystem_identity(tmp_path: Path) -> None:
+    (tmp_path / "firmware.bin").write_bytes(b"image")
+    (tmp_path / "alias.bin").hardlink_to(tmp_path / "firmware.bin")
+
+    with pytest.raises(ConfigError, match="conflicting"):
+        load_mappings(tmp_path, "firmware.bin", "alias.bin")
+    planner = PathPlanner(load_mappings(tmp_path, "firmware.bin"))
+    assert planner.plan_file(tmp_path / "alias.bin", "firmware").remote == "/remote0"
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    (
+        "ghost/../mapped/firmware.bin",
+        "mapped/firmware.bin/.",
+        "mapped/firmware.bin/",
+        "directory-link",
+    ),
+)
+def test_unreachable_local_mapping_path_does_not_apply(tmp_path: Path, spelling: str) -> None:
+    image = tmp_path / "mapped" / "firmware.bin"
+    image.parent.mkdir()
+    image.write_bytes(b"image")
+    (tmp_path / "directory-link").symlink_to("mapped/firmware.bin/")
+
+    planned = PathPlanner(load_mappings(tmp_path, spelling)).plan_file(image, "firmware")
+    assert planned.template is not None
