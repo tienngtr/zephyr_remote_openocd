@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from zephyr_remote_openocd.config import PathMapping
+from zephyr_remote_openocd.config import PathMapping, file_identity, resolve_mapping_roots
 from zephyr_remote_openocd.controller.staging_spec import StagedDirectory, StagedEntry, StagedFile
 from zephyr_remote_openocd.protocol.arguments import ArgumentTemplate, SessionValue
 from zephyr_remote_openocd.protocol.process import RequiredPathSpec
@@ -28,9 +28,8 @@ class PlannedPath:
 
 class PathPlanner:
     def __init__(self, mappings: tuple[PathMapping, ...]):
-        self.mappings = tuple(
-            sorted(mappings, key=lambda item: len(item.local.parts), reverse=True)
-        )
+        # Roots are identified now, as the filesystem currently reaches them.
+        self.mappings = resolve_mapping_roots(mappings)
         self.staged_files: list[StagedEntry] = []
         self.remote_checks: list[RequiredPathSpec] = []
         self._staged_roots: list[tuple[Path, PurePosixPath]] = []
@@ -42,11 +41,12 @@ class PathPlanner:
         except ValueError:
             return None
 
-    def _mapping(self, path: Path) -> tuple[PathMapping, Path] | None:
-        for mapping in self.mappings:
-            relative = self._relative(path, mapping.local)
-            if relative is not None:
-                return mapping, relative
+    def _mapping(self, path: Path) -> tuple[PurePosixPath, Path] | None:
+        # The nearest ancestor that is a mapped root is the most specific mapping.
+        for ancestor in (path, *path.parents):
+            remote = self.mappings.get(file_identity(ancestor))
+            if remote is not None:
+                return remote, path.relative_to(ancestor)
         return None
 
     @staticmethod
@@ -71,8 +71,8 @@ class PathPlanner:
             raise PathPlanningError(f"required search directory is missing: {source}")
         mapped = self._mapping(source)
         if mapped:
-            mapping, relative = mapped
-            remote = str(mapping.remote.joinpath(*relative.parts))
+            root, relative = mapped
+            remote = str(root.joinpath(*relative.parts))
             self.remote_checks.append(RequiredPathSpec(remote, "directory"))
             return PlannedPath(remote)
         existing = self._existing_staged(source)
@@ -91,8 +91,8 @@ class PathPlanner:
             raise PathPlanningError(f"required file is missing: {source}")
         mapped = self._mapping(source)
         if mapped:
-            mapping, relative = mapped
-            remote = str(mapping.remote.joinpath(*relative.parts))
+            root, relative = mapped
+            remote = str(root.joinpath(*relative.parts))
             self.remote_checks.append(RequiredPathSpec(remote, "file"))
             return PlannedPath(remote)
         existing = self._existing_staged(source)

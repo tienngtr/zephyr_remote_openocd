@@ -483,11 +483,12 @@ YAML keys, invalid types, disallowed empty command executables, SSH hosts
 containing NUL, duplicate environment names, invalid paths, duplicate mappings,
 and conflicting mappings SHALL produce actionable configuration errors.
 
-For path mappings, a duplicate mapping has a local key that normalizes to an
-already defined local root with the same destination. A conflicting mapping has
-the same normalized local root with a different destination. Distinct
-normalized local roots in an ancestor/descendant relationship are overlapping
-mappings and SHALL NOT be treated as conflicts.
+For path mappings, a duplicate mapping has a local key that reaches the same
+existing filesystem object as an already defined key with the same destination.
+A conflicting mapping reaches the same existing object with a different
+destination. Distinct local roots in an ancestor/descendant relationship are
+overlapping mappings and SHALL NOT be treated as conflicts. Keys whose roots do
+not exist cannot be duplicates or conflicts.
 
 ### REQ-FUNC-CONFIG-012
 
@@ -635,8 +636,13 @@ reported only when that remote is used.
 
 ### REQ-FUNC-CONFIG-025
 
-Local mapping paths SHALL be normalized before duplicate or conflict detection
-and precedence selection. During a real operation, a home-relative
+Local mapping roots SHALL be identified by the filesystem object that
+traversal of their spelling reaches, not by normalized pathname. They SHALL be
+identified when configuration is loaded, for duplicate or conflict detection,
+and again when required paths are planned, for duplicate or conflict
+detection, matching, and precedence selection. A root that does not exist when
+paths are planned, including one that traversal cannot reach, SHALL NOT match
+any required path. During a real operation, a home-relative
 `openocd_command` executable and home-relative remote path-mapping destinations
 SHALL be resolved using the remote SSH user's home.
 
@@ -653,8 +659,8 @@ absolute or current-user `~` local paths and SHALL exclude NUL. Mapping
 destinations SHALL be absolute or current-user `~` POSIX paths, SHALL exclude
 NUL, and SHALL be lexically normalized: they SHALL NOT contain empty, `.` or
 `..` components or a trailing separator, except that `/` and `~` are valid
-roots. Local mapping paths MAY contain `.` and `..` because they are resolved
-using the local filesystem before collision detection.
+roots. Local mapping paths MAY contain `.`, `..`, and trailing separators
+because they are resolved using the local filesystem; they need not exist.
 
 ---
 
@@ -969,10 +975,11 @@ REQ-FUNC-CONFIG-020.
 ### REQ-FUNC-FILE-004
 
 The runner SHALL support explicit recursive local-to-remote path mappings.
-Mapping matches SHALL be component-aware. Overlapping mappings with distinct
-normalized local roots are valid; when a required local path matches more than
-one mapping, the mapping with the most specific (longest) normalized local root
-SHALL take precedence. For example, with `/src` mapped to `/remote/a` and
+Mapping matches SHALL be component-aware: a mapping matches a required local
+path when its root is the path itself or one of the path's resolved ancestor
+directories. Overlapping mappings with distinct local roots are valid; when a
+required local path matches more than one mapping, the mapping whose root is
+the nearest such ancestor SHALL take precedence. For example, with `/src` mapped to `/remote/a` and
 `/src/board` mapped to `/remote/b`, paths under `/src/board` SHALL use
 `/remote/b` and other paths under `/src` SHALL use `/remote/a`. The selected
 mapping SHALL translate the path by appending its path relative to the selected

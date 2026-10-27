@@ -291,10 +291,12 @@ schema is the sole source for the structural and lexical rules it expresses;
 those rules are not duplicated in handwritten validators. Full loading rejects
 explicit nulls and other structural and lexical violations, including invalid
 command and path spelling, NULs, and invalid normalized remote paths. Code then
-expands and resolves local mapping keys and detects collisions because those
-operations depend on the local filesystem. Remote references and required
-`openocd_command` are checked only when the selected remote is used, allowing
-incomplete unused definitions.
+expands local mapping keys, keeping their spelling, and detects collisions among
+the roots that currently exist by filesystem identity, because those operations
+depend on the local filesystem. The path planner identifies the roots again when
+it is created, so mappings reflect the filesystem when paths are planned. Remote references and
+required `openocd_command` are checked only when the selected remote is used,
+allowing incomplete unused definitions.
 
 Remote fields replace complete preset settings; lists and mappings are not
 merged. During a real operation, a home-relative `openocd_command` executable
@@ -807,8 +809,10 @@ normalize path
 
 Mappings are recursive and component-aware.
 
-When a required path matches more than one mapping, the mapping with the
-longest normalized local root takes precedence. The selected mapping translates
+A mapping matches a required path when its root is the same filesystem object
+as the strictly resolved path or one of its ancestor directories. When more
+than one mapping matches, the one whose root is the nearest ancestor takes
+precedence. The selected mapping translates
 the path by appending its relative suffix to the mapped remote root; other
 matching mappings do not also apply. If no mapping matches, the path is staged
 into the current session.
