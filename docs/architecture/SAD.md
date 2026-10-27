@@ -1285,7 +1285,8 @@ or:
 ```
 
 The configured prefix separates the SSH executable from fixed user arguments.
-Helper and staging operations append the host and remote command unchanged.
+Every SSH invocation that creates no local forward appends the host and
+remote command to the prefix unchanged.
 The resulting SSH argv is executed directly without inserting a local shell.
 Long-lived transports reach it through the non-shell exec launcher of
 [§38.1](#381-local-ssh-subprocess-ownership), which replaces itself with that
