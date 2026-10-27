@@ -1425,6 +1425,11 @@ actionable runner error identifying the step and the timeout rather than an
 unhandled exception traceback. The timeout SHALL NOT be reported as evidence of
 remote completion or cleanup.
 
+Helper startup, from launching the helper control channel until the helper
+reports session creation, SHALL be subject to a finite local deadline. On
+expiry, the runner SHALL fail the operation in the same way, including
+available SSH diagnostics in the error.
+
 ---
 
 ## 21. Concurrent Users and Probe Contention

@@ -1211,7 +1211,13 @@ def test_helper_startup_timeout_does_not_block_on_partial_output(
         def monotonic() -> float:
             return time.monotonic() - connection_module.HELPER_START_TIMEOUT
 
-    process = ControlProcess(CREATED.rstrip(b"\n"))
+    class DiagnosedControlProcess(ControlProcess):
+        @staticmethod
+        @override
+        def stderr_tail() -> bytes:
+            return b"Permission denied (publickey).\n"
+
+    process = DiagnosedControlProcess(CREATED.rstrip(b"\n"))
     real_wait = connection_module.wait_for
     reader_waits = 0
     partial_held = threading.Event()
@@ -1233,6 +1239,9 @@ def test_helper_startup_timeout_does_not_block_on_partial_output(
         with pytest.raises(SessionError) as raised:
             _open_helper_client(process, notified_authority)
 
+        message = str(raised.value)
+        assert "remote helper startup timed out after 30 seconds" in message
+        assert "Permission denied (publickey)." in message
         assert isinstance(raised.value.__cause__, TimeoutError)
         assert process.returncode is not None
         assert process.stdout.closed

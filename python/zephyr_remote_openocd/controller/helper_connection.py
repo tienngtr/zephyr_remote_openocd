@@ -44,7 +44,7 @@ from zephyr_remote_openocd.protocol.wire import (
 # cleanup. Keep the control transport alive through that fallback and remote
 # process scheduling/transport overhead.
 HELPER_STOP_TIMEOUT = 15.0
-HELPER_START_TIMEOUT = 10.0
+HELPER_START_TIMEOUT = 30.0
 
 # Match the remote reader's finite checkpoint: one maximum wire frame of new
 # bytes, in addition to any prefix retained by the incremental framer. The
@@ -198,9 +198,10 @@ class HelperConnection:
             if expired:
                 diagnostic = self._process_or_error().stderr_tail()
                 suffix = ": " + diagnostic.decode("utf-8", "replace").strip() if diagnostic else ""
-                raise SessionError("remote helper startup timed out" + suffix) from TimeoutError(
-                    "remote helper startup deadline expired"
-                )
+                raise SessionError(
+                    f"remote helper startup timed out after {HELPER_START_TIMEOUT:g} seconds"
+                    + suffix
+                ) from TimeoutError("remote helper startup deadline expired")
             expired = wait_for(
                 sources=WaitSources(notifiers=(self._notifier,)), deadline=deadline
             ).expired

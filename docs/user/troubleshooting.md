@@ -18,7 +18,7 @@ reported message or a symptom in the table below, or browse the sections. The
 | `selected remote 'NAME' does not exist` | [No remote is selected](#no-remote-is-selected) |
 | The SSH executable cannot be started | [SSH works manually but the runner fails](#ssh-works-manually-but-the-runner-fails) |
 | `cannot resolve remote home for NAME` | [A remote `python3` error](#remote-helper-deployment-or-startup-fails-with-a-python3-error) |
-| `remote staging timed out`, `helper deployment timed out`, `remote OpenOCD version query timed out`, `... timed out after N seconds` | [A preparation step times out](#a-preparation-step-times-out) |
+| `remote staging timed out`, `helper deployment timed out`, `remote helper startup timed out`, `remote OpenOCD version query timed out`, `... timed out after N seconds` | [A preparation step times out](#a-preparation-step-times-out) |
 | `remote OpenOCD version query failed` | [The OpenOCD version query fails](#the-openocd-version-query-fails) |
 | `invalid remote OpenOCD version response` | [The OpenOCD version query fails](#the-openocd-version-query-fails) |
 | `cannot parse remote OpenOCD version` | [The OpenOCD version query fails](#the-openocd-version-query-fails) |
@@ -225,9 +225,11 @@ ends with `timed out after 30 seconds`, see
 The error names the step and its timeout:
 `cannot resolve remote home for NAME: timed out after 30 seconds`,
 `helper deployment timed out after 30 seconds`,
+`remote helper startup timed out after 30 seconds`,
 `remote OpenOCD version query timed out after 30 seconds`, or
-`remote staging timed out after 60 seconds`. These limits have no
-configuration setting. A timeout does not show whether the remote step
+`remote staging timed out after 60 seconds`. The helper startup message also
+ends with the last error output from SSH, if there was any. These limits have
+no configuration setting. A timeout does not show whether the remote step
 completed or was cleaned up.
 
 **Any step.** A timeout usually means SSH could not connect or authenticate
