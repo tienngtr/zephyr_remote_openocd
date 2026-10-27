@@ -3104,6 +3104,30 @@ A design warrants reconsideration before implementation if it introduces:
 - an acknowledgement or fence whose purpose is to prove another observer has
   seen all earlier events.
 
+Local path interpretation follows filesystem traversal. Non-strict
+`Path.resolve()` applies `..` lexically after a missing component, and
+`os.path.abspath()` and `os.path.normpath()` always do, so either can name a
+file that the filesystem call using the path would not reach. Code therefore:
+
+- passes a user path to filesystem calls unchanged and never normalizes it
+  lexically; `Path.absolute()` is acceptable because it preserves `..`;
+- resolves strictly when a canonical form of an existing path is needed and
+  reports an unreachable path instead of guessing;
+- keeps a path that may not exist yet as spelled and resolves it strictly only
+  when it is used; local path-mapping roots that do not exist then simply do not
+  match;
+- keeps a user path as a string until it has been checked with `os.stat()`,
+  because `Path` construction discards `.` and trailing separators that
+  filesystem calls honor; and
+- compares existing files by identity rather than by normalized spelling, as
+  path-mapping roots are matched and checked for collisions.
+
+Helper archive containment is the deliberate exception and uses non-strict
+resolution. Its targets need not exist yet, and the check must follow a
+dangling final symlink as an opening write would. Non-strict resolution
+diverges from the kernel only where a missing component makes the target
+unwritable.
+
 ### 43.2 Extension recipes
 
 The following patterns are the default way to extend lifecycle-sensitive code.

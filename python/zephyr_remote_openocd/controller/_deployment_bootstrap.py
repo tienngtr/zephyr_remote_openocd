@@ -64,7 +64,7 @@ def main() -> None:
                 "version": 1,
                 "type": "DEPLOYED",
                 "status": "reused" if reused else "deployed",
-                "path": str(target.resolve()),
+                "path": str(target.resolve(strict=True)),
                 "sha256": digest,
             }
         )

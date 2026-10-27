@@ -65,6 +65,11 @@ def _validate_archive(
         kind: Literal["directory", "file"] = "directory" if member.isdir() else "file"
         kinds[relative] = kind
         target = target_root.joinpath(*relative.parts)
+        # nonstrict-path: targets need not exist yet, and opening one for
+        # writing follows a dangling final symlink, so strict resolution cannot
+        # express this check. Non-strict resolution follows every existing link
+        # and applies '..' lexically only after a missing component, where the
+        # kernel cannot reach the path to write it.
         if target_root.resolve() not in target.resolve().parents:
             raise ValueError(f"archive path escapes staging directory: {relative}")
         validated.append(_ValidatedArchiveMember(member, relative, target, kind))
@@ -113,8 +118,11 @@ def _extract_archive(
 
 
 def stage(workspace_path: str | os.PathLike[str]) -> None:
-    root = workspace.workspace_root().resolve()
-    work = Path(workspace_path).resolve()
+    try:
+        root = workspace.workspace_root().resolve(strict=True)
+        work = Path(workspace_path).resolve(strict=True)
+    except (FileNotFoundError, NotADirectoryError):
+        raise ValueError("workspace is not an active helper session") from None
     if root not in work.parents or work.parent != root or not work.is_dir():
         raise ValueError("workspace is not an active helper session")
     target_root = work / "staged"

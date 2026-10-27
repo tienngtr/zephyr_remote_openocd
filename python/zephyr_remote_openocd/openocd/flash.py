@@ -129,8 +129,9 @@ def _plan_image(inputs: FlashInputs, planner: PathPlanner) -> PlannedFlashImage:
     image_source = _image_source(inputs, kind)
     if not image_source:
         raise FlashPlanError(f"cannot flash; no {kind} image specified")
-    source_path = Path(image_source).resolve()
-    remote_image = planner.plan_file(source_path, "firmware")
+    # Plan the spelling itself; Path construction discards trailing separators.
+    remote_image = planner.plan_file(image_source, "firmware")
+    source_path = Path(image_source).absolute()
     entry = _elf_entry(source_path) if kind == "elf" else None
     return PlannedFlashImage(kind, source_path, remote_image.remote, entry, remote_image.template)
 

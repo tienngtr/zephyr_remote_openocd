@@ -153,6 +153,27 @@ class TestFlashPlanning:
         assert not planner.staged_files
         assert not planner.remote_checks
 
+    @pytest.mark.parametrize("spelling", ("ghost/../zephyr.bin", "zephyr.bin/", "zephyr.bin/."))
+    def test_unreachable_image_spelling_is_not_flashed(self, tmp_path: Path, spelling: str) -> None:
+        (tmp_path / "zephyr.bin").write_bytes(b"binary")
+        planner = PathPlanner(())
+        inputs = FlashInputs(
+            executable="/openocd",
+            image_type="bin",
+            file=None,
+            elf_file=None,
+            hex_file=None,
+            bin_file=f"{tmp_path}/{spelling}",
+            search_paths=(),
+            config_files=(),
+            load_command="program",
+            flash_address="0x8000000",
+        )
+
+        with pytest.raises(PathPlanningError):
+            build_flash_plan(inputs, planner)
+        assert not planner.staged_files
+
     def test_plan_directory_rejects_ancestor_symlink_cycle(self, tmp_path: Path) -> None:
         root = tmp_path / "search"
         ancestor = root / "a"
