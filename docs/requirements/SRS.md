@@ -1336,7 +1336,9 @@ Fixed user-supplied SSH argv elements SHALL be preserved exactly and in order.
 For runner-owned local forwards, `ExitOnForwardFailure=yes` and
 `ClearAllForwardings=no` SHALL take precedence over conflicting fixed arguments
 and normal SSH configuration, so generated local forwarding cannot be silently
-discarded and local bind failure remains fatal.
+discarded and a local bind failure fails that forward's startup instead of being
+ignored. Whether that failure fails the operation is decided by REQ-FUNC-SVC-005
+and REQ-FUNC-HELP-011.
 
 ### REQ-FUNC-SSH-006
 
