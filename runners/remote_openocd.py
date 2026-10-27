@@ -7,6 +7,7 @@ from pathlib import Path
 
 def find_module_root(start: Path) -> Path:
     """Find the Zephyr module from its manifest and Python package."""
+    # nonstrict-path: a start that is not a module file reports no module root.
     resolved = start.resolve()
     for candidate in (resolved, *resolved.parents):
         if (candidate / "zephyr" / "module.yml").is_file() and (

@@ -208,3 +208,52 @@ def test_search_tree_rejects_special_files_before_staging(tmp_path: Path) -> Non
 
     with pytest.raises(PathPlanningError):
         plan_support_paths((str(root),), (), PathPlanner(()))
+
+
+@pytest.mark.parametrize("kind", ("file", "directory"))
+@pytest.mark.parametrize("parent", ("missing", "symlink"))
+def test_support_paths_follow_filesystem_traversal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, parent: str
+) -> None:
+    real = tmp_path / "real"
+    (real / "inner").mkdir(parents=True)
+    for root in (tmp_path, real):
+        (root / "scripts").mkdir()
+        (root / "board.cfg").write_text(f"# {root.name}\n")
+    if parent == "symlink":
+        (tmp_path / "link").symlink_to(real / "inner", target_is_directory=True)
+    name = "board.cfg" if kind == "file" else "scripts"
+    spelling = f"{'link' if parent == 'symlink' else 'ghost'}/../{name}"
+    monkeypatch.chdir(tmp_path)
+    search_paths, config_files = ((), (spelling,)) if kind == "file" else ((spelling,), ())
+    planner = PathPlanner(())
+
+    if parent == "missing":
+        with pytest.raises(PathPlanningError):
+            plan_support_paths(search_paths, config_files, planner)
+        assert not planner.staged_files
+        return
+    plan_support_paths(search_paths, config_files, planner)
+    assert planner.staged_files[0].source == real / name
+
+
+def test_search_tree_rejects_broken_symlink_named_through_missing_component(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "scripts"
+    root.mkdir()
+    (root / "board.cfg").write_text("# board\n")
+    (root / "alias.cfg").symlink_to("ghost/../board.cfg")
+
+    with pytest.raises(PathPlanningError, match="alias.cfg"):
+        plan_support_paths((str(root),), (), PathPlanner(()))
+
+
+@pytest.mark.parametrize("spelling", ("{root}/board.cfg/", "{root}/board.cfg/.", "board.cfg/"))
+def test_config_spelled_as_directory_is_not_planned(tmp_path: Path, spelling: str) -> None:
+    root = tmp_path / "scripts"
+    root.mkdir()
+    (root / "board.cfg").write_text("# board\n")
+
+    with pytest.raises(PathPlanningError):
+        plan_support_paths((str(root),), (spelling.format(root=root),), PathPlanner(()))

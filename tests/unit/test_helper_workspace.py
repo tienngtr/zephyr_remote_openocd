@@ -271,6 +271,21 @@ def test_reclaimer_removes_orphaned_lease_but_preserves_live_workspace(
         owner_lock.close()
 
 
+def test_stage_rejects_workspace_named_through_missing_component(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(workspace_module, "workspace_root", lambda: tmp_path)
+    _session_id, workspace, owner_lock = workspace_module.new_workspace()
+    try:
+        with pytest.raises(ValueError, match="active helper session"):
+            helper_staging.stage(tmp_path / "ghost" / ".." / workspace.name)
+    finally:
+        try:
+            workspace_module.remove_workspace(workspace)
+        finally:
+            owner_lock.close()
+
+
 @pytest.mark.parametrize("error_number", (errno.EACCES, errno.EIO))
 def test_closed_admission_rejects_stage_when_closure_inspection_fails(
     tmp_path: Path,

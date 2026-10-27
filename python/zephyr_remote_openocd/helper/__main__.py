@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 if not __package__ and Path(__file__).is_file():
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    sys.path.insert(0, str(Path(__file__).resolve(strict=True).parents[2]))
 
 from zephyr_remote_openocd.helper.cli import run
 

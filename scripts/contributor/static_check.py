@@ -16,12 +16,12 @@ def repository_root() -> Path:
     """Ask Git for the repository containing this script."""
     result = subprocess.run(
         ("git", "rev-parse", "--show-toplevel"),
-        cwd=Path(__file__).resolve().parent,
+        cwd=Path(__file__).resolve(strict=True).parent,
         check=True,
         capture_output=True,
         text=True,
     )
-    return Path(result.stdout.strip()).resolve()
+    return Path(result.stdout.strip()).resolve(strict=True)
 
 
 def tool_executable(name: str) -> str:
@@ -175,6 +175,90 @@ def check_zephyr_import_boundary(root: Path, paths: tuple[str, ...]) -> bool:
     return valid
 
 
+NONSTRICT_PATH_MARKER = "# nonstrict-path:"
+
+
+def _strict_argument(call: ast.Call) -> bool:
+    """Return whether a call passes strict=True by keyword or position."""
+    keywords = (keyword.value for keyword in call.keywords if keyword.arg == "strict")
+    return any(
+        isinstance(argument, ast.Constant) and argument.value is True
+        for argument in (*call.args, *keywords)
+    )
+
+
+def _justified(lines: list[str], call: ast.Call) -> bool:
+    """Find the marker on the call or in the comment block directly above it."""
+    end = call.end_lineno or call.lineno
+    if any(NONSTRICT_PATH_MARKER in line for line in lines[call.lineno - 1 : end]):
+        return True
+    index = call.lineno - 2
+    while index >= 0 and lines[index].lstrip().startswith("#"):
+        if NONSTRICT_PATH_MARKER in lines[index]:
+            return True
+        index -= 1
+    return False
+
+
+def _path_module_bindings(tree: ast.AST) -> tuple[set[str], dict[str, str]]:
+    """Return expressions naming os.path and local names bound to its functions."""
+    modules = {"os.path"}
+    functions = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "os" and alias.asname:
+                    modules.add(f"{alias.asname}.path")
+                elif alias.name in ("os.path", "posixpath"):
+                    modules.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if node.module == "os" and alias.name == "path":
+                    modules.add(alias.asname or alias.name)
+                elif node.module in ("os.path", "posixpath"):
+                    functions[alias.asname or alias.name] = alias.name
+    return modules, functions
+
+
+def _path_function(call: ast.Call, modules: set[str], functions: dict[str, str]) -> str | None:
+    """Return the os.path function a call invokes, if any."""
+    if isinstance(call.func, ast.Name):
+        return functions.get(call.func.id)
+    if isinstance(call.func, ast.Attribute) and ast.unparse(call.func.value) in modules:
+        return call.func.attr
+    return None
+
+
+def check_path_semantics(root: Path, paths: tuple[str, ...]) -> bool:
+    """Reject local path resolution that may apply '..' lexically."""
+    valid = True
+    for relative_path in paths:
+        if Path(relative_path).parts[0] == "tests":
+            continue
+        source = (root / relative_path).read_text(encoding="utf-8")
+        lines = source.splitlines()
+        tree = ast.parse(source, filename=relative_path)
+        modules, functions = _path_module_bindings(tree)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            function = _path_function(node, modules, functions)
+            if function == "realpath" or (
+                isinstance(node.func, ast.Attribute) and node.func.attr == "resolve"
+            ):
+                lexical = not _strict_argument(node)
+            else:
+                lexical = function in ("abspath", "normpath")
+            if lexical and not _justified(lines, node):
+                print(
+                    f"Lexical local path resolution: {relative_path}:{node.lineno}; resolve "
+                    f"strictly or justify it with a '{NONSTRICT_PATH_MARKER}' comment",
+                    file=sys.stderr,
+                )
+                valid = False
+    return valid
+
+
 def commands(
     python_files: tuple[str, ...],
     yaml_paths: tuple[str, ...],
@@ -318,6 +402,9 @@ def main() -> int:
         return 1
     report_phase("Zephyr import boundary check")
     if not check_zephyr_import_boundary(root, python_files):
+        return 1
+    report_phase("Local path semantics check")
+    if not check_path_semantics(root, python_files):
         return 1
     for name, command in commands(
         python_files, yaml_files(root), markdown_files(root), shell_files(root)

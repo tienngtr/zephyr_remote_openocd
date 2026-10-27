@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -18,6 +19,17 @@ REMOTE_ADDRESS_PLACEHOLDER = "{address}"
 
 class PathPlanningError(RuntimeError):
     pass
+
+
+def existing_path(source: str | os.PathLike[str], description: str) -> Path:
+    """Resolve as filesystem calls traverse, without applying '..' lexically."""
+    spelling = os.path.expanduser(source)
+    try:
+        # stat() honors '.' and trailing separators, which Path construction discards.
+        os.stat(spelling)
+        return Path(spelling).resolve(strict=True)
+    except (FileNotFoundError, NotADirectoryError):
+        raise PathPlanningError(f"{description} is missing: {spelling}") from None
 
 
 @dataclass(frozen=True)
@@ -65,8 +77,8 @@ class PathPlanner:
         _, destination, relative = max(candidates, key=lambda item: item[0])
         return self._staged_path(destination.joinpath(*relative.parts))
 
-    def plan_directory(self, source: Path, namespace: str) -> PlannedPath:
-        source = Path(source).expanduser().resolve()
+    def plan_directory(self, source: str | os.PathLike[str], namespace: str) -> PlannedPath:
+        source = existing_path(source, "required search directory")
         if not source.is_dir():
             raise PathPlanningError(f"required search directory is missing: {source}")
         mapped = self._mapping(source)
@@ -85,8 +97,8 @@ class PathPlanner:
         remote, template = self._staged_path(destination)
         return PlannedPath(remote, template)
 
-    def plan_file(self, source: Path, namespace: str) -> PlannedPath:
-        source = Path(source).expanduser().resolve()
+    def plan_file(self, source: str | os.PathLike[str], namespace: str) -> PlannedPath:
+        source = existing_path(source, "required file")
         if not source.is_file():
             raise PathPlanningError(f"required file is missing: {source}")
         mapped = self._mapping(source)
@@ -119,7 +131,10 @@ class PathPlanner:
             raise PathPlanningError(f"symlink cycle in staged root {root}: {resolved}")
         next_stack = stack | {resolved}
         for child in sorted(resolved.iterdir(), key=lambda item: item.name):
-            child_resolved = child.resolve()
+            try:
+                child_resolved = child.resolve(strict=True)
+            except (FileNotFoundError, NotADirectoryError):
+                raise PathPlanningError(f"broken symlink in staged root {root}: {child}") from None
             if child_resolved != root and root not in child_resolved.parents:
                 raise PathPlanningError(f"symlink escapes staged root {root}: {child}")
             target = destination / child.name

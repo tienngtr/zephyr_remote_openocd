@@ -22,6 +22,7 @@ class SetupError(RuntimeError):
 def module_root(script_path: str | os.PathLike[str] | None = None) -> Path:
     """Return the module root independently of the current working directory."""
     path = Path(script_path) if script_path is not None else Path(__file__)
+    # nonstrict-path: a start that is not a module file reports no module root.
     resolved = path.resolve()
     for candidate in (resolved.parent, *resolved.parents):
         if (candidate / "zephyr" / "module.yml").is_file() and (

@@ -4,10 +4,10 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
-from pathlib import Path
 
-from zephyr_remote_openocd.controller.paths import PathPlanner, PlannedPath
+from zephyr_remote_openocd.controller.paths import PathPlanner, PlannedPath, existing_path
 from zephyr_remote_openocd.protocol.arguments import ArgumentTemplate
 
 
@@ -26,15 +26,16 @@ def executable_argv(executable: str | tuple[str, ...]) -> list[str]:
     return list((executable,) if isinstance(executable, str) else executable)
 
 
-def _resolve_config_file(path: str, search_paths: tuple[str, ...]) -> Path:
+def _resolve_config_file(path: str, search_paths: tuple[str, ...]) -> str:
     """Prefer direct files, then look up relative configs in supplied search order."""
 
-    source = Path(path).expanduser()
-    if source.is_absolute() or source.is_file():
+    # Strings keep '.' and trailing separators, which Path construction discards.
+    source = os.path.expanduser(path)
+    if os.path.isabs(source) or os.path.isfile(source):
         return source
     for directory in search_paths:
-        candidate = Path(directory).expanduser() / source
-        if candidate.is_file():
+        candidate = os.path.join(os.path.expanduser(directory), source)
+        if os.path.isfile(candidate):
             return candidate
     # Keep missing-file reporting at the ordinary file-planning boundary.
     return source
@@ -47,8 +48,11 @@ def plan_support_paths(
 
     indexed_search = list(enumerate(search_paths))
     planned_search: dict[int, PlannedPath] = {}
-    for index, path in sorted(indexed_search, key=lambda item: len(Path(item[1]).resolve().parts)):
-        planned_search[index] = planner.plan_directory(Path(path), f"search_{index}")
+    for index, path in sorted(
+        indexed_search,
+        key=lambda item: len(existing_path(item[1], "required search directory").parts),
+    ):
+        planned_search[index] = planner.plan_directory(path, f"search_{index}")
     remote_search = [planned_search[index] for index, _ in indexed_search]
     remote_configs = [
         planner.plan_file(_resolve_config_file(path, search_paths), f"config-{index}")
