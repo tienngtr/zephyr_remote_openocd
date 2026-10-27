@@ -1430,6 +1430,13 @@ reports session creation, SHALL be subject to a finite local deadline. On
 expiry, the runner SHALL fail the operation in the same way, including
 available SSH diagnostics in the error.
 
+Startup of each SSH forward, until the runner confirms that the forward is
+established, SHALL be subject to a finite local deadline. On expiry of that
+deadline, the runner SHALL fail that forward's startup with an error
+identifying the service and local port and including available SSH
+diagnostics. Whether the operation fails is decided by REQ-FUNC-SVC-001 and
+REQ-FUNC-HELP-011.
+
 ---
 
 ## 21. Concurrent Users and Probe Contention

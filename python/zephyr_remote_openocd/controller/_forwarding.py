@@ -27,7 +27,7 @@ from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec, valida
 from zephyr_remote_openocd.controller.waiting import WaitSources, wait_for
 from zephyr_remote_openocd.protocol.listeners import DuplicateEndpointError
 
-FORWARD_START_TIMEOUT = 10.0
+FORWARD_START_TIMEOUT = 30.0
 
 
 class ForwardStartError(SessionError):

@@ -28,6 +28,7 @@ reported message or a symptom in the table below, or browse the sections. The
 | OpenOCD reports that the probe or channel is in use | [OpenOCD cannot acquire the probe](#openocd-cannot-acquire-the-probe) |
 | `Best-effort SERVICE forwarding ... failure` | [A best-effort forwarding warning appears](#a-best-effort-forwarding-warning-appears) |
 | A required local port is occupied | [A required local port is occupied](#a-required-local-port-is-occupied) |
+| `SSH forwarding did not become ready for SERVICE on 127.0.0.1:PORT` | [A forward does not become ready](#a-forward-does-not-become-ready) |
 | GDB client cannot connect | [A GDB client cannot connect](#a-gdb-client-cannot-connect) |
 | `allow-listed environment variable NAME is absent` | [An allow-listed environment variable is absent](#an-allow-listed-environment-variable-is-absent) |
 | `helper shutdown did not produce SESSION_ENDED` | [Shutdown results](#shutdown-results) |
@@ -335,6 +336,18 @@ service with the runner port options described in
 [GDB ports](operations.md#gdb-ports). With SSH connection
 sharing, the listener can be a
 [forward retained from an earlier session](#a-retained-forward-occupies-the-local-port).
+
+### A forward does not become ready
+
+`SSH forwarding did not become ready for SERVICE on 127.0.0.1:PORT` means that
+the SSH process for that forward did not report the forward as ready within 30
+seconds, or that its output ended first. The message ends with the last error
+output from SSH, if there was any. The limit has no configuration setting.
+
+Each forward uses its own SSH process, so check the SSH connection as described
+in [A preparation step times out](#a-preparation-step-times-out). A required
+forward fails the operation. For a best-effort forward, the message appears in
+a [best-effort forwarding warning](#a-best-effort-forwarding-warning-appears).
 
 ### A GDB client cannot connect
 

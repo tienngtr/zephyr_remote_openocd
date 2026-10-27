@@ -605,8 +605,13 @@ class TestForwardingLifecycle:
             def monotonic() -> float:
                 return time.monotonic() - forwarding_module.FORWARD_START_TIMEOUT - 1
 
+        class DiagnosedProcess(TestForwardingLifecycle.Process):
+            @override
+            def stderr_tail(self) -> bytes:
+                return b"Permission denied (publickey).\n"
+
         monkeypatch.setattr(forwarding_module, "time", ElapsedClock)
-        stale = self.Process()
+        stale = DiagnosedProcess()
         read_fd, write_fd = os.pipe()
         stale.stdout = os.fdopen(read_fd, "rb")
         command = self.Command(stale)
@@ -623,6 +628,7 @@ class TestForwardingLifecycle:
             message = str(raised.value)
             assert forward.name in message
             assert f"127.0.0.1:{forward.local_port}" in message
+            assert "Permission denied (publickey)." in message
         finally:
             os.close(write_fd)
         session._forwards.close()
