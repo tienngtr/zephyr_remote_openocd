@@ -75,6 +75,18 @@ def test_reclaimer_removes_stale_directory_without_lock(tmp_path: Path) -> None:
     assert not abandoned.exists()
 
 
+def test_reclaimer_retains_stale_directory_without_lock_but_with_marker(tmp_path: Path) -> None:
+    abandoned = tmp_path / "abandoned"
+    abandoned.mkdir()
+    marker = abandoned / workspace_module.UNCONFIRMED_CHILD
+    marker.touch()
+    os.utime(abandoned, (1.0, 1.0))
+
+    workspace_module.reclaim_stale_workspaces(tmp_path, now=workspace_module.STALE_SESSION_AGE + 2)
+
+    assert marker.is_file()
+
+
 def test_reclaimer_continues_after_stale_lock_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
