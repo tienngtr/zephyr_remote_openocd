@@ -19,6 +19,9 @@
   and rationale.
 - [Protocol v1](architecture/protocol.md): wire format and behavior of the
   remote helper protocol.
+- [Built-in OpenOCD runner compatibility](architecture/builtin_openocd_compatibility.md):
+  upstream evidence for reproducing or deliberately changing built-in runner
+  behavior.
 
 **Contributors and maintainers**
 

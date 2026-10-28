@@ -744,6 +744,44 @@ public `zephyr44/runner.py` facade exports the runner class implemented in
 Supporting a new Zephyr release requires validating this interface or updating
 the version-specific runner integration.
 
+### 16.1 Classifying built-in runner behavior
+
+Built-in runner behavior is reproduced or deliberately changed according to the
+following rules. The
+[built-in OpenOCD runner compatibility record](builtin_openocd_compatibility.md)
+applies them to the inherited flash options with upstream evidence and is
+reviewed when support for another Zephyr release is added.
+
+- **Requests and recipe.** An inherited option either requests an effect on the
+  target or configures how the board achieves it. Image selection, `--erase`,
+  `--verify`, `--verify-only`, and `--serial` are requests. The `--cmd-*`
+  commands, `--config`, `--flash-address`, `--no-init`, and `--no-targets` are
+  the board recipe.
+- **Recipe fidelity.** The built-in runner is authoritative for the recipe. Its
+  generated commands, phase order, and hook placement are reproduced, including
+  differences between image types, because boards were written against them. A
+  recipe difference is a regression unless another requirement defines remote
+  behavior.
+- **Performed or rejected.** A request that applies to the command is either
+  performed or the command fails before remote work. A redundant request, such
+  as `--verify` with `--verify-only`, is performed. A request that the built-in
+  runner would drop, or would report as successful without performing, is
+  rejected.
+- **Restriction before extension.** Rejection is preferred to constructing a
+  behavior that the built-in runner lacks. A dropped request is performed
+  instead only when the built-in runner already defines that behavior for a
+  sibling command and a concrete remote need exists, as for
+  `debugserver --serial`.
+- **Command scope.** Board runner arguments reach every command and cannot be
+  distinguished from user arguments, so a request is evaluated only for the
+  commands it is defined for. For example, `--load` affects only `debug`, and
+  `flash` accepts it without effect.
+
+As a result, every invocation that the runner accepts performs the built-in
+runner's operation, except for remote-execution differences required by other
+requirements and the performed differences listed in REQ-FUNC-OPT-008. The
+differential comparison relies on this property to classify differences.
+
 ---
 
 ## 17. Zephyr Compatibility Boundary
