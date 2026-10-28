@@ -118,7 +118,7 @@ def validate_flash_inputs(inputs: FlashInputs) -> None:
 
 
 def _plan_erase_commands(inputs: FlashInputs) -> tuple[str, ...]:
-    """Resolve explicit erase commands; validation limits erase to HEX and BIN loads."""
+    """Resolve explicit erase commands for a validated non-ELF load."""
     if not inputs.erase:
         return ()
     if not inputs.erase_commands:

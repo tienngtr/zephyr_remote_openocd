@@ -887,7 +887,7 @@ The runner SHALL NOT be required to translate arbitrary local paths embedded in 
 The custom runner SHALL deliberately differ from the built-in `openocd` runner
 of the particular supported Zephyr 4.4.x environment in use as follows:
 
-- `west flash` of a HEX or BIN image with `--erase` but no erase command SHALL
+- `west flash` of a non-ELF image with `--erase` but no erase command SHALL
   fail before remote work rather than succeed without programming the target;
 - `west flash` of a BIN image with `--verify` or `--verify-only` but no verify
   command SHALL fail before remote work rather than succeed without verifying

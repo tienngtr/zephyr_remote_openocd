@@ -58,7 +58,7 @@ class TestFlashPlanning:
         assert not planner.staged_files
         assert not planner.remote_checks
 
-    @pytest.mark.parametrize("kind", ("hex", "bin"))
+    @pytest.mark.parametrize("kind", ("hex", "bin", "other"))
     def test_unsupported_erase_fails_before_planning_paths(self, tmp_path: Path, kind: str) -> None:
         image = tmp_path / f"firmware.{kind}"
         image.write_bytes(b":00000001FF\n")

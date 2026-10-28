@@ -948,8 +948,10 @@ debug symbols, and local build output—remain on the development host.
 
 Flash command construction is phase-oriented: a shared immutable OpenOCD
 prefix is combined with a resolved image plan and one concrete ELF, BIN, or
-HEX operation plan. The public flash-plan result remains the runner boundary.
-Explicit erase commands are resolved and validated once for the selected
+HEX operation plan. As in the built-in runner, the HEX plan also serves an
+image whose type Zephyr leaves undetermined (`FileType.OTHER`), such as a
+`--file` with an unrecognized suffix, so HEX below includes it. The public
+flash-plan result remains the runner boundary. Explicit erase commands are resolved and validated once for the selected
 operation, then consumed by command construction. Only HEX/BIN load operations
 with erase requested require them. ELF operations load the image into target
 memory with `load_image` and have no erase step, and a verification-only

@@ -68,6 +68,12 @@ programming it.
 
 ### Erase and verify options
 
+The runner uses the image type that Zephyr selects: from `--file-type`,
+otherwise from a `--file` path ending in `.hex`, `.bin`, or `.elf`, otherwise
+from a deprecated `--use-*` option, which a board may set by default. An image
+with no recognized type, such as `--file firmware.img`, is flashed with the
+same OpenOCD commands as a HEX image, and the HEX rules below apply to it.
+
 Some erase and verify requests need an OpenOCD command for the image type.
 Supply it with `--cmd-erase` or `--cmd-verify`, or let the board provide it:
 
@@ -87,9 +93,7 @@ take effect:
 - with an ELF image, even when an erase command is available, because ELF
   flashing loads the image into target memory without an erase step.
 
-The image is ELF when `--file-type=elf`, a `--file` path ending in `.elf`, or a
-board default such as `--use-elf` selects it. Use `--verify-only` alone to
-check the image already on the target. To erase before programming, flash a
+Use `--verify-only` alone to check the image already on the target. To erase before programming, flash a
 HEX or BIN image with `--erase`.
 
 The built-in `openocd` runner does not fail in these cases:
