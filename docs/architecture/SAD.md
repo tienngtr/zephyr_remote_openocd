@@ -2326,23 +2326,26 @@ unconfirmed disposal when physical settlement cannot be established.
 Each session holds an advisory lock in its workspace. During new-session
 allocation, the helper takes one directory snapshot of the session root and
 checks each older workspace entry once. A missing session root is treated as
-empty. An older workspace is eligible when the helper can inspect it, acquire
-its session lock exclusively without blocking, and confirm that staging does
-not protect it and no unresolved child or producer depends on its inputs.
+empty. An older workspace is eligible when the helper can inspect it, establish
+inactivity either by acquiring its regular session lock exclusively without
+blocking or by confirming that the lock is absent, and confirm that staging
+does not protect it and no unresolved child or producer depends on its inputs.
 A held lock means that the workspace is active and is skipped.
 
 A missing session lock is itself inactivity evidence. Allocation creates the
 lock immediately after the workspace directory, before the residual-child
 marker, any child, or any staging producer can exist, and only workspace
 removal deletes it: either allocation rollback, before any child, or session
-cleanup after confirmed child disposal. A workspace without a lock is
-therefore either a failed or interrupted allocation or a partially removed
-settled session. The age threshold only excludes allocations still in
-progress. Such a workspace is still removed only after the residual-child
-marker is confirmed absent. A non-file session lock was not created by allocation, does not
-establish inactivity, and is retained, as are other uncertain entries. The
-helper uses the closure and lease-aware workspace-removal procedure for each
-safely eligible workspace and does not retry it during the same allocation.
+cleanup after confirmed child disposal. A workspace without a lock therefore
+has no child or producer to protect. The age threshold only delays
+opportunistic reclamation and is not evidence that an allocation has stopped:
+an allocation delayed past it before creating its lock can at most fail before
+any child starts. Such a workspace is still removed only after the
+residual-child marker is confirmed absent. A non-file session lock was not
+created by allocation, does not establish inactivity, and is retained, as are
+other uncertain entries. The helper uses the closure and lease-aware
+workspace-removal procedure for each safely eligible workspace and does not
+retry it during the same allocation.
 
 Inspection, lock acquisition, or workspace removal errors leave that workspace
 for a later allocation and do not stop inspection of other entries. Errors
