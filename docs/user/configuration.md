@@ -45,7 +45,7 @@ where the module was placed.
    ```
 
 3. [Validate the configuration](#validate-the-configuration) without
-   contacting SSH, OpenOCD, GDB, or hardware:
+   running SSH, OpenOCD, or GDB and without accessing hardware:
 
    ```sh
    python3 /path/to/zephyr_remote_openocd/scripts/user/validate_configuration.py \
@@ -468,14 +468,12 @@ validate their OpenOCD/Tcl semantics, does not substitute text in them (see
 stage files they name (see
 [Files copied to the remote](#files-copied-to-the-remote)).
 
-Avoid conflicts among fixed arguments, and between fixed arguments and
-runner-generated arguments; the runner does not inspect fixed arguments for
-conflicts. For example,
-`-c init`, `-f early.cfg`, or `-c 'source early.cfg'` can initialize OpenOCD or
-create listeners before the runner's bind and service settings take effect;
-avoid that unless it is intended. The runner's startup-ordering guarantees
-cover its generated arguments only; behavior introduced by fixed arguments is
-outside those guarantees.
+The runner does not check fixed arguments for conflicts with each other or with
+the arguments it generates. For example, `-c init`, `-f early.cfg`, or
+`-c 'source early.cfg'` can initialize OpenOCD or create listeners before the
+runner's bind and service settings take effect. Use such arguments only when
+that is intended. The runner's startup-ordering guarantees cover only the
+arguments it generates.
 
 Run a remote runner operation with `west -v` to see the full shell-escaped
 effective remote OpenOCD argv, including fixed arguments, and runner-generated
