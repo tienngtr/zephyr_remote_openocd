@@ -1573,7 +1573,8 @@ Workspace storage format 1 retains the residual-child marker described in
 §38.7 and staging lease/closure metadata. The isolated roots scope workspace
 ownership and conservative reclamation independently of content-addressed
 helper deployment. Marker absence alone does not establish child disposal;
-reclamation also requires positive inactivity evidence.
+reclamation also requires positive inactivity evidence: an exclusively
+acquired session lock, or a missing session lock as defined in §38.7.
 
 Session workspaces and their storage root use owner-only directory
 permissions. Staging directories and associated session metadata remain
@@ -2328,13 +2329,20 @@ checks each older workspace entry once. A missing session root is treated as
 empty. An older workspace is eligible when the helper can inspect it, acquire
 its session lock exclusively without blocking, and confirm that staging does
 not protect it and no unresolved child or producer depends on its inputs.
-A held lock means that the workspace is active and is skipped;
-a missing or non-file session lock represents incomplete lock creation and is
-handled as incomplete allocation only when dependent ownership can also be
-excluded; uncertain entries are retained. The helper uses the closure and
-lease-aware
-workspace-removal procedure for each safely eligible workspace and does not
-retry it during the same allocation.
+A held lock means that the workspace is active and is skipped.
+
+A missing session lock is itself inactivity evidence. Allocation creates the
+lock immediately after the workspace directory, before the residual-child
+marker, any child, or any staging producer can exist, and only workspace
+removal deletes it: either allocation rollback, before any child, or session
+cleanup after confirmed child disposal. A workspace without a lock is
+therefore either a failed or interrupted allocation or a partially removed
+settled session. The age threshold only excludes allocations still in
+progress. Such a workspace is still removed only after the residual-child
+marker is confirmed absent. A non-file session lock was not created by allocation, does not
+establish inactivity, and is retained, as are other uncertain entries. The
+helper uses the closure and lease-aware workspace-removal procedure for each
+safely eligible workspace and does not retry it during the same allocation.
 
 Inspection, lock acquisition, or workspace removal errors leave that workspace
 for a later allocation and do not stop inspection of other entries. Errors
