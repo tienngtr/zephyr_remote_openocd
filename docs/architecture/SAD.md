@@ -2348,10 +2348,11 @@ workspace-removal procedure for each safely eligible workspace and does not
 retry it during the same allocation.
 
 Inspection, lock acquisition, or workspace removal errors leave that workspace
-for a later allocation and do not stop inspection of other entries. Errors
-while taking the root snapshot other than a missing root are propagated. Root
-entries that are neither workspaces nor recognized staging metadata are
-ignored.
+for a later allocation and do not stop inspection of other entries. A failure
+to take the root snapshot skips reclamation for that allocation and does not
+itself fail allocation; the operations that create the new workspace may still
+fail independently. Root entries that are neither workspaces nor recognized
+staging metadata are ignored.
 
 Standalone staging first spools its upload without workspace ownership. Before
 archive validation or extraction, it acquires a shared workspace lease using a

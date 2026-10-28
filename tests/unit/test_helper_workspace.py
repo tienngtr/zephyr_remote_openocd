@@ -7,7 +7,7 @@ import io
 import os
 import sys
 import tarfile
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import IO
@@ -131,6 +131,36 @@ def _fail_inspection(patch: pytest.MonkeyPatch, uncertain: Path, error_number: i
 
     patch.setattr(os, "stat", lambda *args, **kwargs: inspect(original_stat, *args, **kwargs))
     patch.setattr(os, "lstat", lambda *args, **kwargs: inspect(original_lstat, *args, **kwargs))
+
+
+@pytest.mark.parametrize("error_number", (errno.EACCES, errno.EIO))
+def test_root_snapshot_failure_does_not_fail_allocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error_number: int
+) -> None:
+    monkeypatch.setattr(workspace_module, 'workspace_root', lambda: tmp_path)
+    stale = tmp_path / "stale"
+    stale.mkdir()
+    os.utime(stale, (1.0, 1.0))
+    original_iterdir = Path.iterdir
+
+    def iterdir(path: Path) -> Generator[Path, None, None]:
+        if path == tmp_path:
+            raise OSError(error_number, "injected root snapshot failure")
+        return original_iterdir(path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "iterdir", iterdir)
+        _session_id, workspace, lock = workspace_module.new_workspace()
+    try:
+        assert stale.is_dir()
+        assert (workspace / workspace_module.SESSION_LOCK).is_file()
+        assert (workspace / "staged").is_dir()
+        assert workspace_module.lease_path(workspace).is_file()
+    finally:
+        try:
+            workspace_module.remove_workspace(workspace)
+        finally:
+            lock.close()
 
 
 @pytest.mark.parametrize("source", ("marker", "lock", "metadata-workspace"))
