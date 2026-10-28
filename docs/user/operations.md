@@ -77,21 +77,28 @@ Supply it with `--cmd-erase` or `--cmd-verify`, or let the board provide it:
 | `--verify` or `--verify-only` | BIN | Verify command (`--cmd-verify`) |
 
 If the required command is missing, `remote_openocd` fails before contacting
-the remote. When flashing an ELF image, `--erase` does not add an erase
-command.
+the remote.
 
-`remote_openocd` also fails before contacting the remote when `--erase` is
-combined with `--verify-only`, for any image type, because a verify-only run
-does not erase. Use `--verify-only` alone to check the image already on the
-target. For a HEX or BIN image, use `--erase` alone to erase and reprogram the
-target.
+`remote_openocd` also fails before contacting the remote when `--erase` cannot
+take effect:
+
+- with `--verify-only`, for any image type, because a verify-only run does not
+  erase;
+- with an ELF image, even when an erase command is available, because ELF
+  flashing loads the image into target memory without an erase step.
+
+The image is ELF when `--file-type=elf`, a `--file` path ending in `.elf`, or a
+board default such as `--use-elf` selects it. Use `--verify-only` alone to
+check the image already on the target. To erase before programming, flash a
+HEX or BIN image with `--erase`.
 
 The built-in `openocd` runner does not fail in these cases:
 
 - without an erase command, it logs an error and exits successfully without
   programming the target;
 - without a verify command, it skips the verification;
-- with `--erase` and `--verify-only`, it ignores `--erase`.
+- with `--erase` and `--verify-only`, or with `--erase` and an ELF image, it
+  ignores `--erase`.
 
 ## Debug
 

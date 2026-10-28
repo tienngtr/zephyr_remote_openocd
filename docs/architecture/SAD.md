@@ -722,8 +722,8 @@ preserves inherited option names, value forms, and their intended effect while
 translating them into remote plans, except where a specific SRS requirement
 defines different remote behavior. Built-in runner behavior that reports
 success without performing a requested erase or verification, that ignores
-`--erase` combined with `--verify-only`, or that ignores an explicit
-`debugserver --serial`, is deliberately not reproduced;
+`--erase` combined with `--verify-only` or with an ELF image, or that ignores
+an explicit `debugserver --serial`, is deliberately not reproduced;
 REQ-FUNC-OPT-008 is the complete list of such semantic differences, and each
 has focused tests. The differential comparison with the built-in runner classifies
 differences: an unexpected difference fails and must be resolved as a
@@ -913,9 +913,10 @@ prefix is combined with a resolved image plan and one concrete ELF, BIN, or
 HEX operation plan. The public flash-plan result remains the runner boundary.
 Explicit erase commands are resolved and validated once for the selected
 operation, then consumed by command construction. Only HEX/BIN load operations
-with erase requested require them; ELF operations omit explicit erase commands,
-matching the inherited Zephyr behavior. A verification-only operation never
-erases, so requesting erase with it is rejected rather than ignored. Likewise,
+with erase requested require them. ELF operations load the image into target
+memory with `load_image` and have no erase step, and a verification-only
+operation never erases, so requesting erase with either is rejected rather than
+ignored, even when an erase command is available. Likewise,
 BIN verification or verification-only requires a verify command. The adapter
 runs this pure validation before remote-home resolution, so each of these
 failures occurs before any remote work (REQ-FUNC-OPT-008).

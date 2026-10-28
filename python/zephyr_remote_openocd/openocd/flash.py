@@ -100,6 +100,8 @@ def _image_source(inputs: FlashInputs, kind: str) -> str | None:
 def _validate_flash_options(inputs: FlashInputs, kind: str) -> None:
     if inputs.erase and inputs.verify_only:
         raise FlashPlanError("--erase cannot be combined with --verify-only")
+    if inputs.erase and kind == "elf":
+        raise FlashPlanError("--erase is not supported when flashing an ELF image")
     if kind == "bin" and (not inputs.load_command or inputs.flash_address is None):
         raise FlashPlanError("cannot flash BIN; load command and flash address are required")
     if kind == "bin" and (inputs.verify or inputs.verify_only) and not inputs.verify_command:
@@ -112,12 +114,12 @@ def validate_flash_inputs(inputs: FlashInputs) -> None:
     """Reject requests that cannot be performed, using only local inputs."""
     kind = _image_kind(inputs)
     _validate_flash_options(inputs, kind)
-    _plan_erase_commands(inputs, kind)
+    _plan_erase_commands(inputs)
 
 
-def _plan_erase_commands(inputs: FlashInputs, kind: str) -> tuple[str, ...]:
-    """Resolve explicit erase commands only for operations that execute them."""
-    if not inputs.erase or kind == "elf":
+def _plan_erase_commands(inputs: FlashInputs) -> tuple[str, ...]:
+    """Resolve explicit erase commands; validation limits erase to HEX and BIN loads."""
+    if not inputs.erase:
         return ()
     if not inputs.erase_commands:
         raise FlashPlanError("erase requested but the target supplies no erase command")
@@ -266,7 +268,7 @@ def build_flash_plan(
 ) -> FlashPlan:
     kind = _image_kind(inputs)
     _validate_flash_options(inputs, kind)
-    erase_commands = _plan_erase_commands(inputs, kind)
+    erase_commands = _plan_erase_commands(inputs)
     base = plan_openocd_base(
         inputs.executable,
         inputs.serial,

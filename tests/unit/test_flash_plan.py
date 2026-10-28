@@ -297,9 +297,33 @@ class TestFlashPlanning:
         assert not any(command.startswith("load_image ") for command in commands)
 
     @pytest.mark.parametrize("erase_commands", ((), ("target_erase",)))
-    def test_elf_plan_ignores_erase_and_resumes_before_shutdown(
+    def test_elf_erase_fails_before_planning_paths(
         self, tmp_path: Path, erase_commands: tuple[str, ...]
     ) -> None:
+        image = tmp_path / "image.elf"
+        image.write_bytes(elf_memory_witness_bytes(entry_point=ELF_ENTRY_POINT))
+        planner = PathPlanner(())
+        inputs = FlashInputs(
+            executable="openocd",
+            image_type="elf",
+            file=None,
+            elf_file=str(image),
+            hex_file=None,
+            bin_file=None,
+            search_paths=(),
+            config_files=(),
+            erase=True,
+            erase_commands=erase_commands,
+        )
+
+        # Rejected even when an erase command exists: ELF loading never erases.
+        with pytest.raises(flash_module.FlashPlanError):
+            build_flash_plan(inputs, planner)
+
+        assert not planner.staged_files
+        assert not planner.remote_checks
+
+    def test_elf_plan_resumes_before_shutdown(self, tmp_path: Path) -> None:
         image = tmp_path / "image.elf"
         image.write_bytes(elf_memory_witness_bytes(entry_point=ELF_ENTRY_POINT))
         plan = build_flash_plan(
@@ -312,8 +336,6 @@ class TestFlashPlanning:
                 bin_file=None,
                 search_paths=(),
                 config_files=(),
-                erase=True,
-                erase_commands=erase_commands,
             ),
             PathPlanner(()),
         )
@@ -328,7 +350,6 @@ class TestFlashPlanning:
         assert int(resume_command.removeprefix("resume "), 0) == ELF_ENTRY_POINT
         assert commands.index(resume_command) < commands.index("shutdown")
         assert any(command.startswith("load_image ") for command in commands)
-        assert "target_erase" not in commands
 
     def test_longest_mapping_and_remote_check(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

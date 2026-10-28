@@ -1787,6 +1787,11 @@ def test_commands_match_built_in_runner(
             ],
             id="erase-with-verify-only",
         ),
+        pytest.param(
+            "ELF",
+            ["--cmd-erase=flash erase_sector 0 0 last", "--erase"],
+            id="elf-erase",
+        ),
     ),
 )
 def test_live_flash_with_unperformable_request_fails_without_remote_work(
@@ -1831,7 +1836,7 @@ def test_live_flash_with_unperformable_request_fails_without_remote_work(
 
     # Deliberately stricter than Zephyr 4.4 (REQ-FUNC-OPT-008), which returns
     # success without performing the requested erase or verification, and
-    # ignores --erase with --verify-only.
+    # ignores --erase with --verify-only or with an ELF image.
     with pytest.raises(RuntimeError) as raised:
         runner.run("flash")
     assert isinstance(raised.value.__cause__, FlashPlanError)

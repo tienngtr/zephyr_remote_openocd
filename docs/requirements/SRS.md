@@ -894,6 +894,8 @@ of the particular supported Zephyr 4.4.x environment in use as follows:
   the target;
 - `west flash` with both `--erase` and `--verify-only` SHALL fail before remote
   work rather than ignore the erase request, for any image type;
+- `west flash` of an ELF image with `--erase` SHALL fail before remote work
+  rather than load the image without erasing;
 - `west debugserver` SHALL apply an explicit `--serial` as for the other
   supported commands (REQ-FUNC-OPT-002), rather than ignore it.
 
