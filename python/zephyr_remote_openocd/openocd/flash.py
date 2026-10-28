@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum, auto
 from pathlib import Path
 
 from zephyr_remote_openocd.controller.paths import PathPlanner
@@ -17,6 +18,34 @@ from zephyr_remote_openocd.protocol.process import ProcessSpec
 
 class FlashPlanError(RuntimeError):
     pass
+
+
+class FlashMode(Enum):
+    """Phases a flash operation performs, independent of the image type."""
+
+    PROGRAM = auto()
+    PROGRAM_AND_VERIFY = auto()
+    VERIFY_ONLY = auto()
+
+
+@dataclass(frozen=True)
+class FlashOperation:
+    """A requested flash operation; erase modifies only the program phase."""
+
+    mode: FlashMode = FlashMode.PROGRAM
+    erase: bool = False
+
+    def __post_init__(self) -> None:
+        if self.erase and not self.programs:
+            raise FlashPlanError("--erase cannot be combined with --verify-only")
+
+    @property
+    def programs(self) -> bool:
+        return self.mode is not FlashMode.VERIFY_ONLY
+
+    @property
+    def verifies(self) -> bool:
+        return self.mode is not FlashMode.PROGRAM
 
 
 @dataclass(frozen=True)
@@ -36,9 +65,7 @@ class FlashInputs:
     load_command: str | None = None
     verify_command: str | None = None
     post_verify: tuple[str, ...] = ()
-    verify: bool = False
-    verify_only: bool = False
-    erase: bool = False
+    operation: FlashOperation = FlashOperation()
     serial: str | None = None
     flash_address: str | None = None
     no_init: bool = False
@@ -97,33 +124,20 @@ def _image_source(inputs: FlashInputs, kind: str) -> str | None:
     return inputs.hex_file
 
 
-def _validate_flash_options(inputs: FlashInputs, kind: str) -> None:
-    if inputs.erase and inputs.verify_only:
-        raise FlashPlanError("--erase cannot be combined with --verify-only")
-    if inputs.erase and kind == "elf":
+def validate_flash_inputs(inputs: FlashInputs) -> None:
+    """Reject operations the selected image cannot perform, using only local inputs."""
+    kind = _image_kind(inputs)
+    operation = inputs.operation
+    if operation.erase and kind == "elf":
         raise FlashPlanError("--erase is not supported when flashing an ELF image")
     if kind == "bin" and (not inputs.load_command or inputs.flash_address is None):
         raise FlashPlanError("cannot flash BIN; load command and flash address are required")
-    if kind == "bin" and (inputs.verify or inputs.verify_only) and not inputs.verify_command:
+    if kind == "bin" and operation.verifies and not inputs.verify_command:
         raise FlashPlanError("BIN verification requested but no verify command is available")
     if kind not in ("elf", "bin") and (not inputs.load_command or not inputs.verify_command):
         raise FlashPlanError("cannot flash image; load and verify commands are required")
-
-
-def validate_flash_inputs(inputs: FlashInputs) -> None:
-    """Reject requests that cannot be performed, using only local inputs."""
-    kind = _image_kind(inputs)
-    _validate_flash_options(inputs, kind)
-    _plan_erase_commands(inputs)
-
-
-def _plan_erase_commands(inputs: FlashInputs) -> tuple[str, ...]:
-    """Resolve explicit erase commands for a validated non-ELF load."""
-    if not inputs.erase:
-        return ()
-    if not inputs.erase_commands:
+    if operation.erase and not inputs.erase_commands:
         raise FlashPlanError("erase requested but the target supplies no erase command")
-    return inputs.erase_commands
 
 
 def _plan_image(inputs: FlashInputs, planner: PathPlanner) -> PlannedFlashImage:
@@ -151,7 +165,7 @@ def _elf_flash_commands(
     inputs: FlashInputs, image: PlannedFlashImage
 ) -> tuple[str | TclPathArgument, ...]:
     commands: list[str | TclPathArgument] = []
-    if not inputs.verify_only:
+    if inputs.operation.programs:
         commands.extend(_commands(inputs.pre_load))
         commands.extend(
             (
@@ -161,7 +175,7 @@ def _elf_flash_commands(
                 TclPathArgument("load_image ", image.remote, template=image.template),
             )
         )
-    if inputs.verify or inputs.verify_only:
+    if inputs.operation.verifies:
         commands.extend(
             ("-c", TclPathArgument("verify_image ", image.remote, template=image.template))
         )
@@ -179,12 +193,13 @@ def _finish_standard_commands(
 
 
 def _bin_flash_commands(
-    inputs: FlashInputs, image: PlannedFlashImage, erase_commands: tuple[str, ...]
+    inputs: FlashInputs, image: PlannedFlashImage
 ) -> tuple[str | TclPathArgument, ...]:
     commands: list[str | TclPathArgument] = list(_commands(inputs.pre_load))
-    if not inputs.verify_only:
+    if inputs.operation.programs:
         commands.extend(("-c", inputs.reset_halt))
-        commands.extend(_commands(erase_commands))
+        if inputs.operation.erase:
+            commands.extend(_commands(inputs.erase_commands))
         commands.extend(
             (
                 "-c",
@@ -196,7 +211,7 @@ def _bin_flash_commands(
                 ),
             )
         )
-    if inputs.verify or inputs.verify_only:
+    if inputs.operation.verifies:
         commands.extend(("-c", inputs.reset_halt))
         commands.extend(
             (
@@ -213,20 +228,20 @@ def _bin_flash_commands(
 
 
 def _hex_flash_commands(
-    inputs: FlashInputs, image: PlannedFlashImage, erase_commands: tuple[str, ...]
+    inputs: FlashInputs, image: PlannedFlashImage
 ) -> tuple[str | TclPathArgument, ...]:
     commands: list[str | TclPathArgument] = list(_commands(inputs.pre_load))
     load_command = inputs.load_command or ""
-    if not inputs.verify_only:
+    if inputs.operation.programs:
         commands.extend(("-c", inputs.reset_halt))
-        if erase_commands:
-            commands.extend(_commands(erase_commands))
+        if inputs.operation.erase:
+            commands.extend(_commands(inputs.erase_commands))
             if load_command.endswith(" erase"):
                 load_command = load_command[:-6]
         commands.extend(
             ("-c", TclPathArgument(f"{load_command} ", image.remote, template=image.template))
         )
-    if inputs.verify or inputs.verify_only:
+    if inputs.operation.verifies:
         commands.extend(
             (
                 "-c",
@@ -239,26 +254,19 @@ def _hex_flash_commands(
 
 
 def _operation_commands(
-    inputs: FlashInputs, image: PlannedFlashImage, erase_commands: tuple[str, ...]
+    inputs: FlashInputs, image: PlannedFlashImage
 ) -> tuple[str | TclPathArgument, ...]:
     if image.kind == "elf":
         return _elf_flash_commands(inputs, image)
     if image.kind == "bin":
-        return _bin_flash_commands(inputs, image, erase_commands)
-    return _hex_flash_commands(inputs, image, erase_commands)
+        return _bin_flash_commands(inputs, image)
+    return _hex_flash_commands(inputs, image)
 
 
 def _flash_argv(
-    inputs: FlashInputs,
-    base: OpenOcdBasePlan,
-    image: PlannedFlashImage,
-    erase_commands: tuple[str, ...],
+    inputs: FlashInputs, base: OpenOcdBasePlan, image: PlannedFlashImage
 ) -> tuple[str | TclPathArgument, ...]:
-    return (
-        base.argv
-        + tuple(_common_flash_commands(inputs))
-        + _operation_commands(inputs, image, erase_commands)
-    )
+    return base.argv + tuple(_common_flash_commands(inputs)) + _operation_commands(inputs, image)
 
 
 def build_flash_plan(
@@ -266,9 +274,7 @@ def build_flash_plan(
     planner: PathPlanner,
     environment: tuple[tuple[str, str], ...] = (),
 ) -> FlashPlan:
-    kind = _image_kind(inputs)
-    _validate_flash_options(inputs, kind)
-    erase_commands = _plan_erase_commands(inputs)
+    validate_flash_inputs(inputs)
     base = plan_openocd_base(
         inputs.executable,
         inputs.serial,
@@ -279,7 +285,7 @@ def build_flash_plan(
     )
     image = _plan_image(inputs, planner)
 
-    arguments = _flash_argv(inputs, base, image, erase_commands)
+    arguments = _flash_argv(inputs, base, image)
     process = ProcessSpec(
         tuple(arg.render() if isinstance(arg, TclPathArgument) else arg for arg in arguments),
         environment,

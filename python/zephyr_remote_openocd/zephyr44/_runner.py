@@ -40,6 +40,8 @@ from zephyr_remote_openocd.openocd.debug import (
 )
 from zephyr_remote_openocd.openocd.flash import (
     FlashInputs,
+    FlashMode,
+    FlashOperation,
     FlashPlanError,
     build_flash_plan,
     validate_flash_inputs,
@@ -437,14 +439,23 @@ def _flash_inputs(runner: RemoteOpenOcdBinaryRunner, selected: ResolvedRemote) -
         load_command=runner.load_cmd,
         verify_command=runner.verify_cmd,
         post_verify=tuple(runner.post_verify),
-        verify=runner.do_verify,
-        verify_only=runner.do_verify_only,
-        erase=runner.do_erase,
+        operation=_flash_operation(runner),
         serial=runner.parsed_args.serial or None,
         flash_address=runner.flash_address,
         no_init=runner.parsed_args.no_init,
         no_targets=runner.parsed_args.no_targets,
     )
+
+
+def _flash_operation(runner: RemoteOpenOcdBinaryRunner) -> FlashOperation:
+    """Normalize Zephyr's flash flags; --verify-only takes precedence over --verify."""
+    if runner.do_verify_only:
+        mode = FlashMode.VERIFY_ONLY
+    elif runner.do_verify:
+        mode = FlashMode.PROGRAM_AND_VERIFY
+    else:
+        mode = FlashMode.PROGRAM
+    return FlashOperation(mode, erase=runner.do_erase)
 
 
 def _flash_request(runner: RemoteOpenOcdBinaryRunner, selected: ResolvedRemote) -> SessionPlan:

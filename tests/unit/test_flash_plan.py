@@ -13,7 +13,12 @@ from zephyr_remote_openocd.controller.paths import (
     PathPlanningError,
 )
 from zephyr_remote_openocd.openocd import flash as flash_module
-from zephyr_remote_openocd.openocd.flash import FlashInputs, build_flash_plan
+from zephyr_remote_openocd.openocd.flash import (
+    FlashInputs,
+    FlashMode,
+    FlashOperation,
+    build_flash_plan,
+)
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
 
 from tests.elf_fixtures import ELF_ENTRY_POINT, elf_memory_witness_bytes
@@ -75,7 +80,7 @@ class TestFlashPlanning:
             load_command="program",
             verify_command="verify_image",
             flash_address="0x8000000",
-            erase=True,
+            operation=FlashOperation(erase=True),
         )
 
         with pytest.raises(flash_module.FlashPlanError) as error:
@@ -87,46 +92,14 @@ class TestFlashPlanning:
         assert not planner.staged_files
         assert not planner.remote_checks
 
-    @pytest.mark.parametrize("kind", ("hex", "bin", "elf"))
-    @pytest.mark.parametrize("erase_commands", ((), ("target_erase",)))
-    def test_erase_with_verify_only_fails_before_planning_paths(
-        self, tmp_path: Path, kind: str, erase_commands: tuple[str, ...]
-    ) -> None:
-        image = tmp_path / f"firmware.{kind}"
-        image.write_bytes(
-            elf_memory_witness_bytes(entry_point=ELF_ENTRY_POINT)
-            if kind == "elf"
-            else b":00000001FF\n"
-        )
-        planner = PathPlanner(())
-        inputs = FlashInputs(
-            executable="openocd",
-            image_type=kind,
-            file=str(image),
-            elf_file=None,
-            hex_file=str(image),
-            bin_file=None,
-            search_paths=(),
-            config_files=(),
-            load_command="program",
-            verify_command="verify_image",
-            flash_address="0x8000000",
-            erase_commands=erase_commands,
-            verify_only=True,
-            erase=True,
-        )
+    def test_verify_only_operation_cannot_erase(self) -> None:
+        # Verify-only never programs, so an erase cannot be represented at all.
+        with pytest.raises(flash_module.FlashPlanError):
+            FlashOperation(FlashMode.VERIFY_ONLY, erase=True)
 
-        with pytest.raises(flash_module.FlashPlanError) as error:
-            build_flash_plan(inputs, planner)
-
-        # Not the missing-erase-command failure: verify-only never erases.
-        assert "verify-only" in str(error.value).lower()
-        assert not planner.staged_files
-        assert not planner.remote_checks
-
-    @pytest.mark.parametrize(("verify", "verify_only"), ((True, False), (False, True)))
+    @pytest.mark.parametrize("mode", (FlashMode.PROGRAM_AND_VERIFY, FlashMode.VERIFY_ONLY))
     def test_bin_verification_without_verify_command_fails_before_planning_paths(
-        self, tmp_path: Path, verify: bool, verify_only: bool
+        self, tmp_path: Path, mode: FlashMode
     ) -> None:
         image = tmp_path / "firmware.bin"
         image.write_bytes(b"\x00")
@@ -142,8 +115,7 @@ class TestFlashPlanning:
             config_files=(),
             load_command="program",
             flash_address="0x8000000",
-            verify=verify,
-            verify_only=verify_only,
+            operation=FlashOperation(mode),
         )
 
         with pytest.raises(flash_module.FlashPlanError) as error:
@@ -207,7 +179,7 @@ class TestFlashPlanning:
                     load_command="flash write_image erase",
                     verify_command="verify_image",
                     pre_init=("gdb_port 7777", "tcl_port 8888", "telnet_port 9999"),
-                    verify=True,
+                    operation=FlashOperation(FlashMode.PROGRAM_AND_VERIFY),
                 ),
                 planner,
                 (("PROBE", "value"),),
@@ -239,7 +211,7 @@ class TestFlashPlanning:
                 config_files=(),
                 load_command="flash write_image erase",
                 verify_command="verify_image",
-                erase=True,
+                operation=FlashOperation(erase=True),
                 erase_commands=("target_erase",),
             ),
             PathPlanner(()),
@@ -282,7 +254,7 @@ class TestFlashPlanning:
                 load_command="flash write_image erase",
                 verify_command="verify_image",
                 flash_address="0x8000000",
-                verify_only=True,
+                operation=FlashOperation(FlashMode.VERIFY_ONLY),
             ),
             PathPlanner(()),
         )
@@ -312,7 +284,7 @@ class TestFlashPlanning:
             bin_file=None,
             search_paths=(),
             config_files=(),
-            erase=True,
+            operation=FlashOperation(erase=True),
             erase_commands=erase_commands,
         )
 
@@ -440,9 +412,8 @@ class TestFlashPlanning:
                     load_command="program",
                     verify_command="verify",
                     flash_address="0x8000000",
-                    erase=True,
+                    operation=FlashOperation(FlashMode.PROGRAM_AND_VERIFY, erase=True),
                     erase_commands=("mass_erase",),
-                    verify=True,
                 ),
                 PathPlanner(()),
             )

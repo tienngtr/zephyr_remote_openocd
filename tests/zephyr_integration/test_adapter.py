@@ -1710,6 +1710,17 @@ def _recorded_commands(recording: dict[str, Any]) -> list[list[str]]:
             id="elf-verify-only",
         ),
         pytest.param(
+            "flash",
+            "HEX",
+            [
+                "--cmd-load=flash write_image erase",
+                "--cmd-verify=verify_image",
+                "--verify",
+                "--verify-only",
+            ],
+            id="hex-verify-with-verify-only",
+        ),
+        pytest.param(
             "debug",
             "ELF",
             ["--cmd-pre-init=echo pre-init", "--gdb-init=break main"],

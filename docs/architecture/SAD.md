@@ -813,6 +813,16 @@ arguments, so those configurations can consume the variable while loading.
 When `--serial` is omitted, the planner emits no serial-selection command and
 introduces no serial constraint.
 
+The adapter also normalizes the inherited flash flags once into an immutable
+flash operation for the generic flash planner. `--verify-only` selects a
+verify-only operation and, as in the built-in runner, takes precedence over
+`--verify`. `--verify` selects program and verify, and otherwise the operation
+only programs. `--erase` modifies only the program phase, so a verify-only
+operation with erase cannot be constructed and the command fails before remote
+work. The planner then checks whether the selected image can realize the
+operation, because that depends on the image-specific command plan rather than
+on Zephyr flag syntax.
+
 ---
 
 ## 18. Generic Remote Session Model
@@ -951,12 +961,13 @@ prefix is combined with a resolved image plan and one concrete ELF, BIN, or
 HEX operation plan. As in the built-in runner, the HEX plan also serves an
 image whose type Zephyr leaves undetermined (`FileType.OTHER`), such as a
 `--file` with an unrecognized suffix, so HEX below includes it. The public
-flash-plan result remains the runner boundary. Explicit erase commands are resolved and validated once for the selected
-operation, then consumed by command construction. Only HEX/BIN load operations
-with erase requested require them. ELF operations load the image into target
-memory with `load_image` and have no erase step, and a verification-only
-operation never erases, so requesting erase with either is rejected rather than
-ignored, even when an erase command is available. Likewise,
+flash-plan result remains the runner boundary. Command construction realizes
+the operation normalized by the adapter (§17) and does not interpret flag
+combinations. The operation and image are validated before construction.
+Only HEX/BIN program operations with erase requested require explicit erase
+commands. ELF operations load the image into target memory with `load_image`
+and have no erase step, so requesting erase with an ELF image is rejected
+rather than ignored, even when an erase command is available. Likewise,
 BIN verification or verification-only requires a verify command. The adapter
 runs this pure validation before remote-home resolution, so each of these
 failures occurs before any remote work (REQ-FUNC-OPT-008).

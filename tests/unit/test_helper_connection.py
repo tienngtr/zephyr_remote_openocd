@@ -34,7 +34,12 @@ from zephyr_remote_openocd.controller.helper_connection import (
 )
 from zephyr_remote_openocd.controller.paths import PathPlanner
 from zephyr_remote_openocd.controller.waiting import Descriptor, WaitResult, WaitSources, wait_for
-from zephyr_remote_openocd.openocd.flash import FlashInputs, build_flash_plan
+from zephyr_remote_openocd.openocd.flash import (
+    FlashInputs,
+    FlashMode,
+    FlashOperation,
+    build_flash_plan,
+)
 from zephyr_remote_openocd.protocol.arguments import (
     ArgumentTemplate,
     SessionValue,
@@ -296,7 +301,7 @@ def test_flash_paths_are_quoted_after_session_allocation(
             load_command="load_image",
             verify_command="verify_image",
             flash_address="0x1000",
-            verify=True,
+            operation=FlashOperation(FlashMode.PROGRAM_AND_VERIFY),
         ),
         PathPlanner(mappings),
     )
