@@ -108,9 +108,11 @@ def main(argv: list[str] | None = None) -> int:
 
     _print_config(config)
     if remote is None:
-        print("No default remote is configured.")
-        print("Resolve one with:")
-        print("  python3 scripts/user/validate_configuration.py [CONFIG] --remote NAME")
+        validator = shlex.quote(str(ROOT / "scripts" / "user" / "validate_configuration.py"))
+        config_argument = f" {shlex.quote(str(path))}" if args.config is not None else ""
+        print("No remote was checked because neither --remote nor default_remote selects one.")
+        print("To check a remote, run this with NAME replaced by one of the remotes above:")
+        print(f"  python3 {validator}{config_argument} --remote NAME")
     else:
         _print_remote(remote)
     return 0

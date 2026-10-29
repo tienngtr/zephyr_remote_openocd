@@ -88,7 +88,7 @@ def test_default_remote_is_resolved_without_environment_override(
 
 
 def test_no_selected_remote_reports_structural_success(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     path = tmp_path / "config.yaml"
     path.write_text("remotes:\n  incomplete: {}\n")
@@ -98,6 +98,9 @@ def test_no_selected_remote_reports_structural_success(
         lambda *_args, **_kwargs: pytest.fail("an unselected remote must not be resolved"),
     )
     assert validator.main([str(path)]) == 0
+    # The suggested command must work from any directory and check the same file.
+    script = ROOT / "scripts" / "user" / "validate_configuration.py"
+    assert f"python3 {script} {path} --remote NAME" in capsys.readouterr().out
 
 
 def test_summary_allows_independent_home_environment_reads(

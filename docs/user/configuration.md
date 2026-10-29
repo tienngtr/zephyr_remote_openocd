@@ -296,7 +296,8 @@ The validator selects the remote from `--remote`, then `default_remote`.
 It ignores `ZEPHYR_REMOTE_OPENOCD_REMOTE`; when that variable is non-empty,
 pass `--remote "$ZEPHYR_REMOTE_OPENOCD_REMOTE"` to check the remote that
 `remote_openocd` would select. With no remote selected, the validator reports
-that the file is structurally valid and lists the available definitions.
+that the file is structurally valid, lists the available definitions, and
+prints the command that checks one of them.
 
 For a selected remote, the validator prints the effective settings without
 redaction: SSH and OpenOCD argv, hosts, path mappings, and resolved paths. It
