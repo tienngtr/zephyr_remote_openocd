@@ -23,6 +23,8 @@ default_runner: openocd
 #       /absolute/local/path: /absolute/remote/path
 
 remotes:
+  # Remote name: rename freely (letters, digits, ".", "_", "-"), then
+  # select it with --remote <name> or default_remote.
   lab:
     # An SSH configuration alias or host name, interpreted by ssh_command.
     ssh_host: replace-with-ssh-host-or-alias

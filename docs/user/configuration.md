@@ -31,7 +31,9 @@ where the module was placed.
    uses it until `--remote lab`, `ZEPHYR_REMOTE_OPENOCD_REMOTE=lab`, or
    `default_remote: lab` selects it.
 
-2. In the `lab` remote, replace the `ssh_host` value with the remote host name
+2. The `lab` key is the remote's name, not a fixed key; it may be renamed, and
+   the new name is then used with `--remote` and `default_remote`. In the
+   `lab` remote, replace the `ssh_host` value with the remote host name
    or an alias from the normal SSH configuration, and replace the
    `openocd_command` path with the path of the OpenOCD executable on that
    remote host:
@@ -70,6 +72,10 @@ where the module was placed.
    west flash -r remote_openocd --remote lab
    ```
 
+   On a remote host with several probes, add `--serial <serial>` to select the
+   target board's probe; otherwise OpenOCD may program a different board. See
+   [Runner, remote, and probe options](operations.md#runner-remote-and-probe-options).
+
 ### Choose the default remote and runner
 
 For an OpenOCD-capable build, one whose board supports Zephyr's `openocd`
@@ -82,7 +88,7 @@ build configured with `-DBOARD_FLASH_RUNNER=<runner>` uses `<runner>` as its
 default flash runner, and one configured with `-DBOARD_DEBUG_RUNNER=<runner>`
 uses it as its default debug runner; `default_runner` still chooses the other.
 CMake keeps an override in the build directory until it is removed, for
-example with `west build --cmake-only -d <build> -- -UBOARD_FLASH_RUNNER`.
+example with `west build --cmake-only -- -UBOARD_FLASH_RUNNER`.
 
 Keep `default_runner: openocd` to use local OpenOCD by default, or change it to
 `remote_openocd`. Other runners remain available with `-r`. The build stores
@@ -104,16 +110,16 @@ before configuring the build and in every shell that runs west. An unset or
 empty variable selects the default path. See
 [Configuration path rules](#configuration-path-rules) for the accepted values.
 
-The example below creates and selects `$HOME/lab/config.yaml`. To use another
-file, replace `$HOME/lab/config.yaml` with that file's absolute path, and
-replace `$HOME/lab` in the `mkdir` command with its parent directory. The
+The example below creates and selects `$HOME/remote-openocd/config.yaml`. To use another
+file, replace `$HOME/remote-openocd/config.yaml` with that file's absolute path, and
+replace `$HOME/remote-openocd` in the `mkdir` command with its parent directory. The
 `mkdir` command creates the parent directory, which the setup script requires
 for a file other than the default.
 
 ```sh
-mkdir -p "$HOME/lab"
-python3 /path/to/zephyr_remote_openocd/scripts/user/setup.py "$HOME/lab/config.yaml"
-export ZEPHYR_REMOTE_OPENOCD_CONFIG="$HOME/lab/config.yaml"
+mkdir -p "$HOME/remote-openocd"
+python3 /path/to/zephyr_remote_openocd/scripts/user/setup.py "$HOME/remote-openocd/config.yaml"
+export ZEPHYR_REMOTE_OPENOCD_CONFIG="$HOME/remote-openocd/config.yaml"
 python3 /path/to/zephyr_remote_openocd/scripts/user/validate_configuration.py \
   "$ZEPHYR_REMOTE_OPENOCD_CONFIG" --remote lab
 ```
@@ -171,9 +177,9 @@ before continuing.
 A `--no-rebuild` runner command skips this refresh and uses the stored default
 as it is.
 
-Replace `<build>` with the existing Zephyr build directory. To select the
-configuration file again and refresh the stored default runner, run
-`west build --cmake-only -d <build>` when:
+To select the configuration file again and refresh the stored default runner,
+run `west build --cmake-only` when the following applies, adding `-d <build>`
+only for a build directory other than the default:
 
 - the build directory predates activation of this module;
 - `ZEPHYR_REMOTE_OPENOCD_CONFIG` selects a different file. An ordinary
@@ -347,7 +353,7 @@ presets:
 remotes:
   lab:
     preset: default
-    ssh_host: lab_alias
+    ssh_host: ssh-alias
 ```
 
 ### What runs where
@@ -375,6 +381,69 @@ remotes:
 The runner executes this argv directly, without a shell, so shell pipelines,
 redirections, and command strings do not work. SSH authentication remains the
 configured client's responsibility.
+
+#### Translate a manual SSH command
+
+Moving the options into an OpenSSH `~/.ssh/config` entry and using its alias
+as `ssh_host` keeps one definition for both manual `ssh` commands and the
+runner. For example, `ssh -p 2222 -i ~/.ssh/remote_key user@host.example.com`
+becomes this entry:
+
+```text
+Host board-host
+    HostName host.example.com
+    User user
+    Port 2222
+    IdentityFile ~/.ssh/remote_key
+```
+
+The configuration then needs no SSH options:
+
+```yaml
+remotes:
+  lab:
+    ssh_host: board-host
+    openocd_command: [/path/to/openocd]
+```
+
+Plain `ssh board-host`, as used by the manual checks in the
+[Quick start](../../README.md#5-validate-the-configuration-and-remote-prerequisites),
+now connects with the same settings. See the `ssh_config(5)` manual page for
+other keywords, such as `ProxyJump` for `-J`.
+
+To keep the options in the runner configuration file instead, split the command
+into two settings:
+
+- `ssh_host` is the destination, such as `host.example.com` or
+  `user@host.example.com`.
+- `ssh_command` is the executable followed by every option before the
+  destination, one list item per argument:
+  - an option and its value are two items;
+  - quote numeric values such as `"2222"`, because every item must be a
+    string;
+  - prefer absolute paths such as `/home/user/.ssh/remote_key`. The runner
+    passes options without `~` expansion; OpenSSH expands `~` in some option
+    values, such as `-i`, but an absolute path does not depend on the client.
+    See [Commands](#commands).
+
+Leave out any remote command.
+
+| Manual command | `ssh_host` | `ssh_command` |
+| --- | --- | --- |
+| `ssh -p 2222 user@host.example.com` | `user@host.example.com` | `[ssh, -p, "2222"]` |
+| `ssh -i /home/user/.ssh/remote_key host.example.com` | `host.example.com` | `[ssh, -i, /home/user/.ssh/remote_key]` |
+| `ssh -J user@gateway.example.com user@host.example.com` | `user@host.example.com` | `[ssh, -J, user@gateway.example.com]` |
+| `ssh -o ServerAliveInterval=15 host.example.com` | `host.example.com` | `[ssh, -o, ServerAliveInterval=15]` |
+
+Options combine in one list:
+
+```yaml
+remotes:
+  lab:
+    ssh_host: user@host.example.com
+    ssh_command: [ssh, -p, "2222", -i, /home/user/.ssh/remote_key]
+    openocd_command: [/path/to/openocd]
+```
 
 #### SSH client requirements
 
@@ -616,11 +685,11 @@ reading the same file when they run from different directories. `.`
 components and symbolic links in the path are allowed.
 
 The rule applies to the value after shell expansion. In the shell,
-`export ZEPHYR_REMOTE_OPENOCD_CONFIG="$HOME/lab/config.yaml"` stores an
+`export ZEPHYR_REMOTE_OPENOCD_CONFIG="$HOME/remote-openocd/config.yaml"` stores an
 absolute path. So does an unquoted assignment such as
-`ZEPHYR_REMOTE_OPENOCD_CONFIG=~/lab/config.yaml` followed by
+`ZEPHYR_REMOTE_OPENOCD_CONFIG=~/remote-openocd/config.yaml` followed by
 `export ZEPHYR_REMOTE_OPENOCD_CONFIG`, because the shell expands the `~` before
-storing the value. Both `'~/lab/config.yaml'` and `"~/lab/config.yaml"` keep a
+storing the value. Both `'~/remote-openocd/config.yaml'` and `"~/remote-openocd/config.yaml"` keep a
 literal leading `~` and are rejected.
 
 | Path stored in the variable | Result |

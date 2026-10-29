@@ -126,8 +126,11 @@ accepted `export` line.
 
 ### `remote_openocd` is not listed by `west flash --context`
 
+Check the `available runners in runners.yaml:` section of the output, not
+the `zephyr runners which support "west flash":` section above it, which
+lists runners whether or not this build directory registers them.
 `remote_openocd` is registered only for a build that registers Zephyr's
-built-in `openocd` runner. If `openocd` is also missing from the list, the
+built-in `openocd` runner. If `openocd` is also missing from that section, the
 board build does not provide the `openocd` runner that `remote_openocd`
 requires. Otherwise:
 
@@ -135,8 +138,8 @@ requires. Otherwise:
    runs, however the variable is set; see
    [Activate the module](../../README.md#3-activate-the-module).
 2. If the build directory was configured before the module was activated,
-   reconfigure it with `west build --cmake-only -d <build>`, where `<build>` is
-   the build directory. A pristine build is not required; see
+   reconfigure it with `west build --cmake-only`, adding `-d <build>` only for
+   a directory other than the default. A pristine build is not required; see
    [Configure the build](../../README.md#6-configure-the-build).
 
 ### West reports that the board does not support runner `remote_openocd`
@@ -165,7 +168,7 @@ The stored default stays unchanged when:
   runner; see
   [Choose the default remote and runner](configuration.md#choose-the-default-remote-and-runner);
 - `ZEPHYR_REMOTE_OPENOCD_CONFIG` now selects a different file; reconfigure
-  CMake with `west build --cmake-only -d <build>`;
+  CMake with `west build --cmake-only`;
 - the build directory was configured before the module was activated; see
   [`remote_openocd` is not listed](#remote_openocd-is-not-listed-by-west-flash---context).
 
