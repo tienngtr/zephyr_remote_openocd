@@ -167,7 +167,7 @@ def firmware(runner_config: RunnerConfig) -> Path:
 def test_runner_output_reconstructs_fragment_boundaries(
     runner_api: RunnerApi, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from zephyr_remote_openocd.zephyr44 import _runner as runner_module
+    from zephyr_remote_openocd import _runner as runner_module
 
     stdout = io.StringIO()
     stderr = io.StringIO()
@@ -193,7 +193,7 @@ def test_runner_logs_effective_remote_argv(
     level: int,
     forward_ready: bool,
 ) -> None:
-    from zephyr_remote_openocd.zephyr44 import _runner as runner_module
+    from zephyr_remote_openocd import _runner as runner_module
 
     _, _, remote = runner_api
     harness = ForwardingHarness(monkeypatch)
@@ -270,7 +270,7 @@ def test_runner_logs_effective_argv_when_remote_startup_fails(
     caplog: pytest.LogCaptureFixture,
     failure: str,
 ) -> None:
-    from zephyr_remote_openocd.zephyr44 import _runner as runner_module
+    from zephyr_remote_openocd import _runner as runner_module
 
     helper = ROOT / "python/zephyr_remote_openocd/helper/__main__.py"
     environment = {**os.environ, "XDG_RUNTIME_DIR": str(tmp_path)}
@@ -367,7 +367,7 @@ def test_runner_logs_effective_argv_when_remote_startup_fails(
 def test_remote_home_json_preserves_spaces(
     runner_api: RunnerApi, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from zephyr_remote_openocd.zephyr44 import _runner as runner_module
+    from zephyr_remote_openocd import _runner as runner_module
 
     selected = ResolvedRemote(
         "lab",
@@ -395,7 +395,7 @@ def test_remote_home_json_preserves_spaces(
 def test_remote_home_resolution_reports_ssh_failure(
     runner_api: RunnerApi, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from zephyr_remote_openocd.zephyr44 import _runner as runner_module
+    from zephyr_remote_openocd import _runner as runner_module
 
     selected = ResolvedRemote(
         "lab",
@@ -428,7 +428,7 @@ def test_remote_home_resolution_reports_ssh_failure(
 def test_remote_home_resolution_reports_timeout(
     runner_api: RunnerApi, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from zephyr_remote_openocd.zephyr44 import _runner as runner_module
+    from zephyr_remote_openocd import _runner as runner_module
 
     selected = ResolvedRemote(
         "lab",
@@ -455,7 +455,7 @@ def test_remote_home_resolution_reports_timeout(
 def test_remote_home_json_rejects_invalid_paths(
     runner_api: RunnerApi, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, output: bytes
 ) -> None:
-    from zephyr_remote_openocd.zephyr44 import _runner as runner_module
+    from zephyr_remote_openocd import _runner as runner_module
 
     selected = ResolvedRemote(
         "lab",
@@ -478,7 +478,7 @@ def test_remote_home_json_rejects_invalid_paths(
 def test_interactive_gdb_owns_ctrl_c_until_runner_capture_is_restored(
     runner_api: RunnerApi, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from zephyr_remote_openocd.zephyr44 import _runner as runner_module
+    from zephyr_remote_openocd import _runner as runner_module
 
     harness = ForwardingHarness(monkeypatch)
     harness.helper.on_wait = lambda: None
@@ -507,7 +507,7 @@ def test_interactive_gdb_owns_ctrl_c_until_runner_capture_is_restored(
 def test_cancellation_latched_before_gdb_entry_refuses_launch(
     runner_api: RunnerApi, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from zephyr_remote_openocd.zephyr44 import _runner as runner_module
+    from zephyr_remote_openocd import _runner as runner_module
 
     harness = ForwardingHarness(monkeypatch)
     runner = Mock()
@@ -526,7 +526,7 @@ def test_cancellation_latched_before_gdb_entry_refuses_launch(
 def test_rtt_batch_gdb_is_cancellable_runner_work(
     runner_api: RunnerApi, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from zephyr_remote_openocd.zephyr44 import _runner as runner_module
+    from zephyr_remote_openocd import _runner as runner_module
 
     harness = ForwardingHarness(monkeypatch)
     runner = Mock()
@@ -572,7 +572,7 @@ def test_recorded_termination_before_gdb_dispatch_prevents_client_launch(
     command: str,
     terminal: int | Literal["error"],
 ) -> None:
-    from zephyr_remote_openocd.zephyr44 import _runner as runner_module
+    from zephyr_remote_openocd import _runner as runner_module
 
     harness = ForwardingHarness(monkeypatch)
     session = harness.prepare()
@@ -607,7 +607,7 @@ def test_recorded_termination_before_gdb_dispatch_prevents_client_launch(
 def test_recorded_termination_during_rtt_forward_prevents_rtt_client_launch(
     runner_api: RunnerApi, monkeypatch: pytest.MonkeyPatch, terminal: int | Literal["error"]
 ) -> None:
-    from zephyr_remote_openocd.zephyr44 import _runner as runner_module
+    from zephyr_remote_openocd import _runner as runner_module
 
     harness = ForwardingHarness(monkeypatch)
     request = harness.request()
@@ -656,7 +656,7 @@ def test_operation_build_queries_version_without_session(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    from zephyr_remote_openocd.zephyr44 import _runner as runner_module
+    from zephyr_remote_openocd import _runner as runner_module
 
     _, _, remote = runner_api
     build = Path(runner_config.build_dir)
@@ -801,7 +801,7 @@ def test_operation_primary_failure_rules(
     primary: str | None,
     diagnostics: tuple[str, ...],
 ) -> None:
-    from zephyr_remote_openocd.zephyr44 import _runner as runner_module
+    from zephyr_remote_openocd import _runner as runner_module
 
     harness = ForwardingHarness(monkeypatch)
     session = harness.prepare()
@@ -871,7 +871,7 @@ def test_operation_primary_failure_rules(
 def test_interruption_during_session_acquisition_closes_owned_resources(
     runner_api: RunnerApi, monkeypatch: pytest.MonkeyPatch, command: str, phase: str
 ) -> None:
-    from zephyr_remote_openocd.zephyr44 import _runner as runner_module
+    from zephyr_remote_openocd import _runner as runner_module
 
     harness = ForwardingHarness(monkeypatch)
     forwards = () if command == "flash" else (GDB,)
@@ -925,7 +925,7 @@ def test_interruption_during_session_acquisition_closes_owned_resources(
 def test_rtt_execution_defers_forward_until_after_gdb(
     runner_api: RunnerApi, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from zephyr_remote_openocd.zephyr44 import _runner as runner_module
+    from zephyr_remote_openocd import _runner as runner_module
 
     harness = ForwardingHarness(monkeypatch)
     session = harness.prepare()
@@ -968,7 +968,7 @@ def _forwarding_operation(
     rtt_server: bool = False,
 ) -> tuple[NonCallableMagicMock, SessionPlan, DebugPlan]:
     """Control client dispatch while exercising real forwarding and cleanup."""
-    from zephyr_remote_openocd.zephyr44 import _runner as runner_module
+    from zephyr_remote_openocd import _runner as runner_module
 
     plan = build_debug_plan(
         DebugInputs(
@@ -1006,7 +1006,7 @@ def _forwarding_operation(
 def test_required_gdb_startup_failure_aborts_operation(
     runner_api: RunnerApi, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, command: str
 ) -> None:
-    from zephyr_remote_openocd.zephyr44 import _runner as runner_module
+    from zephyr_remote_openocd import _runner as runner_module
 
     harness = ForwardingHarness(monkeypatch)
     runner, request, plan = _forwarding_operation(
@@ -1025,7 +1025,7 @@ def test_best_effort_startup_failure_warns_with_service_and_port(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    from zephyr_remote_openocd.zephyr44 import _runner as runner_module
+    from zephyr_remote_openocd import _runner as runner_module
 
     harness = ForwardingHarness(monkeypatch)
     runner, request, plan = _forwarding_operation(
@@ -1063,7 +1063,7 @@ def test_requested_rtt_failure_aborts_operation(
     command: str,
     phase: str,
 ) -> None:
-    from zephyr_remote_openocd.zephyr44 import _runner as runner_module
+    from zephyr_remote_openocd import _runner as runner_module
 
     harness = ForwardingHarness(monkeypatch)
     runner, request, plan = _forwarding_operation(
@@ -1109,7 +1109,7 @@ def test_requested_rtt_failure_aborts_operation(
 def test_standalone_rtt_setup_failure_never_launches_client(
     runner_api: RunnerApi, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure: str
 ) -> None:
-    from zephyr_remote_openocd.zephyr44 import _runner as runner_module
+    from zephyr_remote_openocd import _runner as runner_module
 
     harness = ForwardingHarness(monkeypatch)
     runner, request, plan = _forwarding_operation(runner_api, monkeypatch, tmp_path, "rtt", harness)
@@ -1127,7 +1127,7 @@ def test_standalone_rtt_setup_failure_never_launches_client(
 def test_rtt_cleanup_failure_does_not_replace_observed_openocd_failure(
     runner_api: RunnerApi, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from zephyr_remote_openocd.zephyr44 import _runner as runner_module
+    from zephyr_remote_openocd import _runner as runner_module
 
     runner = Mock()
     harness = ForwardingHarness(monkeypatch)
@@ -1166,7 +1166,7 @@ def test_debugserver_execution_reports_gdb_service_and_waits(
     caplog: pytest.LogCaptureFixture,
     returncode: int,
 ) -> None:
-    from zephyr_remote_openocd.zephyr44 import _runner as runner_module
+    from zephyr_remote_openocd import _runner as runner_module
 
     harness = ForwardingHarness(monkeypatch)
     runner, request, plan = _forwarding_operation(
@@ -1260,7 +1260,7 @@ def test_attach_rtt_server_forwards_without_loading(
     caplog: pytest.LogCaptureFixture,
     child_returncode: int,
 ) -> None:
-    from zephyr_remote_openocd.zephyr44 import _runner as runner_module
+    from zephyr_remote_openocd import _runner as runner_module
 
     core, _, remote = runner_api
     harness = ForwardingHarness(monkeypatch)
@@ -1964,7 +1964,7 @@ def test_adapter_allows_same_probe_session_to_finish_while_another_is_active(
 def test_active_operation_interrupt_closes_session_and_forwards(
     runner_api: RunnerApi, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, command: str, phase: str
 ) -> None:
-    from zephyr_remote_openocd.zephyr44 import _runner as runner_module
+    from zephyr_remote_openocd import _runner as runner_module
 
     harness = ForwardingHarness(monkeypatch)
     runner, request, plan = _forwarding_operation(
@@ -1998,8 +1998,8 @@ def test_active_operation_interrupt_closes_session_and_forwards(
 def test_ctrl_c_during_live_preparation_projects_keyboard_interrupt(
     runner_api: RunnerApi, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from zephyr_remote_openocd import _runner as runner_module
     from zephyr_remote_openocd.controller.waiting import wait_for
-    from zephyr_remote_openocd.zephyr44 import _runner as runner_module
 
     previous = signal.getsignal(signal.SIGINT)
     execute = Mock(side_effect=AssertionError("no session after cancelled preparation"))
@@ -2027,7 +2027,7 @@ def _debugserver_operation(
     tmp_path: Path,
     harness: ForwardingHarness,
 ) -> tuple[ModuleType, NonCallableMagicMock]:
-    from zephyr_remote_openocd.zephyr44 import _runner as runner_module
+    from zephyr_remote_openocd import _runner as runner_module
 
     runner, request, plan = _forwarding_operation(
         runner_api, monkeypatch, tmp_path, "debugserver", harness
