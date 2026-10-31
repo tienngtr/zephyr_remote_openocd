@@ -20,4 +20,6 @@ def find_module_root(start: Path) -> Path:
 MODULE_ROOT = find_module_root(Path(__file__))
 sys.path.insert(0, str(MODULE_ROOT / "python"))
 
-from zephyr_remote_openocd.zephyr44.runner import RemoteOpenOcdBinaryRunner  # noqa: E402,F401
+from zephyr_remote_openocd._zephyr import select_runner  # noqa: E402
+
+RemoteOpenOcdBinaryRunner = select_runner()
