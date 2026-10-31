@@ -32,7 +32,7 @@ The primary drivers are:
 - no development-repository changes;
 - board-agnostic design;
 - one Linux implementation;
-- Zephyr 4.4.x compatibility;
+- stable Zephyr 4.4.x and 4.5.x compatibility;
 - local GDB and remote OpenOCD;
 - preserve ordinary Zephyr west runner workflows, including configurable
   `remote_openocd` default selection;
@@ -136,12 +136,19 @@ zephyr_remote_openocd/
         zephyr_remote_openocd/
             __init__.py
             config.py
+            _runner.py        shared remote runner operations
+            _zephyr.py        active source version selection
 
             resources/
                 configuration.schema.json
 
             zephyr44/
                 runner.py
+                _runner.py
+
+            zephyr45/
+                runner.py
+                _runner.py
 
             controller/       local coordination, transport, and staging
             helper/           remote coordination and physical ownership
@@ -189,16 +196,16 @@ module_root = find_ancestor_containing(
 )
 sys.path.insert(0, str(module_root / "python"))
 
-from zephyr_remote_openocd.zephyr44.runner import (
-    RemoteOpenOcdBinaryRunner,
-)
+from zephyr_remote_openocd._zephyr import select_runner
+
+RemoteOpenOcdBinaryRunner = select_runner()
 ```
 
 The substantive implementation remains split into normal Python modules.
 
 The local runner may use `pyelftools` for ELF inspection and PyYAML plus
 jsonschema for configuration loading. The configured Python environment for the
-supported Zephyr 4.4.x environment already provides these accepted runtime
+supported Zephyr environment already provides these accepted runtime
 dependencies; they are not functionality to reimplement. Setup reports
 discoverability of `pyelftools`, PyYAML, and jsonschema in the active Python
 environment. Missing dependencies warn and
@@ -705,17 +712,17 @@ runner. When rebuilding or regeneration is explicitly suppressed, such as with
 ## 16. Zephyr Runner Reuse Strategy
 
 The runner may subclass and reuse the non-private interface of the built-in
-`openocd` runner from the particular supported Zephyr 4.4.x environment when
+`openocd` runner from the particular supported Zephyr environment when
 doing so reduces duplication.
 
 The compatibility policy is:
 
 > Zephyr supports `runners.core` as its external-runner API. It does not make
-> that compatibility guarantee for `OpenOcdBinaryRunner`. The Zephyr 4.4.x
-> runner integration may use the class's non-private interface, but that code
+> that compatibility guarantee for `OpenOcdBinaryRunner`. The version adapters
+> may use the class's non-private interface, but that code
 > remains version-specific and confined to the Zephyr compatibility layer.
 
-The built-in `openocd` runner from the particular supported Zephyr 4.4.x
+The built-in `openocd` runner from the particular supported Zephyr
 environment in use defines the compatibility boundary for the supported west
 commands. Compatibility is semantic rather than bug-for-bug: the adapter
 preserves inherited option names, value forms, and their intended effect while
@@ -733,16 +740,53 @@ particular, the remote runner owns the remote
 bind address and service and forwarding configuration because it must allocate
 remote ports and construct SSH forwards before local clients can use them.
 
-The Zephyr 4.4.x runner integration reuses `capabilities()` and the constructor.
-It overrides
-`name()`, `do_create()`, `do_add_parser()`, and `do_run()`. The parser override
-delegates to `OpenOcdBinaryRunner.do_add_parser()` before adding `--remote`.
-Constructor and version coupling is isolated in the `zephyr44` package: the
-public `zephyr44/runner.py` facade exports the runner class implemented in
-`zephyr44/_runner.py`.
+The thin `zephyr44` and `zephyr45` adapters reuse the selected upstream parser,
+capabilities, and public constructor. Their `runner.py` facades export
+`RemoteOpenOcdBinaryRunner`; `_runner.py` contains version-specific adaptation.
+The existing `zephyr44.runner` facade remains supported. Only the selected
+adapter is imported, avoiding duplicate concrete runner-name registrations.
 
-Supporting a new Zephyr release requires validating this interface or updating
-the version-specific runner integration.
+The stable external entry point delegates to `_zephyr.select_runner()`, which
+reads `VERSION` under upstream `zephyr_ext_common.ZEPHYR_BASE`. West owns source
+selection precedence. Stable 4.4.x and 4.5.x select their respective adapters;
+patch 99, nonzero tweak, nonempty extraversion, other families, and invalid
+version files produce an unavailable runner whose parser reports the diagnostic.
+Failure to import the source-authority module or obtain its `ZEPHYR_BASE`
+attribute follows that same unavailable-runner path. Only those import/attribute
+errors are contained at source discovery; errors importing an adapter after a
+supported version is selected remain visible as implementation defects.
+The import itself remains harmless to stock runners. No adapter selection is
+cached in CMake or inferred from generated runner configuration.
+
+West imports external runners before rebuilding, then reads generated runner
+arguments afterward. Source switching therefore selects the current Python API
+before normal CMake regeneration refreshes build arguments. Separate and shared
+build directories retain normal Zephyr/application/module/toolchain constraints;
+stale metadata is not an alternate source authority or a supported repair path.
+The module continues copying finalized OpenOCD board arguments unchanged.
+
+Shared `_runner.py` consumes the `RemoteRunner` structural interface and owns
+configuration selection, immutable operation planning, recording, and existing
+session orchestration. Adapters normalize serial selection, flash pre-init,
+GDB command phases, RTOS eligibility, and interactive execution. The 4.5 adapter
+uses `dev_id`, chooses flash-specific init when supplied, and places debug-only
+GDB commands after optional load and before common GDB init. Its RTOS eligibility
+uses upstream target-architecture checking. Shared planning retains both the
+requested thread-information state and the effective support decision; an
+ineligible target needs no OpenOCD version query or recording injection.
+The shared code contains no Zephyr-version conditionals.
+
+Interactive execution remains inside the existing session's admitted client
+interval. The 4.4 adapter invokes `run_client`; the 4.5 adapter invokes
+`check_call_ignore_sigint`. Both restore the parent's signal disposition on
+success and failure. Session acquisition, partial-initialization ownership,
+rollback, cleanup, failure composition, and cancellation authority are unchanged.
+No upstream OpenOCD process lifecycle method is called.
+
+The 4.5 parser accepts `--log-file`, but construction rejects any supplied value
+before configuration resolution or remote effects, including in recording mode.
+No pathname transport, log retrieval, or output/readiness change is included.
+Supporting logging requires a separate architectural design.
 
 ### 16.1 Classifying built-in runner behavior
 
@@ -781,6 +825,7 @@ As a result, every invocation that the runner accepts performs the built-in
 runner's operation, except for remote-execution differences required by other
 requirements and the performed differences listed in REQ-FUNC-OPT-008. The
 differential comparison relies on this property to classify differences.
+
 
 ---
 
@@ -3075,8 +3120,9 @@ The package boundaries express execution location and logical ownership:
   depends on protocol templates and consumes controller path and forwarding
   descriptions as offline inputs without acquiring transports or live session
   resources.
-- `zephyr44` adapts the supported Zephyr 4.4 runner state to board-independent
-  plans; `config.py` loads and resolves the configuration contract. The west
+- `zephyr44` and `zephyr45` adapt their upstream runner state through shared
+  `_runner.py` remote operations to board-independent plans; `config.py` loads and resolves the configuration
+  contract. The west
   runner entry point remains the supported public integration boundary.
 
 Specifications and observations do not own live resources. `SessionPlan`
@@ -3098,8 +3144,9 @@ composed by the existing authority. Platform-specific SSH behavior remains in
 the configured SSH command boundary.
 
 Python naming distinguishes supported integration, internal collaboration, and
-private implementation. The supported `zephyr44.runner` facade exports only
-`RemoteOpenOcdBinaryRunner`; adapter operations live in `zephyr44._runner`.
+private implementation. The supported `zephyr44.runner` and `zephyr45.runner`
+facades export only `RemoteOpenOcdBinaryRunner`; version coupling stays in each
+adapter, while shared remote operations live in the package-level `_runner.py`.
 Package initializers deliberately do not collect implementation exports.
 `controller.api` is a separate, explicitly package-internal runtime facade for
 session consumers: it groups session construction, results, errors, and advisory

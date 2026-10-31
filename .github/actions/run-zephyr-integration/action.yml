@@ -6,6 +6,10 @@ inputs:
   zephyr_ref:
     description: Zephyr Git ref to initialize
     required: true
+  source_switching:
+    description: Also run the fixed 4.4 to 4.5 to 4.4 source-switch matrix
+    required: false
+    default: 'false'
   coverage_file:
     description: Coverage data file to create; empty disables coverage collection
     required: false
@@ -38,10 +42,16 @@ runs:
         workspace="$RUNNER_TEMP/zephyr-workspace"
         export ZEPHYR_BASE="$workspace/zephyr"
         cd "$workspace"
-        west config manifest.project-filter -- '-.*,+cmsis,+hal_rpi_pico'
+        west config manifest.project-filter -- '-.*,+cmsis,+cmsis_6,+hal_rpi_pico'
         west update --narrow -o=--depth=1
         python -m pip install -r "$ZEPHYR_BASE/scripts/requirements-base.txt"
         printf 'WEST=%s\n' "$(command -v west)" >> "$GITHUB_ENV"
+    - name: Fetch source-switching release fixtures
+      if: inputs.source_switching == 'true'
+      shell: bash
+      run: >-
+        git -C "$RUNNER_TEMP/zephyr-workspace/zephyr"
+        fetch --depth=1 origin tag v4.4.0 tag v4.5.0
     # Ordinary static checks cannot resolve Zephyr's runners package, so the
     # adapter's upstream base class is checked only here.
     - name: Type-check against the selected Zephyr runners
@@ -49,8 +59,18 @@ runs:
         MYPYPATH: ${{ runner.temp }}/zephyr-workspace/zephyr/scripts/west_commands
       shell: bash
       run: |
-        git ls-files -z '*.py' |
-          xargs -0 python -m mypy --config-file=mypy.ini --follow-imports=silent
+        adapter_dir="$(PYTHONPATH=python python - <<'PY'
+        import os
+        from pathlib import Path
+        from zephyr_remote_openocd._zephyr import adapter_module
+        selected = adapter_module(Path(os.environ["MYPYPATH"]).parents[1] / "VERSION")
+        print(selected.rsplit(".", 1)[0].replace(".", "/"))
+        PY
+        )"
+        python -m mypy --config-file=mypy.ini --follow-imports=silent \
+          python/zephyr_remote_openocd/_runner.py \
+          python/zephyr_remote_openocd/_zephyr.py "python/$adapter_dir" \
+          runners/remote_openocd.py tests/zephyr_integration
     - name: Determine version of Zephyr SDK to use
       id: sdk
       shell: bash
@@ -64,6 +84,7 @@ runs:
     - name: Run Zephyr integration suite
       env:
         COVERAGE_FILE: ${{ inputs.coverage_file }}
+        SOURCE_SWITCHING: ${{ inputs.source_switching }}
         OPENOCD_DEFAULT_PATH: /usr/share/openocd/scripts
         ZEPHYR_BASE: ${{ runner.temp }}/zephyr-workspace/zephyr
       shell: bash
@@ -74,6 +95,9 @@ runs:
           -m zephyr
           --require-external-tests
         )
+        if [[ "$SOURCE_SWITCHING" != true ]]; then
+          pytest_args+=(--ignore=tests/zephyr_integration/test_switching.py)
+        fi
         if [[ -n "$COVERAGE_FILE" ]]; then
           pytest_args+=(--cov --cov-config=.coveragerc --cov-report=)
         fi

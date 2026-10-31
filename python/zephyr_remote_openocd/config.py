@@ -106,7 +106,7 @@ def _require_dependencies(config_path: str | Path) -> None:
     if _IMPORT_ERROR is not None:
         raise ConfigError(
             f"cannot load YAML configuration {config_path}: PyYAML and jsonschema are "
-            "required; use the Python environment configured for Zephyr 4.4"
+            "required; use the Python environment configured for Zephyr 4.4 or 4.5"
         ) from _IMPORT_ERROR
 
 

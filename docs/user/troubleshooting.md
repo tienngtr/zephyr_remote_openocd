@@ -10,6 +10,10 @@ reported message or a symptom in the table below, or browse the sections. The
 | Setup script `Error:` or dependency `Warning:` | [The setup script fails or warns](#the-setup-script-fails-or-warns) |
 | `remote_openocd` missing from `west flash --context` | [`remote_openocd` is not listed](#remote_openocd-is-not-listed-by-west-flash---context) |
 | `board BOARD does not support runner remote_openocd` | [West reports that the board does not support runner `remote_openocd`](#west-reports-that-the-board-does-not-support-runner-remote_openocd) |
+| `unsupported Zephyr VERSION in PATH`, `cannot read Zephyr version from PATH` | [`remote_openocd` reports an unsupported Zephyr version](#remote_openocd-reports-an-unsupported-zephyr-version) |
+| `cannot determine active Zephyr source` | [`remote_openocd` reports an unsupported Zephyr version](#remote_openocd-reports-an-unsupported-zephyr-version) |
+| `remote_openocd --log-file is not supported on Zephyr 4.5` | [`--log-file` on Zephyr 4.5](operations.md#--log-file-on-zephyr-45) |
+| `runner NAME received unknown arguments` after switching Zephyr releases | [Switch Zephyr releases](operations.md#switch-zephyr-releases) |
 | CMake configuration or regeneration fails with a configuration error | [CMake configuration errors](configuration.md#cmake-configuration-errors) |
 | `ZEPHYR_REMOTE_OPENOCD_CONFIG must be an absolute pathname` | [The configuration path is rejected](#the-configuration-path-is-rejected) |
 | A changed default runner has no effect | [A changed default runner has no effect](#a-changed-default-runner-has-no-effect) |
@@ -54,7 +58,7 @@ does not exist. Check that:
 
 A dependency warning for `pyelftools`, PyYAML, or jsonschema does not stop the
 setup script from creating the configuration. Use the Python environment
-configured for Zephyr 4.4.x; the runner has no separate product
+configured for Zephyr 4.4.x or 4.5.x; the runner has no separate product
 dependency-installation step. See
 [Run the setup script](../../README.md#2-run-the-setup-script).
 
@@ -150,6 +154,26 @@ board's `board.cmake` file does not apply to this module. Find the cause in
 [`remote_openocd` is not listed](#remote_openocd-is-not-listed-by-west-flash---context);
 a build directory configured before the module was activated produces this
 error until it is reconfigured.
+
+### `remote_openocd` reports an unsupported Zephyr version
+
+`remote_openocd` reads the release from the `VERSION` file of the Zephyr
+checkout that west uses, not from the build directory. It accepts only stable
+Zephyr 4.4.x and 4.5.x releases, so it fails for a development version such as
+`4.5.99`, a release candidate, another release series, or a missing or
+malformed `VERSION` file. Check out a stable 4.4.x or 4.5.x release so that
+`remote_openocd` can run.
+
+Version-file errors name the selected `VERSION` path. If it belongs to another
+checkout than expected, check `ZEPHYR_BASE` and the west workspace.
+
+`cannot determine active Zephyr source` means the runner cannot access the
+checkout's upstream source-selection interface. Use a supported stable Zephyr
+checkout. This diagnostic is reported only when `remote_openocd` is selected.
+
+An unsupported release does not prevent selecting another runner, such as
+`openocd`. For moving between supported releases, see
+[Switch Zephyr releases](operations.md#switch-zephyr-releases).
 
 ### A changed default runner has no effect
 

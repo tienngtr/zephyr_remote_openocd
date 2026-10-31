@@ -5,8 +5,9 @@ Use the `remote_openocd` runner with the usual west commands: `flash`, `debug`,
 options of Zephyr's built-in `openocd` runner, but runs OpenOCD on the
 configured remote host over SSH. West, GDB, and RTT clients stay on the local
 machine, OpenOCD output appears in the local terminal, and OpenOCD services are
-forwarded to local `127.0.0.1` ports. Any Zephyr 4.4.x build that supports the
-built-in `openocd` runner can use `remote_openocd`.
+forwarded to local `127.0.0.1` ports. Any build for a stable Zephyr 4.4.x or
+4.5.x release that supports the built-in `openocd` runner can use
+`remote_openocd`.
 
 ## Requirements
 
@@ -40,6 +41,17 @@ for local OpenOCD.
 On a remote host with several probes, pass `--serial` to select one.
 `remote_openocd` applies it to every command, including `debugserver`, for
 which the built-in `openocd` runner ignores it.
+
+### `--log-file` on Zephyr 4.5
+
+On Zephyr 4.5, `remote_openocd` rejects the built-in runner's `--log-file`
+option with any value, including an empty one. The command fails before
+contacting the remote with
+`remote_openocd --log-file is not supported on Zephyr 4.5`. This also applies
+when the board or build passes the option to the `openocd` runner, for example
+through `BOARD_RUNNER_ARGS_openocd`; remove it from those arguments and
+reconfigure the build so that `remote_openocd` can run. OpenOCD output still
+appears in the local terminal.
 
 ## Commands at a glance
 
@@ -279,6 +291,40 @@ Ctrl-C takes effect during the operation, with these exceptions:
   remote host, Ctrl-C takes effect when that step finishes.
 - **Inside interactive GDB** for `debug` or `attach`, Ctrl-C belongs to GDB.
   Exit GDB to end the operation.
+
+## Switch Zephyr releases
+
+The activated module supports switching a Zephyr checkout at a fixed path
+between stable 4.4.x and 4.5.x releases. `remote_openocd` follows the release
+of the Zephyr checkout that west uses, not the release a build directory was
+configured with.
+
+1. Switch the Zephyr checkout to the other stable release, keeping it at the
+   same path.
+2. For each build directory, choose one of these approaches:
+   - **Separate build directories.** Use a build directory configured with
+     the active release.
+   - **Shared build directory.** Run `west build`, or pass `--rebuild` to
+     the first runner command, so that the build directory is updated for
+     the active release even when west is configured not to rebuild before
+     flashing or debugging. Reconfigure the build or make a pristine build
+     when Zephyr, the application, its modules, or the toolchain require it;
+     the runner does not repair an incompatible build directory.
+3. Run west commands as usual.
+
+**Unsupported releases.** Development versions such as `4.5.99`, release
+candidates, other release series, and a checkout whose version cannot be read
+make `remote_openocd` fail when it is selected; see
+[`remote_openocd` reports an unsupported Zephyr version](troubleshooting.md#remote_openocd-reports-an-unsupported-zephyr-version).
+Another runner, such as `openocd`, can still be selected.
+
+**Skipped rebuilds after a switch.** A runner command that skips its rebuild,
+for example with `--no-rebuild`, uses a shared build directory as the previous
+release left it and can fail with `runner NAME received unknown arguments`.
+Skip the rebuild only when the build directory was last built with the active
+release. Scripts used with both releases should pass `--no-rebuild` rather
+than `--skip-rebuild`, because Zephyr 4.5 removes the deprecated
+`--skip-rebuild`.
 
 ## Uninstall
 

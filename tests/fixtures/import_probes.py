@@ -20,13 +20,16 @@ from collections.abc import Sequence
 from pathlib import Path
 from types import ModuleType
 
-PACKAGES = ("controller", "openocd", "protocol", "helper", "zephyr44")
+PACKAGES = ("controller", "openocd", "protocol", "helper", "zephyr44", "zephyr45")
 FORBIDDEN_TOP_LEVEL = {"runners", "yaml", "jsonschema", "elftools"}
 FORBIDDEN_PACKAGES = (
     "zephyr_remote_openocd.config",
     "zephyr_remote_openocd.helper",
     "zephyr_remote_openocd.openocd",
     "zephyr_remote_openocd.zephyr44",
+    "zephyr_remote_openocd.zephyr45",
+    "zephyr_remote_openocd._runner",
+    "zephyr_remote_openocd._zephyr",
 )
 FORBIDDEN_EVENTS = {"subprocess.Popen", "socket.__new__", "os.system"}
 

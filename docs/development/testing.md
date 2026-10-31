@@ -8,7 +8,7 @@ Choose the smallest layer that covers the change:
 
 - Every change: `.venv/bin/python -m pytest` and `.venv/bin/python scripts/contributor/static_check.py`.
 - Zephyr runner integration or build integration: `tests/zephyr_integration/` with a
-  Zephyr 4.4.x source tree and its configured Python environment.
+  Zephyr 4.4.x or 4.5.x source tree and its configured Python environment.
 - SSH transport behavior: `tests/ssh_integration/` with a local hardware inventory.
 - Real board behavior: `tests/hardware/` with a board, probe, serial endpoint,
   and remote OpenOCD.
@@ -41,11 +41,13 @@ PATH="$(.scratch/cmake-3.20.5/bin/python -c 'import cmake; print(cmake.CMAKE_BIN
 .venv/bin/python -m pytest tests/local_integration/test_cmake_configuration.py
 ```
 
-GitHub Actions runs four independent validation jobs: the self-contained suite
-on Python 3.12, 3.13, 3.14, and 3.15, static checks, the SSH suite against an isolated SSH server container, and the full
-Zephyr 4.4.x integration suite with a real workspace and SDK. That suite runs
-real Zephyr CMake configuration and west runner commands in recording mode;
-it does not compile or execute firmware. The SSH server has its own filesystem,
+GitHub Actions runs independent validation jobs: the self-contained suite
+on Python 3.12, 3.13, 3.14, and 3.15, static checks, the SSH suite against an
+isolated SSH server container, and the full
+Zephyr 4.4.x and 4.5.x integration suites with real workspaces and SDKs. These
+suites run real Zephyr CMake configuration and west runner commands in recording
+mode; they do not compile or execute firmware. The SSH server has its own
+filesystem,
 process namespace, and network namespace; the tests use the real SSH client
 and server. External layers remain explicit locally, so a normal contributor
 run never needs SSH, a Zephyr checkout, or lab hardware:
@@ -186,8 +188,8 @@ exercise packaged-helper discovery or deployment, remote connectivity, process
 lifecycle and cleanup, target state, or hardware behavior. Do not use a
 recording result as acceptance evidence for those behaviors.
 
-For a thread-info-enabled `debug`, `attach`, `debugserver`, or `rtt` build, set
-`ZRO_RECORD_OPENOCD_VERSION` to representative output from `openocd --version`:
+For a thread-info-enabled and RTOS-eligible `debug`, `attach`, `debugserver`, or
+`rtt` build, set `ZRO_RECORD_OPENOCD_VERSION` to representative output from `openocd --version`:
 
 ```sh
 ZRO_RECORD=1 \
@@ -197,14 +199,15 @@ west debug -r remote_openocd --remote lab
 
 The injected version lets the runner construct its thread-awareness plan
 without querying remote OpenOCD. It is ignored when thread information is not
-requested and is not a substitute for testing the configured remote executable.
+requested or the target is ineligible under the selected adapter. It is not a
+substitute for testing the configured remote executable.
 
 ## Linux
 
 The focused runner-integration contract tests need only the Zephyr source and its Python
 runner dependencies, not a board, SDK, or firmware build. GitHub Actions also
 runs these alongside the full Zephyr integration suite. The integration suite
-uses real Zephyr 4.4.x `west build --cmake-only` configuration for module
+uses real Zephyr 4.4.x/4.5.x `west build --cmake-only` configuration for module
 discovery, runner metadata, and clean-install coverage, then invokes real
 `west flash` and `west debug` commands with `--no-rebuild` in recording mode;
 it requires the SDK/toolchain for CMake discovery but does not compile or link
@@ -240,9 +243,39 @@ Zephyr integration CI job also type-checks the repository against the selected
 checkout's runners; run the same check locally with:
 
 ```sh
-git ls-files '*.py' | MYPYPATH=/path/to/zephyr/scripts/west_commands \
-xargs .venv/bin/python -m mypy --config-file=mypy.ini --follow-imports=silent
+MYPYPATH=/path/to/zephyr/scripts/west_commands \
+.venv/bin/python -m mypy --config-file=mypy.ini --follow-imports=silent \
+  python/zephyr_remote_openocd/_runner.py python/zephyr_remote_openocd/_zephyr.py \
+  python/zephyr_remote_openocd/zephyr44 runners/remote_openocd.py tests/zephyr_integration
 ```
+
+Select `zephyr44` or `zephyr45` to match the source being checked; the inactive
+adapter must not be checked against the other release's incompatible constructor.
+Ordinary static checks still cover all repository Python files.
+
+The source-switching tests require a local Git repository containing both
+`v4.4.0` and `v4.5.0` tags, a matching SDK, and modules that permit configuration
+for both releases. They create disposable clones and build directories under
+`.scratch/`, preserving the contributor's checkout. Collect first, then run:
+
+```sh
+ZEPHYR_BASE=/path/to/zephyr \
+ZRO_SWITCH_ZEPHYR_REPOSITORY=/path/to/zephyr \
+.venv/bin/python -m pytest tests/zephyr_integration/test_switching.py --collect-only
+
+ZEPHYR_BASE=/path/to/zephyr \
+ZRO_SWITCH_ZEPHYR_REPOSITORY=/path/to/zephyr \
+.venv/bin/python -m pytest tests/zephyr_integration/test_switching.py
+```
+
+`ZRO_SWITCH_ZEPHYR_REPOSITORY` defaults to `ZEPHYR_BASE`. Modules default to the
+repository's sibling `modules` directory. If needed, `ZRO_SWITCH_MODULES` supplies
+a semicolon-separated list for CMake's `ZEPHYR_MODULES`, independently of runner
+activation. No adapter override is provided. These tests use real regeneration
+via `west build -t help`, then recording with current metadata and explicit
+no-build artifacts; they do not compile or execute firmware. A stock-runner
+control checks deliberately stale Pico 2 arguments. Fresh subprocess probes
+verify adapter identity and one concrete registration before regeneration.
 
 Native SSH tests require an `ssh` executable on `PATH` and a reachable host
 from the inventory. Zephyr integration additionally requires a Zephyr checkout,
@@ -253,14 +286,22 @@ the Python environment used by `west`. Hardware tests require the declared
 board, probe, serial endpoint, and remote OpenOCD setup.
 
 GitHub Actions supplies the SSH layer with an ephemeral key and an isolated
-container running `sshd`, Python, and OpenOCD. The Zephyr job checks the 4.4.x
-product boundary using a v4.4.0 baseline and a separate rolling
-`v4.4-branch` check, updates the modules needed for their test board, and
-installs the matching SDK toolchain. The v4.4.0 checkout is a CI baseline, not
-a product-version restriction. The rolling `v4.4-branch` check detects
-possibly breaking changes from upstream and is non-gating. These jobs use
+container running `sshd`, Python, and OpenOCD. The Zephyr jobs check both release
+families using v4.4.0/v4.5.0 baselines and separate rolling
+`v4.4-branch`/`v4.5-branch` checks. They update the modules needed for their test
+board and install the matching SDK toolchain. The release-tag checkouts are CI
+baselines, not product-version restrictions. Rolling checks detect possibly
+breaking changes from upstream and are non-gating. These jobs use
 `--require-external-tests` so a missing prerequisite or skipped test fails the
-job. Physical hardware remains an explicit lab-only validation layer and never
+job. The fixed release-switch matrix runs once in the 4.4 baseline job; other
+Zephyr jobs exercise their selected release without repeating that matrix.
+The matrix reuses the 4.4.0 manifest's CMSIS and Pico modules, which support
+configuration under both release fixtures. The 4.5-pinned CMSIS module cannot
+configure the 4.4 Cortex-M fixture because it removed the module-level
+`CMakeLists.txt` that fixture requires. The ordinary 4.5 suite retains its own
+manifest-pinned modules. These configuration fixtures do not promise arbitrary
+module-version interchangeability or cross-release firmware-build compatibility.
+Physical hardware remains an explicit lab-only validation layer and never
 runs on GitHub-hosted runners. Spike and virtual OpenOCD target testing are not
 part of this CI setup.
 

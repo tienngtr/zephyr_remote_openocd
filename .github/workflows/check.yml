@@ -115,6 +115,7 @@ jobs:
       - uses: ./.github/actions/run-zephyr-integration
         with:
           zephyr_ref: v4.4.0
+          source_switching: 'true'
           coverage_file: .coverage.zephyr-4-4-0-integration
           coverage_artifact: coverage-zephyr-4-4-0-integration
 
@@ -127,8 +128,27 @@ jobs:
         with:
           zephyr_ref: v4.4-branch
 
+  zephyr-4-5-0-integration:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/run-zephyr-integration
+        with:
+          zephyr_ref: v4.5.0
+          coverage_file: .coverage.zephyr-4-5-0-integration
+          coverage_artifact: coverage-zephyr-4-5-0-integration
+
+  zephyr-4-5-branch-integration:
+    continue-on-error: true
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/run-zephyr-integration
+        with:
+          zephyr_ref: v4.5-branch
+
   coverage:
-    needs: [self-contained-tests, ssh-integration, zephyr-4-4-0-integration]
+    needs: [self-contained-tests, ssh-integration, zephyr-4-4-0-integration, zephyr-4-5-0-integration]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7

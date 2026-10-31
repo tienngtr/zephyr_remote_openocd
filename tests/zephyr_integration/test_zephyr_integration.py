@@ -399,7 +399,9 @@ class TestZephyrIntegration:
             "/configuration/../config.yaml",
         ),
     )
-    def test_no_rebuild_runner_rejects_unsupported_override(self, override: str) -> None:
+    def test_no_rebuild_runner_rejects_unsupported_override(
+        self, override: str, tmp_path: Path
+    ) -> None:
         result = self._west(
             "flash",
             "-d",
@@ -409,17 +411,19 @@ class TestZephyrIntegration:
             "--no-rebuild",
             extra_env={"ZEPHYR_REMOTE_OPENOCD_CONFIG": override},
             check=False,
-            cwd=self.scratch,
+            # Outside any contributor workspace, west discovers the selected
+            # layer through ZEPHYR_BASE rather than an unrelated .west ancestor.
+            cwd=tmp_path,
         )
 
         assert result.returncode != 0
         assert "ZEPHYR_REMOTE_OPENOCD_CONFIG" in result.stdout
         assert "absolute" in result.stdout
 
-    def test_absolute_override_is_independent_of_cwd_and_regeneration(self) -> None:
+    def test_absolute_override_is_independent_of_cwd_and_regeneration(self, tmp_path: Path) -> None:
         root = self.scratch / "override-resolution"
-        initial = root / "initial"
-        runtime = root / "runtime"
+        initial = tmp_path / "initial"
+        runtime = tmp_path / "runtime"
         target = root / "~"
         for directory in (initial, runtime, target):
             directory.mkdir(parents=True)
@@ -592,9 +596,12 @@ class TestZephyrIntegration:
                 f"-DUSER_CACHE_DIR={cache}",
                 f"-DOPENOCD={fake_openocd}",
             )
-            modules = (build / "zephyr_modules.txt").read_text()
-            assert str(distribution) in modules
-            assert str(ROOT) not in modules
+            modules = (build / "zephyr_modules.txt").read_text().splitlines()
+            module_record = next(
+                line for line in modules if line.startswith('"zephyr_remote_openocd":')
+            )
+            assert str(distribution) in module_record
+            assert str(ROOT) not in module_record
             self._create_recording_flash_artifact(build)
             recorded = west(
                 "flash",

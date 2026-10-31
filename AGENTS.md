@@ -4,8 +4,9 @@
 
 Use Python 3.12+. Production code lives in `python/zephyr_remote_openocd/`:
 board-independent logic in `controller/`, `helper/`, `protocol/`, and `openocd/`,
-Zephyr 4.4 integration in the
-`zephyr44/` package (public facade `runner.py`, implementation `_runner.py`),
+Zephyr 4.4/4.5 integration in thin `zephyr44/` and `zephyr45/` adapters
+(public facades `runner.py`), shared remote operations in `_runner.py`,
+source-version selection in `_zephyr.py`,
 and the west entry point in `runners/remote_openocd.py`.
 Requirements and architecture live in `docs/requirements/SRS.md` and
 `docs/architecture/SAD.md`.
@@ -15,9 +16,9 @@ checks. Before external validation, follow `docs/development/testing.md` and
 `docs/development/hardware_inventories.md`. Tests live under `tests/unit/`,
 `tests/local_integration/`, `tests/zephyr_integration/`,
 `tests/ssh_integration/`, and `tests/hardware/`; the last three require external
-resources. Zephyr integration needs a Zephyr 4.4.x environment; SSH and
-hardware tests need a contributor-provided hardware inventory. External tests
-can build and flash: collect nodes first, run destructive profiles serially,
+resources. Zephyr integration needs a supported stable Zephyr 4.4.x or 4.5.x
+environment; SSH and hardware tests need a contributor-provided hardware
+inventory. External tests can build and flash: collect nodes first, run destructive profiles serially,
 and inspect cleanup.
 
 Keep builds, populated hardware inventories, and temporary agent notes in
@@ -31,8 +32,9 @@ Use four-space indentation, type hints, `snake_case` functions/modules,
 `PascalCase` classes, uppercase constants, immutable transport dataclasses, and
 `pathlib`. Minimize production dependencies.
 
-Keep production board- and vendor-independent. Isolate Zephyr 4.4 coupling in
-its adapter, preserve the public runner boundary, and never use private
+Keep production board- and vendor-independent. Isolate upstream OpenOCD
+coupling in the concrete version adapters, preserve the public runner boundary,
+and never use private
 `OpenOcdBinaryRunner` members. Use the configured `SshCommand` for every remote
 action; never assume system `ssh` or hard-code test or lab host details.
 Preserve Zephyr command behavior and enabled GDB, Tcl, and telnet services.

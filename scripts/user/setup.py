@@ -141,7 +141,7 @@ def _print_dependency_status(
             continue
         print(f"  {display_name}: missing")
         print(f"Warning: {display_name} is not available in this Python environment.")
-        print("Use the Python environment configured for Zephyr 4.4.")
+        print("Use the Python environment configured for Zephyr 4.4 or 4.5.")
 
 
 def argument_parser() -> argparse.ArgumentParser:

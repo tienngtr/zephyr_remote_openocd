@@ -7,7 +7,7 @@ for each classification. [REQ-FUNC-OPT-008](../requirements/SRS.md#req-func-opt-
 remains the normative list of deliberate differences; this record explains
 them. Review it whenever support for another Zephyr release is added.
 
-Last reviewed on 2026-10-28 against Zephyr v4.4.0, v4.4.2, and v4.5.0-rc3.
+Last reviewed on 2026-11-01 against Zephyr v4.4.0, v4.4.2, and v4.5.0.
 Upstream code links point to release tags; history links point to commits and
 pull requests in `zephyrproject-rtos/zephyr`.
 
@@ -122,7 +122,10 @@ whether an ELF load reaches flash depends on the target and the OpenOCD build.
 | --- | --- | --- |
 | v4.4.0 | Baseline for this record. | None. |
 | v4.4.1, v4.4.2 | `openocd.py` identical to v4.4.0. | None. |
-| v4.5.0-rc3 | Unchanged. | `--cmd-pre-init-flash` replaces `--cmd-pre-init` for flash ([#101910](https://github.com/zephyrproject-rtos/zephyr/pull/101910), [code](https://github.com/zephyrproject-rtos/zephyr/blob/v4.5.0-rc3/scripts/west_commands/runners/openocd.py#L381)); this is board recipe and must be reproduced. `--serial` becomes a deprecated alias for `-i/--dev-id` ([#111906](https://github.com/zephyrproject-rtos/zephyr/pull/111906), [code](https://github.com/zephyrproject-rtos/zephyr/blob/v4.5.0-rc3/scripts/west_commands/runners/openocd.py#L160-L162)); `debugserver` still omits it. |
+| v4.5.0 | Unchanged. | `--cmd-pre-init-flash` replaces `--cmd-pre-init` for flash ([#101910](https://github.com/zephyrproject-rtos/zephyr/pull/101910), [code](https://github.com/zephyrproject-rtos/zephyr/blob/v4.5.0/scripts/west_commands/runners/openocd.py#L381)); this is board recipe and must be reproduced. `--serial` becomes a deprecated alias for `-i/--dev-id` ([#111906](https://github.com/zephyrproject-rtos/zephyr/pull/111906), [code](https://github.com/zephyrproject-rtos/zephyr/blob/v4.5.0/scripts/west_commands/runners/openocd.py#L160-L162)); `debugserver` still omits it. |
 
-The v4.5.0-rc3 entry describes a release candidate, not a supported release,
-and must be rechecked against the final v4.5.0 release.
+The final v4.5.0 source preserves these flash behaviors. Its additional debug
+command phases, RTOS eligibility, and interactive-client API are adapted as
+described in [SAD §16](SAD.md#16-zephyr-runner-reuse-strategy). Its `--log-file`
+option is explicitly rejected under REQ-FUNC-OPT-008 pending separate logging
+support. Release candidates and development versions remain unsupported.

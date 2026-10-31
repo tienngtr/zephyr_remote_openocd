@@ -253,7 +253,7 @@ The project has the following primary goals:
 6. Preserve ordinary local OpenOCD operation.
 7. Minimize remote-host administration.
 8. Reuse the built-in `openocd` runner from the particular supported Zephyr
-   4.4.x environment in use while defining remote-specific behavior explicitly
+   environment in use while defining remote-specific behavior explicitly
    in this specification.
 9. Keep Zephyr-version-specific integration isolated from the generic remote subsystem.
 10. Support Linux as the local platform.
@@ -265,7 +265,20 @@ The project has the following primary goals:
 
 ### REQ-FUNC-SCOPE-001
 
-The runner SHALL target the Zephyr 4.4 release series (4.4.x).
+The runner SHALL support stable Zephyr 4.4.x and 4.5.x release families.
+Each west invocation SHALL select its compatibility adapter from `VERSION`
+under west's effective `ZEPHYR_BASE`, independently of generated build metadata.
+Accepted releases SHALL have zero `VERSION_TWEAK`, empty `EXTRAVERSION`, and
+`PATCHLEVEL` other than the development marker 99. Development versions, release
+candidates, other release families, and unreadable or malformed source versions
+SHALL fail clearly when `remote_openocd` is selected, without rejecting unrelated
+stock runners merely because the external module was imported.
+
+The same activated module SHALL support switching a fixed-path Zephyr checkout
+4.4.x to 4.5.x and back between west invocations. Separate build directories and
+shared build directories SHALL remain subject to ordinary Zephyr, application,
+module, and toolchain compatibility and reconfiguration requirements. The runner
+SHALL NOT select an adapter from stale metadata or repair unsupported stale builds.
 
 ### REQ-FUNC-SCOPE-002
 
@@ -355,7 +368,7 @@ The project SHALL NOT require:
 for installation or operation.
 
 This prohibits a project-specific package-installation step; it does not
-prohibit reuse of dependencies supplied by the supported Zephyr 4.4.x runner
+prohibit reuse of dependencies supplied by the supported Zephyr runner
 environment, including `pyelftools`, PyYAML, and jsonschema.
 
 ### REQ-FUNC-INSTALL-004
@@ -402,7 +415,7 @@ directory to exist and SHALL create only the file, with mode `0600`.
 The setup program SHALL report whether `pyelftools`, PyYAML, and jsonschema are
 discoverable in the active Python environment. A missing dependency SHALL
 produce a warning directing the user to the Python environment configured for
-the supported Zephyr 4.4.x environment, but SHALL NOT prevent configuration
+the supported Zephyr environment, but SHALL NOT prevent configuration
 initialization or recommend a separate product installation.
 
 ---
@@ -832,7 +845,7 @@ Users SHALL NOT need to duplicate built-in OpenOCD board-runner arguments in:
 
 For the west commands in REQ-FUNC-SCOPE-002, the custom runner SHALL accept
 the user-facing runner option names and value forms exposed by the built-in
-`openocd` runner from the particular supported Zephyr 4.4.x environment in use.
+`openocd` runner from the particular supported Zephyr environment in use.
 Inherited options SHALL preserve their supported, intended effect on runner
 configuration and generated OpenOCD or GDB behavior, except for
 remote-execution behavior defined by another requirement in this SRS and the
@@ -852,7 +865,9 @@ runner.
 ### REQ-FUNC-OPT-002
 
 The runner SHALL support probe selection through the built-in `openocd` runner's
-`--serial` option in the particular supported Zephyr 4.4.x environment in use.
+`--serial` option in the particular supported Zephyr environment in use.
+On Zephyr 4.5, `-i`/`--dev-id` and the deprecated `--serial` alias SHALL retain
+upstream precedence and select the same remote probe.
 
 Rationale:
 
@@ -860,7 +875,8 @@ Remote hosts may contain multiple otherwise equivalent probes.
 
 ### REQ-FUNC-OPT-003
 
-If `--serial` is omitted, the custom runner SHALL NOT invent a serial-selection requirement.
+If no supported probe-selection option is supplied, the custom runner SHALL NOT
+invent a serial-selection requirement.
 
 ### REQ-FUNC-OPT-004
 
@@ -875,7 +891,7 @@ locally at the same port; the unused `--gdb-client-port` SHALL have no effect.
 
 User-supplied OpenOCD command options inherited under REQ-FUNC-OPT-001 SHALL
 retain their intended semantics from the built-in `openocd` runner in the
-particular supported Zephyr 4.4.x environment in use when constructing the
+particular supported Zephyr environment in use when constructing the
 remote OpenOCD command, subject to REQ-FUNC-OPT-008.
 
 ### REQ-FUNC-OPT-007
@@ -885,7 +901,7 @@ The runner SHALL NOT be required to translate arbitrary local paths embedded in 
 ### REQ-FUNC-OPT-008
 
 The custom runner SHALL deliberately differ from the built-in `openocd` runner
-of the particular supported Zephyr 4.4.x environment in use as follows:
+of the particular supported Zephyr environment in use as follows:
 
 - `west flash` of a non-ELF image with `--erase` but no erase command SHALL
   fail before remote work rather than succeed without programming the target;
@@ -897,7 +913,11 @@ of the particular supported Zephyr 4.4.x environment in use as follows:
 - `west flash` of an ELF image with `--erase` SHALL fail before remote work
   rather than load the image without erasing;
 - `west debugserver` SHALL apply an explicit `--serial` as for the other
-  supported commands (REQ-FUNC-OPT-002), rather than ignore it.
+  supported commands (REQ-FUNC-OPT-002), rather than ignore it;
+- on Zephyr 4.5, the inherited `--log-file` option SHALL accept its upstream
+  syntax but reject any supplied value, including an empty value, before SSH,
+  remote-home resolution, session acquisition, or local client execution.
+  This restriction SHALL also apply to recording and generated board arguments.
 
 Any further deliberate semantic or correctness-motivated difference from the
 built-in runner SHALL be added to this requirement. Remote-execution
@@ -1078,7 +1098,7 @@ NOT rewrite user-provided Tcl or opaque fixed arguments.
 
 Flash-related options inherited under REQ-FUNC-OPT-001 SHALL retain their
 intended semantics from the built-in `openocd` runner from the particular
-supported Zephyr 4.4.x environment in use, subject to REQ-FUNC-OPT-008, for:
+supported Zephyr environment in use, subject to REQ-FUNC-OPT-008, for:
 
 - erase;
 - load;
@@ -1150,7 +1170,7 @@ allow an independent GDB client to control the target.
 
 `west debug -r remote_openocd` SHALL preserve the GDB invocation and
 initialization behavior of the built-in `openocd` runner from the particular
-supported Zephyr 4.4.x environment in use, except for remote-execution
+supported Zephyr environment in use, except for remote-execution
 behavior explicitly defined by this specification and the deliberate
 deviations in REQ-FUNC-OPT-008.
 
@@ -1706,7 +1726,7 @@ information.
 During `debug` or `attach`, the configured GDB client invocation, including any
 configured wrapper, SHALL own terminal Ctrl-C with the normal GDB interaction
 semantics of the built-in `openocd` runner from the particular supported Zephyr
-4.4.x environment in use. Such an interruption SHALL NOT by itself cause the
+environment in use. Such an interruption SHALL NOT by itself cause the
 runner to cancel the operation or close the remote session. A cancellation
 recorded before the client is launched SHALL prevent its launch. Independently
 observed session or transport failures SHALL still be handled under
@@ -1926,7 +1946,7 @@ Severity: Medium.
 
 Mitigation:
 
-Keep all use of `OpenOcdBinaryRunner` in the Zephyr 4.4.x compatibility layer.
+Keep all use of `OpenOcdBinaryRunner` in the concrete Zephyr compatibility adapters.
 Do not use private attributes or methods. Validate or update the runner
 integration for each newly supported Zephyr version.
 

@@ -13,7 +13,7 @@ where the module was placed.
 
 1. Create the configuration file with the
    [setup script](../../README.md#2-run-the-setup-script), using the Python
-   environment configured for Zephyr 4.4.x:
+   environment configured for Zephyr 4.4.x or 4.5.x:
 
    ```sh
    python3 /path/to/zephyr_remote_openocd/scripts/user/setup.py

@@ -3,16 +3,22 @@
 This Zephyr module provides a west runner, `remote_openocd`, for boards
 attached to a remote Linux host. OpenOCD runs on the remote host, which the
 runner accesses through SSH; west, GDB, and client tools stay on the local
-machine. The runner supports the Zephyr 4.4 release series (4.4.x) on Linux
-with Python 3.12 or newer.
+machine. The runner supports stable Zephyr 4.4.x and 4.5.x releases on Linux
+with Python 3.12 or newer. The module can stay activated while a Zephyr
+checkout is switched between these releases; see
+[Switch Zephyr releases](docs/user/operations.md#switch-zephyr-releases).
 
 ## Prerequisites and support
 
 Before using the runner, make sure that:
 
-- **The local machine** runs Linux with Python 3.12 or newer, a Zephyr 4.4.x
-  workspace with its configured Python environment, and west.
-- **The board build** supports Zephyr's built-in `openocd` runner.
+- **The local machine** runs Linux with Python 3.12 or newer, a workspace for
+  a stable Zephyr 4.4.x or 4.5.x release with its configured Python
+  environment, and west. Development versions and release candidates are not
+  supported.
+- **The board build** supports Zephyr's built-in `openocd` runner. On Zephyr
+  4.5, it must not pass `--log-file` to the runner; see
+  [`--log-file` on Zephyr 4.5](docs/user/operations.md#--log-file-on-zephyr-45).
 - **The local SSH client** meets the
   [SSH client requirements](docs/user/configuration.md#ssh-client-requirements),
   including the
@@ -51,8 +57,8 @@ instead of cloning; Git is not required at run time.
 
 ### 2. Run the setup script
 
-Run the setup script with the Python environment configured for Zephyr 4.4.x;
-the module has no separate dependency installation step:
+Run the setup script with the Python environment configured for Zephyr 4.4.x
+or 4.5.x; the module has no separate dependency installation step:
 
 ```sh
 python3 zephyr_remote_openocd/scripts/user/setup.py
@@ -79,6 +85,7 @@ export EXTRA_ZEPHYR_MODULES="${EXTRA_ZEPHYR_MODULES:+$EXTRA_ZEPHYR_MODULES;}$HOM
 To set it in every shell, put the `export` command in `~/.zephyrrc` and source
 Zephyr's `zephyr-env.sh`; see
 [Using `zephyrrc` files](https://docs.zephyrproject.org/4.4.0/develop/env_vars.html#option-3-using-zephyrrc-files).
+That page is the same for Zephyr 4.4 and 4.5.
 
 **Verify:** `echo "$EXTRA_ZEPHYR_MODULES"` includes the module path in the
 shell that will run `west`.
