@@ -84,3 +84,21 @@ class RemoteOpenOcdBinaryRunner(OpenOcdBinaryRunner):
 
     def do_run(self, command: str, **kwargs: object) -> None:
         run_operation(self, command)
+
+    @property
+    def serial_selection(self) -> str | None:
+        return self.parsed_args.serial or None
+
+    @property
+    def flash_pre_init(self) -> tuple[str, ...]:
+        return tuple(self.pre_init)
+
+    @property
+    def rtos_eligible(self) -> bool:
+        return True
+
+    def gdb_commands(self, command: str) -> tuple[str, ...]:
+        return tuple(self.gdb_init or ())
+
+    def run_interactive_client(self, client: list[str]) -> None:
+        self.run_client(client)

@@ -72,7 +72,6 @@ class RemoteRunner(Protocol):
     telnet_port: int | str
     gdb_port: int | str
     gdb_client_port: int | str
-    gdb_init: list[str] | None
     target_handle: str
     rtt_port: int | str
 
@@ -83,7 +82,18 @@ class RemoteRunner(Protocol):
 
     def require(self, program: str) -> str: ...
 
-    def run_client(self, client: list[str]) -> None: ...
+    @property
+    def serial_selection(self) -> str | None: ...
+
+    @property
+    def flash_pre_init(self) -> tuple[str, ...]: ...
+
+    @property
+    def rtos_eligible(self) -> bool: ...
+
+    def gdb_commands(self, command: str) -> tuple[str, ...]: ...
+
+    def run_interactive_client(self, client: list[str]) -> None: ...
 
     def get_rtt_address(self) -> int | None: ...
 
@@ -152,7 +162,7 @@ def build_operation(
     if command not in {"debug", "attach", "debugserver", "rtt"}:
         raise RuntimeError(f"remote_openocd {command} is not implemented")
     version = None
-    if runner.thread_info_enabled:
+    if runner.thread_info_enabled and runner.rtos_eligible:
         version = parse_openocd_version(
             query_remote_openocd_version(
                 SshCommand(selected.ssh_command),
@@ -225,7 +235,7 @@ def execute_gdb_client(
     if returncode is not None:
         raise RuntimeError(f"remote OpenOCD exited before GDB startup with status {returncode}")
     # The configured client, including any wrapper, owns terminal Ctrl-C.
-    session.run_interactive_client(lambda: runner.run_client(list(gdb_argv)))
+    session.run_interactive_client(lambda: runner.run_interactive_client(list(gdb_argv)))
     return session.poll_operation()
 
 
@@ -355,17 +365,18 @@ def record_operation(
     if command not in {"debug", "attach", "debugserver", "rtt"}:
         return None, None, None, None
     requested = runner.thread_info_enabled
+    enabled = requested and runner.rtos_eligible
     supplied = os.environ.get("ZRO_RECORD_OPENOCD_VERSION")
-    if requested and supplied is None:
+    if enabled and supplied is None:
         raise RuntimeError(
             "ZRO_RECORD_OPENOCD_VERSION is required to record a thread-info-enabled build"
         )
-    version = parse_openocd_version(supplied) if requested and supplied is not None else None
+    version = parse_openocd_version(supplied) if enabled and supplied is not None else None
     plan = _debug_plan(runner, command, selected, version)
     thread_info: dict[str, object] = {
         "requested": requested,
-        "version": supplied if requested else None,
-        "version_source": "injected" if requested else None,
+        "version": supplied if enabled else None,
+        "version_source": "injected" if enabled else None,
         "rtos_awareness": plan.rtos_awareness,
     }
     rtt = _recorded_rtt(runner, command, plan)
@@ -397,7 +408,7 @@ def _flash_inputs(runner: RemoteRunner, selected: ResolvedRemote) -> FlashInputs
         bin_file=runner.remote_config.bin_file,
         search_paths=_search_paths(runner),
         config_files=tuple(runner.openocd_config or ()),
-        pre_init=tuple(runner.pre_init),
+        pre_init=runner.flash_pre_init,
         reset_halt=runner.reset_halt_cmd,
         pre_load=tuple(runner.pre_load),
         erase_commands=tuple(runner.erase_cmd or ()),
@@ -405,7 +416,7 @@ def _flash_inputs(runner: RemoteRunner, selected: ResolvedRemote) -> FlashInputs
         verify_command=runner.verify_cmd,
         post_verify=tuple(runner.post_verify),
         operation=_flash_operation(runner),
-        serial=runner.parsed_args.serial or None,
+        serial=runner.serial_selection,
         flash_address=runner.flash_address,
         no_init=runner.parsed_args.no_init,
         no_targets=runner.parsed_args.no_targets,
@@ -529,7 +540,7 @@ def _debug_plan(
             config_files=tuple(runner.openocd_config or ()),
             pre_init=tuple(runner.pre_init),
             reset_halt=runner.reset_halt_cmd,
-            serial=runner.parsed_args.serial or None,
+            serial=runner.serial_selection,
             no_halt=runner.parsed_args.no_halt,
             no_init=runner.parsed_args.no_init,
             no_targets=runner.parsed_args.no_targets,
@@ -537,11 +548,12 @@ def _debug_plan(
             telnet_port=runner.telnet_port,
             gdb_port=runner.gdb_port,
             gdb_client_port=runner.gdb_client_port,
-            gdb_init=tuple(runner.gdb_init or ()),
+            gdb_init=runner.gdb_commands(command),
             tui=bool(runner.parsed_args.tui),
             load=bool(runner.parsed_args.load),
             target_handle=runner.target_handle,
             thread_info_requested=runner.thread_info_enabled,
+            thread_info_supported=runner.rtos_eligible,
             openocd_version=version,
             openocd_init_sentinel="ZRO_OPENOCD_INIT_" + sentinel_suffix,
             startup_complete_sentinel="ZRO_STARTUP_COMPLETE_" + sentinel_suffix,

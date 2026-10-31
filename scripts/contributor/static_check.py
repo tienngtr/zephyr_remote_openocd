@@ -144,11 +144,13 @@ def check_ssh_config(root: Path) -> bool:
 def check_zephyr_import_boundary(root: Path, paths: tuple[str, ...]) -> bool:
     """Keep upstream OpenOCD runner imports in the Zephyr compatibility layer."""
     package = Path("python/zephyr_remote_openocd")
-    compatibility_layer = package / "zephyr44"
+    compatibility_layers = (package / "zephyr44", package / "zephyr45")
     valid = True
     for relative_path in paths:
         path = Path(relative_path)
-        if package not in path.parents or compatibility_layer in path.parents:
+        if package not in path.parents or any(
+            layer in path.parents for layer in compatibility_layers
+        ):
             continue
         tree = ast.parse((root / path).read_text(encoding="utf-8"), filename=relative_path)
         for node in ast.walk(tree):

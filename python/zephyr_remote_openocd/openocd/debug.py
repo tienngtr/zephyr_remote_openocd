@@ -84,6 +84,7 @@ class DebugInputs:
     load: bool = True
     target_handle: str = "_TARGETNAME"
     thread_info_requested: bool = False
+    thread_info_supported: bool = True
     openocd_version: OpenOcdVersion | None = None
     rtt_address: int | None = None
     rtt_port: int | str = 5555
@@ -306,7 +307,9 @@ def build_debug_plan(
         planner,
         pre_config_commands,
     )
-    rtos = thread_info_enabled(inputs.thread_info_requested, inputs.openocd_version)
+    rtos = inputs.thread_info_supported and thread_info_enabled(
+        inputs.thread_info_requested, inputs.openocd_version
+    )
     argv = base.argv + _server_commands(inputs, endpoint_plan, rtos)
     gdb_argv = _client_argv(inputs, endpoint_plan)
 

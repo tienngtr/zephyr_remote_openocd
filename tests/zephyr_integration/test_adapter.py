@@ -18,7 +18,7 @@ import threading
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path, PurePosixPath
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, BinaryIO, Literal, override
+from typing import TYPE_CHECKING, Any, BinaryIO, Literal, cast, override
 from unittest.mock import Mock, NonCallableMagicMock, create_autospec
 
 import pytest
@@ -67,10 +67,10 @@ if TYPE_CHECKING:
     # Resolvable only with the selected Zephyr tree on MYPYPATH.
     from runners.core import RunnerConfig, ZephyrBinaryRunner
     from runners.openocd import OpenOcdBinaryRunner
-    from zephyr_remote_openocd.zephyr44.runner import RemoteOpenOcdBinaryRunner
+    from zephyr_remote_openocd._runner import RemoteRunner
 
 # runners.core is imported from the selected Zephyr tree at fixture setup.
-type RunnerApi = tuple[ModuleType, type[OpenOcdBinaryRunner], type[RemoteOpenOcdBinaryRunner]]
+type RunnerApi = tuple[ModuleType, type[OpenOcdBinaryRunner], type[ZephyrBinaryRunner]]
 
 pytestmark = pytest.mark.zephyr
 
@@ -122,15 +122,15 @@ def _batch_gdb(
 def runner_api(monkeypatch: pytest.MonkeyPatch) -> RunnerApi:
     zephyr = env_path("ZEPHYR_BASE")
     if zephyr is None or not zephyr.is_dir():
-        pytest.skip("ZEPHYR_BASE must name a Zephyr 4.4 source tree")
+        pytest.skip("ZEPHYR_BASE must name a supported stable Zephyr source tree")
     pytest.importorskip("west")
     monkeypatch.syspath_prepend(str(zephyr / "scripts" / "west_commands"))
     # These modules become importable only after adding the selected Zephyr tree.
     import runners.core as core  # pylint: disable=no-name-in-module
     import runners.openocd as openocd  # pylint: disable=no-name-in-module
-    from zephyr_remote_openocd.zephyr44.runner import RemoteOpenOcdBinaryRunner
+    from zephyr_remote_openocd._zephyr import select_runner
 
-    return core, openocd.OpenOcdBinaryRunner, RemoteOpenOcdBinaryRunner
+    return core, openocd.OpenOcdBinaryRunner, select_runner()
 
 
 @pytest.fixture
@@ -491,7 +491,7 @@ def test_interactive_gdb_owns_ctrl_c_until_runner_capture_is_restored(
         # Terminal Ctrl-C during the client belongs to GDB, not the runner.
         signal.raise_signal(signal.SIGINT)
 
-    runner.run_client.side_effect = interactive_gdb
+    runner.run_interactive_client.side_effect = interactive_gdb
     with pytest.raises(OperationCancelled), operation_scope() as operation:
         session = harness.prepare((GDB,), ())
         with cleanup_on_exit(session.close):
@@ -518,7 +518,7 @@ def test_cancellation_latched_before_gdb_entry_refuses_launch(
             session.acquire()
             signal.raise_signal(signal.SIGINT)
             runner_module.execute_gdb_client(runner, plan, session)
-    runner.run_client.assert_not_called()
+    runner.run_interactive_client.assert_not_called()
     assert raised.value is operation.cancellation
     assert harness.helper.authority.snapshot().failure is operation.cancellation
 
@@ -596,7 +596,7 @@ def test_recorded_termination_before_gdb_dispatch_prevents_client_launch(
         batch = _batch_gdb(monkeypatch, runner_module)
         with pytest.raises((RuntimeError, SessionError)):
             runner_module.execute_started_operation(runner, command, plan, session)
-        runner.run_client.assert_not_called()
+        runner.run_interactive_client.assert_not_called()
         batch.assert_not_called()
         rtt_client.assert_not_called()
     finally:
@@ -660,7 +660,7 @@ def test_operation_build_queries_version_without_session(
 
     _, _, remote = runner_api
     build = Path(runner_config.build_dir)
-    (build / "zephyr" / ".config").write_text("CONFIG_DEBUG_THREAD_INFO=y\n")
+    (build / "zephyr" / ".config").write_text("CONFIG_DEBUG_THREAD_INFO=y\nCONFIG_CPU_CORTEX_M=y\n")
     cfg = runner_config._replace(elf_file=str(firmware))
     runner = remote.create(cfg, parser_for(remote).parse_args([]))
     # Upstream declares create() as returning the ZephyrBinaryRunner base.
@@ -684,7 +684,9 @@ def test_operation_build_queries_version_without_session(
         raise AssertionError("operation planning must not prepare a session")
 
     monkeypatch.setattr(SessionController, "prepare", forbid_prepare)
-    resolved, request, plan = runner_module.build_operation(runner, "debug", selected)
+    resolved, request, plan = runner_module.build_operation(
+        cast("RemoteRunner", runner), "debug", selected
+    )
     assert resolved == selected
     assert plan is not None
     assert plan.thread_info_requested
@@ -876,7 +878,7 @@ def test_interruption_during_session_acquisition_closes_owned_resources(
     harness = ForwardingHarness(monkeypatch)
     forwards = () if command == "flash" else (GDB,)
     request = harness.request(forwards=forwards, auxiliary=())
-    runner = create_autospec(runner_api[1], instance=True)
+    runner = create_autospec(runner_api[2], instance=True)
     runner.logger = logging.getLogger("test.remote_openocd.interruption")
     interruption = KeyboardInterrupt()
     acquired: SessionController | None = None
@@ -911,7 +913,7 @@ def test_interruption_during_session_acquisition_closes_owned_resources(
         assert acquired.closed
         assert not acquired.forwarded_specs
         assert harness.helper.close_calls == 1
-        runner.run_client.assert_not_called()
+        runner.run_interactive_client.assert_not_called()
         for forward in forwards if phase == "ready" else ():
             process = harness.ssh.process(forward)
             assert process.returncode is not None
@@ -995,7 +997,7 @@ def _forwarding_operation(
         (),
     )
     monkeypatch.setattr(runner_module, "SshCommand", lambda _prefix: harness.ssh)
-    runner = create_autospec(runner_api[1], instance=True)
+    runner = create_autospec(runner_api[2], instance=True)
     runner.logger = logging.getLogger("test.remote_openocd.forwarding")
     for forward in (*plan.forwards, *((plan.rtt_forward,) if plan.rtt_forward else ())):
         harness.ssh.process(forward)
@@ -1015,7 +1017,7 @@ def test_required_gdb_startup_failure_aborts_operation(
     harness.ssh.process(GDB).ready = False
     with pytest.raises(ForwardStartError):
         runner_module.execute_operation(runner, command, request, plan)
-    runner.run_client.assert_not_called()
+    runner.run_interactive_client.assert_not_called()
     assert harness.helper.close_calls == 1
 
 
@@ -1039,11 +1041,11 @@ def test_best_effort_startup_failure_warns_with_service_and_port(
             terminal_snapshot(Trigger.CHILD_EXIT, returncode=0)
         )
 
-    runner.run_client.side_effect = client_with_required_forwarding
+    runner.run_interactive_client.side_effect = client_with_required_forwarding
     with caplog.at_level(logging.INFO, logger=runner.logger.name):
         runner_module.execute_operation(runner, "debug", request, plan)
 
-    runner.run_client.assert_called_once()
+    runner.run_interactive_client.assert_called_once()
     warnings = [
         record.getMessage() for record in caplog.records if record.levelno == logging.WARNING
     ]
@@ -1088,7 +1090,7 @@ def test_requested_rtt_failure_aborts_operation(
         harness.helper.on_wait = exit_after_health_observation
 
     harness.helper.on_wait = fail_rtt_during_active_operation
-    runner.run_client.side_effect = lambda _argv: fail_rtt_during_active_operation()
+    runner.run_interactive_client.side_effect = lambda _argv: fail_rtt_during_active_operation()
     expected_error = ForwardStartError if phase == "startup" else SessionError
     with (
         caplog.at_level(logging.INFO, logger=runner.logger.name),
@@ -1097,9 +1099,9 @@ def test_requested_rtt_failure_aborts_operation(
         runner_module.execute_operation(runner, command, request, plan)
     assert not any(record.levelno == logging.WARNING for record in caplog.records)
     if phase == "startup":
-        runner.run_client.assert_not_called()
+        runner.run_interactive_client.assert_not_called()
     elif command in {"debug", "attach"}:
-        runner.run_client.assert_called_once()
+        runner.run_interactive_client.assert_called_once()
     assert harness.helper.close_calls == 1
     for forward in (GDB, RTT):
         assert harness.ssh.process(forward).mock.close_stderr.call_count == 1
@@ -1192,11 +1194,11 @@ def test_debugserver_execution_reports_gdb_service_and_waits(
         "GDB" in record.getMessage() and f"127.0.0.1:{GDB.local_port}" in record.getMessage()
         for record in caplog.records
     )
-    runner.run_client.assert_not_called()
+    runner.run_interactive_client.assert_not_called()
     assert harness.helper.close_calls == 1
 
 
-def parser_for(runner: type[OpenOcdBinaryRunner]) -> argparse.ArgumentParser:
+def parser_for(runner: type[ZephyrBinaryRunner]) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(allow_abbrev=False)
     runner.add_parser(parser)
     return parser
@@ -1303,7 +1305,7 @@ def test_attach_rtt_server_forwards_without_loading(
         )
 
     monkeypatch.setattr(runner, "require", create_autospec(runner.require))
-    monkeypatch.setattr(runner, "run_client", attach_client)
+    monkeypatch.setattr(runner, "run_interactive_client", attach_client)
     monkeypatch.setattr(
         runner_module,
         "run_rtt_client",
@@ -1879,7 +1881,7 @@ def test_thread_info_recording_requires_injected_version_without_remote_query(
     assert thread_info["version_source"] is None
     assert not thread_info["rtos_awareness"]
 
-    (build / "zephyr/.config").write_text("CONFIG_DEBUG_THREAD_INFO=y\n")
+    (build / "zephyr/.config").write_text("CONFIG_DEBUG_THREAD_INFO=y\nCONFIG_CPU_CORTEX_M=y\n")
     runner = remote.create(cfg, parser_for(remote).parse_args([]))
     # Establish a valid recording path before removing only its version input.
     monkeypatch.setenv("ZRO_RECORD_OPENOCD_VERSION", "Open On-Chip Debugger 0.12.0")
@@ -1979,7 +1981,7 @@ def test_active_operation_interrupt_closes_session_and_forwards(
         # Standalone RTT setup runs batch GDB as ordinary process work.
         _batch_gdb(monkeypatch, runner_module, interrupt if phase == "gdb" else None)
     if phase == "gdb" and command != "rtt":
-        runner.run_client.side_effect = interrupt
+        runner.run_interactive_client.side_effect = interrupt
     elif phase == "rtt":
         monkeypatch.setattr(runner_module, "run_rtt_client", interrupt)
     elif phase == "wait":
@@ -2204,3 +2206,206 @@ def test_existing_cwd_config_reaches_real_initialization_and_recording(
     argv = request["process"]["argv"]
     assert argv[argv.index("-f") + 1] == f"/mapped{selected}"
     assert f"/mapped{support}" in argv
+
+
+def _new_options(runner_api: RunnerApi, argv: list[str]) -> argparse.Namespace | None:
+    """Exercise additions on 4.5 and preserve parser rejection on 4.4."""
+    _, upstream, remote = runner_api
+    try:
+        expected = parser_for(upstream).parse_args(argv)
+    except SystemExit:
+        with pytest.raises(SystemExit):
+            parser_for(remote).parse_args(argv)
+        return None
+    actual = parser_for(remote).parse_args(argv)
+    assert {key: vars(actual)[key] for key in vars(expected)} == vars(expected)
+    return actual
+
+
+@pytest.mark.parametrize(
+    "argv", (["-i", "first", "--serial=last"], ["--serial=first", "--dev-id=last"])
+)
+def test_device_selection_preserves_upstream_alias_precedence(
+    runner_api: RunnerApi, runner_config: RunnerConfig, argv: list[str]
+) -> None:
+    _, upstream, remote = runner_api
+    args = parser_for(remote).parse_args(argv)
+    if not upstream.capabilities().dev_id:
+        with pytest.raises(ValueError):
+            remote.create(runner_config, args)
+        return
+    runner = remote.create(runner_config, args)
+    assert isinstance(runner, remote)
+    assert cast("RemoteRunner", runner).serial_selection == "last"
+    expected = upstream.create(runner_config, parser_for(upstream).parse_args(argv))
+    assert isinstance(expected, upstream)
+    assert any("last" in item for item in expected.serial)
+
+
+@pytest.mark.parametrize("command", ("flash", "debug"))
+def test_flash_specific_initialization_matches_upstream(
+    runner_api: RunnerApi,
+    comparison_config: RunnerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+    forbid_external_io: None,
+    command: str,
+) -> None:
+    core, upstream, remote = runner_api
+    argv = ["--cmd-pre-init=echo generic", "--cmd-pre-init-flash=echo flash"]
+    args = _new_options(runner_api, argv)
+    if args is None:
+        return
+    cfg = comparison_config._replace(file_type=core.FileType.ELF)
+    stock = upstream.create(cfg, parser_for(upstream).parse_args(argv))
+    expected = _built_in_commands(stock, command, caplog)
+    monkeypatch.setenv("ZRO_RECORD", "1")
+    remote.create(cfg, args).run(command)
+    actual = _recorded_commands(json.loads(capsys.readouterr().out))[0]
+    selected = "echo flash" if command == "flash" else "echo generic"
+    omitted = "echo generic" if command == "flash" else "echo flash"
+    assert selected in actual and selected in expected[0]
+    assert omitted not in actual and omitted not in expected[0]
+
+
+@pytest.mark.parametrize("command", ("debug", "attach", "rtt"))
+@pytest.mark.parametrize("load", (False, True), ids=("no-load", "load"))
+def test_pre_debug_and_gdb_init_command_phases(
+    runner_api: RunnerApi,
+    comparison_config: RunnerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    forbid_external_io: None,
+    command: str,
+    load: bool,
+) -> None:
+    _, _, remote = runner_api
+    argv = [
+        "--gdb-pre-debug=monitor reset init",
+        "--gdb-pre-debug=break main",
+        "--gdb-init=echo first",
+        "--gdb-init=echo second",
+        "--rtt-address=0x20000000",
+    ]
+    if not load:
+        argv.append("--no-load")
+    args = _new_options(runner_api, argv)
+    if args is None:
+        return
+    monkeypatch.setenv("ZRO_RECORD", "1")
+    remote.create(comparison_config._replace(rtt_address=0x20000000), args).run(command)
+    client = json.loads(capsys.readouterr().out)["local_gdb_argv"]
+    commands = [client[index + 1] for index, value in enumerate(client[:-1]) if value == "-ex"]
+    if command == "debug":
+        assert commands[1:] == (["load"] if load else []) + [
+            "monitor reset init",
+            "break main",
+            "echo first",
+            "echo second",
+        ]
+    else:
+        assert "monitor reset init" not in commands and "break main" not in commands
+        assert commands[1:3] == ["echo first", "echo second"]
+    assert ("load" in commands) == (command == "debug" and load)
+
+
+@pytest.mark.parametrize(
+    "cpu",
+    ("", "CONFIG_RISCV", "CONFIG_CPU_CORTEX_M", "CONFIG_CPU_AARCH32_CORTEX_R", "CONFIG_ISA_ARCV2"),
+)
+def test_rtos_eligibility_preserves_request_without_unnecessary_version_query(
+    runner_api: RunnerApi,
+    runner_config: RunnerConfig,
+    firmware: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    forbid_external_io: None,
+    cpu: str,
+) -> None:
+    from zephyr_remote_openocd import _runner as runner_module
+
+    _, upstream, remote = runner_api
+    (Path(runner_config.build_dir) / "zephyr/.config").write_text(
+        "CONFIG_DEBUG_THREAD_INFO=y\n" + (f"{cpu}=y\n" if cpu else "")
+    )
+    cfg = runner_config._replace(elf_file=str(firmware))
+    runner = remote.create(cfg, parser_for(remote).parse_args([]))
+    stock = upstream.create(cfg, parser_for(upstream).parse_args([]))
+    eligible = stock.target_supports_rtos() if hasattr(stock, "target_supports_rtos") else True
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "default_remote: chosen\nremotes:\n  chosen:\n    openocd_command: [openocd]\n"
+    )
+    monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", str(config))
+    monkeypatch.setenv("ZRO_RECORD", "1")
+    if eligible:
+        monkeypatch.setenv("ZRO_RECORD_OPENOCD_VERSION", "Open On-Chip Debugger 0.12.0")
+    else:
+        monkeypatch.delenv("ZRO_RECORD_OPENOCD_VERSION", raising=False)
+    runner.run("debug")
+    record = json.loads(capsys.readouterr().out)
+    assert record["thread_info"]["requested"]
+    assert record["thread_info"]["rtos_awareness"] == eligible
+    if not eligible:
+        assert record["thread_info"]["version_source"] is None
+        selected = ResolvedRemote("chosen", config, "host", ("openocd",), ("ssh",), (), ())
+        query = Mock(side_effect=AssertionError("ineligible target must not query OpenOCD"))
+        monkeypatch.setattr(runner_module, "query_remote_openocd_version", query)
+        _, _, plan = runner_module.build_operation(cast("RemoteRunner", runner), "debug", selected)
+        assert plan is not None and not plan.rtos_awareness
+        query.assert_not_called()
+
+
+@pytest.mark.parametrize("value", ("", "output.log"))
+@pytest.mark.parametrize("recording", (False, True), ids=("live", "recording"))
+def test_log_file_is_rejected_before_operation_effects(
+    runner_api: RunnerApi,
+    runner_config: RunnerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    forbid_external_io: None,
+    value: str,
+    recording: bool,
+) -> None:
+    from zephyr_remote_openocd import _runner as runner_module
+
+    _, _, remote = runner_api
+    args = _new_options(runner_api, [f"--log-file={value}"])
+    if args is None:
+        return
+    monkeypatch.setenv("ZRO_RECORD", "1" if recording else "0")
+    load = Mock(side_effect=AssertionError("log-file rejection entered configuration loading"))
+    monkeypatch.setattr(runner_module, "load_config", load)
+    with pytest.raises(ValueError, match="--log-file.*not supported"):
+        remote.create(runner_config, args)
+    load.assert_not_called()
+
+
+@pytest.mark.parametrize("fails", (False, True))
+def test_adapter_interactive_execution_restores_signal_disposition(
+    runner_api: RunnerApi,
+    runner_config: RunnerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    fails: bool,
+) -> None:
+    _, _, remote = runner_api
+    runner = remote.create(runner_config, parser_for(remote).parse_args([]))
+    previous = signal.getsignal(signal.SIGINT)
+    observed = []
+
+    def client(_argv: list[str]) -> None:
+        observed.append(signal.getsignal(signal.SIGINT))
+        if fails:
+            raise RuntimeError("client failed")
+
+    monkeypatch.setattr(runner, "check_call", client)
+    if fails:
+        with pytest.raises(RuntimeError, match="client failed"):
+            cast("RemoteRunner", runner).run_interactive_client(["gdb"])
+    else:
+        cast("RemoteRunner", runner).run_interactive_client(["gdb"])
+    assert observed == [signal.SIG_IGN]
+    assert signal.getsignal(signal.SIGINT) == previous
+    assert not any("deprecated" in record.getMessage() for record in caplog.records)

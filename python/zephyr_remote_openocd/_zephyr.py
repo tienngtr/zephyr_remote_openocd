@@ -19,7 +19,7 @@ class UnsupportedZephyrError(ValueError):
 
 def adapter_module(version_file: Path) -> str:
     """Read source VERSION without consulting generated build state or Git."""
-    support = "supported versions are stable Zephyr 4.4.x releases"
+    support = "supported versions are stable Zephyr 4.4.x and 4.5.x releases"
     try:
         fields = dict(
             line.split("=", 1) for line in version_file.read_text().splitlines() if line.strip()
@@ -39,7 +39,7 @@ def adapter_module(version_file: Path) -> str:
     version = (
         f"{major}.{minor}.{patch}" + (f"+{tweak}" if tweak else "") + (f"-{extra}" if extra else "")
     )
-    if (major, minor) != (4, 4) or patch == 99 or tweak or extra:
+    if (major, minor) not in {(4, 4), (4, 5)} or patch == 99 or tweak or extra:
         raise UnsupportedZephyrError(f"unsupported Zephyr {version} in {version_file}; {support}")
     return f"zephyr_remote_openocd.zephyr{major}{minor}.runner"
 

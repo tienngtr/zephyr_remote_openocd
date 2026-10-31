@@ -8,14 +8,15 @@ import pytest
 from zephyr_remote_openocd._zephyr import UnsupportedZephyrError, adapter_module
 
 
+@pytest.mark.parametrize("minor", (4, 5))
 @pytest.mark.parametrize("patch", (0, 1, 2, 42))
-def test_stable_release_family(tmp_path: Path, patch: int) -> None:
+def test_stable_release_family(tmp_path: Path, minor: int, patch: int) -> None:
     version = tmp_path / "VERSION"
     version.write_text(
-        f"VERSION_MAJOR = 4\nVERSION_MINOR = 4\nPATCHLEVEL = {patch}\n"
+        f"VERSION_MAJOR = 4\nVERSION_MINOR = {minor}\nPATCHLEVEL = {patch}\n"
         "VERSION_TWEAK = 0\nEXTRAVERSION =\n"
     )
-    assert adapter_module(version).endswith(".zephyr44.runner")
+    assert adapter_module(version).endswith(f".zephyr4{minor}.runner")
 
 
 @pytest.mark.parametrize(
