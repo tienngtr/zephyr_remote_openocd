@@ -46,9 +46,9 @@ from zephyr_remote_openocd.protocol.wire import (
 HELPER_STOP_TIMEOUT = 15.0
 HELPER_START_TIMEOUT = 30.0
 
-# Match the remote reader's finite checkpoint: one maximum wire frame of new
-# bytes, in addition to any prefix retained by the incremental framer. The
-# allowance is never replenished by a descendant that keeps writing.
+# One maximum wire frame of new bytes, in addition to any prefix retained by
+# the incremental framer. The allowance is never replenished by a descendant
+# that keeps writing.
 _FINAL_OBSERVATION_BYTES = MAX_FRAME_SIZE
 _READ_CHUNK_SIZE = 64 * 1024
 

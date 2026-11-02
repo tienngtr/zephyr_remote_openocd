@@ -409,7 +409,7 @@ def start_frame(
     environment: dict[str, str] | None = None,
     required_paths: list[dict[str, object]] | None = None,
     listeners: Iterable[dict[str, object]] = (),
-    required_output_sentinels: Iterable[str] = (),
+    readiness_evidence: Iterable[str] = (),
     readiness_timeout: float = 30.0,
     literal_prefix: int = 0,
     argv_templates: Iterable[dict[str, object]] = (),
@@ -423,7 +423,7 @@ def start_frame(
         environment={} if environment is None else environment,
         required_paths=[] if required_paths is None else required_paths,
         services=list(listeners),
-        required_output_sentinels=list(required_output_sentinels),
+        readiness_evidence=list(readiness_evidence),
         readiness_timeout=readiness_timeout,
         literal_prefix=literal_prefix,
         argv_templates=list(argv_templates),
@@ -760,9 +760,10 @@ def test_repeated_ctrl_c_during_session_close_skips_no_cleanup(
                 (
                     sys.executable,
                     "-c",
-                    "import signal; print('child-ready', flush=True); signal.pause()",
+                    "import signal; open('../readiness', 'a').write('child_ready\\n');"
+                    "signal.pause()",
                 ),
-                required_output_sentinels=("child-ready",),
+                readiness_evidence=("child_ready",),
             ),
             forwards=(ForwardSpec("gdb", 32155, 3333), ForwardSpec("tcl", 32156, 6666)),
         ),
@@ -1864,7 +1865,7 @@ class TestRealProcessHelper:
                     if stream is not None and not stream.closed:
                         stream.close()
 
-    def test_persistent_process_waits_for_sentinels_without_service_probes(
+    def test_persistent_process_waits_for_artifact_evidence_without_service_probes(
         self, requires_loopback_listener: None
     ) -> None:
         with socket.socket() as probe:
@@ -1887,12 +1888,15 @@ class TestRealProcessHelper:
                 created = json.loads(read_line(process.stdout))
                 assert created["type"] == "SESSION_CREATED"
                 workspace = Path(created["remote_workspace"])
-                first_sentinel = "ZRO_INIT_READY_unit"
-                second_sentinel = "ZRO_START_READY_unit"
+                first_sentinel = "init"
+                second_sentinel = "startup"
+                # Evidence goes only to the helper-owned artifact, as the
+                # runner's Tcl writes it, never to stdout or stderr.
                 child_code = (
                     "import sys,time;"
-                    "print(sys.argv[1],flush=True);"
-                    "print(sys.argv[2],flush=True);"
+                    "artifact=open('../readiness','a');"
+                    "artifact.write(sys.argv[1]+'\\n');artifact.flush();"
+                    "artifact.write(sys.argv[2]+'\\n');artifact.close();"
                     "time.sleep(30)"
                 )
                 process.stdin.write(
@@ -1905,7 +1909,7 @@ class TestRealProcessHelper:
                             second_sentinel,
                         ],
                         listeners=[{"name": "tcl", "remote_port": remote_port}],
-                        required_output_sentinels=(first_sentinel, second_sentinel),
+                        readiness_evidence=(first_sentinel, second_sentinel),
                         readiness_timeout=5,
                     )
                 )
@@ -1916,15 +1920,7 @@ class TestRealProcessHelper:
                 ready = next(event for event in events if event["type"] == "READY")
                 child_pid = ready["child_pid"]
                 child_pidfd = os.pidfd_open(child_pid)
-                assert any(
-                    event["type"] == "CHILD_OUTPUT"
-                    and event["payload"] in {first_sentinel, second_sentinel}
-                    for event in events
-                )
-                output_payloads = {
-                    event["payload"] for event in events if event["type"] == "CHILD_OUTPUT"
-                }
-                assert output_payloads >= {first_sentinel, second_sentinel}
+                assert not any(event["type"] == "CHILD_OUTPUT" for event in events)
                 process.stdin.write(encode_release())
                 process.stdin.close()
                 assert process.wait(timeout=8) == 0
@@ -1991,7 +1987,7 @@ class TestRealProcessHelper:
                         ],
                         listeners=[{"name": "tcl", "remote_port": remote_port}],
                         environment={"ZRO_COLLISION_STATE": str(state)},
-                        required_output_sentinels=(output_sentinel,),
+                        readiness_evidence=(output_sentinel,),
                         argv_templates=[{"index": 2, "parts": [{"session": "address"}]}],
                         preferred_address=preferred,
                     )
@@ -2109,7 +2105,7 @@ class TestRealProcessHelper:
                         str(child_pid_file),
                         str(output_bytes),
                     ],
-                    required_output_sentinels=("not-ready",),
+                    readiness_evidence=("not_ready",),
                 )
             )
             process.stdin.flush()
@@ -2226,7 +2222,7 @@ class TestRealProcessHelper:
                         "-c",
                         "import os, signal; print(os.getpid(), flush=True); signal.pause()",
                     ],
-                    required_output_sentinels=["not-ready"],
+                    readiness_evidence=["not_ready"],
                 )
             )
             process.stdin.flush()
@@ -2335,13 +2331,14 @@ class TestRealProcessHelper:
                 command = [
                     sys.executable,
                     "-c",
-                    "import sys; print(sys.argv[1], flush=True)",
+                    "import sys; open('../readiness', 'a').write(sys.argv[1] + '\\n');"
+                    "print('partial evidence', flush=True)",
                     first_sentinel,
                 ]
                 process.stdin.write(
                     start_frame(
                         command,
-                        required_output_sentinels=(first_sentinel, missing_sentinel),
+                        readiness_evidence=(first_sentinel, missing_sentinel),
                     )
                 )
                 process.stdin.flush()
@@ -2483,7 +2480,7 @@ class TestRealProcessHelper:
             child = ROOT / "tests/fixtures/group_descendant_child.py"
             remote_process = ProcessSpec(
                 (sys.executable, str(child), "ZRO_DESCENDANT_READY"),
-                required_output_sentinels=("ZRO_DESCENDANT_READY",),
+                readiness_evidence=("ZRO_DESCENDANT_READY",),
             )
             output = []
             session_controller = SessionController(
@@ -2692,12 +2689,12 @@ class TestRealProcessHelper:
                 "import os,signal,sys,time;"
                 "signal.signal(signal.SIGTERM, signal.SIG_IGN);"
                 "Path(sys.argv[2]).write_text(str(os.getpid()), encoding='ascii');"
-                "print(sys.argv[1], flush=True);"
+                "open('../readiness', 'a').write(sys.argv[1] + '\\n');"
                 "time.sleep(30)"
             )
             remote_process = ProcessSpec(
                 (sys.executable, "-c", child_code, output_sentinel, str(child_pid_path)),
-                required_output_sentinels=(output_sentinel,),
+                readiness_evidence=(output_sentinel,),
             )
             command = LocalCommand()
             authority = notified_authority.authority

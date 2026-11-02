@@ -12,10 +12,9 @@ import sys
 from collections import deque
 from types import TracebackType
 
-from zephyr_remote_openocd.protocol.wire import MAX_FRAME_SIZE, encode_frame
+from zephyr_remote_openocd.protocol.wire import encode_frame
 
 RELAY_CHUNK_SIZE = 64 * 1024
-MAX_FINAL_OBSERVATION_BYTES = MAX_FRAME_SIZE
 MAX_PROTOCOL_OUTPUT_BYTES = 16 * 1024 * 1024
 CHILD_RELAY_JOIN_TIMEOUT = 2
 protocol_output: contextvars.ContextVar[ProtocolOutput | None] = contextvars.ContextVar(
@@ -170,9 +169,6 @@ class AsyncInput:
     def __init__(self, descriptor: int) -> None:
         self.descriptor = descriptor
         self._wake: asyncio.Future[None] | None = None
-        self._checkpoint: asyncio.Future[None] | None = None
-        self._scan_remaining = 0
-        self._closed = False
         self.was_blocking = _acquire_nonblocking(descriptor)
 
     def __enter__(self) -> AsyncInput:
@@ -195,32 +191,15 @@ class AsyncInput:
             for note in getattr(cleanup_error, "__notes__", ()):
                 failure.add_note(f"input descriptor restoration detail: {note}")
 
-    def _observed(self) -> None:
-        if self._checkpoint is not None and not self._checkpoint.done():
-            self._scan_remaining = 0
-            self._checkpoint.set_result(None)
-
     def _wake_reader(self) -> None:
         if self._wake is not None and not self._wake.done():
             self._wake.set_result(None)
 
-    def checkpoint(self) -> asyncio.Future[None]:
-        """Request a finite available-byte scan by the sole descriptor reader."""
-        self._checkpoint = asyncio.get_running_loop().create_future()
-        self._scan_remaining = MAX_FINAL_OBSERVATION_BYTES
-        if self._closed:
-            self._observed()
-        else:
-            self._wake_reader()
-        return self._checkpoint
-
     async def read(self) -> bytes:
         while True:
             try:
-                size = min(RELAY_CHUNK_SIZE, self._scan_remaining or RELAY_CHUNK_SIZE)
-                chunk = os.read(self.descriptor, size)
+                return os.read(self.descriptor, RELAY_CHUNK_SIZE)
             except BlockingIOError:
-                self._observed()
                 loop = asyncio.get_running_loop()
                 self._wake = loop.create_future()
                 loop.add_reader(self.descriptor, self._wake_reader)
@@ -229,16 +208,6 @@ class AsyncInput:
                 finally:
                     loop.remove_reader(self.descriptor)
                     self._wake = None
-            else:
-                if not chunk:
-                    self._observed()
-                elif self._scan_remaining:
-                    self._scan_remaining -= len(chunk)
-                    if not self._scan_remaining:
-                        self._observed()
-                return chunk
 
     def close(self) -> None:
-        self._closed = True
-        self._observed()
         os.set_blocking(self.descriptor, self.was_blocking)

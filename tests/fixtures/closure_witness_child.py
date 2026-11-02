@@ -3,7 +3,7 @@
 """A live child that records staging closure when its cleanup signal arrives.
 
 Arguments are the closure-marker path and a result path. After installing its
-SIGTERM handler the child prints ``ZRO_ARMED``; on SIGTERM it records whether
+SIGTERM handler the child announces ``ZRO_ARMED``; on SIGTERM it records whether
 the marker already exists, then exits.
 """
 
@@ -14,6 +14,9 @@ import sys
 from pathlib import Path
 from types import FrameType
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from tests.readiness_evidence import announce
+
 
 def main() -> None:
     marker, result = Path(sys.argv[1]), Path(sys.argv[2])
@@ -23,7 +26,7 @@ def main() -> None:
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, witness)
-    print("ZRO_ARMED", flush=True)
+    announce("ZRO_ARMED")
     while True:
         signal.pause()
 

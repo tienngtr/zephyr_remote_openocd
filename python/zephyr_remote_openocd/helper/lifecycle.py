@@ -32,7 +32,7 @@ class StartupRequest(Protocol):
     def completion_policy(self) -> CompletionPolicy: ...
 
     @property
-    def required_output_sentinels(self) -> tuple[str, ...]: ...
+    def readiness_evidence(self) -> tuple[str, ...]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,7 +163,7 @@ class LifecycleAuthority[RequestT: StartupRequest]:
                 self.terminate(Trigger.CHILD_EXIT)
         return True
 
-    def observe_marker(self, marker: str) -> bool:
+    def observe_evidence(self, name: str) -> bool:
         state = self._state
         if (
             not isinstance(state, Starting)
@@ -173,9 +173,9 @@ class LifecycleAuthority[RequestT: StartupRequest]:
         attempt = self._current_attempt()
         if not isinstance(attempt, OwnedAttempt) or attempt.child_result is not None:
             return False
-        if marker not in state.request.required_output_sentinels:
+        if name not in state.request.readiness_evidence:
             return False
-        self._state = replace(state, evidence=state.evidence | {marker})
+        self._state = replace(state, evidence=state.evidence | {name})
         return True
 
     def ready(self, *, child_live: bool, admitted: bool) -> bool:
@@ -186,7 +186,7 @@ class LifecycleAuthority[RequestT: StartupRequest]:
             or state.request.completion_policy != CompletionPolicy.LIVE_SERVER
             or not isinstance(attempt, OwnedAttempt)
             or attempt.child_result is not None
-            or not set(state.request.required_output_sentinels).issubset(state.evidence)
+            or not set(state.request.readiness_evidence).issubset(state.evidence)
             or not child_live
         ):
             return False

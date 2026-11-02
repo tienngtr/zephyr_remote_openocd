@@ -24,39 +24,39 @@ CONFIRMED = CleanupReport("confirmed", "confirmed")
 
 
 def _starting(
-    *, markers: tuple[str, ...] = (), policy: CompletionPolicy = CompletionPolicy.LIVE_SERVER
+    *, evidence: tuple[str, ...] = (), policy: CompletionPolicy = CompletionPolicy.LIVE_SERVER
 ) -> LifecycleAuthority[ProcessSpec]:
     lifecycle = LifecycleAuthority[ProcessSpec]()
     lifecycle.start(
-        ProcessSpec(("openocd",), required_output_sentinels=markers, completion_policy=policy)
+        ProcessSpec(("openocd",), readiness_evidence=evidence, completion_policy=policy)
     )
     return lifecycle
 
 
 def _owned(
-    *, markers: tuple[str, ...] = (), policy: CompletionPolicy = CompletionPolicy.LIVE_SERVER
+    *, evidence: tuple[str, ...] = (), policy: CompletionPolicy = CompletionPolicy.LIVE_SERVER
 ) -> LifecycleAuthority[ProcessSpec]:
-    lifecycle = _starting(markers=markers, policy=policy)
+    lifecycle = _starting(evidence=evidence, policy=policy)
     assert lifecycle.enter_attempt(admitted=True)
     assert lifecycle.adopt_attempt()
     return lifecycle
 
 
 def test_live_readiness_requires_owned_current_live_child_and_evidence() -> None:
-    lifecycle = _starting(markers=("init", "complete"))
+    lifecycle = _starting(evidence=("init", "complete"))
     assert not lifecycle.ready(child_live=True, admitted=True)
     assert lifecycle.enter_attempt(admitted=True)
     assert not lifecycle.ready(child_live=True, admitted=True)
     assert lifecycle.adopt_attempt()
-    assert lifecycle.observe_marker("init")
+    assert lifecycle.observe_evidence("init")
     assert not lifecycle.ready(child_live=True, admitted=True)
-    assert lifecycle.observe_marker("complete")
+    assert lifecycle.observe_evidence("complete")
     assert not lifecycle.ready(child_live=False, admitted=True)
     assert lifecycle.ready(child_live=True, admitted=True)
     assert isinstance(lifecycle.state, Active)
 
 
-def test_empty_marker_live_policy_still_requires_ready() -> None:
+def test_empty_evidence_live_policy_still_requires_ready() -> None:
     lifecycle = _owned()
     before_ready = lifecycle.state
     assert isinstance(before_ready, Starting)
@@ -85,7 +85,7 @@ def test_failed_admission_terminates_without_entry_or_activation(boundary: str) 
 def test_one_shot_exit_is_result_without_readiness(
     exit_before_adoption: bool, returncode: int
 ) -> None:
-    lifecycle = _starting(markers=("never printed",), policy=CompletionPolicy.PROCESS_EXIT)
+    lifecycle = _starting(evidence=("never_written",), policy=CompletionPolicy.PROCESS_EXIT)
     assert lifecycle.enter_attempt(admitted=True)
     if exit_before_adoption:
         assert lifecycle.observe_child_exit(returncode)

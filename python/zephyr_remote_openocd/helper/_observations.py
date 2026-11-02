@@ -34,7 +34,12 @@ class ChildExited(NamedTuple):
 class Deadline(NamedTuple):
     child: SupervisedProcess
     readiness: bool
-    final: bool = False
+
+
+class ReadinessPoll(NamedTuple):
+    """A tick on which the coordinator itself reads the readiness artifact."""
+
+    child: SupervisedProcess
 
 
 class SignalReceived(NamedTuple):
@@ -58,6 +63,7 @@ Observation = (
     | ChildOutput
     | ChildExited
     | Deadline
+    | ReadinessPoll
     | SignalReceived
     | ObservationFailed
     | GroupCleaned

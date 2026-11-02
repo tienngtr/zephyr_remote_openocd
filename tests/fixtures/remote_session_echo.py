@@ -3,10 +3,12 @@
 """Remote TCP echo service, executed as ``python3 -c`` source.
 
 SSH integration sends this file's text to the remote host, so it must remain a
-standalone standard-library program. Arguments are ``ADDRESS PORT``; it prints
-``ZRO_TEST_READY`` once listening. With a third ``STATE`` argument it first
-appends startup work to ``STATE``, prints ``ZRO_TEST_STARTUP_WORK``, and holds
-a colliding listener so its own bind fails with ``EADDRINUSE``.
+standalone standard-library program. Arguments are ``ADDRESS PORT``; once
+listening it prints ``ZRO_TEST_READY`` and writes it as readiness evidence to
+the helper-owned artifact beside its ``staged`` working directory. With a
+third ``STATE`` argument it first appends startup work to ``STATE``, prints
+``ZRO_TEST_STARTUP_WORK``, and holds a colliding listener so its own bind
+fails with ``EADDRINUSE``.
 """
 
 import socket
@@ -29,6 +31,8 @@ def main() -> None:
     listener.bind((address, port))
     listener.listen()
     print("ZRO_TEST_READY", flush=True)
+    with Path("..", "readiness").open("a") as artifact:
+        artifact.write("ZRO_TEST_READY\n")
     while True:
         connection, _ = listener.accept()
         with connection:

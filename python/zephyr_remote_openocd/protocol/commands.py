@@ -20,7 +20,7 @@ from zephyr_remote_openocd.protocol.addresses import validate_preferred_address
 from zephyr_remote_openocd.protocol.arguments import ArgumentTemplate, SessionValue, TclWord
 from zephyr_remote_openocd.protocol.listeners import ListenerSpec, validated_listeners
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
-from zephyr_remote_openocd.protocol.process import ProcessSpec
+from zephyr_remote_openocd.protocol.process import ProcessSpec, valid_evidence_name
 from zephyr_remote_openocd.protocol.wire import decode_frame, encode_frame
 
 
@@ -57,19 +57,11 @@ def _validate_environment(environment: object) -> None:
             raise ValueError("START environment must contain valid string values")
 
 
-def _validate_required_output_sentinels(sentinels: object) -> None:
-    if not isinstance(sentinels, list) or not all(
-        isinstance(sentinel, str)
-        and sentinel
-        and sentinel == sentinel.strip()
-        and "\0" not in sentinel
-        and "\n" not in sentinel
-        and "\r" not in sentinel
-        for sentinel in sentinels
-    ):
-        raise ValueError("START required output markers are invalid")
-    if len(sentinels) != len(set(sentinels)):
-        raise ValueError("START required output markers must be unique")
+def _validate_readiness_evidence(names: object) -> None:
+    if not isinstance(names, list) or not all(valid_evidence_name(name) for name in names):
+        raise ValueError("START readiness evidence names are invalid")
+    if len(names) != len(set(names)):
+        raise ValueError("START readiness evidence names must be unique")
 
 
 def _validate_timeout(timeout: object) -> None:
@@ -94,9 +86,9 @@ def _validate_literal_prefix(literal_prefix: object, argv_length: int) -> None:
 
 
 def _validate_options(
-    sentinels: object, timeout: object, literal_prefix: object, argv_length: int
+    evidence: object, timeout: object, literal_prefix: object, argv_length: int
 ) -> None:
-    _validate_required_output_sentinels(sentinels)
+    _validate_readiness_evidence(evidence)
     _validate_timeout(timeout)
     _validate_literal_prefix(literal_prefix, argv_length)
 
@@ -162,7 +154,7 @@ class StartRequest(NamedTuple):
     environment: tuple[tuple[str, str], ...]
     required_paths: tuple[RequiredPath, ...]
     listeners: tuple[ListenerSpec, ...]
-    required_output_sentinels: tuple[str, ...]
+    readiness_evidence: tuple[str, ...]
     readiness_timeout: float
     literal_prefix: int
     argv_templates: tuple[tuple[int, ArgumentTemplate], ...]
@@ -201,7 +193,7 @@ def _decode_start(message: dict[str, Any]) -> StartRequest:
         "environment",
         "required_paths",
         "services",
-        "required_output_sentinels",
+        "readiness_evidence",
         "readiness_timeout",
         "literal_prefix",
         "argv_templates",
@@ -212,12 +204,12 @@ def _decode_start(message: dict[str, Any]) -> StartRequest:
         raise ValueError("START fields are invalid")
     argv = message["argv"]
     environment = message["environment"]
-    sentinels = message["required_output_sentinels"]
+    evidence = message["readiness_evidence"]
     timeout = message["readiness_timeout"]
     literal_prefix = message["literal_prefix"]
     validate_argv(argv)
     _validate_environment(environment)
-    _validate_options(sentinels, timeout, literal_prefix, len(argv))
+    _validate_options(evidence, timeout, literal_prefix, len(argv))
     listeners = _parse_listeners(message["services"])
     checks = _parse_required_paths(message["required_paths"])
     templates = _parse_argv_templates(message["argv_templates"], len(argv), literal_prefix)
@@ -229,7 +221,7 @@ def _decode_start(message: dict[str, Any]) -> StartRequest:
         tuple(environment.items()),
         checks,
         listeners,
-        tuple(sentinels),
+        tuple(evidence),
         float(timeout),
         literal_prefix,
         templates,
@@ -284,7 +276,7 @@ def encode_start(
         services=[
             {"name": listener.name, "remote_port": listener.remote_port} for listener in listeners
         ],
-        required_output_sentinels=list(process.required_output_sentinels),
+        readiness_evidence=list(process.readiness_evidence),
         readiness_timeout=process.readiness_timeout,
         literal_prefix=process.literal_prefix,
         argv_templates=[

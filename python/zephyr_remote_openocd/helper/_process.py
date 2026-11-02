@@ -16,9 +16,9 @@ from contextlib import suppress
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, NamedTuple, Protocol
 
-from zephyr_remote_openocd.helper._child_output import OutputDecoder, RequiredOutputSentinels
+from zephyr_remote_openocd.helper._child_output import OutputDecoder
 from zephyr_remote_openocd.helper._cleanup import raise_cleanup_errors
-from zephyr_remote_openocd.helper._streams import AsyncInput, readable
+from zephyr_remote_openocd.helper._streams import readable
 from zephyr_remote_openocd.protocol.arguments import materialize_path
 from zephyr_remote_openocd.protocol.commands import RequiredPath, StartRequest
 
@@ -138,17 +138,10 @@ def _poll_unreaped_process(process: ChildProcessHandle) -> int | None:
 class SupervisedProcess:
     """Own a process group; observe the leader before explicitly reaping it."""
 
-    def __init__(
-        self, process: ChildProcessHandle, required_output_sentinels: Iterable[str] = ()
-    ) -> None:
+    def __init__(self, process: ChildProcessHandle) -> None:
         self.process = process
-        self.required_output_sentinels = RequiredOutputSentinels(required_output_sentinels)
-        self.decoders = {
-            name: OutputDecoder(name, self.required_output_sentinels)
-            for name in ("stdout", "stderr")
-        }
+        self.decoders = {name: OutputDecoder(name) for name in ("stdout", "stderr")}
         self.output_finished: set[str] = set()
-        self.readers: dict[str, AsyncInput] = {}
         self.tasks: list[asyncio.Task[ObservationFailed | None]] = []
         self._observed_returncode: int | None = None
         self.group_disposed = False
@@ -352,7 +345,6 @@ def spawn_child(
     *,
     cwd: Path | None = None,
     environment: Mapping[str, str] | None = None,
-    required_output_sentinels: Iterable[str] = (),
     ownership: ChildAcquisition | None = None,
 ) -> SupervisedProcess:
     owner = ownership if ownership is not None else ChildAcquisition()
@@ -364,7 +356,7 @@ def spawn_child(
             environment=environment,
         )
         assert owner.process is not None
-        owner.child = SupervisedProcess(owner.process, required_output_sentinels)
+        owner.child = SupervisedProcess(owner.process)
         return owner.child
     except BaseException as error:
         if owner.process is not None and getattr(owner.process, "pid", None) is None:

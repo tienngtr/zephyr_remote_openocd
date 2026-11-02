@@ -72,12 +72,12 @@ class TestSessionSpecifications:
         ("READY", b"READY"),
         ids=("string", "bytes"),
     )
-    def test_remote_process_rejects_scalar_output_sentinel_container(
+    def test_remote_process_rejects_scalar_readiness_evidence_container(
         self, sentinels: str | bytes
     ) -> None:
         with pytest.raises(ValueError):
             # A deliberately ill-typed value reaches the runtime validation.
-            ProcessSpec(("openocd",), required_output_sentinels=sentinels)  # type: ignore[arg-type]
+            ProcessSpec(("openocd",), readiness_evidence=sentinels)  # type: ignore[arg-type]
 
     @pytest.mark.parametrize(
         "changes",
@@ -89,9 +89,9 @@ class TestSessionSpecifications:
             pytest.param({"environment": (("BAD=NAME", "value"),)}, id="invalid-env-name"),
             pytest.param({"environment": (("NAME", "bad\0value"),)}, id="nul-env-value"),
             pytest.param({"required_paths": (object(),)}, id="invalid-path-check"),
-            pytest.param({"required_output_sentinels": ("",)}, id="empty-marker"),
-            pytest.param({"required_output_sentinels": (" READY ",)}, id="untrimmed-marker"),
-            pytest.param({"required_output_sentinels": ("READY", "READY")}, id="duplicate-marker"),
+            pytest.param({"readiness_evidence": ("",)}, id="empty-evidence"),
+            pytest.param({"readiness_evidence": ("start up",)}, id="space-in-evidence"),
+            pytest.param({"readiness_evidence": ("init", "init")}, id="duplicate-evidence"),
             pytest.param({"readiness_timeout": True}, id="boolean-timeout"),
             pytest.param({"readiness_timeout": float("inf")}, id="infinite-timeout"),
             pytest.param({"readiness_timeout": 10**400}, id="unrepresentable-timeout"),

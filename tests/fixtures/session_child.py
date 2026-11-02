@@ -9,6 +9,9 @@ import os
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from tests.readiness_evidence import announce
+
 
 def main() -> None:
     root = Path(sys.argv[1])
@@ -20,7 +23,7 @@ def main() -> None:
         )
     )
     assert "set _ZEPHYR_BOARD_SERIAL test-probe" in sys.argv
-    print("ZRO_TEST_READY", flush=True)
+    announce("ZRO_TEST_READY")
     with (root / f"entered-{channel}").open("wb", buffering=0) as entered:
         entered.write(
             (json.dumps({"pid": os.getpid(), "workspace": str(Path.cwd().parent)}) + "\n").encode()

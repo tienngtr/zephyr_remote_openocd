@@ -49,9 +49,14 @@ from zephyr_remote_openocd.openocd.debug import (
     DebugPlan,
     OpenOcdVersion,
     build_debug_plan,
+    readiness_commands,
 )
 from zephyr_remote_openocd.openocd.flash import FlashPlanError
-from zephyr_remote_openocd.protocol.arguments import ArgumentTemplate, SessionValue
+from zephyr_remote_openocd.protocol.arguments import (
+    ArgumentTemplate,
+    SessionValue,
+    materialize_argv,
+)
 from zephyr_remote_openocd.protocol.listeners import ListenerSpec
 from zephyr_remote_openocd.protocol.outcome import Trigger
 from zephyr_remote_openocd.protocol.process import ProcessSpec
@@ -253,10 +258,18 @@ def test_runner_logs_effective_remote_argv(
         assert argv[: len(fixed)] == fixed
         assert "bindto 127.64.0.1" in argv
         assert "echo {workspace}/generated.cfg" in argv
-        assert argv == fixed + [
-            "bindto 127.64.0.1" if arg == "bindto {address}" else arg
-            for arg in processes[0].argv[len(fixed) :]
-        ]
+        # Only runner-owned templates are resolved, including the quoted
+        # readiness artifact path; literal user text stays unchanged.
+        assert argv == list(
+            materialize_argv(
+                processes[0].argv,
+                workspace="/workspace with spaces",
+                address="127.64.0.1",
+                literal_prefix=processes[0].literal_prefix,
+                argv_templates=processes[0].argv_templates,
+            )
+        )
+        assert any(arg.endswith('"/workspace with spaces/readiness"') for arg in argv[len(fixed) :])
     else:
         assert commands == []
     assert harness.helper.close_calls == 1
@@ -338,7 +351,7 @@ def test_runner_logs_effective_argv_when_remote_startup_fails(
         LocalHelperCommand(),
         ProcessSpec(
             (*fixed, "{workspace}/generated file", "{address}"),
-            required_output_sentinels=("missing-startup-marker",),
+            readiness_evidence=("missing_startup_evidence",),
             literal_prefix=len(fixed),
             argv_templates=(
                 (len(fixed), ArgumentTemplate((SessionValue.WORKSPACE, "/generated file"))),
@@ -980,8 +993,7 @@ def _forwarding_operation(
             str(tmp_path / "app.elf"),
             (),
             (),
-            "init-sentinel",
-            "complete-sentinel",
+            "test",
             rtt_address=0x20000000,
             rtt_server=rtt_server,
         ),
@@ -1677,11 +1689,18 @@ def _recorded_commands(recording: dict[str, Any]) -> list[list[str]]:
         return []
     process = request["process"]
     argv = _remove_runner_command(process["argv"], "bindto {address}")
-    sentinels = process["required_output_sentinels"]
-    if sentinels:
-        initialized, complete = sentinels
-        argv = _remove_runner_command(argv, f"lappend post_init_commands {{echo {initialized}}}")
-        argv = _remove_runner_command(argv, f"echo {complete}")
+    if process["readiness_evidence"]:
+        assert process["readiness_evidence"] == ["init", "startup"]
+        suffix = next(
+            item.removeprefix("lappend post_init_commands zro_init_")
+            for item in argv
+            if item.startswith("lappend post_init_commands zro_init_")
+        )
+        readiness = readiness_commands(suffix)
+        for command in (*readiness.setup, readiness.startup):
+            argv = _remove_runner_command(
+                argv, command.preview() if isinstance(command, ArgumentTemplate) else command
+            )
     gdb = recording["local_gdb_argv"]
     return [argv, *([gdb] if gdb is not None else [])]
 

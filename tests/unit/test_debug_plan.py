@@ -21,6 +21,7 @@ from zephyr_remote_openocd.openocd.debug import (
     parse_openocd_version,
     thread_info_enabled,
 )
+from zephyr_remote_openocd.protocol.arguments import materialize_argv
 from zephyr_remote_openocd.protocol.listeners import ListenerSpec
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
 
@@ -37,8 +38,7 @@ class TestDebugPlanning:
             elf_file="/local/zephyr.elf",
             search_paths=(str(root),),
             config_files=(str(config),),
-            openocd_init_sentinel="ZRO_OPENOCD_INIT_test",
-            startup_complete_sentinel="ZRO_STARTUP_COMPLETE_test",
+            readiness_suffix="test",
         )
         return replace(defaults, **changes)
 
@@ -120,7 +120,7 @@ class TestDebugPlanning:
         (False, True),
         ids=("explicit-init", "automatic-init"),
     )
-    def test_openocd_readiness_setup_precedes_configs_and_requires_both_sentinels(
+    def test_readiness_evidence_setup_precedes_configs_and_writes_both_lines(
         self, tmp_path: Path, no_init: bool
     ) -> None:
         inputs = self.inputs(
@@ -136,25 +136,37 @@ class TestDebugPlanning:
         commands = [
             (index, argv[index + 1]) for index, argument in enumerate(argv[:-1]) if argument == "-c"
         ]
-        pre_config = {command for index, command in commands if index < first_config}
+        pre_config = [command for index, command in commands if index < first_config]
         assert {
-            "lappend post_init_commands {echo ZRO_OPENOCD_INIT_test}",
+            "lappend post_init_commands zro_init_test",
             f"bindto {REMOTE_ADDRESS_PLACEHOLDER}",
             "tcl_port disabled",
             "telnet_port disabled",
             "gdb_port 3333",
-        } <= pre_config
+        } <= set(pre_config)
+        # The artifact path reaches Tcl only through the workspace template,
+        # quoted as one word, and never through the post-init list.
+        templates = dict(plan.process.argv_templates)
+        materialized = materialize_argv(
+            argv,
+            workspace="/w [$x]",
+            address="127.64.0.7",
+            literal_prefix=plan.process.literal_prefix,
+            argv_templates=plan.process.argv_templates,
+        )
+        path_commands = [materialized[index + 1] for index, _ in commands if index + 1 in templates]
+        assert 'set zro_readiness_test "/w \\[\\$x\\]/readiness"' in path_commands
+        assert pre_config.index("lappend post_init_commands zro_init_test") > max(
+            pre_config.index(command) for command in pre_config if command.startswith("proc ")
+        )
         startup_commands = [command for index, command in commands if index > first_config]
-        assert startup_commands[-1] == "echo ZRO_STARTUP_COMPLETE_test"
+        assert startup_commands[-1] == "zro_evidence_test startup"
         assert ("init" in startup_commands) is (not no_init)
         if not no_init:
             assert startup_commands.index("init") < startup_commands.index(
-                "echo ZRO_STARTUP_COMPLETE_test"
+                "zro_evidence_test startup"
             )
-        assert plan.process.required_output_sentinels == (
-            "ZRO_OPENOCD_INIT_test",
-            "ZRO_STARTUP_COMPLETE_test",
-        )
+        assert plan.process.readiness_evidence == ("init", "startup")
 
     def test_local_and_remote_paths_with_spaces_remain_argv_elements(self, tmp_path: Path) -> None:
         local = tmp_path / "debug support"

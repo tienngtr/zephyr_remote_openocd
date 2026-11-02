@@ -5,11 +5,21 @@
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from zephyr_remote_openocd.protocol.arguments import ArgumentTemplate, TclWord
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
+
+_EVIDENCE_NAME = re.compile(r"[A-Za-z0-9_]+")
+# Helper-owned readiness artifact below the session workspace (Protocol v1).
+READINESS_ARTIFACT = "readiness"
+
+
+def valid_evidence_name(name: object) -> bool:
+    """A readiness evidence name is a non-empty run of ASCII letters, digits, and underscores."""
+    return isinstance(name, str) and _EVIDENCE_NAME.fullmatch(name) is not None
 
 
 @dataclass(frozen=True)
@@ -36,7 +46,7 @@ class ProcessSpec:
     argv: tuple[str, ...]
     environment: tuple[tuple[str, str], ...] = field(default_factory=tuple)
     required_paths: tuple[RequiredPathSpec, ...] = field(default_factory=tuple)
-    required_output_sentinels: tuple[str, ...] = field(default_factory=tuple)
+    readiness_evidence: tuple[str, ...] = field(default_factory=tuple)
     readiness_timeout: float = 30.0
     literal_prefix: int = 0
     argv_templates: tuple[tuple[int, ArgumentTemplate], ...] = ()
@@ -45,18 +55,16 @@ class ProcessSpec:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "completion_policy", CompletionPolicy(self.completion_policy))
-        argv, environment, required_paths, required_output_sentinels = _normalized_process_fields(
-            self
-        )
+        argv, environment, required_paths, readiness_evidence = _normalized_process_fields(self)
         _validate_process_argv(argv)
         _validate_process_environment(environment)
         _validate_process_paths(required_paths)
-        _validate_process_readiness(required_output_sentinels, self.readiness_timeout)
+        _validate_process_readiness(readiness_evidence, self.readiness_timeout)
         _validate_literal_prefix(self.literal_prefix, len(argv))
         object.__setattr__(self, "argv", argv)
         object.__setattr__(self, "environment", environment)
         object.__setattr__(self, "required_paths", required_paths)
-        object.__setattr__(self, "required_output_sentinels", required_output_sentinels)
+        object.__setattr__(self, "readiness_evidence", readiness_evidence)
         templates = tuple(self.argv_templates)
         indices = [index for index, _ in templates]
         if len(indices) != len(set(indices)) or any(
@@ -80,15 +88,15 @@ def _normalized_process_fields(
 ]:
     """Freeze collection-valued process fields before validating them."""
 
-    raw_sentinels: Any = process.required_output_sentinels
-    if isinstance(raw_sentinels, (str, bytes)):
-        raise ValueError("required output markers must be a collection of strings")
+    raw_evidence: Any = process.readiness_evidence
+    if isinstance(raw_evidence, (str, bytes)):
+        raise ValueError("readiness evidence must be a collection of names")
 
     return (
         tuple(process.argv),
         tuple(process.environment),
         tuple(process.required_paths),
-        tuple(raw_sentinels),
+        tuple(raw_evidence),
     )
 
 
@@ -125,17 +133,11 @@ def _validate_process_paths(required_paths: tuple[RequiredPathSpec, ...]) -> Non
         raise ValueError("remote path checks must be RequiredPathSpec values")
 
 
-def _validate_process_readiness(required_output_sentinels: tuple[str, ...], timeout: float) -> None:
-    if not all(
-        isinstance(sentinel, str)
-        and sentinel
-        and sentinel == sentinel.strip()
-        and "\0" not in sentinel
-        and "\n" not in sentinel
-        and "\r" not in sentinel
-        for sentinel in required_output_sentinels
-    ) or len(required_output_sentinels) != len(set(required_output_sentinels)):
-        raise ValueError("required output markers must be unique non-empty trimmed output lines")
+def _validate_process_readiness(readiness_evidence: tuple[str, ...], timeout: float) -> None:
+    if not all(valid_evidence_name(name) for name in readiness_evidence) or len(
+        readiness_evidence
+    ) != len(set(readiness_evidence)):
+        raise ValueError("readiness evidence must be unique names of ASCII letters, digits, or _")
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
         raise ValueError("readiness timeout must be positive")
     try:

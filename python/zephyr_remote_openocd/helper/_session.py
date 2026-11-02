@@ -15,6 +15,7 @@ from typing import IO, Any, Literal
 
 from zephyr_remote_openocd.helper import _addresses as addresses
 from zephyr_remote_openocd.helper import _process as process
+from zephyr_remote_openocd.helper import _readiness as readiness
 from zephyr_remote_openocd.helper import _streams as streams
 from zephyr_remote_openocd.helper import _workspace as workspace
 from zephyr_remote_openocd.helper._cleanup import raise_cleanup_errors
@@ -26,6 +27,7 @@ from zephyr_remote_openocd.helper._observations import (
     GroupCleaned,
     Observation,
     ObservationFailed,
+    ReadinessPoll,
     SignalReceived,
     StartReceived,
 )
@@ -90,6 +92,7 @@ class HelperSession:
         self._staging_closed = False
         self._resources_released = False
         self._output_available = True
+        self._readiness: readiness.ReadinessArtifact | None = None
 
     @classmethod
     def create(cls) -> HelperSession:
@@ -160,12 +163,20 @@ class HelperSession:
         self, child: process.SupervisedProcess, name: str, stream: IO[bytes]
     ) -> None:
         with streams.AsyncInput(stream.fileno()) as reader:
-            child.readers[name] = reader
             while True:
                 chunk = await reader.read()
                 await self._events.put(ChildOutput(child, name, chunk))
                 if not chunk:
                     return
+
+    async def _observe_readiness(self, child: process.SupervisedProcess, timeout: float) -> None:
+        # Ticks and the deadline come from one task, so no tick follows it.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while (remaining := deadline - loop.time()) > 0:
+            await asyncio.sleep(min(readiness.READINESS_POLL_INTERVAL, remaining))
+            await self._events.put(ReadinessPoll(child))
+        await self._events.put(Deadline(child, readiness=True))
 
     async def _observe_exit(self, child: process.SupervisedProcess) -> None:
         await self._events.put(ChildExited(child, await child.wait_for_exit()))
@@ -284,6 +295,7 @@ class HelperSession:
         process.check_required_paths(
             request.required_paths, workspace=str(self.work), address=self.address
         )
+        self._create_workspace_entries(request)
         self.account_recorded_failures()
         if not isinstance(self.lifecycle.state, Starting):
             return
@@ -302,7 +314,6 @@ class HelperSession:
                 argv,
                 cwd=self.work / "staged",
                 environment=process.child_environment(request),
-                required_output_sentinels=request.required_output_sentinels,
                 ownership=owner,
             )
         except BaseException as error:
@@ -327,10 +338,15 @@ class HelperSession:
         ):
             self._deadline_task = self._observe(
                 "readiness deadline",
-                self._observe_deadline(self.child, request.readiness_timeout, readiness=True),
+                self._observe_readiness(self.child, request.readiness_timeout),
                 self.child,
             )
             self._ready()
+
+    def _create_workspace_entries(self, request: StartRequest) -> None:
+        """Create helper-owned entries before ATTEMPT; failure is startup failure."""
+        if request.completion_policy == CompletionPolicy.LIVE_SERVER:
+            self._readiness = readiness.ReadinessArtifact.create(self.work)
 
     def _start_output_observers(self, child: process.SupervisedProcess) -> None:
         observed = {task.get_name() for task in child.tasks}
@@ -380,16 +396,22 @@ class HelperSession:
             or state.request.completion_policy != CompletionPolicy.LIVE_SERVER
         ):
             return
-        for marker in set(state.request.required_output_sentinels) - set(
-            child.required_output_sentinels.unseen
-        ):
-            self.lifecycle.observe_marker(marker)
+        if state.request.readiness_evidence:
+            if self._readiness is None:
+                return
+            try:
+                observed = self._readiness.observe(state.request.readiness_evidence)
+            except BaseException as error:
+                self._failure(Trigger.HELPER_FAILURE, "READINESS_ARTIFACT_FAILURE", error)
+                return
+            for name in observed:
+                self.lifecycle.observe_evidence(name)
         state = self.lifecycle.state
         if (
             not isinstance(state, Starting)
             or not isinstance(state.attempt, OwnedAttempt)
             or state.attempt.child_result is not None
-            or not set(state.request.required_output_sentinels).issubset(state.evidence)
+            or not set(state.request.readiness_evidence).issubset(state.evidence)
         ):
             return
         returncode = child.poll()
@@ -431,13 +453,6 @@ class HelperSession:
                     self._failure(Trigger.OUTPUT_FAILURE, "CHILD_OUTPUT_ADMISSION", error)
         if not observation.chunk:
             child.output_finished.add(observation.stream)
-        self._ready()
-
-    async def _observe_final_readiness(self, child: process.SupervisedProcess) -> None:
-        readers = list(child.readers.values())
-        if readers:
-            await asyncio.wait([reader.checkpoint() for reader in readers])
-        await self._events.put(Deadline(child, readiness=True, final=True))
 
     @staticmethod
     async def _dispose_group(child: process.SupervisedProcess) -> GroupCleaned:
@@ -559,6 +574,9 @@ class HelperSession:
             self._observation_failed(observation)
         elif isinstance(observation, ChildOutput):
             self._output(observation)
+        elif isinstance(observation, ReadinessPoll):
+            if observation.child is self.child:
+                self._ready()
         elif isinstance(observation, ChildExited):
             if observation.child is self.child:
                 self._record_exit(observation.child, observation.returncode)
@@ -582,24 +600,19 @@ class HelperSession:
         elif isinstance(observation, Deadline) and observation.child is self.child:
             state = self.lifecycle.state
             if observation.readiness and isinstance(state, Starting):
-                if observation.final:
-                    self._ready()
-                    state = self.lifecycle.state
-                    if (
-                        isinstance(state, Starting)
-                        and isinstance(state.attempt, OwnedAttempt)
-                        and state.attempt.child_result is None
-                    ):
-                        self._failure(
-                            Trigger.STARTUP_FAILURE,
-                            "READINESS_TIMEOUT",
-                            RuntimeError("process readiness timed out"),
-                        )
-                else:
-                    self._observe(
-                        "final readiness observation",
-                        self._observe_final_readiness(observation.child),
-                        observation.child,
+                # One dispatch step: account, read the artifact, check child
+                # exit, then decide READY, startup exit, or READINESS_TIMEOUT.
+                self._ready()
+                state = self.lifecycle.state
+                if (
+                    isinstance(state, Starting)
+                    and isinstance(state.attempt, OwnedAttempt)
+                    and state.attempt.child_result is None
+                ):
+                    self._failure(
+                        Trigger.STARTUP_FAILURE,
+                        "READINESS_TIMEOUT",
+                        RuntimeError("process readiness timed out"),
                     )
             elif not observation.readiness and observation.child.output_finished != {
                 "stdout",
@@ -612,6 +625,9 @@ class HelperSession:
         while True:
             self.account_recorded_failures()
             state = self.lifecycle.state
+            if not isinstance(state, Starting):
+                # The readiness decision is made, or the attempt is ending.
+                self._close_readiness()
             if isinstance(state, Terminating):
                 if not self._staging_closed:
                     try:
@@ -651,11 +667,19 @@ class HelperSession:
             )
         )
 
+    def _close_readiness(self) -> None:
+        if self._readiness is not None:
+            try:
+                self._readiness.close()
+            except BaseException as error:
+                self._cleanup_failure(error)
+
     def release_workspace(self) -> None:
         if self._resources_released:
             return
         self._resources_released = True
         self._close_address_lease()
+        self._close_readiness()
         try:
             if self._child_disposed() and self._address_lease is None:
                 try:

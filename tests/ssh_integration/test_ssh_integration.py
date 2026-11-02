@@ -56,7 +56,7 @@ REMOTE_SESSION_ECHO = (ROOT / "tests/fixtures/remote_session_echo.py").read_text
 def session_echo_process() -> ProcessSpec:
     return ProcessSpec(
         ("python3", "-c", REMOTE_SESSION_ECHO, "{address}", "3333"),
-        required_output_sentinels=("ZRO_TEST_READY",),
+        readiness_evidence=("ZRO_TEST_READY",),
         literal_prefix=3,
         argv_templates=((3, ArgumentTemplate((SessionValue.ADDRESS,))),),
     )
@@ -371,7 +371,7 @@ class TestSshTransportIntegration:
                 "3333",
                 "{workspace}/first-address",
             ),
-            required_output_sentinels=("ZRO_TEST_READY",),
+            readiness_evidence=("ZRO_TEST_READY",),
             literal_prefix=3,
             argv_templates=(
                 (3, ArgumentTemplate((SessionValue.ADDRESS,))),

@@ -36,7 +36,7 @@ def test_remote_only_controller_eof_fails_although_terminal_arrives_after_local_
             SshCommand((sys.executable, str(RELAY), str(tmp_path))),
             ProcessSpec(
                 (sys.executable, str(ROOT / "tests/fixtures/idle_child.py"), "ZRO_TEST_READY"),
-                required_output_sentinels=("ZRO_TEST_READY",),
+                readiness_evidence=("ZRO_TEST_READY",),
             ),
         )
     )

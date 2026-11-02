@@ -10,19 +10,22 @@ from dataclasses import dataclass
 from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec, validated_forwards
 from zephyr_remote_openocd.controller.paths import PathPlanner
 from zephyr_remote_openocd.openocd.command import plan_openocd_base
-from zephyr_remote_openocd.protocol.arguments import ArgumentTemplate, SessionValue
+from zephyr_remote_openocd.protocol.arguments import ArgumentTemplate, SessionValue, TclWord
 from zephyr_remote_openocd.protocol.listeners import (
     DuplicateEndpointError,
     ListenerSpec,
     validated_listeners,
 )
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
-from zephyr_remote_openocd.protocol.process import ProcessSpec
+from zephyr_remote_openocd.protocol.process import READINESS_ARTIFACT, ProcessSpec
 
 RTT_SEARCH_RANGE_SIZE = 0x10
 RTT_CHANNEL = 0
 THREAD_INFO_VERSION_THRESHOLD = (0, 11, 0)
 OPENOCD_READINESS_TIMEOUT = 30.0
+# Fixed lines the generated Tcl appends to the helper's readiness artifact.
+INIT_EVIDENCE = "init"
+STARTUP_EVIDENCE = "startup"
 
 
 class DebugPlanError(RuntimeError):
@@ -67,8 +70,8 @@ class DebugInputs:
     elf_file: str | None
     search_paths: tuple[str, ...]
     config_files: tuple[str, ...]
-    openocd_init_sentinel: str
-    startup_complete_sentinel: str
+    # Per-session suffix of the runner's names in OpenOCD's global Tcl namespace.
+    readiness_suffix: str
     pre_init: tuple[str, ...] = ()
     reset_halt: str = "reset init"
     serial: str | None = None
@@ -89,6 +92,38 @@ class DebugInputs:
     rtt_address: int | None = None
     rtt_port: int | str = 5555
     rtt_server: bool = False
+
+
+@dataclass(frozen=True)
+class ReadinessCommands:
+    """Runner-generated Tcl that writes evidence lines to the readiness artifact."""
+
+    setup: tuple[str | ArgumentTemplate, ...]
+    startup: str
+
+
+def readiness_commands(suffix: str) -> ReadinessCommands:
+    """Store the artifact path, then define writers outside the post-init list.
+
+    The post-init entry is only a proc name, so configuration that echoes the
+    list exposes no path or evidence line. Evidence never passes through the
+    OpenOCD logger, and a failed open aborts init or the final command.
+    """
+    variable = f"zro_readiness_{suffix}"
+    evidence = f"zro_evidence_{suffix}"
+    initialized = f"zro_init_{suffix}"
+    return ReadinessCommands(
+        (
+            ArgumentTemplate(
+                (f"set {variable} ", TclWord((SessionValue.WORKSPACE, f"/{READINESS_ARTIFACT}")))
+            ),
+            f"proc {evidence} {{line}} {{global {variable}; "
+            f"set f [open ${variable} a]; puts $f $line; close $f}}",
+            f"proc {initialized} {{}} {{{evidence} {INIT_EVIDENCE}}}",
+            f"lappend post_init_commands {initialized}",
+        ),
+        f"{evidence} {STARTUP_EVIDENCE}",
+    )
 
 
 @dataclass(frozen=True)
@@ -198,7 +233,7 @@ def _plan_debug_endpoints(inputs: DebugInputs) -> DebugEndpointPlan:
 
 
 def _server_commands(
-    inputs: DebugInputs, endpoint_plan: DebugEndpointPlan, rtos: bool
+    inputs: DebugInputs, endpoint_plan: DebugEndpointPlan, rtos: bool, startup: str
 ) -> tuple[str, ...]:
     commands: list[str] = _commands(inputs.pre_init)
     if rtos:
@@ -223,7 +258,7 @@ def _server_commands(
                 f"rtt server start {endpoint_plan.rtt_forward.remote_port} {RTT_CHANNEL}",
             )
         )
-    commands.extend(("-c", f"echo {inputs.startup_complete_sentinel}"))
+    commands.extend(("-c", startup))
     return tuple(commands)
 
 
@@ -292,8 +327,9 @@ def build_debug_plan(
     telnet_port = (
         endpoint_plan.remote_telnet if endpoint_plan.remote_telnet is not None else "disabled"
     )
+    readiness = readiness_commands(inputs.readiness_suffix)
     pre_config_commands = (
-        f"lappend post_init_commands {{echo {inputs.openocd_init_sentinel}}}",
+        *readiness.setup,
         ArgumentTemplate(("bindto ", SessionValue.ADDRESS)),
         f"tcl_port {tcl_port}",
         f"telnet_port {telnet_port}",
@@ -310,14 +346,14 @@ def build_debug_plan(
     rtos = inputs.thread_info_supported and thread_info_enabled(
         inputs.thread_info_requested, inputs.openocd_version
     )
-    argv = base.argv + _server_commands(inputs, endpoint_plan, rtos)
+    argv = base.argv + _server_commands(inputs, endpoint_plan, rtos, readiness.startup)
     gdb_argv = _client_argv(inputs, endpoint_plan)
 
     process = ProcessSpec(
         argv,
         environment,
         tuple(planner.remote_checks),
-        (inputs.openocd_init_sentinel, inputs.startup_complete_sentinel),
+        (INIT_EVIDENCE, STARTUP_EVIDENCE),
         readiness_timeout=OPENOCD_READINESS_TIMEOUT,
         literal_prefix=base.literal_prefix,
         argv_templates=base.argv_templates,

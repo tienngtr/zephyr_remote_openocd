@@ -71,7 +71,7 @@ class TestProtocol:
                 RequiredPathSpec("/firmware.elf", "file"),
                 RequiredPathSpec(path_template.preview(), "directory", template=path_template),
             ),
-            required_output_sentinels=("INIT COMPLETE", "READY FOR START"),
+            readiness_evidence=("init", "startup"),
             readiness_timeout=0.5,
             literal_prefix=2,
             completion_policy=policy,
@@ -97,7 +97,7 @@ class TestProtocol:
         ]
         assert request.literal_prefix == process.literal_prefix
         assert request.completion_policy == process.completion_policy
-        assert request.required_output_sentinels == process.required_output_sentinels
+        assert request.readiness_evidence == process.readiness_evidence
         assert request.readiness_timeout == process.readiness_timeout
         assert request.preferred_address == preferred_address
 

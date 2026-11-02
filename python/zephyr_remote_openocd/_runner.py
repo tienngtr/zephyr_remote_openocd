@@ -528,7 +528,6 @@ def _debug_plan(
     version: OpenOcdVersion | None,
 ) -> DebugPlan:
     planner = PathPlanner(selected.path_mappings)
-    sentinel_suffix = secrets.token_hex(16)
     rtt_requested = command == "rtt" or runner.parsed_args.rtt_server
     return build_debug_plan(
         DebugInputs(
@@ -538,6 +537,7 @@ def _debug_plan(
             elf_file=runner.remote_config.elf_file,
             search_paths=_search_paths(runner),
             config_files=tuple(runner.openocd_config or ()),
+            readiness_suffix=secrets.token_hex(16),
             pre_init=tuple(runner.pre_init),
             reset_halt=runner.reset_halt_cmd,
             serial=runner.serial_selection,
@@ -555,8 +555,6 @@ def _debug_plan(
             thread_info_requested=runner.thread_info_enabled,
             thread_info_supported=runner.rtos_eligible,
             openocd_version=version,
-            openocd_init_sentinel="ZRO_OPENOCD_INIT_" + sentinel_suffix,
-            startup_complete_sentinel="ZRO_STARTUP_COMPLETE_" + sentinel_suffix,
             rtt_address=runner.get_rtt_address() if rtt_requested else None,
             rtt_port=runner.rtt_port,
             rtt_server=bool(runner.parsed_args.rtt_server),
@@ -624,7 +622,7 @@ def _request_record(request: SessionPlan) -> dict[str, object]:
                 }
                 for item in request.process.required_paths
             ],
-            "required_output_sentinels": list(request.process.required_output_sentinels),
+            "readiness_evidence": list(request.process.readiness_evidence),
             "readiness_timeout": request.process.readiness_timeout,
             "literal_prefix": request.process.literal_prefix,
             "argv_templates": [

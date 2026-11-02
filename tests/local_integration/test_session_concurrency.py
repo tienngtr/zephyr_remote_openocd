@@ -69,10 +69,10 @@ def test_interruption_after_session_acquisition_cleans_helper_and_child(
             "-c",
             "import os,pathlib,signal,sys; "
             "pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); "
-            "print('ZRO_TEST_READY', flush=True); signal.pause()",
+            "open('../readiness', 'a').write('ZRO_TEST_READY\\n'); signal.pause()",
             str(child_pid_path),
         ),
-        required_output_sentinels=("ZRO_TEST_READY",),
+        readiness_evidence=("ZRO_TEST_READY",),
     )
     session = SessionController.prepare(
         SessionPlan(
@@ -170,7 +170,7 @@ def test_same_probe_session_finishes_while_another_session_is_active(tmp_path: P
             SessionPlan(
                 "test-host",
                 ssh,
-                replace(plan.process, required_output_sentinels=("ZRO_TEST_READY",)),
+                replace(plan.process, readiness_evidence=("ZRO_TEST_READY",)),
                 staged_files=plan.staged_files,
             )
         )

@@ -31,10 +31,11 @@ from zephyr_remote_openocd.helper._observations import (
     ControlEOF,
     Deadline,
     Observation,
+    ReadinessPoll,
 )
 from zephyr_remote_openocd.helper._process import ChildAcquisition, SupervisedProcess
 from zephyr_remote_openocd.helper._session import HelperSession
-from zephyr_remote_openocd.helper.lifecycle import Closed
+from zephyr_remote_openocd.helper.lifecycle import Closed, Starting
 from zephyr_remote_openocd.protocol import commands as protocol_commands
 from zephyr_remote_openocd.protocol.commands import encode_release, encode_start
 from zephyr_remote_openocd.protocol.outcome import (
@@ -117,7 +118,7 @@ def test_coordinator_adoption_failure_attempts_lock_cleanup_after_workspace_fail
             remove(acquired[0][1])
 
 
-def _start_session_command(argv: list[str], sentinels: Iterable[str] = ()) -> bytes:
+def _start_session_command(argv: list[str], evidence: Iterable[str] = ()) -> bytes:
     return (
         json.dumps(
             {
@@ -128,7 +129,7 @@ def _start_session_command(argv: list[str], sentinels: Iterable[str] = ()) -> by
                 "environment": {},
                 "required_paths": [],
                 "services": [],
-                "required_output_sentinels": list(sentinels),
+                "readiness_evidence": list(evidence),
                 "readiness_timeout": 30,
                 "literal_prefix": len(argv),
                 "argv_templates": [],
@@ -180,14 +181,12 @@ def coordinated_helper(
         *,
         cwd: Path | None = None,
         environment: Mapping[str, str] | None = None,
-        required_output_sentinels: Iterable[str] = (),
         ownership: ChildAcquisition | None = None,
     ) -> SupervisedProcess:
         child = spawn(
             argv,
             cwd=cwd,
             environment=environment,
-            required_output_sentinels=required_output_sentinels,
             ownership=ownership,
         )
         children.append(child)
@@ -221,6 +220,12 @@ def _output_closed(child: SupervisedProcess) -> bool:
 
 def _idle_child(*lines: str) -> tuple[str, ...]:
     return (sys.executable, str(ROOT / "tests/fixtures/idle_child.py"), *lines)
+
+
+def _write_evidence(session: HelperSession, text: str) -> None:
+    """Append to the helper-owned artifact as the runner's readiness Tcl does."""
+    with (session.work / "readiness").open("a", encoding="ascii") as artifact:
+        artifact.write(text)
 
 
 def _release(writer: FileIO) -> None:
@@ -317,9 +322,7 @@ def test_release_before_readiness_is_not_a_termination_request(
             writer.close()
 
     monkeypatch.setattr(helper_streams, 'emit', emit)
-    start = encode_start(
-        ProcessSpec(_idle_child("ready"), required_output_sentinels=("ready",)), ()
-    )
+    start = encode_start(ProcessSpec(_idle_child("ready"), readiness_evidence=("ready",)), ())
     # RELEASE recognized with START only qualifies a later EOF; the session
     # stays live until that EOF, which is sent only after READY.
     writer.write(start + RELEASE)
@@ -538,7 +541,7 @@ def test_staging_admission_closes_before_child_disposal_signal(
                     str(workspace_module.closure_path(session.work)),
                     str(witness),
                 ),
-                required_output_sentinels=("ZRO_ARMED",),
+                readiness_evidence=("ZRO_ARMED",),
             ),
             (),
         )
@@ -549,43 +552,58 @@ def test_staging_admission_closes_before_child_disposal_signal(
     assert witness.read_text() == "closed"
 
 
-@pytest.mark.parametrize("evidence", ("no-sentinel", "sentinel"))
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("evidence", ((), ("init", "startup")), ids=("empty", "artifact"))
 def test_live_readiness_is_published_without_waiting_for_its_deadline(
-    coordinated_helper: CoordinatedHelper, monkeypatch: pytest.MonkeyPatch, evidence: str
+    coordinated_helper: CoordinatedHelper,
+    monkeypatch: pytest.MonkeyPatch,
+    evidence: tuple[str, ...],
 ) -> None:
-    session, writer, events, _children = coordinated_helper
-    observe_deadline = HelperSession._observe_deadline
-    evidence_published = asyncio.Event()
-    if evidence == "no-sentinel":
-        evidence_published.set()
-
-    async def deadline_after_evidence(
-        owner: HelperSession, child: SupervisedProcess, timeout: float, *, readiness: bool
-    ) -> None:
-        if not readiness:
-            return await observe_deadline(owner, child, timeout, readiness=readiness)
-        # READY cancels this deadline in the same coordinator step that
-        # publishes the evidence, so the deadline never observes it.
-        await evidence_published.wait()
-        raise AssertionError("readiness waited for its deadline")
-
+    session, writer, events, children = coordinated_helper
+    read = os.read
+    output_blocked = True
     record = helper_streams.emit
 
+    def controlled_read(descriptor: int, size: int) -> bytes:
+        # Child stdout and stderr stay unread until READY: readiness cannot
+        # wait for them.
+        streams = (children[0].process.stdout, children[0].process.stderr) if children else ()
+        if output_blocked and any(
+            stream is not None and descriptor == stream.fileno() for stream in streams
+        ):
+            raise BlockingIOError
+        return read(descriptor, size)
+
     def emit(kind: str, **fields: object) -> None:
+        nonlocal output_blocked
         record(kind, **fields)
-        if kind == "CHILD_OUTPUT" and fields.get("payload") == "ZRO_ARMED":
-            evidence_published.set()
         if kind == "READY":
+            output_blocked = False
             _release(writer)
 
-    monkeypatch.setattr(HelperSession, "_observe_deadline", deadline_after_evidence)
-    monkeypatch.setattr(helper_streams, 'emit', emit)
-    sentinels = ("ZRO_ARMED",) if evidence == "sentinel" else ()
+    monkeypatch.setattr(os, "read", controlled_read)
+    monkeypatch.setattr(helper_streams, "emit", emit)
+    # Evidence is written out of order beside unread output; the deadline is
+    # far beyond the test timeout, so READY comes from an observation tick.
+    child = (
+        sys.executable,
+        "-c",
+        "import signal,sys;from pathlib import Path;"
+        "sys.stdout.write('x'*4096);sys.stdout.flush();"
+        "sys.stderr.write('y'*4096);sys.stderr.flush();"
+        "Path('../readiness').write_text(''.join(l+'\\n' for l in sys.argv[1:]));"
+        "signal.pause()",
+        *reversed(evidence),
+    )
     writer.write(
-        encode_start(ProcessSpec(_idle_child(*sentinels), required_output_sentinels=sentinels), ())
+        encode_start(ProcessSpec(child, readiness_evidence=evidence, readiness_timeout=3600), ())
     )
     _run_terminated(session, fails=False)
-    assert "READY" in [kind for kind, _ in events]
+    kinds = [kind for kind, _ in events]
+    assert kinds.count("READY") == 1
+    if evidence:
+        # The output written before the evidence is relayed after READY.
+        assert kinds.index("READY") < kinds.index("CHILD_OUTPUT")
     snapshot = _terminal_event(events)
     assert snapshot.outcome.primary_failure is None
     assert snapshot.cleanup.confirmed
@@ -627,7 +645,7 @@ def test_output_held_after_group_disposal_ends_at_drain_deadline(
                     str(ROOT / "tests/fixtures/escaped_output_holder.py"),
                     str(holder),
                 ),
-                required_output_sentinels=("ZRO_ARMED",),
+                readiness_evidence=("ZRO_ARMED",),
             ),
             (),
         )
@@ -694,7 +712,7 @@ def test_exit_observation_without_pidfd_keeps_genuine_status_and_ownership(
             completion_policy=CompletionPolicy.PROCESS_EXIT,
         )
     else:
-        spec = ProcessSpec(_idle_child("ZRO_ARMED"), required_output_sentinels=("ZRO_ARMED",))
+        spec = ProcessSpec(_idle_child("ZRO_ARMED"), readiness_evidence=("ZRO_ARMED",))
     writer.write(encode_start(spec, ()))
     _run_terminated(session, fails=completion == "natural-exit")
     snapshot = _terminal_event(events)
@@ -730,7 +748,6 @@ def test_signal_capture_and_spawn_handoff_keep_cleanup_reachable(
         *,
         cwd: Path | None = None,
         environment: Mapping[str, str] | None = None,
-        required_output_sentinels: Iterable[str] = (),
         ownership: ChildAcquisition | None = None,
     ) -> SupervisedProcess:
         if boundary == "before_spawn":
@@ -739,7 +756,6 @@ def test_signal_capture_and_spawn_handoff_keep_cleanup_reachable(
             argv,
             cwd=cwd,
             environment=environment,
-            required_output_sentinels=required_output_sentinels,
             ownership=ownership,
         )
         if boundary == "returned":
@@ -1025,98 +1041,68 @@ def test_observer_settlement_retains_descriptor_restoration_failure(
     assert session.workspace_lock.closed and not session.work.exists()
 
 
+@pytest.mark.timeout(60)
 @pytest.mark.parametrize("final_observation", ("ready", "exit", "timeout"))
-@pytest.mark.usefixtures("child_acquisitions")
-def test_readiness_deadline_processes_final_visible_observation(
-    tmp_path: Path,
+def test_readiness_deadline_decides_from_one_artifact_and_exit_observation(
+    coordinated_helper: CoordinatedHelper,
     monkeypatch: pytest.MonkeyPatch,
-    control_pipe: tuple[BufferedReader, FileIO],
     final_observation: str,
 ) -> None:
-    _reader, writer = control_pipe
-    workspace = tmp_path / "workspace"
-    (workspace / "staged").mkdir(parents=True)
-    lock = (workspace / workspace_module.SESSION_LOCK).open("w+b")
-    session = helper_session.HelperSession("session", workspace, lock)
-    children: list[SupervisedProcess] = []
-    events: list[Event] = []
-    original_spawn = helper_process.spawn_child
-    original_read = os.read
-    original_sleep = asyncio.sleep
-    original_checkpoint = helper_streams.AsyncInput.checkpoint
-    output_blocked = True
+    session, writer, events, children = coordinated_helper
+    handle = HelperSession._handle
+    decided = asyncio.Event()
 
-    def spawn(
-        argv: Sequence[str],
-        *,
-        cwd: Path | None = None,
-        environment: Mapping[str, str] | None = None,
-        required_output_sentinels: Iterable[str] = (),
-        ownership: ChildAcquisition | None = None,
-    ) -> SupervisedProcess:
-        child = original_spawn(
-            argv,
-            cwd=cwd,
-            environment=environment,
-            required_output_sentinels=required_output_sentinels,
-            ownership=ownership,
-        )
-        children.append(child)
-        return child
+    def handle_then_report(owner: HelperSession, observation: Observation) -> None:
+        handle(owner, observation)
+        if isinstance(observation, Deadline) and observation.readiness:
+            decided.set()
 
-    def controlled_read(descriptor: int, size: int) -> bytes:
-        stream = children[0].process.stdout if children else None
-        if output_blocked and stream is not None and descriptor == stream.fileno():
-            raise BlockingIOError
-        return original_read(descriptor, size)
-
-    async def controlled_sleep(delay: float) -> None:
-        if delay == 30:
-            # Observe readiness through a duplicate fd without reading any bytes.
-            stream = children[0].process.stdout
-            assert stream is not None
-            descriptor = os.dup(stream.fileno())
+    async def deadline_only(
+        owner: HelperSession, child: SupervisedProcess, _timeout: float
+    ) -> None:
+        # No tick precedes the deadline: the deadline step alone reads the
+        # artifact. The child has written it, and has exited, before then.
+        assert child.process.stdout is not None
+        handshake = os.dup(child.process.stdout.fileno())
+        try:
+            await helper_streams.readable(handshake)
+        finally:
+            os.close(handshake)
+        if final_observation == "exit":
+            descriptor = os.pidfd_open(child.pid)
             try:
+                os.kill(child.pid, signal.SIGUSR1)
                 await helper_streams.readable(descriptor)
             finally:
                 os.close(descriptor)
-            if final_observation == "exit":
-                child = children[0]
-                descriptor = os.pidfd_open(child.pid)
-                try:
-                    os.kill(child.pid, signal.SIGUSR1)
-                    await helper_streams.readable(descriptor)
-                finally:
-                    os.close(descriptor)
-        else:
-            await original_sleep(delay)
+        await owner._events.put(Deadline(child, readiness=True))
+        # A tick queued behind the deadline, after the decision, cannot change
+        # it even when the evidence line completes in between.
+        await decided.wait()
+        _write_evidence(owner, "\n")
+        await owner._events.put(ReadinessPoll(child))
 
-    def checkpoint(reader: helper_streams.AsyncInput) -> asyncio.Future[None]:
-        nonlocal output_blocked
-        # Visible bytes stay unread until the final observation requests the
-        # reader's scan, so READY depends on that scan rather than relay timing.
-        output_blocked = False
-        return original_checkpoint(reader)
+    record = helper_streams.emit
 
     def emit(kind: str, **values: object) -> None:
-        events.append((kind, values))
+        record(kind, **values)
         if kind == "READY":
             _release(writer)
 
-    monkeypatch.setattr(helper_process, 'spawn_child', spawn)
-    monkeypatch.setattr(os, "read", controlled_read)
-    monkeypatch.setattr(asyncio, "sleep", controlled_sleep)
-    monkeypatch.setattr(helper_streams.AsyncInput, "checkpoint", checkpoint)
+    monkeypatch.setattr(HelperSession, "_observe_readiness", deadline_only)
+    monkeypatch.setattr(HelperSession, "_handle", handle_then_report)
     monkeypatch.setattr(helper_streams, 'emit', emit)
-    marker = "diagnostic" if final_observation == "timeout" else "READY"
+    # The timeout case leaves its line unterminated, which is never evidence.
+    line = "READY" if final_observation == "timeout" else "READY\n"
     writer.write(
         _start_session_command(
             [
                 sys.executable,
                 "-c",
-                "import signal,sys;"
+                "import signal,sys;from pathlib import Path;"
                 "signal.signal(signal.SIGUSR1,lambda *_:sys.exit(7));"
-                f"print({marker!r},flush=True);signal.pause()",
+                f"Path('../readiness').write_text({line!r});"
+                "print('written',flush=True);signal.pause()",
             ],
             ("READY",),
         )
@@ -1127,13 +1113,14 @@ def test_readiness_deadline_processes_final_visible_observation(
     assert [kind for kind, _ in events].count("READY") == (1 if final_observation == "ready" else 0)
     assert snapshot.cleanup.confirmed
     if final_observation == "exit":
+        # A dead child cannot authorize READY, even with complete evidence.
         assert snapshot.outcome.child_result is not None
         assert snapshot.outcome.child_result.returncode == SAMPLE_CHILD_EXIT_CODE
+        assert snapshot.outcome.trigger == Trigger.STARTUP_FAILURE
     elif final_observation == "timeout":
         assert _failure_code(snapshot) == "READINESS_TIMEOUT"
     assert children[0].process.returncode is not None
-    assert not workspace.exists()
-    assert lock.closed
+    assert not session.work.exists()
 
 
 @pytest.mark.timeout(60)
@@ -1158,7 +1145,6 @@ def test_child_observer_failure_is_accounted_once_without_blocking_disposal(
         # Relay readiness evidence, then fail at the end of the stream, which
         # the first case reaches only once disposal begins.
         with helper_streams.AsyncInput(stream.fileno()) as reader:
-            child.readers[name] = reader
             while chunk := await reader.read():
                 await owner._events.put(ChildOutput(child, name, chunk))
         raise failure
@@ -1186,7 +1172,7 @@ def test_child_observer_failure_is_accounted_once_without_blocking_disposal(
     if observer == "stdout" and established == "first":
         # The child ends its own output while it stays alive.
         argv = (sys.executable, str(ROOT / "tests/fixtures/output_closing_child.py"))
-    writer.write(encode_start(ProcessSpec(argv, required_output_sentinels=sentinels), ()))
+    writer.write(encode_start(ProcessSpec(argv, readiness_evidence=sentinels), ()))
     _run_terminated(session, fails=True)
     snapshot = _terminal_event(events)
     outcome = snapshot.outcome
@@ -1266,17 +1252,16 @@ def test_observer_failure_recorded_before_ready_dispatch_prevents_ready(
             await release.wait()
             raise failure
         await stderr_waiting.wait()
-        # Wake the failing observer first; the readiness evidence queued next
-        # wakes the coordinator, which therefore dispatches that evidence only
+        # Wake the failing observer first; the readiness tick queued next
+        # wakes the coordinator, which therefore reads the evidence only
         # after the failure is recorded and while it is still queued behind it.
         release.set()
-        await owner._events.put(ChildOutput(child, name, b"ZRO_ARMED\n"))
+        _write_evidence(owner, "ZRO_ARMED\n")
+        await owner._events.put(ReadinessPoll(child))
         await observe_output(owner, child, name, stream)
 
     monkeypatch.setattr(HelperSession, "_observe_output", output)
-    writer.write(
-        encode_start(ProcessSpec(_idle_child(), required_output_sentinels=("ZRO_ARMED",)), ())
-    )
+    writer.write(encode_start(ProcessSpec(_idle_child(), readiness_evidence=("ZRO_ARMED",)), ()))
     _run_terminated(session, fails=True)
     snapshot = _terminal_event(events)
     assert "READY" not in [kind for kind, _ in events]
@@ -1322,16 +1307,15 @@ def test_lease_loss_recognized_behind_readiness_evidence_prevents_ready(
     ) -> None:
         if name == "stdout":
             # The reader recognizes unreleased EOF before the readiness
-            # evidence is queued; the EOF itself is never dispatched.
+            # evidence is written; the EOF itself is never dispatched.
             writer.close()
             await held_controller_eof.wait()
-            await owner._events.put(ChildOutput(child, name, b"ZRO_ARMED\n"))
+            _write_evidence(owner, "ZRO_ARMED\n")
+            await owner._events.put(ReadinessPoll(child))
         await observe_output(owner, child, name, stream)
 
     monkeypatch.setattr(HelperSession, "_observe_output", output)
-    writer.write(
-        encode_start(ProcessSpec(_idle_child(), required_output_sentinels=("ZRO_ARMED",)), ())
-    )
+    writer.write(encode_start(ProcessSpec(_idle_child(), readiness_evidence=("ZRO_ARMED",)), ()))
     _run_terminated(session, fails=True)
     snapshot = _terminal_event(events)
     assert "READY" not in [kind for kind, _ in events]
@@ -1394,7 +1378,7 @@ def test_lease_loss_recognized_around_child_exit_fails_without_eof_dispatch(
         monkeypatch.setattr(HelperSession, "_record_exit", lose_lease_after_commit)
         monkeypatch.setattr(HelperSession, "_begin_child_cleanup", clean_after_recognition)
     child = (sys.executable, str(ROOT / "tests/fixtures/usr1_exit_child.py"), str(status))
-    writer.write(encode_start(ProcessSpec(child, required_output_sentinels=("ZRO_ARMED",)), ()))
+    writer.write(encode_start(ProcessSpec(child, readiness_evidence=("ZRO_ARMED",)), ()))
     _run_terminated(session, fails=True)
     snapshot = _terminal_event(events)
     assert "READY" in [kind for kind, _ in events]
@@ -1617,7 +1601,8 @@ def test_coordinator_failure_with_live_child_still_disposes_it(
     def poll_after_marker(child: SupervisedProcess) -> int | None:
         # Fail the final live-child check once readiness evidence is complete:
         # the coordinator itself raises while it owns a live child.
-        if not child.required_output_sentinels.unseen:
+        state = session.lifecycle.state
+        if isinstance(state, Starting) and "ZRO_ARMED" in state.evidence:
             raise failure
         return poll(child)
 
@@ -1640,7 +1625,7 @@ def test_coordinator_failure_with_live_child_still_disposes_it(
         encode_start(
             ProcessSpec(
                 _idle_child("ZRO_ARMED"),
-                required_output_sentinels=("ZRO_ARMED",),
+                readiness_evidence=("ZRO_ARMED",),
             ),
             (),
         )
@@ -2037,7 +2022,7 @@ def test_address_lease_cleanup_failure_preserves_startup_failure(
                     "import sys;print('Address already in use',file=sys.stderr,flush=True);"
                     "sys.exit(1)",
                 ),
-                required_output_sentinels=("not-ready",),
+                readiness_evidence=("not_ready",),
             ),
             (),
         )

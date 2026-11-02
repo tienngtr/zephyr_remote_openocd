@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 import sys
-from contextlib import suppress
 
 import pytest
 from zephyr_remote_openocd.helper import _streams as helper_streams
@@ -70,54 +68,3 @@ def test_protocol_writer_close_releases_pending_buffer_after_interruption(
         assert not output.frames
         assert output.pending_bytes == 0
         assert os.get_blocking(write_fd)
-
-
-@pytest.mark.parametrize("source", ("available-prefix", "continuous"))
-def test_final_reader_scan_consumes_available_prefix_with_finite_budget(
-    monkeypatch: pytest.MonkeyPatch, source: str
-) -> None:
-    read_fd, write_fd = os.pipe()
-    original_read = os.read
-    prefix = b"prefix before READY"
-
-    def read(descriptor: int, size: int) -> bytes:
-        if descriptor != read_fd:
-            return original_read(descriptor, size)
-        if source == "continuous":
-            return b"x" * size
-        return original_read(descriptor, min(size, 3))
-
-    monkeypatch.setattr(os, "read", read)
-
-    async def run() -> None:
-        reader = helper_streams.AsyncInput(read_fd)
-        next_read = None
-        try:
-            os.write(write_fd, prefix)
-            checkpoint = reader.checkpoint()
-            captured = bytearray(await reader.read())
-            assert not checkpoint.done()
-            if source == "continuous":
-                while not checkpoint.done():
-                    captured.extend(await reader.read())
-                assert len(captured) == helper_streams.MAX_FINAL_OBSERVATION_BYTES
-            else:
-                while len(captured) < len(prefix):
-                    captured.extend(await reader.read())
-                assert bytes(captured) == prefix
-                next_read = asyncio.create_task(reader.read())
-                await checkpoint
-                assert not next_read.done()
-        finally:
-            if next_read is not None:
-                next_read.cancel()
-                with suppress(asyncio.CancelledError):
-                    await next_read
-            reader.close()
-
-    try:
-        asyncio.run(run())
-        assert os.get_blocking(read_fd)
-    finally:
-        os.close(read_fd)
-        os.close(write_fd)

@@ -2,7 +2,7 @@
 
 """A ready child leaving a SIGTERM-ignoring descendant in its process group.
 
-The leader prints its ``SENTINEL`` argument only after the descendant has
+The leader announces its readiness argument only after the descendant has
 installed its disposition, so cleanup always finds a surviving group member.
 """
 
@@ -12,10 +12,14 @@ import os
 import signal
 import sys
 import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from tests.readiness_evidence import announce
 
 
 def main() -> None:
-    sentinel = sys.argv[1]
+    evidence = sys.argv[1]
     reader, writer = os.pipe()
     if os.fork() == 0:
         os.close(reader)
@@ -27,7 +31,7 @@ def main() -> None:
     os.close(writer)
     assert os.read(reader, len(b"ready")) == b"ready"
     os.close(reader)
-    print(sentinel, flush=True)
+    announce(evidence)
     time.sleep(30)
 
 
