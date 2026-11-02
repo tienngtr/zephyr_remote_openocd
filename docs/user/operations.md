@@ -38,9 +38,13 @@ this runner and the remote named `lab`. Either option can be omitted:
 Select any other available runner with `-r`, for example `west flash -r openocd`
 for local OpenOCD.
 
-On a remote host with several probes, pass `--serial` to select one.
-`remote_openocd` applies it to every command, including `debugserver`, for
-which the built-in `openocd` runner ignores it.
+On a remote host with several probes, select the target board's probe by its
+serial number with `--serial <serial>`. On Zephyr 4.5, the option is
+`-i <serial>` or `--dev-id <serial>`, and `--serial` remains a deprecated alias
+for it. Zephyr 4.4 accepts `-i` and `--dev-id` but its `openocd` runner, and
+therefore `remote_openocd`, ignores them, so scripts used with both releases
+must pass `--serial`. `remote_openocd` applies the selection to every command,
+including `debugserver`, for which the built-in `openocd` runner ignores it.
 
 ### `--log-file` on Zephyr 4.5
 

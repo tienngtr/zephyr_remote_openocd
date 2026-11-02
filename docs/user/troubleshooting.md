@@ -583,6 +583,14 @@ SSH control connection once the remote helper observes that loss. Failure to
 remove any of these is reported as a cleanup failure while the connection can
 still deliver the report; after SSH loss, the report may not arrive.
 
+**Session storage on NFS.** Workspace removal fails on a filesystem that keeps
+an unlinked open file visible in its directory, as NFS clients do, so every
+operation that uses such storage fails with a cleanup failure. For example,
+when `XDG_RUNTIME_DIR` in the remote SSH environment does not identify an
+existing directory and the remote home directory is on NFS, workspaces are
+created on NFS under `~/.cache`; see
+[Remote session file locations](#remote-session-file-locations).
+
 Orphaned session metadata older than 24 hours whose workspace is absent can be
 removed during a later session's setup. This does not guarantee a maximum
 retention time.

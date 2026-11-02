@@ -187,7 +187,7 @@ build cannot use it. If either runner is missing, see
 > [!WARNING]
 > If the remote host has more than one probe attached, add `--serial <serial>`
 > with the serial number of the target board's probe; otherwise OpenOCD may
-> program a different board. See
+> program a different board. On Zephyr 4.5, `-i <serial>` is equivalent. See
 > [Runner, remote, and probe options](docs/user/operations.md#runner-remote-and-probe-options).
 
 ```sh
