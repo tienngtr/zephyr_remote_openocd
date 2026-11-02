@@ -5,7 +5,11 @@
 The client and helper use numeric `version: 1` for session and standalone
 operations. Compatibility requires the full contract, not version equality.
 There is no negotiation or dual-version session. Content-addressed deployment
-supplies matching revisions in the `protocol_v1` helper namespace.
+supplies matching revisions in the `protocol_v1` helper namespace. The number
+identifies the envelope and the deployment namespace; the helper digest
+identifies the contract revision. Because client and helper are always
+deployed as a matching pair, the contract is revised in place without a new
+number.
 
 Configured SSH wrappers must deliver directional EOF: closing controller stdin
 leaves helper stdout/stderr readable until helper exit. They must also deliver
@@ -33,7 +37,8 @@ rejected like malformed UTF-8, and senders reject such text before admission.
 Operating-system text that is not valid UTF-8, such as a surrogate-escaped file
 name, is therefore not representable in Protocol v1.
 Helper stdout contains protocol frames only. Child stdout/stderr are output
-events; helper stderr carries infrastructure diagnostics.
+events, the child's OpenOCD log channel is carried as `LOG_DATA` events, and
+helper stderr carries infrastructure diagnostics.
 
 Frames in either direction are limited to 1 MiB (1,048,576 encoded bytes),
 including LF. Both complete and incomplete frames are bounded independently,
@@ -128,13 +133,13 @@ START contains exactly the envelope and the following immutable request:
 
 | Field | Value |
 | --- | --- |
-| `completion_policy` | Exactly `live_server` or `process_exit`; required, with no default or inference from markers/services. |
+| `completion_policy` | Exactly `live_server` or `process_exit`; required, with no default or inference from readiness evidence or services. |
 | `argv` | Non-empty list of strings without NUL; the first string is non-empty and later strings may be empty. |
 | `environment` | Object whose names are non-empty strings without `=` or NUL and whose values are strings without NUL. |
 | `required_paths` | List of exact `{kind, path}` objects. `kind` is `file` or `directory`; `path` is a non-empty literal string without NUL or an exact `{parts}` path template as defined below. |
 | `services` | List of exact `{name, remote_port}` objects. `name` is a non-empty string; `remote_port` is a non-Boolean integer in `1..65535`. Names and ports are unique within the request. |
 | `preferred_address` | Null, or a canonical dotted-decimal IPv4 string in `127.64.0.0/10`, excluding `127.64.0.0` and `127.127.255.255`. A hint, not an allocation or lease. |
-| `required_output_sentinels` | List of unique non-empty, trimmed startup output markers without `CR`, `LF`, or NUL; may be empty. Trimmed means no leading or trailing whitespace, where whitespace is every character for which Python `str.isspace()` is true: Unicode `White_Space` characters plus the separators U+001C to U+001F. |
+| `readiness_evidence` | List of unique evidence names; may be empty. Each name is a non-empty string of ASCII letters, ASCII digits, and underscores. |
 | `readiness_timeout` | Positive, non-Boolean number whose conversion to the helper's IEEE 754 binary64 timeout type is finite and greater than zero. Used only for `live_server`. |
 | `literal_prefix` | Non-Boolean, non-negative integer no greater than the length of `argv`. Templates cannot target this many leading arguments. |
 | `argv_templates` | List of exact `{index, parts}` objects. Indices are unique non-Boolean integers at least `literal_prefix` and less than the length of `argv`. Each template replaces its indexed argv element. An empty list is valid and required when no templates are used. |
@@ -144,12 +149,12 @@ The client selects `completion_policy` from the operation, explicitly:
 | Policy | Required behavior |
 | --- | --- |
 | `live_server` | Used for debug, attach, debugserver, and RTT. READY is required before successful server use or dependent local launch. Child exit before READY is startup failure; the deployed helper does not restart it. |
-| `process_exit` | Used for one-shot flash. The helper never admits READY, waits for markers, or starts a readiness timer. Genuine child exit supplies the operation result; zero may succeed only with no operation/infrastructure failure and confirmed required cleanup, and nonzero fails. |
+| `process_exit` | Used for one-shot flash. The helper never creates a readiness artifact, admits READY, waits for readiness evidence, or starts a readiness timer. Genuine child exit supplies the operation result; zero may succeed only with no operation/infrastructure failure and confirmed required cleanup, and nonzero fails. |
 
-Both policies validate the entire START request. Marker and timeout fields retain
-their schema validation but have no readiness effect under `process_exit`.
-Empty marker/service lists do not select `process_exit`; non-empty lists do not
-select `live_server`. Controller EOF, protocol/output failure, cleanup, and child
+Both policies validate the entire START request. Readiness-evidence and timeout
+fields retain their schema validation but have no readiness effect under
+`process_exit`. Empty evidence/service lists do not select `process_exit`;
+non-empty lists do not select `live_server`. Controller EOF, protocol/output failure, cleanup, and child
 result provenance remain applicable to both. Failure to deliver actual required
 output is still an infrastructure failure, but `process_exit` cannot fail through
 admission of an unnecessary READY.
@@ -158,9 +163,10 @@ All ordinary strings are literal, including `{workspace}` and `{address}`
 spellings in argv, required paths, mapping destinations, and inherited Tcl.
 There is no automatic textual replacement. A template's `parts` is a non-empty
 list containing literal strings without NUL and exact `{session}` objects whose
-value is `workspace` or `address`. The helper concatenates these parts in order,
-inserting its actual workspace or the current attempt's allocated address only
-at those explicit references. Inserted values are not scanned for additional
+value is `workspace`, `address`, or `log_spool`. The helper concatenates these
+parts in order, inserting its actual workspace, the current attempt's
+allocated address, or the path of the session's log channel only at those
+explicit references. Inserted values are not scanned for additional
 substitutions. An argv element targeted by a template is a planning preview;
 the template supplies its complete effective value.
 
@@ -179,6 +185,19 @@ helper checks it when it materializes templates, before ATTEMPT. A required-path
 template, or a template for the first argv element, that resolves to an empty
 string is a startup failure with no ATTEMPT, like a missing required path.
 
+The `log_spool` session value is valid only in exactly one form: an argv
+template whose `parts` is exactly one `{tcl_word}` whose parts are exactly
+`[{"session": "log_spool"}]`. At most one such template may occur in a START
+request. Any other occurrence, including additional literal or session parts
+in the Tcl word or the template, a plain argv-template part, or a
+required-path template part, is rejected before startup. The materialized
+argv element is therefore exactly the quoted log channel path. Placing that
+element where the child uses it as its log output is the runner's
+responsibility; the protocol does not interpret child options. Its presence
+requests the session's log channel (helper-owned workspace entries below).
+Without it, the session has no log channel, no `LOG_DATA`, and a null terminal
+`log`.
+
 For example, an argv template with
 `parts: ["bindto ", {"session": "address"}]` resolves the runner-owned bind
 address, while the ordinary string `"echo {address}"` stays literal.
@@ -190,6 +209,21 @@ and starts the child in `<remote_workspace>/staged` with the helper environment
 overlaid by `environment`. Service `remote_port` values are unique by
 contract, and duplicate values are rejected during validation before startup.
 
+### Helper-owned workspace entries
+
+Before ATTEMPT, the helper creates these entries in the workspace and owns
+them for the session:
+
+| Entry | Created when | Contract |
+| --- | --- | --- |
+| `<remote_workspace>/readiness` | `completion_policy` is `live_server` | Empty regular file, mode `0600`, the readiness artifact. The runner refers to it only through templates over the `workspace` session value. |
+| The log channel | START uses `log_spool` | Owner-only destination whose path is the `log_spool` value. The child may open it for writing, as its log output; the helper reads it and relays the bytes as `LOG_DATA`. Its kind and relay policy are defined in SAD §38.8. |
+
+Failure to create or open an entry is startup failure with no ATTEMPT.
+Staging writes only below `staged`, so these entries never collide with staged
+inputs. Child configuration that writes these entries other than through the
+runner's generated commands is outside this contract.
+
 ## Attempt admission and startup failure
 
 The helper allocates a leased address in `127.64.0.0/10` and validates requested
@@ -199,8 +233,9 @@ null uses randomized candidates only. The preference does not bypass leasing or 
 validation. Post-spawn bind failure ends the operation. OpenOCD owns
 its listeners; the helper does not probe connectability.
 
-After address allocation, template materialization, and required-path
-validation, the authority checks current startup state, admits
+After address allocation, template materialization, required-path
+validation, and creation of helper-owned workspace entries, the authority
+checks current startup state, admits
 ATTEMPT with the exact effective argv, establishes physical acquisition ownership,
 and invokes spawn. ATTEMPT contains exactly the envelope and:
 
@@ -239,20 +274,24 @@ READY alone never authorizes GDB or RTT launch: the local operation also
 validates required forwarding, cancellation, and established failures at
 actual execution entry.
 
-Required markers are complete lines on either stream, trimmed with the same
-whitespace definition as START markers and matched exactly
-and in any order using incremental UTF-8 decoding with replacement. Prefix
-fragments do not count. An actual stream EOF finalizes the decoder and its
-last unterminated line, which can satisfy a complete marker. For `live_server`
-with no markers, startup evidence is immediately satisfied but
+Startup evidence is the set of complete LF-terminated lines in the readiness
+artifact that exactly equal a name in `readiness_evidence`, in any order.
+Repeated lines and lines that equal no requested name have no effect, and an
+unterminated final line never counts. Evidence is complete when every
+requested name has been observed. For `live_server` with an empty
+`readiness_evidence`, startup evidence is immediately satisfied but
 ownership/live-child/admission checks still apply. `process_exit` never admits
-READY, regardless of its marker list; its result comes from SESSION_ENDED.
+READY, regardless of its evidence list; its result comes from SESSION_ENDED.
 
-For `live_server`, the readiness deadline starts a bounded final observation
-of retained decoder evidence, finite available stream bytes, actual EOF, and
-child exit. SAD §40 defines the finite scan policy. Then readiness or startup
-failure is chosen; continued output cannot indefinitely extend determination.
-A dead child cannot authorize live READY. Controller EOF and deadline handling
+Child stdout/stderr and the log channel are not inspected for readiness.
+READY makes no ordering claim relative to CHILD_OUTPUT or `LOG_DATA`: output
+produced before readiness may be admitted after READY.
+
+For `live_server`, the readiness deadline starts a bounded final observation:
+one bounded read of the readiness artifact and the current child exit state,
+after already recorded failures are accounted. SAD §40 defines the read bound.
+Readiness or startup failure is then chosen; continued output cannot extend
+determination. A dead child cannot authorize live READY. Controller EOF and deadline handling
 may race without fabricating child status or restoring local launch
 eligibility.
 
@@ -268,9 +307,7 @@ CHILD_OUTPUT contains exactly the envelope and:
 
 A logical line may span several events. Newline-free fragments remain observable
 before child exit; UTF-8 decoding uses replacement for invalid bytes. Actual
-EOF flushes the decoder without inventing a newline. Markers
-inspect retained decoding evidence without requiring successful
-bulk-output delivery.
+EOF flushes the decoder without inventing a newline.
 
 Output is allowed during startup, activity, and termination, after its ATTEMPT
 and before SESSION_ENDED. Order is preserved within each stream. There is no
@@ -278,6 +315,26 @@ total stdout/stderr write ordering promise. Bulk backpressure cannot block contr
 observation, child exit accounting, or resource cleanup. Final retained output
 receives a finite drain opportunity under the bounded SAD policy; no event can
 follow the terminal frame.
+
+## LOG_DATA
+
+`LOG_DATA` contains exactly the envelope and:
+
+| Field | Constraint |
+| --- | --- |
+| `offset` | Non-Boolean integer equal to the total decoded length of all earlier `LOG_DATA` in the session; zero for the first. |
+| `data` | Standard base64 (RFC 4648 alphabet with `=` padding and no other characters) of 1 to 65,536 bytes. |
+
+`LOG_DATA` is allowed only when START used `log_spool`, after its ATTEMPT and
+before SESSION_ENDED, under either completion policy and before or after
+READY. Unlike CHILD_OUTPUT, it preserves bytes exactly. The decoded data of
+all `LOG_DATA` in a session, in order, is a prefix of the log channel's byte
+stream starting at its first byte. After any channel byte that the helper
+discards or does not admit, it admits no later byte, and the session ends with
+`log.complete: false`. The helper bounds `LOG_DATA` admitted to its writer but
+not yet written (SAD §38.8), so log data never makes READY or SESSION_ENDED
+wait behind an unbounded backlog. There is no ordering promise between
+`LOG_DATA` and CHILD_OUTPUT or READY.
 
 ## SESSION_ENDED and structured outcome
 
@@ -291,6 +348,7 @@ It contains exactly the envelope and:
 | `diagnostics` | Ordered list of Diagnostic objects for secondary or informational details. |
 | `child_result` | Null or exactly `{returncode, termination_requested}`: returncode is an observed integer child status, including negative signal status; termination_requested is Boolean as defined below. |
 | `cleanup` | Exactly the Cleanup object below. |
+| `log` | Null exactly when START did not use `log_spool`; otherwise exactly the Log object below. |
 
 A Diagnostic is exactly `{code, message, diagnostics}`. `code` is a non-empty
 string, `message` is a string, and `diagnostics` is an ordered list of nested
@@ -306,6 +364,24 @@ Cleanup is exactly:
 | `workspace_disposal` | `not_created`, `confirmed`, or `unconfirmed`. `confirmed` requires safe removal of workspace and per-session coordination artifacts. |
 | `residual_resources` | List of unique names drawn from `child_producer`, `child_group`, `child_relays`, `address_lease`, `workspace`, `workspace_metadata`, identifying outstanding disposal obligations. |
 
+Log is exactly:
+
+| Field | Constraint |
+| --- | --- |
+| `byte_count` | Non-Boolean integer, at least zero, equal to the total decoded length of the session's `LOG_DATA`. |
+| `complete` | Boolean. |
+| `diagnostic` | Null exactly when `complete` is true; otherwise a Diagnostic identifying why the relay is incomplete. |
+
+`complete` reports remote relay completeness only; it carries no knowledge of
+the client's local file. `complete: true` means the session's `LOG_DATA` is
+the entire byte stream of the log channel: the helper read the channel to
+end-of-file after every writer was gone and admitted every byte it read. It requires `child_disposal`
+`confirmed` or `not_acquired`. `complete: false` means the `LOG_DATA` is a
+prefix that is shorter than the stream or cannot be shown to be all of it, for
+example after relay-buffer overflow, expiry of the final drain deadline,
+unconfirmed disposal, or a log-channel read failure. `log` is not part of `trigger`, `primary_failure`, or
+`diagnostics`, and never selects or replaces a primary failure.
+
 A failure trigger (`signal`, `startup_failure`, `protocol_failure`,
 `output_failure`, or `helper_failure`) requires a non-null primary failure.
 Controller EOF or child exit can also coexist with a primary failure established
@@ -315,7 +391,8 @@ child result.
 and a non-null child result is incompatible with `child_disposal: not_acquired`.
 Disposal claims must also agree with earlier session events: SESSION_CREATED
 rules out `workspace_disposal: not_created`, while READY or CHILD_OUTPUT rules
-out `child_disposal: not_acquired`. ATTEMPT alone does not prove child acquisition.
+out `child_disposal: not_acquired`; so does `LOG_DATA`. ATTEMPT alone does not
+prove child acquisition.
 Creation can fail after acquiring a workspace but before admitting SESSION_CREATED,
 so a terminal-only history may still report confirmed workspace disposal.
 
@@ -380,8 +457,8 @@ null, even with zero helper/SSH status. A failed spawn can have an ATTEMPT and
 still have null child result. Signal failure is retained as a primary or
 secondary Diagnostic; it never substitutes a signal number for child status.
 
-Freeze at most one immutable snapshot after cleanup attempts and retained-output
-accounting. SESSION_ENDED is admitted after the output retained for delivery.
+Freeze at most one immutable snapshot after cleanup attempts, retained-output
+accounting, and the log decision. SESSION_ENDED is admitted after the output retained for delivery.
 Failed admission, partial writes, or transport loss do not allow another terminal
 snapshot or replay from its beginning. Local diagnostics may grow after freezing
 but cannot mutate the wire snapshot. The output writer gets a finite drain
@@ -392,7 +469,10 @@ The client records remote outcome, disposal confirmation, and helper/SSH status
 independently. Missing or malformed terminal information is infrastructure
 uncertainty, not success or confirmed remote disposal. Nonzero helper/SSH status
 after a valid snapshot remains independent failure evidence. A valid snapshot
-with primary failure or unconfirmed required disposal fails the operation. Later
+with primary failure or unconfirmed required disposal fails the operation. A
+valid snapshot with `log.complete: false` also fails the operation; the client
+applies it at result projection, where an established failure or cancellation
+stays primary (SAD §39). Later
 cleanup cannot replace an already established local operation failure.
 
 ## Allowed session histories and failure boundaries
@@ -400,15 +480,18 @@ cleanup cannot replace an already established local operation failure.
 ```text
 helper: SESSION_CREATED
 client: START; stdin remains open as lease
-helper: ATTEMPT?; CHILD_OUTPUT*; READY?; CHILD_OUTPUT*; SESSION_ENDED
+helper: ATTEMPT?; (CHILD_OUTPUT | LOG_DATA)*; READY?; (CHILD_OUTPUT | LOG_DATA)*; SESSION_ENDED
 client: RELEASE then EOF at intentional closure; input EOF alone may occur at any point
 ```
 
 The compact grammar is illustrative: setup/startup failure can end before
 ATTEMPT or READY. SESSION_ENDED may be the first and only frame if creation
 failed. The client rejects duplicate creation or ATTEMPT, READY before
-ATTEMPT, READY under `process_exit`, output or child result without ATTEMPT,
-duplicate terminal events, and any event after terminal. A successful
+ATTEMPT, READY under `process_exit`, output, `LOG_DATA`, or child result
+without ATTEMPT, `LOG_DATA` when START did not use `log_spool`, a `LOG_DATA`
+offset other than the received total, a terminal `log` that disagrees with
+START or the received total, duplicate terminal events, and any event after
+terminal. A successful
 `live_server` startup requires READY; pre-readiness failure/cancellation may end without it.
 Under `process_exit`, READY is forbidden and genuine process completion
 requires no readiness event. Failed spawn remains an admitted diagnostic
@@ -511,6 +594,7 @@ parsing, SSH, or transport failure may instead terminate without a usable
 response. Deployment bootstrap failure is reported by a nonzero subprocess
 status and diagnostics rather than a session-protocol `ERROR` event.
 
-Bulk binary content remains stream-oriented instead of JSON/base64. The
+Bulk binary content remains stream-oriented instead of JSON/base64, except the
+session's OpenOCD log, which is carried as bounded base64 `LOG_DATA`. The
 configured SSH command prefix is passed as argv, separate from runner-generated
 arguments.

@@ -5,8 +5,8 @@
 - [Context, terminology, and scope](#1-purpose)
 - [Integration and configuration](#6-source-repository-independence)
 - [Remote execution and user operations](#13-remote-host-and-openocd)
-- [Lifecycle, platform, and quality requirements](#21-concurrent-users-and-probe-contention)
-- [Assumptions, risks, and non-goals](#26-assumptions)
+- [Lifecycle, platform, and quality requirements](#22-concurrent-users-and-probe-contention)
+- [Assumptions, risks, and non-goals](#27-assumptions)
 - [Verification traceability](../traceability/verification.md)
 
 ## 1. Purpose
@@ -120,7 +120,7 @@ An unprivileged per-user program executed on the remote host to:
 - stage files;
 - allocate a session address;
 - launch and supervise OpenOCD;
-- relay OpenOCD output.
+- relay OpenOCD output and a requested OpenOCD log.
 
 ### 2.10 Remote session
 
@@ -914,10 +914,23 @@ of the particular supported Zephyr environment in use as follows:
   rather than load the image without erasing;
 - `west debugserver` SHALL apply an explicit `--serial` as for the other
   supported commands (REQ-FUNC-OPT-002), rather than ignore it;
-- on Zephyr 4.5, the inherited `--log-file` option SHALL accept its upstream
-  syntax but reject any supplied value, including an empty value, before SSH,
-  remote-home resolution, session acquisition, or local client execution.
-  This restriction SHALL also apply to recording and generated board arguments.
+- on Zephyr 4.5, `--log-file` (REQ-FUNC-LOG-001) SHALL differ as follows:
+  - a target that is not a regular file, such as a FIFO, terminal, other
+    character device, or process-substitution path, SHALL be rejected without
+    being modified, rather than passed to OpenOCD;
+  - the pathname SHALL be used literally, rather than evaluated as Tcl by
+    OpenOCD;
+  - the file SHALL be created or truncated before the remote session is
+    acquired, rather than when OpenOCD starts, even if the operation later
+    fails before OpenOCD starts;
+  - failure to open or validate the file SHALL fail the operation before a
+    remote session is acquired, rather than leaving logging on stderr and
+    continuing, as some OpenOCD versions do;
+  - a local write failure or an incomplete relay (REQ-FUNC-LOG-003) SHALL
+    fail the operation, rather than being ignored;
+  - OpenOCD configuration that redirects logging with `log_output` SHALL leave
+    content already written in the local file, rather than truncating it when
+    the redirect names the same path.
 
 Any further deliberate semantic or correctness-motivated difference from the
 built-in runner SHALL be added to this requirement. Remote-execution
@@ -1138,19 +1151,26 @@ checked again at entry. A late readiness report SHALL NOT restore eligibility
 after cancellation. These checks do not promise continued process liveness.
 
 For live-server operations, the runner SHALL apply a finite startup-readiness
-deadline. Expiration SHALL initiate a bounded final observation of startup
-sources owned by the helper, including retained decoded evidence, finitely
-available stream bytes, stream EOF, and current child exit state as
-applicable. The helper SHALL then choose readiness or startup failure. This is
-a finite local observation boundary, not a globally synchronized instant or an
-indefinitely extensible drain.
+deadline. Expiration SHALL initiate a bounded final observation of the
+helper-owned startup-readiness evidence and the current child exit state,
+after accounting for failures already recorded. The helper SHALL then choose
+readiness or startup failure. This is a finite local observation boundary, not
+a globally synchronized instant or an indefinitely extensible drain.
+
+Startup-readiness evidence SHALL be written by runner-generated OpenOCD
+commands to a helper-owned destination that is independent of OpenOCD logger
+output. The logger's destination, format, and debug level SHALL NOT affect
+readiness determination. OpenOCD stdout/stderr and log data are relayed
+independently of readiness determination: output produced before readiness MAY
+be delivered after the readiness report, and no ordering between them is
+required.
 
 For an operation requiring a live server, OpenOCD exit before readiness,
 unestablished readiness after final determination, or failed required forwarding
 SHALL fail startup without dependent client launch. A one-shot flash operation SHALL
 instead be evaluated from its genuine child result and infrastructure outcome.
 The process request SHALL explicitly distinguish these completion policies
-rather than infer them from markers or services. One-shot operations SHALL NOT
+rather than infer them from readiness evidence or services. One-shot operations SHALL NOT
 publish or wait for live-server readiness, or apply its readiness deadline; a
 genuine child exit is their process result.
 
@@ -1340,7 +1360,124 @@ outside the runner's compatibility guarantees.
 
 ---
 
-## 20. SSH Client Selection and Compatibility
+## 20. OpenOCD Log File
+
+On Zephyr 4.5, the built-in `openocd` runner's `--log-file` option sends
+OpenOCD logger output to a file. Zephyr 4.4 has no such option. In this
+section, the OpenOCD log channel is the helper-owned destination that the
+runner configures as OpenOCD's log output for a session, and its byte stream is
+the sequence of bytes the helper reads from that destination.
+
+### REQ-FUNC-LOG-001
+
+The runner SHALL interpret a `--log-file` value, including one from generated
+board arguments, as the built-in runner does: with its pathname normalization,
+with a relative value resolved against the current working directory of the
+west process, and with an empty value equivalent to an omitted option. When a
+log file is requested, the runner SHALL configure the OpenOCD log channel as
+OpenOCD's log output for the session and SHALL write the channel's byte stream
+to the local file as specified by REQ-FUNC-LOG-002. The pathname SHALL be used
+literally and SHALL NOT be passed to OpenOCD.
+
+The local file SHALL be a regular file. The runner SHALL open it for writing
+without truncation, creating it if it is missing, and SHALL determine the type
+of the opened file before modifying it. A target that is not a regular file
+SHALL be rejected without being modified; a regular file SHALL then be
+truncated. Opening, validation, and truncation SHALL occur after local
+validation and remote preparation and before a remote session is acquired.
+Their failure SHALL fail the operation before a remote session is acquired.
+
+Recording mode SHALL NOT create, open, inspect, or modify the file.
+
+### REQ-FUNC-LOG-002
+
+The local log file SHALL contain a contiguous prefix of the OpenOCD log
+channel byte stream, starting at its first byte, with no byte altered,
+reordered, or inserted. Once continuity is lost, because channel bytes were
+discarded or could not be delivered, or once final delivery is cut, no later
+bytes SHALL be appended. The runner SHALL NOT delete, rename, or truncate the
+file after validation; partial content SHALL remain after failure or
+cancellation.
+
+While transport and the local consumer permit, log bytes SHALL be delivered
+incrementally while OpenOCD runs. No ordering is required between log bytes
+and OpenOCD stdout/stderr, the readiness report, or local client launch.
+
+### REQ-FUNC-LOG-003
+
+Remote relay completeness and local log-file fulfillment are distinct. The
+relay is complete only when the helper has relayed the entire OpenOCD log
+channel byte stream: every byte written to the channel until no writer
+remains. Relay completeness SHALL be established only after confirmed disposal
+of the session's OpenOCD process scope, or when no OpenOCD process was
+acquired, and is reported in the terminal outcome without knowledge of the
+local file. The requested log file is fulfilled only when the relay is
+complete and every relayed byte was received and written to the local file.
+An incomplete relay, or a failure to write the local file, is a log failure.
+
+A log failure SHALL fail the operation, even when OpenOCD and session cleanup
+succeeded. A log failure SHALL NOT terminate OpenOCD, revoke startup
+readiness, prevent dependent local work, or interrupt a running local client.
+It SHALL be applied when the operation result is reported: an established
+operation failure or cancellation remains the primary outcome and the log
+failure is retained as diagnostic information; otherwise the first recorded
+log failure is the operation failure. After a local write failure, the runner
+SHALL continue to consume log data without writing it.
+
+### REQ-FUNC-LOG-004
+
+Log relay SHALL use bounded memory on both hosts. A slow or stalled local
+consumer or transport SHALL NOT block or terminate OpenOCD through its log
+output. When pending log data reaches its bound, the helper SHALL continue
+reading the OpenOCD log channel and discard the excess, and the relay SHALL be
+incomplete. Log data pending ahead of the readiness report or the terminal
+outcome SHALL be bounded.
+
+If the helper cannot continue reading the OpenOCD log channel while OpenOCD
+may still write to it, that read failure SHALL itself be a helper failure under
+REQ-FUNC-HELP-011 and SHALL initiate bounded session termination. The
+resulting incomplete relay is still a log failure under REQ-FUNC-LOG-003; that
+log failure itself initiates no termination. A read failure after confirmed
+disposal of the OpenOCD process scope only makes the relay incomplete.
+
+After remote termination is committed, final log delivery SHALL be a bounded
+attempt with a finite deadline, as defined in §3.5. Log data not delivered by
+that deadline, and channel data that cannot be read to its end because
+disposal of the OpenOCD process scope is unconfirmed, make the relay
+incomplete.
+That deadline and the local coordination budget of REQ-FUNC-HELP-010 are
+independent bounds; neither implies the other. No minimum transport
+throughput is guaranteed.
+
+### REQ-FUNC-LOG-005
+
+These remote-execution boundaries apply to `--log-file`:
+
+- OpenOCD configuration that runs `log_output` with a path SHALL send later
+  logger records to that path on the remote host, resolved like other remote
+  OpenOCD file operations. Those records are not in the local file.
+  `log_output` without a path, or with `default`, sends later records to
+  OpenOCD stderr, which is relayed like other OpenOCD output.
+- When `--log-file` is supplied, the runner's log output option SHALL take
+  effect after any log output option in fixed `openocd_command` arguments, so
+  the fixed option does not determine the session's log output. Its target MAY
+  still be created on the remote host.
+- Records in which OpenOCD reports its log destination name the OpenOCD log
+  channel, not the local pathname.
+- Output that OpenOCD writes outside its logger, including its startup banner
+  and semihosting console output, SHALL remain on OpenOCD stdout/stderr and be
+  relayed under REQ-FUNC-HELP-006 and REQ-FUNC-SEMI-002.
+
+Rationale:
+
+The local file preserves the built-in option's purpose, a file containing
+OpenOCD's log, while the remote helper owns the OpenOCD-side destination. A
+truthful prefix with explicit incompleteness is preferred to blocking or
+stopping a debug server because a log consumer is slow.
+
+---
+
+## 21. SSH Client Selection and Compatibility
 
 ### REQ-FUNC-SSH-001
 
@@ -1461,7 +1598,7 @@ REQ-FUNC-HELP-011.
 
 ---
 
-## 21. Concurrent Users and Probe Contention
+## 22. Concurrent Users and Probe Contention
 
 ### REQ-FUNC-CONC-001
 
@@ -1482,7 +1619,7 @@ If OpenOCD cannot acquire the requested probe or channel because another process
 
 ---
 
-## 22. Remote Helper
+## 23. Remote Helper
 
 ### REQ-FUNC-HELP-002
 
@@ -1543,8 +1680,9 @@ client launch.
 
 Remote OpenOCD stdout/stderr SHALL be relayed incrementally while the child is
 running, including long newline-free output, while transport remains usable.
-Ordering SHALL be preserved within each stream; no total order between streams
-is required. Protocol and output memory SHALL remain bounded. Final retained
+Ordering SHALL be preserved within each stream; no total order between streams,
+and no order relative to the readiness report, is required. Protocol and output
+memory SHALL remain bounded. Final retained
 output SHALL receive a finite drain opportunity after resource cleanup; drain
 failure SHALL NOT undo completed cleanup.
 
@@ -1770,7 +1908,7 @@ coalescing.
 
 ---
 
-## 23. Session Data
+## 24. Session Data
 
 ### REQ-FUNC-DATA-002
 
@@ -1813,7 +1951,7 @@ allocation occurs or when inspection or removal continues to fail.
 
 ---
 
-## 24. Platform Requirements
+## 25. Platform Requirements
 
 ### REQ-NFUNC-PLAT-001
 
@@ -1825,7 +1963,7 @@ The remote platform SHALL be Linux with Python 3.12 or newer.
 
 ---
 
-## 25. Other Non-Functional Requirements
+## 26. Other Non-Functional Requirements
 
 ### REQ-NFUNC-ADMIN-001
 
@@ -1842,7 +1980,7 @@ Remote-session and forwarding behavior SHALL be testable using fake OpenOCD endp
 
 ---
 
-## 26. Assumptions
+## 27. Assumptions
 
 ### ASM-001
 
@@ -1906,9 +2044,18 @@ equivalent to the corresponding local inputs, including mapped firmware,
 OpenOCD configuration, and search-tree contents. The runner does not stage,
 compare, or verify mapped contents.
 
+### ASM-013
+
+The remote session storage root permits removal of a session workspace while
+the helper holds an open descriptor for the session lock inside it. A
+filesystem that keeps an unlinked open file visible in its directory, for
+example by renaming it to a hidden entry as NFS clients do, does not satisfy
+this assumption. There, normal workspace removal fails and is reported as
+cleanup failure under REQ-FUNC-DATA-003.
+
 ---
 
-## 27. Explicit Non-Goals
+## 28. Explicit Non-Goals
 
 The current scope does not include:
 
@@ -1934,7 +2081,7 @@ The current scope does not include:
 
 ---
 
-## 28. Major Risks
+## 29. Major Risks
 
 ### RISK-003 - Zephyr-version API coupling
 

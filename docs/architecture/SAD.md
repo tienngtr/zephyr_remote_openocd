@@ -730,7 +730,8 @@ translating them into remote plans, except where a specific SRS requirement
 defines different remote behavior. Built-in runner behavior that reports
 success without performing a requested erase or verification, that ignores
 `--erase` combined with `--verify-only` or with an ELF image, or that ignores
-an explicit `debugserver --serial`, is deliberately not reproduced;
+an explicit `debugserver --serial`, is deliberately not reproduced, nor are the
+`--log-file` behaviors listed there;
 REQ-FUNC-OPT-008 is the complete list of such semantic differences, and each
 has focused tests. The differential comparison with the built-in runner classifies
 differences: an unexpected difference fails and must be resolved as a
@@ -783,10 +784,18 @@ success and failure. Session acquisition, partial-initialization ownership,
 rollback, cleanup, failure composition, and cancellation authority are unchanged.
 No upstream OpenOCD process lifecycle method is called.
 
-The 4.5 parser accepts `--log-file`, but construction rejects any supplied value
-before configuration resolution or remote effects, including in recording mode.
-No pathname transport, log retrieval, or output/readiness change is included.
-Supporting logging requires a separate architectural design.
+The 4.5 adapter supports `--log-file`. It normalizes the value as the built-in
+runner does, `Path(value).as_posix()` with an empty value meaning absent; this
+is the scoped exception to the no-lexical-normalization rule in §43.1. The
+plan carries the normalized local path for the session's local log sink (§39)
+and emits the OpenOCD log option at the built-in runner's position, after the
+search directories and before configuration files and commands, as
+`--log_output` followed by an argv template whose only part is a `tcl_word`
+whose only part is the `log_spool` session value, the one form Protocol v1
+accepts for that value. The pathname itself never reaches
+OpenOCD or the remote host. Recording reports the normalized value and that
+template, and creates, opens, or inspects no file. Zephyr 4.4 has no such
+option. The log relay is described in §38.8.
 
 ### 16.1 Classifying built-in runner behavior
 
@@ -936,6 +945,9 @@ precedence. The selected mapping translates
 the path by appending its relative suffix to the mapped remote root; other
 matching mappings do not also apply. If no mapping matches, the path is staged
 into the current session.
+
+A `--log-file` path is a local output, not a required input. It is neither
+mapped nor staged; the local log sink writes it (§39).
 
 ---
 
@@ -1177,7 +1189,7 @@ result semantics, so runner Ctrl-C cancels it like other setup work.
 
 For `debug --rtt-server`, `attach --rtt-server`, and `debugserver --rtt-server`,
 RTT setup is included in OpenOCD's startup command sequence before its
-startup-complete marker.
+`startup` readiness evidence.
 OpenOCD owns the RTT listener; the helper does not probe it. These operations
 expose the endpoint but do not launch a local RTT client. The `rtt` command reuses the
 same remote OpenOCD version and Zephyr thread-info decision as debug/attach.
@@ -1219,7 +1231,9 @@ remote helper
 local west process
 ```
 
-No semihosting-specific network subsystem exists.
+No semihosting-specific network subsystem exists. OpenOCD writes semihosting
+console output outside its logger, so redirecting logger output, including
+through `--log-file`, does not move it.
 
 The runner explicitly supports semihosting console output through this normal
 relay and accepts ordinary OpenOCD commands that enable it. It does not
@@ -1673,6 +1687,15 @@ helper deployment. Marker absence alone does not establish child disposal;
 reclamation also requires positive inactivity evidence: an exclusively
 acquired session lock, or a missing session lock as defined in §38.7.
 
+Workspace removal relies on the storage root's unlink and directory-removal
+semantics. The helper removes a workspace while the session-lock descriptor
+inside it is still open, and closes the lock afterwards. A filesystem that
+keeps an unlinked open file visible as a hidden directory entry, as NFS
+clients do by renaming it, makes that removal fail; the failure is reported as
+cleanup failure (SRS ASM-013). Supporting such roots needs a separate design of
+lock release and removal order, including its reclamation races, and is not
+part of this architecture.
+
 Session workspaces and their storage root use owner-only directory
 permissions. Staging directories and associated session metadata remain
 beneath that protected hierarchy, so ordinary remote users cannot access
@@ -1715,6 +1738,8 @@ or control-channel loss. The ownership boundaries are:
 | `HelperSession` | Coordinates remote physical owners, observation dispatch, and cleanup through the remote authority. |
 | `LifecycleAuthority` | Owns remote phase transitions, attempt admission, and outcome selection; acquires no resources. |
 | Child physical owner | Owns the acquired OpenOCD process group, output relays, termination, reaping, and stream closure; reports facts to the remote authority. |
+| Log relay owner | Owns the OpenOCD log channel and its descriptors, the relay buffer, `LOG_DATA` admission, the final log drain, and the log decision; reports deferred log facts (§38.8). |
+| Local log sink | Owned by `SessionController`: the local `--log-file` descriptor from validation through reader settlement. `HelperConnection` borrows only its write callable (§39). |
 
 `SessionController.close()` coordinates the subsystem cleanup sequences and publishes
 the failure selected by its shared `SessionAuthority` authority. Failure of one
@@ -1941,9 +1966,8 @@ This two-phase physical observation uses the existing lifecycle authority and
 does not wait for another observer's acknowledgement.
 
 The final scan has a non-replenishing allowance of `MAX_FRAME_SIZE` (one MiB)
-of new raw bytes, in reads of at most 64 KiB. This reuses the remote readiness
-checkpoint's semantic observation bound (§38.4): it can complete any one legal
-maximum-sized frame, including a prefix retained from ordinary reading, without
+of new raw bytes, in reads of at most 64 KiB. This bound equals the maximum
+frame size: it can complete any one legal maximum-sized frame, including a prefix retained from ordinary reading, without
 promising to drain an arbitrary backlog. Previously retained bytes precede new
 bytes and are not charged again. Every complete valid frame within the cut is
 accounted. Would-block and actual EOF both finish the scan immediately: an empty
@@ -2056,7 +2080,7 @@ prevents further entry or activation, including after a late acquisition result.
 Closure freezes one snapshot; later failures remain local diagnostics.
 
 The deployed helper's coordinator uses this authority for START, attempt entry,
-adoption, marker evidence, readiness, observed exit, termination, and freeze.
+adoption, readiness evidence, readiness, observed exit, termination, and freeze.
 Its observers report immutable facts; physical cleanup facts stay with their
 owners. Physical adapters must validate eligibility before wire admission,
 retain immediate acquisition ownership, and establish the facts passed into the
@@ -2105,7 +2129,7 @@ snapshot is frozen, not that every physical disposal necessarily succeeded.
 
 The immutable request carries an explicit `completion_policy` selected by the
 Zephyr adapter: `live_server` for debug/attach/debugserver/RTT, `process_exit` for
-flash. Neither markers nor services select the policy. Starting covers process
+flash. Neither readiness evidence nor services select the policy. Starting covers process
 acquisition for both; an owned `process_exit` attempt becomes Active without
 READY or a readiness timer, while `live_server` remains Starting until READY
 admission. One-shot child exit drives its result even if it arrives before
@@ -2190,6 +2214,9 @@ not by cancelling its awaiter.
 | Workspace, lease metadata, session lock | Allocation rollback scope, including partially created artifacts | Remote coordinator adoption transfers all artifacts; setup failure attempts workspace and lock cleanup independently. |
 | Remote address lease | Current attempt acquisition scope | Transfer to child attempt only with continuous reachability; failed materialization/spawn releases it, normal cleanup releases it after child settlement. |
 | Child Popen and its pipes | Acquisition ticket preregisters the resource-free raw Popen instance before initialization | Once the PID is published, rollback can reach the child even if constructor return fails. Child physical owner adopts inside that same guard; interruption on either side disposes the group, reaps, and settles pipes. |
+| Readiness artifact (`live_server`) | Session rollback scope; created empty and opened before ATTEMPT | The coordinator's read descriptor closes at the readiness decision or at attempt settlement. Creation failure is startup failure with no ATTEMPT. |
+| OpenOCD log channel: FIFO, read end, keep-open writer | Session rollback scope; created before ATTEMPT when START uses `log_spool` | Owned by the log relay; closed after the log decision and before workspace removal (§38.8). Creation failure is startup failure with no ATTEMPT. |
+| Local `--log-file` descriptor | Local guard from `open` until adoption into `SessionController` | Validated and truncated before adoption; any failure closes it. Closed only after the helper reader has settled or never started; an unsettled reader keeps it (§39). |
 | Observer tasks and protocol writer | Task-creation/setup scope | Register with session/attempt owner before publication; setup failure joins/cancels under bounded policy and retains unresolved obligations. |
 | Staging shared lease | Standalone staging scope | Held through validation, extraction, and success reporting; always released on failure/process exit, with no transfer to the controller. |
 | Forwarding transport | Forward manager's pending-resource owner | Keep rollback ownership through validation/adoption; independent failed forwards cannot orphan an acquired process or roll back another active forward. |
@@ -2214,22 +2241,9 @@ probe listener connectability.
 The input adapter owns one raw reader and bounded incremental START framer.
 After valid START, it observes EOF or unexpected input while startup and active
 work proceed. Each child stream likewise has one raw reader and incremental
-decoder. Normal decoding and the final startup scan share that ownership;
-there are no competing readiness readers. Their facts reach the authority
-independently of bulk-output delivery.
-
-The owned raw reader's checkpoint performs a finite available-byte scan. Each
-stream's reader consumes until EOF, a would-block result, or a raw read budget
-of one MiB initialized when the checkpoint is requested; continuous arrivals cannot
-replenish that budget. This budget matches the maximum control frame and is an
-internal observation bound, independent of the startup timeout. Bytes read before
-the checkpoint request are not charged against its raw read budget.
-They retain their order ahead of later bytes in the same stream. Decoding and
-ordered publication remain on the normal observation path. The coordinator
-continues dispatching while checkpoint facts are published, then decides readiness from
-child status and retained evidence. Reader cancellation or close still
-settles the checkpoint. Readiness scans only child streams; controller input is
-observed independently.
+decoder, and the log channel has one raw reader (§38.8). Their facts reach the
+authority independently of bulk-output delivery. Readiness never reads or
+waits for child streams or the log channel (§40).
 
 ### 38.5 Output and outcome ownership
 
@@ -2265,7 +2279,7 @@ candidate retry when cleanup remains unsuccessful. Ordinary pre-spawn candidate
 selection never repeats spawned child work.
 
 Bounded accumulation also applies before writer admission: raw-observation queues,
-per-stream decoding/marker capture, and structured diagnostic retention cannot
+per-stream decoding, the log relay buffer, and structured diagnostic retention cannot
 hide an unbounded buffer behind the encoded-output limit. Overflow reports
 infrastructure failure while critical fact reporting and cleanup remain usable.
 
@@ -2282,8 +2296,8 @@ Exception notes may be rendered at a boundary; exception structure is not the
 canonical result. Existing notes on secondary exceptions must survive conversion
 into structured diagnostics.
 
-The authority freezes at most one terminal snapshot after cleanup attempts and
-retained-output accounting. Admission or partial-write failure cannot create a
+The authority freezes at most one terminal snapshot after cleanup attempts,
+retained-output accounting, and the log decision (§38.8). Admission or partial-write failure cannot create a
 second snapshot. Failures discovered after freezing extend local diagnostics
 only. Child status is recorded from actual child observation, including during
 shutdown; controller EOF does not imply a fabricated code.
@@ -2374,7 +2388,8 @@ its TaskGroup ends.
 Workspace cleanup closes new staging admission when termination begins,
 before waiting for child disposal. Independent process/relay cleanup proceeds
 without first blocking on the staging lock. Remove the workspace only after
-acquisition producers have settled, child disposal is confirmed, and exclusive
+acquisition producers have settled, child disposal is confirmed, the log
+decision is made with the relay descriptors closed (§38.8), and exclusive
 staging exclusion is obtained. Unconfirmed child disposal retains required
 inputs, the lease/closure metadata, and explicit residual responsibility.
 A session lock may be released on helper exit, so later reclamation must also
@@ -2493,6 +2508,131 @@ deadline. Filesystem operations retain their ordinary OS behavior.
 Standalone staging behavior and protocol framing remain coordinated through
 [protocol.md](protocol.md).
 
+### 38.8 OpenOCD log relay
+
+When START uses the `log_spool` session value, the helper provides the
+session's OpenOCD log channel as a FIFO with mode `0600` in the session
+workspace. The log relay owner in the helper owns the channel, its
+descriptors, the relay buffer, `LOG_DATA` admission, the final drain, and the
+log decision. It reports facts to the coordinator and never decides lifecycle
+transitions.
+
+**Acquisition.** Before ATTEMPT, inside the session rollback scope, the helper
+creates the FIFO, opens its read end nonblocking, and then opens a keep-open
+write end. Neither open can block, because the read end exists before the
+writer opens. Both descriptors are close-on-exec, so OpenOCD inherits neither;
+OpenOCD opens the FIFO itself through its log option. A failure at any step is
+a startup failure with no ATTEMPT, and rollback closes what was opened.
+
+**Relay.** One observer task reads the read end and reports chunks to the
+coordinator, like the stdout/stderr observers. The coordinator owns a bounded
+relay buffer of 8 MiB of raw log bytes. It admits `LOG_DATA` from that buffer
+while the encoded `LOG_DATA` already admitted to the protocol writer but not
+yet written is below a credit of 256 KiB; pending `LOG_DATA` therefore exceeds
+the credit by at most one frame. Admission never waits for the writer. When
+the writer finishes a `LOG_DATA` frame, it sets a coalescing credit latch and
+returns; it never waits on the coordinator queue. A dedicated observer task
+publishes the latch as a coordinator observation, as the signal observer does,
+so a returned credit is never lost when the queue is full. The coordinator
+moves data from the buffer to the writer when a log chunk arrives, when credit
+returns, and when the channel reaches end-of-file.
+
+**Backpressure and overflow.** The FIFO has the same physical backpressure as
+the stderr pipe: OpenOCD blocks in `write` only while the helper stops reading.
+The helper reads continuously while OpenOCD runs, and no coordinator step
+waits for protocol output, so a stalled consumer or transport does not stop
+the read. When a chunk does not fit in the buffer, the relay keeps the part
+that fits, discards the rest and every later channel byte, and records one
+deferred log fact. It keeps reading, so OpenOCD never blocks on the relay.
+Overflow does not terminate the session, revoke READY, or close dependent-work
+admission. This differs deliberately from CHILD_OUTPUT, whose overflow of the
+writer bound is an output failure that ends the session.
+
+**Read failure.** Continuous reading is what keeps OpenOCD independent of
+protocol backpressure, so the relay cannot lose its reader while OpenOCD may
+still write. A log-channel observer failure before confirmed process-group
+disposal is therefore an ordinary fatal observer failure (§38.3): the
+coordinator accounts it as a helper failure and, unless termination is already
+committed, initiates normal bounded termination. The read end stays owned
+until settlement, and the log decision is incomplete. After confirmed
+disposal no writer remains, so a read failure during the final drain is only
+a deferred log fact and makes the log incomplete.
+
+**Exact prefix.** Admitted `LOG_DATA` is a contiguous prefix of the channel's
+byte stream. After the first byte that is discarded or not admitted, no later
+byte is admitted, so the local file never contains a gap.
+
+**Readiness independence.** The relay is not part of readiness. `LOG_DATA` may
+be admitted before or after READY, and READY waits behind at most the credit
+of pending `LOG_DATA`.
+
+**Final extent and drain.** After confirmed process-group disposal (§38.5), the
+relay closes the keep-open writer. End-of-file on the read end then marks the
+final extent, because no writer remains. If disposal is unconfirmed, the relay
+cuts instead: it stops reading and later closes the read end, so a residual
+writer gets `EPIPE`, as on the stderr pipe. In both cases, bytes already in the
+buffer may still be delivered. The final drain moves the buffer into the
+writer under the credit until the buffer is empty, or until an absolute
+deadline of 10 seconds after the remote termination commit (`T_term`). There
+is no progress-reset or separate stall budget: a stall consumes the deadline.
+
+**Log decision.** The relay decides once, before freeze:
+
+- **Complete:** the read end reached end-of-file after confirmed disposal, or
+  no child was acquired, and every channel byte was admitted.
+- **Incomplete:** otherwise. The diagnostic names the first cause: relay
+  overflow, the final drain deadline, unconfirmed disposal, or a log-channel
+  read failure.
+
+The decision becomes the terminal snapshot's `log` field. It is remote relay
+completeness only; the local file's state is a separate local fact (§39).
+Relay overflow, the drain deadline, the unconfirmed-disposal cut, and a read
+failure after confirmed disposal are deferred log facts held by the relay
+owner. They never commit termination and
+never change the trigger, primary failure, diagnostics, or child result.
+
+**Order.**
+
+```text
+termination commit (T_term)
+  -> process-group disposal (§38.5)
+  -> confirmed: close the keep-open writer; read to end-of-file
+     unconfirmed: cut
+  -> drain the buffer under the credit, until empty or T_term + 10 s
+  -> log decision
+  -> close the read end and any remaining relay descriptor
+  -> workspace removal (§38.7)
+  -> freeze -> SESSION_ENDED -> terminal writer drain
+```
+
+Workspace removal never runs while relay descriptors are open. SESSION_ENDED
+waits for the log decision, so removal after the decision adds no visible
+delay.
+
+**Bounds.** Helper log memory is bounded by the relay buffer, the credit plus
+one encoded frame in the writer, and at most the observation-queue capacity of
+read chunks (64 chunks of up to 64 KiB); the existing 16 MiB writer bound
+still applies to all frames. The drain deadline bounds project-controlled
+remote log work after `T_term`. It does not bound the interval between local
+RELEASE and `T_term`, and it is independent of the local 15-second
+coordination budget (§39). The buffer size, credit, and deadline are tuning
+values, not correctness assumptions or minimum-bandwidth guarantees. On a slow
+transport, the final `LOG_DATA` and SESSION_ENDED may not flush within the
+terminal writer drain; the client then reports missing terminal information,
+never success.
+
+**OpenOCD log output semantics.** OpenOCD flushes each logger record into the
+FIFO. Configuration `log_output` with another path closes OpenOCD's FIFO
+descriptor and opens that remote path relative to OpenOCD's working directory,
+`staged`; later records go there and are removed with the workspace.
+`log_output default` returns records to stderr. Because the keep-open writer
+holds the FIFO open, such a switch causes no end-of-file, and a later reopen of
+the channel path appends without discarding bytes already written, unlike a
+regular file opened by OpenOCD with truncation.
+
+The relay stores no log content in the remote workspace, so remote storage
+capacity does not limit or silently truncate the log.
+
 ---
 
 ## 39. Local Session Lifecycle
@@ -2541,6 +2681,49 @@ before polling another process, so an exception in a later poll cannot discard
 or acknowledge an unpublished earlier exit. A terminal fact recorded during
 collection is accounted by that projection. Every recorded fatal observation
 also closes dependent-work admission.
+
+A local `--log-file` write failure and a received `log.complete: false` are
+deferred log facts. The requested log is fulfilled only when the terminal
+reports relay completeness and every received `LOG_DATA` byte was written
+locally; `log.complete` alone says nothing about the local file. A log-channel
+read failure while OpenOCD may still write is itself an ordinary helper
+failure (§38.8); the `log.complete: false` that results from it is still a
+deferred fact, which initiates nothing on its own. The authority records them at recognition in a separate
+deferred record, not as fatal observations. They do not close dependent-work
+admission, revoke READY, interrupt a local client, or take part in primary
+selection, and the first-fatal-observation rule above is unchanged. When the
+session projects its final result, an established fatal failure or
+cancellation stays primary and deferred log facts are attached as diagnostics.
+With no fatal failure, the first recorded deferred log fact becomes the
+operation failure. This is a projection rule applied by the one session
+authority, not a second failure authority or precedence tier.
+
+When `--log-file` is requested, `SessionController.acquire()` opens the local
+file as its first effect, after preparation and before it creates
+`HelperConnection`. The sequence is `open(O_WRONLY | O_CREAT | O_NONBLOCK |
+O_NOCTTY | O_CLOEXEC)`, `fstat`, rejection and close unless the file is
+regular, `ftruncate(0)`, and adoption into the controller's slot. A local guard
+owns the descriptor from `open` until adoption, and inside `operation_scope()`
+no asynchronous exception separates them. A failure is an ordinary acquisition
+failure with no remote session. A rejected existing target is never modified,
+because no truncation precedes the type check. `O_NONBLOCK` makes a FIFO
+without a reader fail immediately instead of blocking an `open` that runner
+Ctrl-C cannot interrupt.
+
+`HelperConnection` borrows the sink's write callable. The reader thread checks
+each `LOG_DATA` offset against the received total and writes the whole chunk
+synchronously, like terminal output, with no additional local queue. A
+positive short write count is not success: the writer continues with the
+remaining bytes, and only a write that has consumed the entire chunk completes
+it. An error, or a write that makes no progress, is a write failure, even
+partway through a chunk. After a write failure the reader records the deferred
+fact, writes nothing more, and keeps validating and discarding later chunks, so
+the file stays an exact prefix of the received bytes. At terminal receipt it checks
+`log.byte_count` against the received total; a mismatch is a protocol failure.
+`close()` closes the sink only after the reader has settled or if it never
+started. An unsettled reader keeps the descriptor, like the control completion
+descriptor (§38.1), and its existing reader failure covers it. Recording never
+reaches acquisition, so it has no file effect.
 
 Delivery acknowledgement is separate from failure retention. Repeated cleanup
 does not replay an already-delivered failure unless newly recorded secondary
@@ -2591,6 +2774,7 @@ RTT phase transition does not reopen a cancelled operation.
 
 ```text
 prepare and adopt resource-free coordinator
+    -> open and validate the local log file, when requested
     -> acquire helper transport and session workspace
     -> stage inputs; send immutable START
     -> keep helper stdin open as controller lease
@@ -2841,11 +3025,15 @@ The runner starts a dependent local client only after OpenOCD startup
 readiness is satisfied. Startup readiness is one fact; it does not prove that
 every forwarded service can accept a connection.
 
-The runner adds two OpenOCD startup output markers for `debug`, `attach`,
-`debugserver`, and `rtt` operations. It places an init-complete echo in
-OpenOCD's post-init command list
-before board configuration files and appends a startup-complete echo after the
-full server startup sequence. Within its generated arguments, the runner also
+For `debug`, `attach`, `debugserver`, and `rtt` operations, the runner adds
+readiness-evidence commands, and the helper creates the readiness artifact
+before spawn ([protocol.md](protocol.md)). Before board configuration files,
+the generated arguments store the artifact path in a Tcl variable through a
+`tcl_word` template over the `workspace` session value, define a proc that
+appends one line to the artifact and closes it, define an init proc that
+writes the `init` line, and append that init proc's name to OpenOCD's post-init
+command list. After the full server startup sequence, a final command writes
+the `startup` line. Within its generated arguments, the runner also
 sets the remote bind address and service-port settings before those files.
 These are runner-owned session and transport properties, so an `init` triggered
 by those board configuration files sees the runner's transport settings.
@@ -2884,19 +3072,34 @@ defines diagnostic admission and the intentional controller-termination races.
 Version compatibility is supplied by content-addressed deployment, which
 installs the matching helper revision automatically.
 
-The runner's init-complete and startup-complete markers establish distinct
-lifecycle facts. The helper applies the readiness rules defined in
-[protocol.md](protocol.md) to those observations. The init marker covers
-explicit `init`, config-triggered initialization, and OpenOCD's normal
-automatic initialization when `--no-init` is used. If RTT server startup is
-part of the sequence, successful `rtt server start` precedes the
-startup-complete marker, so startup readiness follows that command causally.
+The `init` and `startup` evidence lines establish distinct lifecycle facts.
+The helper applies the readiness rules defined in [protocol.md](protocol.md)
+to the artifact. The `init` line covers explicit `init`, config-triggered
+initialization, and OpenOCD's normal automatic initialization when `--no-init`
+is used. If RTT server startup is part of the sequence, successful
+`rtt server start` precedes the `startup` line, so startup readiness follows
+that command causally.
+
+Evidence names are fixed. The artifact is fresh, empty, owner-only, and per
+session, and only the runner's procs write it, so stale or foreign evidence is
+excluded without random tokens. The procs and the variable live in OpenOCD's
+global Tcl namespace with board, target, user, and fixture Tcl, so their names
+carry a per-session random suffix; artifact freshness does not prevent a name
+collision there. The post-init entry contains only a proc name, never a path or
+evidence line, so a later configuration that echoes the post-init list exposes
+only that name. Evidence does not pass through OpenOCD's logger, so
+`log_output` redirection, `--log-file`, and the debug level cannot affect it.
+A failure to open the artifact is a Tcl error that aborts `init` or the final
+command, so evidence never appears and readiness fails closed. Each write
+appends one complete line; a partial line is never evidence. Configuration
+that writes the artifact or redefines the runner's procs or variable is
+outside the compatibility boundary.
 
 The three relevant facts are distinct:
 
 | Fact | What it proves |
 | --- | --- |
-| OpenOCD startup readiness | The configured startup output markers were observed and the helper can report readiness under the protocol contract. |
+| OpenOCD startup readiness | The required evidence lines were observed in the readiness artifact and the helper can report readiness under the protocol contract. |
 | SSH forward established | SSH accepted and started a local forward. |
 | Service reachable | A client connected successfully through the forward to the remote listener. |
 
@@ -2912,33 +3115,33 @@ fatal helper outcome prevents the session from opening; best-effort
 unavailability with successful rollback produces a warning. The active RTT
 client must connect to establish end-to-end reachability.
 
-For `live_server` with no required markers, startup evidence is immediately
-satisfied, but READY still requires current ownership, final live-child
-validation, and writer admission. Under `process_exit`, markers do not gate
-completion, no READY is admitted, and no readiness timer is started. The request's
-marker/timeout fields remain validated but unused for readiness under that policy.
+For `live_server` with no required evidence names, startup evidence is
+immediately satisfied, but READY still requires current ownership, final
+live-child validation, and writer admission. Under `process_exit`, evidence
+does not gate completion, no readiness artifact is created, no READY is
+admitted, and no readiness timer is started. The request's evidence and
+timeout fields remain validated but unused for readiness under that policy.
 The nominal `live_server` OpenOCD readiness deadline remains 30 seconds.
 
-Deadline expiry initiates a finite local determination, not automatic timeout.
-Retained decoder/marker evidence and already-read but undecoded chunks remain
-on the normal observation path. Each owned child stream receives the finite
-nonblocking checkpoint scan defined in [section 38.4](#384-child-physical-ownership),
-including its raw read budget and treatment of previously read chunks.
-Account EOF if observed within that scan, flush decoder state for actual EOF,
-and check current child exit without a blocking wait. The same reader owns
-ordinary observation and the final scan, avoiding a competing final reader.
-The checkpoint budget is not replenished by new output;
-a noisy producer cannot extend the scan indefinitely. This policy may
-include bytes arriving during the scan and may exclude bytes beyond the finite
-cut; it is not a global timestamp guarantee.
+The coordinator itself reads the readiness artifact, both on its pre-deadline
+observation ticks and at the deadline, so every readiness read and decision
+happens in coordinator dispatch. Deadline expiry initiates a finite local
+determination, not automatic timeout. In the dispatch step that handles the
+deadline, the coordinator accounts recorded failures, reads at most one MiB of
+the artifact, checks current child exit without a blocking wait, and decides:
+READY, startup exit, or READINESS_TIMEOUT. The artifact is append-only, so this
+read observes everything an earlier queued observation could report, and the
+queue order of such observations cannot change the decision. It is not a
+global timestamp guarantee.
 
-Complete marker evidence at that boundary can satisfy readiness, but a dead
-child cannot authorize live READY. Missing evidence commits startup failure
-unless the authority has already committed termination. EOF and the deadline
-may race with either initiating cause. The final scan observes owned child
-streams and accounts recorded fatal physical adapter failures. Controller input
-is observed independently. Exact complete-line/EOF
-marker semantics belong in [protocol.md](protocol.md).
+Child stdout/stderr and the log relay are neither read nor waited for at any
+readiness step. Their output may be admitted before or after READY, and READY
+makes no ordering claim relative to CHILD_OUTPUT or `LOG_DATA`. Complete
+evidence at the deadline can satisfy readiness, but a dead child cannot
+authorize live READY. Missing evidence commits startup failure unless the
+authority has already committed termination. EOF and the deadline may race
+with either initiating cause. Controller input is observed independently.
+Exact evidence-line semantics belong in [protocol.md](protocol.md).
 
 ---
 
@@ -2948,7 +3151,7 @@ Remote OpenOCD output is relayed with bounded low buffering. The helper reads
 each child stream in bounded chunks and emits output fragments through the
 protocol contract. Long newline-free output becomes visible before the child
 exits. Fragment order is preserved within each child stream. Exact output
-representation, decoding and marker-recognition rules, cross-stream
+representation, decoding rules, cross-stream
 serialization, delimiter handling, and terminal-event ordering are defined
 solely in [protocol.md](protocol.md).
 
@@ -2961,12 +3164,17 @@ This includes:
 - semihosting console output.
 
 Application console output is not interpreted as application-level data or
-semantically rewritten. The helper does inspect output for configured complete
-startup-marker lines when making readiness decisions. Output diagnostics cannot
-authorize another child attempt. Relayed output is also represented through the
+semantically rewritten. The helper does not inspect output for readiness
+decisions, and output diagnostics cannot authorize another child attempt. Relayed output is also represented through the
 protocol's
 incremental UTF-8 decoding with replacement and fragment rules, so the payload
 is not a byte-preserving channel.
+
+When `--log-file` is requested, OpenOCD logger records go to the log relay
+instead of stderr (§38.8). `LOG_DATA` preserves bytes exactly and has no
+ordering relative to stdout/stderr. Output that OpenOCD writes outside its
+logger, such as its startup banner and semihosting console output, stays on
+stdout/stderr.
 
 ---
 
@@ -3227,6 +3435,10 @@ shall preserve these invariants:
 - Physical adapters may retain state needed for ownership, idempotent effects,
   and physical observations. They shall not duplicate or independently decide
   semantic lifecycle state owned by the lifecycle authority.
+- Deferred log facts are recorded by their owners and applied only at final
+  result projection. They are not fatal observations: they never commit
+  termination, close dependent-work admission, or form a second failure
+  authority.
 
 A design warrants reconsideration before implementation if it introduces:
 
@@ -3260,6 +3472,10 @@ file that the filesystem call using the path would not reach. Code therefore:
   filesystem calls honor; and
 - compares existing files by identity rather than by normalized spelling, as
   path-mapping roots are matched and checked for collisions.
+
+The `--log-file` value is a scoped exception: the runner applies the built-in
+runner's `Path(value).as_posix()` normalization, because the built-in runner
+defines that pathname, and passes the result unchanged to the open.
 
 Helper archive containment is the deliberate exception and uses non-strict
 resolution. Its targets need not exist yet, and the check must follow a
@@ -3352,8 +3568,10 @@ observe failure
     -> retain the new failure as ordered diagnostic information
 ```
 
-Do not add independent precedence rules merely because the new failure belongs
-to another subsystem. If the existing session authority cannot express the new
+A failure that must not stop work, such as a log failure, is recorded as a
+deferred fact and applied at result projection (§39); it gets no precedence of
+its own over fatal failures. Do not add independent precedence rules merely
+because the new failure belongs to another subsystem. If the existing session authority cannot express the new
 failure domain cleanly, reconsider or extract the local failure arbiter instead
 of adding another ad hoc precedence branch.
 
@@ -3376,7 +3594,7 @@ The maintained test suite separates self-contained unit tests, local process and
 socket integration, Zephyr integration, SSH integration, and destructive
 hardware validation. External layers consume explicitly configured environments
 and local hardware inventory data. Recording mode remains free of SSH, helper,
-OpenOCD, GDB, and hardware I/O. Hardware capabilities are selected
+OpenOCD, GDB, hardware I/O, and local log-file effects. Hardware capabilities are selected
 independently so an unsupported optional capability does not suppress other
 operations. Verification traceability maps requirements directly to maintained
 tests; this document describes only the architecture of that test boundary.
@@ -3431,7 +3649,12 @@ Selected architecture:
 - one remote phase-specific lifecycle authority with a single child attempt;
 - local launch gate, revalidated at actual execution entry;
 - structured outcome and one immutable terminal snapshot;
-- finite child-stream final observation at readiness determination;
+- helper-owned readiness artifact with fixed evidence names and per-session
+  Tcl proc names; final readiness observation of the artifact and child state,
+  with no child-stream checkpoint;
+- helper-owned FIFO log relay with a bounded buffer, credit-limited
+  `LOG_DATA`, exact-prefix delivery, and deferred log failures applied at
+  result projection;
 - event-driven local waits: descriptor readiness, state notifications, and
   pidfd process completion instead of health polling;
 - operation-owned, non-raising runner Ctrl-C capture dispatched only at defined
@@ -3451,6 +3674,7 @@ Selected architecture:
 | Separate authorities | The local launch gate owns dependent launch eligibility; the remote authority owns attempts, readiness, termination, and terminal freeze. Each acts on its own observations. |
 | Continuous physical ownership | Acquisition and adoption must preserve cleanup reachability across interruption. Process groups, producers, staging exclusion, forwards, and RTT resources require independent settlement evidence. |
 | Bounded observation and reporting | Finite final observation, bounded frame and writer storage, and a finite terminal drain keep failure handling bounded. One structured snapshot preserves result provenance and nested diagnostics. |
+| OpenOCD log relay | A FIFO with bounded memory needs no remote storage and makes `complete` truthful; overflow discards and reports instead of blocking or stopping OpenOCD. Costs: another child-attached observer, a credit-return path, a final drain deadline, and a deferred-fact projection rule. |
 | Startup and residual storage | One child creation attempt avoids repeating opaque/user effects after startup failure. Phase checks reject invalid late observations. Residual-child markers and isolated storage formats prevent uncertain cleanup from authorizing unsafe reclamation. |
 
 The local session authority gates new forwarding work and public GDB/RTT launch. The remote
@@ -3474,8 +3698,8 @@ is externally owned and is never a cleanup target. Native helper signals are
 failures, including signals after freeze; child disposal signals retain their
 separate result provenance.
 
-The raw reader's sole-reader wake mechanism and finite child-stream checkpoint
-support final readiness observation. Control reader cleanup stays in the
+Final readiness observation reads only the helper-owned readiness artifact and
+child state. Control reader cleanup stays in the
 observer's `finally` block, and its task is owned by the session task group and
 cancellation ledger.
 

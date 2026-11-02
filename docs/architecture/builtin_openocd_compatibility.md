@@ -127,5 +127,7 @@ whether an ELF load reaches flash depends on the target and the OpenOCD build.
 The final v4.5.0 source preserves these flash behaviors. Its additional debug
 command phases, RTOS eligibility, and interactive-client API are adapted as
 described in [SAD §16](SAD.md#16-zephyr-runner-reuse-strategy). Its `--log-file`
-option is explicitly rejected under REQ-FUNC-OPT-008 pending separate logging
-support. Release candidates and development versions remain unsupported.
+option is supported through the remote log relay
+([SAD §38.8](SAD.md#388-openocd-log-relay)); its deliberate differences are
+listed in REQ-FUNC-OPT-008. Release candidates and development versions remain
+unsupported.
