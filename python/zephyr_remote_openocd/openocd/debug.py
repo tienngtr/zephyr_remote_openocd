@@ -92,6 +92,7 @@ class DebugInputs:
     rtt_address: int | None = None
     rtt_port: int | str = 5555
     rtt_server: bool = False
+    log_output: bool = False
 
 
 @dataclass(frozen=True)
@@ -342,6 +343,7 @@ def build_debug_plan(
         inputs.config_files,
         planner,
         pre_config_commands,
+        inputs.log_output,
     )
     rtos = inputs.thread_info_supported and thread_info_enabled(
         inputs.thread_info_requested, inputs.openocd_version

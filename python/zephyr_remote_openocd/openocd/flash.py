@@ -70,6 +70,7 @@ class FlashInputs:
     flash_address: str | None = None
     no_init: bool = False
     no_targets: bool = False
+    log_output: bool = False
 
 
 @dataclass(frozen=True)
@@ -282,6 +283,7 @@ def build_flash_plan(
         inputs.config_files,
         planner,
         (ArgumentTemplate(("bindto ", SessionValue.ADDRESS)),),
+        inputs.log_output,
     )
     image = _plan_image(inputs, planner)
 

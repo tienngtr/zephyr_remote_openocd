@@ -92,6 +92,10 @@ class SessionAuthority:
         self._control_ended = False
         self._control_observation_pending = False
         self._deferred_refusals: list[tuple[str, BaseException, object]] = []
+        # Deferred log facts: never fatal observations, applied only by
+        # project_result() at the final operation result.
+        self._log_failures: list[BaseException] = []
+        self._log_failures_projected = 0
         self._changed = threading.RLock()
         self._notify = notify
 
@@ -148,11 +152,47 @@ class SessionAuthority:
             self._gate.fail(diagnostic)
             self._notify()
 
+    def record_log_failure(self, error: BaseException) -> None:
+        """Record a deferred log fact at recognition.
+
+        It does not close dependent-work admission, revoke READY, interrupt a
+        local client, or take part in primary selection.
+        """
+        with self._changed:
+            if all(recorded is not error for recorded in self._log_failures):
+                self._log_failures.append(error)
+
+    def project_result(self) -> BaseException | None:
+        """Return the final operation failure, applying deferred log facts.
+
+        An established fatal failure or cancellation stays primary and the log
+        facts become its diagnostics; otherwise the first log fact fails the
+        operation. This is a projection rule, not a second failure authority.
+        """
+        with self._changed:
+            primary = self.publish_failure()
+            first = self._log_failures_projected
+            if primary is None and self._log_failures:
+                primary = self._log_failures[0]
+                first = max(first, 1)
+            if primary is not None:
+                for error in self._log_failures[first:]:
+                    add_failure_note(primary, "OpenOCD log file also failed", error)
+                self._log_failures_projected = len(self._log_failures)
+            return primary
+
     def record_terminal(self, snapshot: TerminalSnapshot) -> None:
         with self._changed:
             # The helper classified controller EOF when it recognized it; the
             # receipt time of this snapshot never reinterprets that cause.
             self._terminal = snapshot
+            if snapshot.log is not None and snapshot.log.diagnostic is not None:
+                self.record_log_failure(
+                    SessionError(
+                        "OpenOCD log relay is incomplete: "
+                        + _render_diagnostic(snapshot.log.diagnostic)
+                    )
+                )
             outcome = snapshot.outcome
             result = outcome.child_result
             if result is not None and outcome.child_failure_is_primary:

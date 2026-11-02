@@ -19,6 +19,7 @@ from zephyr_remote_openocd.controller._forwarding import (
     ForwardManager,
     ForwardStartError,
 )
+from zephyr_remote_openocd.controller._log_file import LocalLogFile
 from zephyr_remote_openocd.controller._ssh import SshCommand
 from zephyr_remote_openocd.controller.authority import (
     SessionAuthority,
@@ -130,6 +131,9 @@ class SessionConnection(Protocol):
 
     def timeout_expired(self, timeout: float) -> subprocess.TimeoutExpired: ...
 
+    @property
+    def reader_settled(self) -> bool: ...
+
     def close(self) -> None: ...
 
 
@@ -163,6 +167,8 @@ class SessionController:
         self.deployment = deployment
         self._forwards: SessionForwards = ForwardManager(plan.ssh_command, plan.host)
         self._helper_connection: SessionConnection | None = None
+        # The local --log-file descriptor, from validation until reader settlement.
+        self._log_file: LocalLogFile | None = None
         # Resource-free until acquisition opens it inside the caller's cleanup scope.
         self._notifier = Notifier()
         self._authority = SessionAuthority(notify=self._notifier.notify)
@@ -209,6 +215,11 @@ class SessionController:
         """Acquire resources on an owned coordinator; the caller must close it."""
         if self.closed or self._helper_connection is not None:
             raise SessionError("remote session has already been acquired or closed")
+        try:
+            self._open_log_file()
+        except BaseException as error:
+            primary = self._authority.resolve_effect_failure(error)
+            raise primary from primary.__cause__
         self._notifier.open()
         self._helper_connection = HelperConnection(
             self.plan.ssh_command,
@@ -216,6 +227,7 @@ class SessionController:
             self.deployment,
             output_handler=output_handler,
             process_start_handler=process_start_handler,
+            log_writer=None if self._log_file is None else self._log_file.write,
             authority=self._authority,
             notifier=self._notifier,
         )
@@ -226,6 +238,24 @@ class SessionController:
         except BaseException as error:
             primary = self._authority.resolve_effect_failure(error)
             raise primary from primary.__cause__
+
+    def _open_log_file(self) -> None:
+        """Open the local log file as the first effect, before any remote session."""
+        if self.plan.log_file is None:
+            return
+        admit_effect()
+        # No asynchronous exception separates the guarded open from adoption
+        # inside the operation's Ctrl-C capture scope.
+        self._log_file = LocalLogFile.open(self.plan.log_file)
+
+    def _close_log_file(self) -> None:
+        if self._log_file is None:
+            return
+        connection = self._helper_connection
+        if connection is not None and not connection.reader_settled:
+            # An unsettled reader may still write; its reader failure covers it.
+            return
+        self._log_file.close()
 
     def _stage(self, files: Iterable[StagedEntry]) -> None:
         connection = self._connection_or_error()
@@ -425,7 +455,7 @@ class SessionController:
             self.close()
         except BaseException as error:
             self.record_operation_failure(error)
-        failure = self._authority.publish_failure()
+        failure = self._authority.project_result()
         if failure is not None:
             raise failure
 
@@ -466,7 +496,12 @@ class SessionController:
         # Sample before disposal erases already-exited SSH processes.
         if self._helper_connection is not None:
             self._observe_health()
-        for cleanup in (self._forwards.close, self._close_connection, self._notifier.close):
+        for cleanup in (
+            self._forwards.close,
+            self._close_connection,
+            self._close_log_file,
+            self._notifier.close,
+        ):
             try:
                 cleanup()
             except BaseException as error:

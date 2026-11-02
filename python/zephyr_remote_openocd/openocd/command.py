@@ -8,7 +8,7 @@ import os
 from dataclasses import dataclass
 
 from zephyr_remote_openocd.controller.paths import PathPlanner, PlannedPath, existing_path
-from zephyr_remote_openocd.protocol.arguments import ArgumentTemplate
+from zephyr_remote_openocd.protocol.arguments import ArgumentTemplate, log_spool_template
 
 
 @dataclass(frozen=True)
@@ -67,6 +67,7 @@ def base_argv(
     remote_search: list[PlannedPath],
     remote_configs: list[PlannedPath],
     pre_config_commands: tuple[str | ArgumentTemplate, ...],
+    log_output: bool = False,
 ) -> OpenOcdBasePlan:
     """Put runner setup before board configs, after the opaque configured prefix."""
 
@@ -82,6 +83,13 @@ def base_argv(
     for path in remote_search:
         argv.append("-s")
         append(path.remote, path.template)
+    if log_output:
+        # The built-in runner's position: after search directories, before
+        # configuration files and commands, and after any fixed log option.
+        # The helper's log channel replaces the local pathname.
+        argv.append("--log_output")
+        template = log_spool_template()
+        append(template.preview(), template)
     for command in pre_config_commands:
         argv.append("-c")
         if isinstance(command, ArgumentTemplate):
@@ -104,9 +112,12 @@ def plan_openocd_base(
     config_files: tuple[str, ...],
     planner: PathPlanner,
     pre_config_commands: tuple[str | ArgumentTemplate, ...],
+    log_output: bool = False,
 ) -> OpenOcdBasePlan:
-    """Plan executable, support paths, runner setup, serial, and board configs."""
+    """Plan executable, support paths, log output, runner setup, serial, and board configs."""
 
     executable_parts = tuple(executable_argv(executable))
     remote_search, remote_configs = plan_support_paths(search_paths, config_files, planner)
-    return base_argv(executable_parts, serial, remote_search, remote_configs, pre_config_commands)
+    return base_argv(
+        executable_parts, serial, remote_search, remote_configs, pre_config_commands, log_output
+    )

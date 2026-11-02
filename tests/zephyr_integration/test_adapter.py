@@ -55,6 +55,7 @@ from zephyr_remote_openocd.openocd.flash import FlashPlanError
 from zephyr_remote_openocd.protocol.arguments import (
     ArgumentTemplate,
     SessionValue,
+    log_spool_template,
     materialize_argv,
 )
 from zephyr_remote_openocd.protocol.listeners import ListenerSpec
@@ -1011,6 +1012,7 @@ def _forwarding_operation(
     monkeypatch.setattr(runner_module, "SshCommand", lambda _prefix: harness.ssh)
     runner = create_autospec(runner_api[2], instance=True)
     runner.logger = logging.getLogger("test.remote_openocd.forwarding")
+    runner.log_file = None
     for forward in (*plan.forwards, *((plan.rtt_forward,) if plan.rtt_forward else ())):
         harness.ssh.process(forward)
     return runner, runner_module.debug_request(runner, selected, plan), plan
@@ -1701,6 +1703,15 @@ def _recorded_commands(recording: dict[str, Any]) -> list[list[str]]:
             argv = _remove_runner_command(
                 argv, command.preview() if isinstance(command, ArgumentTemplate) else command
             )
+    if request["log_file"] is not None:
+        # The runner owns only the log destination: the helper's log channel,
+        # in the one template form Protocol v1 accepts, at the built-in position.
+        index = argv.index("--log_output") + 1
+        templates = {item["index"]: item["parts"] for item in process["argv_templates"]}
+        assert templates[process["argv"].index("--log_output") + 1] == (
+            log_spool_template().wire_parts()
+        )
+        argv = [*argv[:index], request["log_file"], *argv[index + 1 :]]
     gdb = recording["local_gdb_argv"]
     return [argv, *([gdb] if gdb is not None else [])]
 
@@ -1747,6 +1758,17 @@ def _recorded_commands(recording: dict[str, Any]) -> list[list[str]]:
             ["--cmd-pre-init=echo pre-init", "--gdb-init=break main"],
             id="debug",
         ),
+        pytest.param(
+            "flash",
+            "HEX",
+            [
+                "--cmd-load=flash write_image erase",
+                "--cmd-verify=verify_image",
+                "--log-file=logs//./openocd.log",
+            ],
+            id="flash-log-file",
+        ),
+        pytest.param("debug", "ELF", ["--log-file=/tmp/openocd.log"], id="debug-log-file"),
     ),
 )
 def test_commands_match_built_in_runner(
@@ -1768,6 +1790,12 @@ def test_commands_match_built_in_runner(
     away.
     """
     core, upstream, remote = runner_api
+    if (
+        any(item.startswith("--log-file") for item in argv)
+        and _new_options(runner_api, argv) is None
+    ):
+        # Zephyr 4.4 has no --log-file; both parsers rejected it above.
+        return
     cfg = comparison_config._replace(file_type=getattr(core.FileType, file_type))
     expected = _built_in_commands(
         upstream.create(cfg, parser_for(upstream).parse_args(argv)), command, caplog
@@ -2377,28 +2405,156 @@ def test_rtos_eligibility_preserves_request_without_unnecessary_version_query(
         query.assert_not_called()
 
 
-@pytest.mark.parametrize("value", ("", "output.log"))
-@pytest.mark.parametrize("recording", (False, True), ids=("live", "recording"))
-def test_log_file_is_rejected_before_operation_effects(
+@pytest.mark.parametrize(
+    "value", ("", "openocd.log", "logs//./openocd.log", "existing.log", "fifo.log")
+)
+@pytest.mark.parametrize("command", ("flash", "debug"))
+def test_log_file_recording_normalizes_like_built_in_runner_without_file_effects(
     runner_api: RunnerApi,
-    runner_config: RunnerConfig,
+    comparison_config: RunnerConfig,
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
     forbid_external_io: None,
+    command: str,
     value: str,
-    recording: bool,
+) -> None:
+    core, upstream, remote = runner_api
+    argv = [
+        f"--log-file={value}",
+        "--cmd-load=flash write_image erase",
+        "--cmd-verify=verify_image",
+    ]
+    args = _new_options(runner_api, argv)
+    if args is None:
+        return
+    work = tmp_path / "cwd"
+    (work / "logs").mkdir(parents=True)
+    (work / "existing.log").write_bytes(b"retained")
+    os.mkfifo(work / "fifo.log")
+    monkeypatch.chdir(work)
+    before = {path.name: path.lstat() for path in work.rglob("*")}
+    file_type = "HEX" if command == "flash" else "ELF"
+    cfg = comparison_config._replace(file_type=getattr(core.FileType, file_type))
+    expected = upstream.create(cfg, parser_for(upstream).parse_args(argv))
+    monkeypatch.setenv("ZRO_RECORD", "1")
+    remote.create(cfg, args).run(command)
+    request = json.loads(capsys.readouterr().out)["remote_session_request"]
+    # The built-in normalization, with an empty value meaning no log file.
+    # The attribute exists only on the 4.5 runner, so it is read as instance state.
+    assert request["log_file"] == vars(expected)["log_file"]
+    assert ("--log_output" in request["process"]["argv"]) == bool(value)
+    # Recording creates, opens, inspects, and modifies nothing.
+    assert {path.name: path.lstat() for path in work.rglob("*")} == before
+    assert (work / "existing.log").read_bytes() == b"retained"
+
+
+class _PreparedRemote(SshCommand):
+    """Answer the remote-home query; any helper session acquisition is recorded."""
+
+    acquisitions: list[str]
+
+    def __init__(self, argv_prefix: tuple[str, ...]) -> None:
+        super().__init__(argv_prefix)
+        object.__setattr__(self, "acquisitions", [])
+
+    @override
+    def run(
+        self,
+        host: str,
+        remote_command: str,
+        *,
+        input_data: bytes | None = None,
+        timeout: float = 15,
+    ) -> subprocess.CompletedProcess[bytes]:
+        assert "pathlib.Path.home()" in remote_command
+        return subprocess.CompletedProcess((), 0, b'"/home/remote"\n', b"")
+
+    @override
+    def popen(
+        self,
+        host: str,
+        remote_command: str,
+        *,
+        local_forward: SshForwardSpec | None = None,
+        on_acquired: ProcessAcquiredHandler | None = None,
+    ) -> ManagedSshProcess:
+        self.acquisitions.append(remote_command)
+        raise SessionError("remote helper session is unavailable")
+
+
+@pytest.mark.parametrize(
+    "target", ("fifo-without-reader", "fifo-with-reader", "character-device", "regular")
+)
+def test_live_log_file_is_opened_after_remote_preparation_and_before_session(
+    runner_api: RunnerApi,
+    comparison_config: RunnerConfig,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
 ) -> None:
     from zephyr_remote_openocd import _runner as runner_module
 
-    _, _, remote = runner_api
-    args = _new_options(runner_api, [f"--log-file={value}"])
+    core, _, remote = runner_api
+    readers: list[int] = []
+    path = tmp_path / "openocd.log"
+    if target.startswith("fifo"):
+        os.mkfifo(path)
+        if target == "fifo-with-reader":
+            readers.append(os.open(path, os.O_RDONLY | os.O_NONBLOCK))
+    elif target == "character-device":
+        path = Path(os.devnull)
+    else:
+        path.write_bytes(b"previous log")
+    args = _new_options(
+        runner_api,
+        [f"--log-file={path}", "--cmd-load=flash write_image erase", "--cmd-verify=verify_image"],
+    )
     if args is None:
         return
-    monkeypatch.setenv("ZRO_RECORD", "1" if recording else "0")
-    load = Mock(side_effect=AssertionError("log-file rejection entered configuration loading"))
-    monkeypatch.setattr(runner_module, "load_config", load)
-    with pytest.raises(ValueError, match="--log-file.*not supported"):
-        remote.create(runner_config, args)
-    load.assert_not_called()
+    config = tmp_path / "home-relative.yaml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "default_remote": "chosen",
+                "remotes": {
+                    "chosen": {
+                        "ssh_host": "selected_host",
+                        # Remote preparation must resolve this before the open.
+                        "openocd_command": ["~/bin/openocd"],
+                        "path_mappings": {"/": "/"},
+                    }
+                },
+            }
+        )
+    )
+    monkeypatch.setenv("ZEPHYR_REMOTE_OPENOCD_CONFIG", str(config))
+    ssh = _PreparedRemote(("ssh",))
+    monkeypatch.setattr(runner_module, "SshCommand", lambda _argv: ssh)
+    deployed: list[str] = []
+
+    def deploy(_ssh: SshCommand, host: str) -> DeploymentResult:
+        deployed.append(host)
+        return DeploymentResult("/helper.py", "digest", False)
+
+    monkeypatch.setattr(session_module, "deploy_helper", deploy)
+    cfg = comparison_config._replace(file_type=core.FileType.HEX)
+    try:
+        with pytest.raises(RuntimeError) as raised:
+            remote.create(cfg, args).run("flash")
+        if target == "regular":
+            # Truncated before the session, even though the session then failed.
+            assert ssh.acquisitions and path.read_bytes() == b""
+            assert "remote helper session is unavailable" in str(raised.value)
+        else:
+            assert "OpenOCD log file" in str(raised.value)
+            assert not ssh.acquisitions
+        assert deployed == ["selected_host"]
+        for reader in readers:
+            assert os.read(reader, 1) == b""
+    finally:
+        for reader in readers:
+            os.close(reader)
 
 
 @pytest.mark.parametrize("fails", (False, True))

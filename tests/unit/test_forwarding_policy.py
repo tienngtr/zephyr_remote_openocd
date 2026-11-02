@@ -24,6 +24,7 @@ from zephyr_remote_openocd.controller.api import ForwardSpec, SessionError
 from zephyr_remote_openocd.controller.authority import SessionAuthority
 from zephyr_remote_openocd.controller.helper_connection import (
     HelperConnection,
+    LogWriter,
     OutputHandler,
     ProcessStartHandler,
 )
@@ -90,6 +91,7 @@ def test_close_preserves_recorded_session_failure_over_forward_cleanup(
             output_handler: OutputHandler | None = None,
             *,
             process_start_handler: ProcessStartHandler | None = None,
+            log_writer: LogWriter | None = None,
             authority: SessionAuthority,
             notifier: Notifier,
         ) -> HelperConnection:
@@ -99,12 +101,14 @@ def test_close_preserves_recorded_session_failure_over_forward_cleanup(
             harness.make_helper(
                 *arguments,
                 process_start_handler=process_start_handler,
+                log_writer=log_writer,
                 authority=authority,
                 notifier=notifier,
             )
             return HelperConnection(
                 *arguments,
                 process_start_handler=process_start_handler,
+                log_writer=log_writer,
                 authority=authority,
                 notifier=notifier,
             )

@@ -74,6 +74,8 @@ class RemoteRunner(Protocol):
     gdb_client_port: int | str
     target_handle: str
     rtt_port: int | str
+    # Normalized --log-file pathname; Zephyr 4.4 has no such option.
+    log_file: str | None
 
     @property
     def thread_info_enabled(self) -> bool: ...
@@ -420,6 +422,7 @@ def _flash_inputs(runner: RemoteRunner, selected: ResolvedRemote) -> FlashInputs
         flash_address=runner.flash_address,
         no_init=runner.parsed_args.no_init,
         no_targets=runner.parsed_args.no_targets,
+        log_output=runner.log_file is not None,
     )
 
 
@@ -444,6 +447,7 @@ def _flash_request(runner: RemoteRunner, selected: ResolvedRemote) -> SessionPla
         plan.process,
         plan.staged_files,
         (),
+        log_file=runner.log_file,
     )
 
 
@@ -558,6 +562,7 @@ def _debug_plan(
             rtt_address=runner.get_rtt_address() if rtt_requested else None,
             rtt_port=runner.rtt_port,
             rtt_server=bool(runner.parsed_args.rtt_server),
+            log_output=runner.log_file is not None,
         ),
         planner,
         _forwarded_environment(runner, selected),
@@ -573,6 +578,7 @@ def debug_request(runner: RemoteRunner, selected: ResolvedRemote, plan: DebugPla
         plan.forwards,
         plan.auxiliary_forwards,
         plan.reserved_listeners,
+        log_file=runner.log_file,
     )
 
 
@@ -586,6 +592,8 @@ def _request_record(request: SessionPlan) -> dict[str, object]:
     return {
         "host": request.host,
         "ssh_command": list(request.ssh_command.argv_prefix),
+        # Recording reports the normalized pathname; it never touches the file.
+        "log_file": request.log_file,
         "staged_files": [
             {"source": str(item.source), "destination": str(item.destination)}
             for item in request.staged_files

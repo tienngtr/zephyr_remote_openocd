@@ -30,7 +30,11 @@ from zephyr_remote_openocd.controller.api import (
     SessionPlan,
 )
 from zephyr_remote_openocd.controller.authority import SessionAuthority
-from zephyr_remote_openocd.controller.helper_connection import OutputHandler, ProcessStartHandler
+from zephyr_remote_openocd.controller.helper_connection import (
+    LogWriter,
+    OutputHandler,
+    ProcessStartHandler,
+)
 from zephyr_remote_openocd.controller.waiting import Notifier, WaitResult, WaitSources, wait_for
 from zephyr_remote_openocd.protocol.arguments import materialize_argv
 from zephyr_remote_openocd.protocol.commands import decode_command, encode_start
@@ -83,6 +87,7 @@ class ControlledHelper:
     """Helper-control transport facts, with no forwarding policy."""
 
     allocation = SessionAllocation("session", "/workspace")
+    reader_settled = True
 
     def __init__(self) -> None:
         self._authority: SessionAuthority | None = None
@@ -230,10 +235,11 @@ class ForwardingHarness:
         output_handler: OutputHandler | None = None,
         *,
         process_start_handler: ProcessStartHandler | None = None,
+        log_writer: LogWriter | None = None,
         authority: SessionAuthority,
         notifier: Notifier,
     ) -> ControlledHelper:
-        del ssh_command, host, deployment, output_handler, notifier
+        del ssh_command, host, deployment, output_handler, log_writer, notifier
         self.helper.authority = authority
         self.helper.process_start_handler = process_start_handler
         return self.helper

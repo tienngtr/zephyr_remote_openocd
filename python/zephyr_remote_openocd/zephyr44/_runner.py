@@ -17,6 +17,9 @@ from zephyr_remote_openocd._runner import run_operation
 class RemoteOpenOcdBinaryRunner(OpenOcdBinaryRunner):
     """OpenOCD-compatible runner with a version-isolated flash integration."""
 
+    # Zephyr 4.4 has no --log-file option.
+    log_file: str | None = None
+
     def __init__(self, cfg: RunnerConfig, parsed_args: argparse.Namespace) -> None:
         # Reuse OpenOCD's public initializer and state construction, but never
         # call its local process-launching implementation.

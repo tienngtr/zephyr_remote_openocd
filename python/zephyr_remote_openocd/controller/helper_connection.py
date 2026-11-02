@@ -37,6 +37,7 @@ from zephyr_remote_openocd.protocol.wire import (
     EventOrder,
     decode_frame,
     decode_terminal,
+    log_data,
 )
 
 # The helper gives a supervised child five seconds to exit after SIGTERM,
@@ -62,6 +63,8 @@ assert len(_RELEASE) <= select.PIPE_BUF
 type OutputHandler = Callable[[str, str, bool], None]
 # The materialized argv of each helper launch attempt.
 type ProcessStartHandler = Callable[[tuple[str, ...]], None]
+# Writes one whole LOG_DATA chunk to the local log file, or raises.
+type LogWriter = Callable[[bytes], None]
 
 
 class HelperConnection:
@@ -80,6 +83,7 @@ class HelperConnection:
         output_handler: OutputHandler | None = None,
         *,
         process_start_handler: ProcessStartHandler | None = None,
+        log_writer: LogWriter | None = None,
         authority: SessionAuthority,
         notifier: Notifier,
     ) -> None:
@@ -88,6 +92,9 @@ class HelperConnection:
         self._deployment = deployment
         self._output_handler = output_handler
         self._process_start_handler = process_start_handler
+        # Borrowed from the controller's log sink, which it never closes.
+        self._log_writer = log_writer
+        self._log_write_failed = False
         self._authority = authority
         self._notifier = notifier
         self._reader_thread: threading.Thread | None = None
@@ -103,6 +110,11 @@ class HelperConnection:
     def allocation(self) -> SessionAllocation:
         assert self._allocation is not None
         return self._allocation
+
+    @property
+    def reader_settled(self) -> bool:
+        """Whether no reader can still use borrowed callables, including the log writer."""
+        return self._reader_thread is None or self._reader_finished.is_set()
 
     def start_process(
         self,
@@ -381,10 +393,27 @@ class HelperConnection:
             self._process_start_handler(tuple(event["argv"]))
         elif event["type"] == "CHILD_OUTPUT" and self._output_handler is not None:
             self._output_handler(event["stream"], event["payload"], event["line_end"])
+        elif event["type"] == "LOG_DATA":
+            self._write_log(log_data(event))
         elif event["type"] == "READY":
             self._authority.record_ready(event["remote_address"])
         elif event["type"] == "SESSION_ENDED":
             self._authority.record_terminal(decode_terminal(event))
+
+    def _write_log(self, data: bytes) -> None:
+        """Write synchronously; after a failure keep validating but write nothing.
+
+        The local file therefore stays an exact prefix of the received bytes.
+        """
+        if self._log_writer is None or self._log_write_failed:
+            return
+        try:
+            self._log_writer(data)
+        except BaseException as error:
+            self._log_write_failed = True
+            failure = SessionError(f"cannot write OpenOCD log file: {error}")
+            failure.__cause__ = error
+            self._authority.record_log_failure(failure)
 
     def _dispatch_frames(self, frames: ControlFrameBuffer, chunk: bytes) -> None:
         frames.feed(chunk)

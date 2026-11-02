@@ -73,11 +73,11 @@ class SwitchWorkspace:
         assert data["runners"].count("remote_openocd") == 1
         return data
 
-    def record(self, build: Path, command: str) -> dict[str, Any]:
+    def record(self, build: Path, command: str, *argv: str) -> dict[str, Any]:
         data = self.metadata(build)
         # Explicit no-build artifact: recording does not execute firmware.
         (build / "zephyr" / data["config"]["hex_file"]).touch()
-        output = self.west(command, "-d", str(build), "--no-rebuild")
+        output = self.west(command, "-d", str(build), "--no-rebuild", *argv)
         return json.loads(output[output.index("{\n") :])
 
     def probe_registration(self, family: str) -> None:
@@ -175,10 +175,10 @@ def test_source_switching_regenerates_shared_and_preserves_separate_builds(
     for build in (shared, separate45):
         for command in ("flash", "debug"):
             assert ws.record(build, command)["command"] == command
-    log = ws.west(
-        "debug", "-d", str(separate45), "--no-rebuild", "--log-file=output.log", fails=True
-    )
-    assert "--log-file is not supported" in log
+    # Recording reports the normalized log file and never creates it.
+    debug = ws.record(separate45, "debug", "--log-file=logs//output.log")
+    assert debug["remote_session_request"]["log_file"] == "logs/output.log"
+    assert "--log_output" in debug["remote_session_request"]["process"]["argv"]
     ws.west(
         "build",
         "--cmake-only",
@@ -188,8 +188,9 @@ def test_source_switching_regenerates_shared_and_preserves_separate_builds(
         "-DBOARD_RUNNER_ARGS_openocd=--log-file=board.log",
     )
     assert "--log-file=board.log" in ws.metadata(separate45)["args"]["remote_openocd"]
-    board_log = ws.west("flash", "-d", str(separate45), "--no-rebuild", fails=True)
-    assert "--log-file is not supported" in board_log
+    flash = ws.record(separate45, "flash")
+    assert flash["remote_session_request"]["log_file"] == "board.log"
+    assert not (ws.root / "logs").exists() and not (ws.root / "board.log").exists()
 
     ws.switch("v4.4.0")
     ws.probe_registration("44")  # Old 4.5 metadata cannot choose the adapter.

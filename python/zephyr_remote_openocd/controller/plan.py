@@ -22,10 +22,14 @@ class SessionPlan:
     forwards: tuple[ForwardSpec, ...] = field(default_factory=tuple)
     auxiliary_forwards: tuple[ForwardSpec, ...] = field(default_factory=tuple)
     reserved_listeners: tuple[ListenerSpec, ...] = field(default_factory=tuple)
+    # Normalized local --log-file path; the process must then request the channel.
+    log_file: str | None = None
 
     def __post_init__(self) -> None:
         if not self.host:
             raise ValueError("remote host must not be empty")
+        if (self.log_file is not None) != self.process.uses_log_spool:
+            raise ValueError("a local log file requires exactly the remote log channel")
         object.__setattr__(self, "staged_files", tuple(self.staged_files))
         forwards = validated_forwards(self.forwards)
         reserved = validated_listeners(self.reserved_listeners)

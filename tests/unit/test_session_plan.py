@@ -142,6 +142,28 @@ class TestSessionSpecifications:
                 argv_templates=((1, template), (2, template)),
             )
 
+    @pytest.mark.parametrize("log_file", (None, "openocd.log"))
+    @pytest.mark.parametrize("uses_log_spool", (False, True))
+    def test_local_log_file_requires_exactly_the_remote_log_channel(
+        self, log_file: str | None, uses_log_spool: bool
+    ) -> None:
+        template = log_spool_template()
+        process = (
+            ProcessSpec(
+                ("openocd", template.preview()), literal_prefix=1, argv_templates=((1, template),)
+            )
+            if uses_log_spool
+            else TEST_PROCESS
+        )
+        if (log_file is not None) == uses_log_spool:
+            assert (
+                SessionPlan("host", SshCommand(("ssh",)), process, log_file=log_file).log_file
+                == log_file
+            )
+        else:
+            with pytest.raises(ValueError):
+                SessionPlan("host", SshCommand(("ssh",)), process, log_file=log_file)
+
     @pytest.mark.parametrize(
         ("path", "kind"),
         (

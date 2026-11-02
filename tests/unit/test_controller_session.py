@@ -32,6 +32,7 @@ from zephyr_remote_openocd.controller.api import (
 from zephyr_remote_openocd.controller.authority import SessionAuthority
 from zephyr_remote_openocd.controller.helper_connection import (
     HelperConnection,
+    LogWriter,
     OutputHandler,
     ProcessStartHandler,
 )
@@ -264,10 +265,11 @@ def test_invalid_or_timed_out_staging_prevents_start(
         *,
         output_handler: OutputHandler | None = None,
         process_start_handler: ProcessStartHandler | None = None,
+        log_writer: LogWriter | None = None,
         authority: SessionAuthority | None = None,
         notifier: Notifier | None = None,
     ) -> Helper:
-        del output_handler
+        del output_handler, log_writer
         return Helper()
 
     monkeypatch.setattr(

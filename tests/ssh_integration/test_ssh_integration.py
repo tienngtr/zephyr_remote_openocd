@@ -36,6 +36,7 @@ from zephyr_remote_openocd.controller.api import (
     StagedFile,
 )
 from zephyr_remote_openocd.controller.paths import PathPlanner
+from zephyr_remote_openocd.openocd.debug import DebugInputs, build_debug_plan
 from zephyr_remote_openocd.protocol.arguments import ArgumentTemplate, SessionValue
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
 from zephyr_remote_openocd.protocol.process import ProcessSpec
@@ -759,3 +760,134 @@ class TestSshTransportIntegration:
             assert any(
                 payload == "ZRO_CONFIG_VALUE=channel_1" for _stream, payload, _line_end in output
             )
+
+    @pytest.mark.parametrize("redirect", ("none", "default", "path"))
+    def test_real_openocd_readiness_and_log_relay_are_independent_of_logger_routing(
+        self, tmp_path: Path, redirect: str
+    ) -> None:
+        """Real OpenOCD at debug level 3 with --log-file and configuration log_output.
+
+        Readiness evidence bypasses the logger, so READY follows even when
+        configuration redirects logger output. The relay carries logger
+        records written to the log channel; the fixed ``-l`` option is
+        superseded by the runner's option.
+        """
+        openocd_command = self.ssh_settings.openocd_command
+        probe = self.ssh.run(
+            self.host,
+            shlex.join((*openocd_command, "-c", "adapter driver dummy", "-c", "shutdown")),
+            timeout=20,
+        )
+        if probe.returncode:
+            pytest.skip("remote OpenOCD cannot run without hardware (no dummy adapter)")
+        config = tmp_path / "dummy target.cfg"
+        switch = {"none": "", "default": "log_output default\n", "path": "log_output moved.log\n"}
+        config.write_text(
+            "adapter driver dummy\n"
+            "transport select jtag\n"
+            "jtag newtap zro cpu -irlen 4 -expected-id 0\n"
+            'echo "ZRO_POST_INIT=$post_init_commands"\n'
+            "echo ZRO_BEFORE_SWITCH\n" + switch[redirect] + "echo ZRO_AFTER_SWITCH\n"
+        )
+        suffix = uuid.uuid4().hex
+        planner = PathPlanner(())
+        plan = build_debug_plan(
+            DebugInputs(
+                command="debugserver",
+                executable=(*openocd_command, "-d3", "-l", "fixed.log"),
+                gdb=None,
+                elf_file=None,
+                search_paths=(),
+                config_files=(str(config),),
+                readiness_suffix=suffix,
+                reset_halt="echo ZRO_NO_RESET",
+                no_targets=True,
+                tcl_port="disabled",
+                telnet_port="disabled",
+                log_output=True,
+            ),
+            planner,
+        )
+        local_log = tmp_path / "local openocd.log"
+        output: list[tuple[str, str, bool]] = []
+        session = SessionController.prepare(
+            SessionPlan(
+                self.host, self.ssh, plan.process, plan.staged_files, log_file=str(local_log)
+            )
+        )
+        try:
+            session.acquire(
+                output_handler=lambda stream, payload, line_end: output.append(
+                    (stream, payload, line_end)
+                )
+            )
+            # READY at debug level 3, whatever the configuration does to the logger.
+            assert session.descriptor is not None
+            workspace = session.descriptor.remote_workspace
+        finally:
+            session.finish()
+        log = local_log.read_text(encoding="utf-8", errors="replace")
+        stderr = "\n".join(payload for stream, payload, _ in output if stream == "stderr")
+        assert "ZRO_BEFORE_SWITCH" in log
+        # The post-init list exposes only the runner's proc name.
+        assert f"ZRO_POST_INIT=zro_init_{suffix}" in log
+        post_init = next(line for line in log.splitlines() if "ZRO_POST_INIT=" in line)
+        assert "readiness" not in post_init and workspace not in post_init
+        # Log destination records name the helper's channel, never the local file.
+        assert f"{workspace}/log" in log and str(local_log) not in log
+        if redirect == "none":
+            assert "ZRO_AFTER_SWITCH" in log
+        else:
+            assert "ZRO_AFTER_SWITCH" not in log
+            assert ("ZRO_AFTER_SWITCH" in stderr) == (redirect == "default")
+
+    def test_real_openocd_failed_evidence_write_fails_readiness_closed(
+        self, tmp_path: Path
+    ) -> None:
+        """A failed artifact write is a Tcl error, so evidence never appears."""
+        openocd_command = self.ssh_settings.openocd_command
+        probe = self.ssh.run(
+            self.host,
+            shlex.join((*openocd_command, "-c", "adapter driver dummy", "-c", "shutdown")),
+            timeout=20,
+        )
+        if probe.returncode:
+            pytest.skip("remote OpenOCD cannot run without hardware (no dummy adapter)")
+        suffix = uuid.uuid4().hex
+        config = tmp_path / "unwritable evidence.cfg"
+        config.write_text(
+            "adapter driver dummy\n"
+            "transport select jtag\n"
+            "jtag newtap zro cpu -irlen 4 -expected-id 0\n"
+            # Outside the compatibility boundary: point the writer at a path
+            # that cannot be opened, as an unwritable artifact would fail.
+            f"set zro_readiness_{suffix} /nonexistent/readiness\n"
+        )
+        plan = build_debug_plan(
+            DebugInputs(
+                command="debugserver",
+                executable=openocd_command,
+                gdb=None,
+                elf_file=None,
+                search_paths=(),
+                config_files=(str(config),),
+                readiness_suffix=suffix,
+                reset_halt="echo ZRO_NO_RESET",
+                no_targets=True,
+                tcl_port="disabled",
+                telnet_port="disabled",
+            ),
+            PathPlanner(()),
+        )
+        session = SessionController.prepare(
+            SessionPlan(self.host, self.ssh, plan.process, plan.staged_files)
+        )
+        try:
+            with pytest.raises(SessionError) as raised:
+                session.acquire()
+        finally:
+            # Closure re-reports the established startup failure.
+            with suppress(SessionError):
+                session.close()
+        assert session.descriptor is None
+        assert "STARTUP_EXIT" in str(raised.value), raised.value

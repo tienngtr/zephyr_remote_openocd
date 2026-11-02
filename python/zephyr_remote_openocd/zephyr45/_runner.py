@@ -18,8 +18,6 @@ class RemoteOpenOcdBinaryRunner(OpenOcdBinaryRunner):
     """OpenOCD-compatible runner with a version-isolated OpenOCD integration."""
 
     def __init__(self, cfg: RunnerConfig, parsed_args: argparse.Namespace) -> None:
-        if parsed_args.log_file is not None:
-            raise ValueError("remote_openocd --log-file is not supported on Zephyr 4.5")
         # Reuse OpenOCD's public initializer and state construction, but never
         # call its local process-launching implementation.
         image_type = cfg.file_type
@@ -61,6 +59,8 @@ class RemoteOpenOcdBinaryRunner(OpenOcdBinaryRunner):
             no_targets=parsed_args.no_targets,
             tcl_port=parsed_args.tcl_port,
             telnet_port=parsed_args.telnet_port,
+            # Upstream normalizes this as Path(value).as_posix(), empty meaning absent.
+            log_file=parsed_args.log_file,
             gdb_port=parsed_args.gdb_port,
             gdb_client_port=parsed_args.gdb_client_port,
             gdb_init=parsed_args.gdb_init,
