@@ -11,17 +11,21 @@ from zephyr_remote_openocd.protocol.outcome import (
     CleanupReport,
     CompletionPolicy,
     Diagnostic,
+    LogReport,
     Outcome,
     TerminalSnapshot,
     Trigger,
 )
 from zephyr_remote_openocd.protocol.wire import (
     MAX_FRAME_SIZE,
+    MAX_LOG_DATA_BYTES,
     EventOrder,
     ProtocolError,
     decode_frame,
     decode_terminal,
     encode_frame,
+    encode_log_data,
+    log_data,
     terminal_fields,
 )
 
@@ -367,3 +371,164 @@ def test_terminal_ends_event_history(trigger: Trigger) -> None:
     ):
         with pytest.raises(ProtocolError):
             order.accept(following)
+
+
+def _log_history(order: EventOrder) -> None:
+    order.accept(
+        _event("SESSION_CREATED", helper="helper", session_id="session", remote_workspace="/w")
+    )
+    order.accept(_event("ATTEMPT", argv=["openocd"]))
+
+
+def _log_terminal(log: LogReport | None) -> dict[str, Any]:
+    snapshot = TerminalSnapshot(
+        Outcome(Trigger.CHILD_EXIT, child_result=ChildResult(0, False)),
+        CleanupReport("confirmed", "confirmed"),
+        log,
+    )
+    return _event("SESSION_ENDED", **terminal_fields(snapshot))
+
+
+def test_log_data_preserves_exact_bytes_and_offsets_track_the_received_total() -> None:
+    order = EventOrder(CompletionPolicy.PROCESS_EXIT, log_requested=True)
+    _log_history(order)
+    chunks = (bytes(range(256)), b"\n\r\x00\xff", b"x" * MAX_LOG_DATA_BYTES)
+    offset = 0
+    received = b""
+    for chunk in chunks:
+        event = decode_frame(encode_log_data(offset, chunk))
+        order.accept(event)
+        received += log_data(event)
+        offset += len(chunk)
+    assert received == b"".join(chunks)
+    order.accept(_log_terminal(LogReport(offset, True)))
+    assert order.ended
+
+
+@pytest.mark.parametrize(
+    "data",
+    (
+        "",
+        "QQ",
+        "QQ=",
+        "QR==",
+        "Q Q==",
+        "QQ==\n",
+        "-_8=",
+        "QUFB" * ((MAX_LOG_DATA_BYTES // 3) + 1),
+        1,
+        None,
+    ),
+    ids=(
+        "empty",
+        "unpadded",
+        "short-padding",
+        "non-canonical-bits",
+        "whitespace",
+        "newline",
+        "url-alphabet",
+        "oversized",
+        "integer",
+        "null",
+    ),
+)
+def test_log_data_requires_canonical_standard_base64_of_bounded_size(data: object) -> None:
+    order = EventOrder(log_requested=True)
+    _log_history(order)
+    with pytest.raises(ProtocolError):
+        order.accept(_event("LOG_DATA", offset=0, data=data))
+
+
+@pytest.mark.parametrize(
+    ("log_requested", "attempted", "offset"),
+    ((False, True, 0), (True, False, 0), (True, True, 1), (True, True, -1), (True, True, True)),
+    ids=("not-requested", "before-attempt", "gap", "negative", "boolean"),
+)
+def test_order_rejects_log_data_outside_its_history(
+    log_requested: bool, attempted: bool, offset: object
+) -> None:
+    order = EventOrder(log_requested=log_requested)
+    order.accept(
+        _event("SESSION_CREATED", helper="helper", session_id="session", remote_workspace="/w")
+    )
+    if attempted:
+        order.accept(_event("ATTEMPT", argv=["openocd"]))
+    with pytest.raises(ProtocolError):
+        order.accept(_event("LOG_DATA", offset=offset, data="QQ=="))
+
+
+@pytest.mark.parametrize(
+    ("log_requested", "log"),
+    (
+        (True, None),
+        (False, LogReport(0, True)),
+        (True, LogReport(1, True)),
+        (True, LogReport(0, False, Diagnostic("LOG_RELAY_OVERFLOW", "overflow"))),
+    ),
+    ids=("missing-log", "unrequested-log", "count-mismatch", "incomplete-count-mismatch"),
+)
+def test_terminal_log_must_agree_with_start_and_received_total(
+    log_requested: bool, log: LogReport | None
+) -> None:
+    order = EventOrder(CompletionPolicy.PROCESS_EXIT, log_requested=log_requested)
+    _log_history(order)
+    if log is not None and log.complete is False:
+        order.accept(decode_frame(encode_log_data(0, b"x")))
+    with pytest.raises(ProtocolError):
+        order.accept(_log_terminal(log))
+
+
+@pytest.mark.parametrize(
+    "log",
+    (
+        {
+            "byte_count": 0,
+            "complete": True,
+            "diagnostic": {"code": "X", "message": "", "diagnostics": []},
+        },
+        {"byte_count": 0, "complete": False, "diagnostic": None},
+        {"byte_count": -1, "complete": True, "diagnostic": None},
+        {"byte_count": 0, "complete": 1, "diagnostic": None},
+        {"byte_count": 0, "complete": True},
+        {"byte_count": 0, "complete": True, "diagnostic": None, "extra": None},
+    ),
+    ids=(
+        "complete-with-diagnostic",
+        "incomplete-without-diagnostic",
+        "negative-count",
+        "integer-complete",
+        "missing-field",
+        "unknown-field",
+    ),
+)
+def test_terminal_rejects_invalid_log_report(log: dict[str, object]) -> None:
+    fields = terminal_fields(_terminal())
+    fields["log"] = log
+    with pytest.raises(ProtocolError):
+        decode_terminal(_event("SESSION_ENDED", **fields))
+
+
+def test_complete_log_requires_confirmed_or_no_child_acquisition() -> None:
+    fields = terminal_fields(_terminal())
+    fields["cleanup"] = {
+        "child_disposal": "unconfirmed",
+        "workspace_disposal": "unconfirmed",
+        "residual_resources": ["child_group", "workspace"],
+    }
+    fields["primary_failure"] = {"code": "CLEANUP_FAILURE", "message": "", "diagnostics": []}
+    fields["log"] = {"byte_count": 0, "complete": True, "diagnostic": None}
+    with pytest.raises(ProtocolError):
+        decode_terminal(_event("SESSION_ENDED", **fields))
+
+
+def test_log_data_proves_child_acquisition() -> None:
+    order = EventOrder(log_requested=True)
+    _log_history(order)
+    order.accept(decode_frame(encode_log_data(0, b"x")))
+    snapshot = TerminalSnapshot(
+        Outcome(Trigger.CONTROLLER_EOF),
+        CleanupReport("not_acquired", "confirmed"),
+        LogReport(1, True),
+    )
+    with pytest.raises(ProtocolError):
+        order.accept(_event("SESSION_ENDED", **terminal_fields(snapshot)))

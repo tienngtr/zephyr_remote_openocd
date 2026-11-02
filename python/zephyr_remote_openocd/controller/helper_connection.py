@@ -127,6 +127,7 @@ class HelperConnection:
         self._authority.set_policy(process_spec.completion_policy)
         assert self._order is not None
         self._order.policy = process_spec.completion_policy
+        self._order.log_requested = process_spec.uses_log_spool
         listener_specs = tuple(listeners)
         helper = self._process_or_error()
         if helper.stdin is None:

@@ -14,6 +14,7 @@ from types import FrameType
 from typing import IO, Any, Literal
 
 from zephyr_remote_openocd.helper import _addresses as addresses
+from zephyr_remote_openocd.helper import _log_relay as log_relay
 from zephyr_remote_openocd.helper import _process as process
 from zephyr_remote_openocd.helper import _readiness as readiness
 from zephyr_remote_openocd.helper import _streams as streams
@@ -25,6 +26,10 @@ from zephyr_remote_openocd.helper._observations import (
     ControlEOF,
     Deadline,
     GroupCleaned,
+    LogChunk,
+    LogCredit,
+    LogDeadline,
+    LogReaderStopped,
     Observation,
     ObservationFailed,
     ReadinessPoll,
@@ -52,6 +57,7 @@ from zephyr_remote_openocd.protocol.outcome import (
     CleanupReport,
     CompletionPolicy,
     Diagnostic,
+    LogReport,
     ResidualResource,
     Trigger,
 )
@@ -93,6 +99,9 @@ class HelperSession:
         self._resources_released = False
         self._output_available = True
         self._readiness: readiness.ReadinessArtifact | None = None
+        self._log: log_relay.LogRelay | None = None
+        self._log_reader: asyncio.Task[ObservationFailed | None] | None = None
+        self._log_drain_started = False
 
     @classmethod
     def create(cls) -> HelperSession:
@@ -168,6 +177,38 @@ class HelperSession:
                 await self._events.put(ChildOutput(child, name, chunk))
                 if not chunk:
                     return
+
+    async def _observe_log(self, relay: log_relay.LogRelay) -> None:
+        """Read the log channel continuously, so OpenOCD never blocks on the relay."""
+        assert relay.read_descriptor is not None
+        try:
+            with streams.AsyncInput(relay.read_descriptor) as reader:
+                while True:
+                    chunk = await reader.read()
+                    await self._events.put(LogChunk(chunk))
+                    if not chunk:
+                        return
+        except asyncio.CancelledError:
+            raise
+        except BaseException as error:
+            if not relay.disposal_confirmed:
+                # OpenOCD may still write: an ordinary fatal observer failure.
+                raise
+            # No writer remains; the relay owner retains a deferred fact.
+            relay.read_failed(error)
+        await self._events.put(LogReaderStopped())
+
+    async def _observe_log_credit(self, output: streams.ProtocolOutput) -> None:
+        # The writer only sets the latch; this task performs the publication
+        # that can block on a full queue, so no returned credit is lost.
+        while True:
+            await output.credit_returned.wait()
+            output.credit_returned.clear()
+            await self._events.put(LogCredit())
+
+    async def _observe_log_deadline(self) -> None:
+        await asyncio.sleep(log_relay.LOG_DRAIN_DEADLINE)
+        await self._events.put(LogDeadline())
 
     async def _observe_readiness(self, child: process.SupervisedProcess, timeout: float) -> None:
         # Ticks and the deadline come from one task, so no tick follows it.
@@ -261,6 +302,9 @@ class HelperSession:
             return
         if failure.child is not None and failure.source in ("stdout", "stderr"):
             failure.child.output_finished.add(failure.source)
+        if failure.source == "log" and self._log is not None:
+            self._log.read_failed(failure.exception)
+            self._log_progress()
         trigger = (
             Trigger.PROTOCOL_FAILURE
             if failure.source == "control"
@@ -284,12 +328,14 @@ class HelperSession:
         )
         self._address_lease = allocated.lease
         self.address = str(allocated)
+        log_spool = self.work / log_relay.LOG_CHANNEL
         argv = materialize_argv(
             request.argv,
             workspace=str(self.work),
             address=self.address,
             literal_prefix=request.literal_prefix,
             argv_templates=request.argv_templates,
+            log_spool=str(log_spool) if request.uses_log_spool else None,
         )
         validate_argv(list(argv))
         process.check_required_paths(
@@ -328,6 +374,7 @@ class HelperSession:
                 if owner.termination_requested:
                     self.lifecycle.record_child_termination()
                 self.lifecycle.observe_child_exit(owner.process.returncode)
+            self._log_disposal(owner.process is None or owner.rollback_confirmed)
             return
         self.child.termination_requested |= owner.termination_requested
         self.lifecycle.adopt_attempt()
@@ -347,6 +394,12 @@ class HelperSession:
         """Create helper-owned entries before ATTEMPT; failure is startup failure."""
         if request.completion_policy == CompletionPolicy.LIVE_SERVER:
             self._readiness = readiness.ReadinessArtifact.create(self.work)
+        if request.uses_log_spool:
+            self._log = log_relay.LogRelay.create(self.work)
+            self._log_reader = self._observe("log", self._observe_log(self._log))
+            output = streams.protocol_output.get()
+            if output is not None:
+                self._observe("log credit", self._observe_log_credit(output))
 
     def _start_output_observers(self, child: process.SupervisedProcess) -> None:
         observed = {task.get_name() for task in child.tasks}
@@ -454,6 +507,51 @@ class HelperSession:
         if not observation.chunk:
             child.output_finished.add(observation.stream)
 
+    def _log_progress(self) -> None:
+        relay = self._log
+        if relay is None:
+            return
+        relay.pump()
+        if relay.ready_to_decide:
+            relay.decide()
+
+    def _log_disposal(self, confirmed: bool) -> None:
+        """Expose the final extent after confirmed disposal, or cut the relay."""
+        relay = self._log
+        if relay is None or relay.decision is not None:
+            return
+        if not confirmed:
+            relay.cut()
+            if self._log_reader is not None:
+                self._log_reader.cancel()
+        elif not relay.disposal_confirmed:
+            try:
+                relay.confirm_disposal()
+            except BaseException as error:
+                self._cleanup_failure(error)
+        self._log_progress()
+
+    def _log_decided(self) -> bool:
+        relay = self._log
+        if relay is None or relay.decision is not None:
+            return True
+        if not self._child_acquired:
+            # No child was acquired, so only the keep-open writer existed.
+            relay.decide(child_acquired=False)
+            return True
+        return False
+
+    def _begin_log_drain(self) -> None:
+        """Anchor the absolute final-drain deadline at the termination commit."""
+        if self._log_drain_started or self._log is None or self._log.decision is not None:
+            return
+        self._log_drain_started = True
+        try:
+            self._observe("log drain deadline", self._observe_log_deadline())
+        except BaseException as error:
+            self._cleanup_failure(error)
+            self._log.decide(deadline=True)
+
     @staticmethod
     async def _dispose_group(child: process.SupervisedProcess) -> GroupCleaned:
         failure = None
@@ -553,6 +651,7 @@ class HelperSession:
             self.child = None
         else:
             self._cleanup_failure(RuntimeError("child disposal remains unconfirmed"))
+            self._log_disposal(False)
         self._attempt_finished = True
 
     def _handle(self, observation: Observation) -> None:
@@ -574,6 +673,15 @@ class HelperSession:
             self._observation_failed(observation)
         elif isinstance(observation, ChildOutput):
             self._output(observation)
+        elif isinstance(observation, LogChunk):
+            if self._log is not None:
+                self._log.accept(observation.chunk)
+            self._log_progress()
+        elif isinstance(observation, (LogCredit, LogReaderStopped)):
+            self._log_progress()
+        elif isinstance(observation, LogDeadline):
+            if self._log is not None:
+                self._log.decide(deadline=True)
         elif isinstance(observation, ReadinessPoll):
             if observation.child is self.child:
                 self._ready()
@@ -585,6 +693,7 @@ class HelperSession:
                 self._child_cleanup = observation
                 if observation.exception is not None:
                     self._cleanup_failure(observation.exception)
+                self._log_disposal(observation.child.group_disposed)
                 if observation.child.output_finished != {"stdout", "stderr"}:
                     try:
                         self._deadline_task = self._observe(
@@ -629,6 +738,7 @@ class HelperSession:
                 # The readiness decision is made, or the attempt is ending.
                 self._close_readiness()
             if isinstance(state, Terminating):
+                self._begin_log_drain()
                 if not self._staging_closed:
                     try:
                         workspace.close_staging_admission(self.work)
@@ -636,8 +746,10 @@ class HelperSession:
                         self._cleanup_failure(error)
                     self._staging_closed = True
                 if self.child is None or self._attempt_finished:
-                    return
-                await self._begin_child_cleanup()
+                    if self._log_decided():
+                        return
+                else:
+                    await self._begin_child_cleanup()
             elif (
                 isinstance(state, Starting)
                 and isinstance(state.attempt, OwnedAttempt)
@@ -647,6 +759,7 @@ class HelperSession:
             if (
                 isinstance(self._child_cleanup, GroupCleaned)
                 and self.child is not None
+                and not self._attempt_finished
                 and self.child.output_finished == {"stdout", "stderr"}
             ):
                 await self._finish_attempt()
@@ -674,14 +787,36 @@ class HelperSession:
             except BaseException as error:
                 self._cleanup_failure(error)
 
+    def _close_log_channel(self) -> bool:
+        """Close relay descriptors after the log decision; report whether they are closed."""
+        relay = self._log
+        if relay is None:
+            return True
+        if self._log_reader is not None and not self._log_reader.done():
+            # The unsettled reader still watches the read end.
+            self._cleanup_failure(RuntimeError("log relay reader did not stop"))
+            return False
+        try:
+            relay.close()
+        except BaseException as error:
+            self._cleanup_failure(error)
+        return not relay.descriptors_open
+
     def release_workspace(self) -> None:
         if self._resources_released:
             return
         self._resources_released = True
         self._close_address_lease()
         self._close_readiness()
+        log_closed = self._close_log_channel()
         try:
-            if self._child_disposed() and self._address_lease is None:
+            if not log_closed:
+                # Workspace removal never runs while relay descriptors are open.
+                workspace.close_staging_admission(self.work)
+                self._cleanup_failure(
+                    RuntimeError("retaining workspace for open log relay descriptors")
+                )
+            elif self._child_disposed() and self._address_lease is None:
                 try:
                     (self.work / workspace.UNCONFIRMED_CHILD).unlink(missing_ok=True)
                 except BaseException as error:
@@ -747,6 +882,15 @@ class HelperSession:
             )
         return CleanupReport(child_status, workspace_status, tuple(residuals))
 
+    def _log_report(self, cleanup: CleanupReport) -> LogReport | None:
+        """Null exactly when START did not request the log channel."""
+        if self.request is None or not self.request.uses_log_spool:
+            return None
+        if self._log is None:
+            # START requested it, but startup ended before the channel existed.
+            return LogReport(0, True)
+        return self._log.report(child_disposal_confirmed=cleanup.child_disposal != "unconfirmed")
+
     async def _run_session_tasks(
         self, output: streams.ProtocolOutput, signals: SessionSignals
     ) -> None:
@@ -773,7 +917,7 @@ class HelperSession:
             cleanup = self._cleanup_report()
             with signals.commit():
                 self.account_recorded_failures()
-                snapshot = self.lifecycle.freeze(cleanup)
+                snapshot = self.lifecycle.freeze(cleanup, self._log_report(cleanup))
             try:
                 streams.emit("SESSION_ENDED", **terminal_fields(snapshot))
                 await output.drain()

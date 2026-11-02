@@ -6,6 +6,12 @@ import pytest
 from zephyr_remote_openocd.controller._ssh import SshCommand
 from zephyr_remote_openocd.controller.forwarding_spec import ForwardSpec
 from zephyr_remote_openocd.controller.plan import SessionPlan
+from zephyr_remote_openocd.protocol.arguments import (
+    ArgumentTemplate,
+    SessionValue,
+    TclWord,
+    log_spool_template,
+)
 from zephyr_remote_openocd.protocol.listeners import ListenerSpec
 from zephyr_remote_openocd.protocol.process import ProcessSpec, RequiredPathSpec
 
@@ -106,6 +112,35 @@ class TestSessionSpecifications:
         with pytest.raises(ValueError):
             # Some values are deliberately ill-typed for runtime validation.
             ProcessSpec(**fields)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        "template",
+        (
+            pytest.param(ArgumentTemplate((SessionValue.LOG_SPOOL,)), id="plain-part"),
+            pytest.param(
+                ArgumentTemplate((TclWord((SessionValue.LOG_SPOOL, ".log")),)), id="word-suffix"
+            ),
+            pytest.param(
+                ArgumentTemplate(("-l ", TclWord((SessionValue.LOG_SPOOL,)))), id="template-prefix"
+            ),
+        ),
+    )
+    def test_remote_process_rejects_log_spool_outside_its_one_form(
+        self, template: ArgumentTemplate
+    ) -> None:
+        with pytest.raises(ValueError):
+            ProcessSpec(
+                ("openocd", template.preview()), literal_prefix=1, argv_templates=((1, template),)
+            )
+
+    def test_remote_process_rejects_a_second_log_spool_argument(self) -> None:
+        template = log_spool_template()
+        with pytest.raises(ValueError):
+            ProcessSpec(
+                ("openocd", "first", "second"),
+                literal_prefix=1,
+                argv_templates=((1, template), (2, template)),
+            )
 
     @pytest.mark.parametrize(
         ("path", "kind"),

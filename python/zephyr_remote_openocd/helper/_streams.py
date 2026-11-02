@@ -12,7 +12,7 @@ import sys
 from collections import deque
 from types import TracebackType
 
-from zephyr_remote_openocd.protocol.wire import encode_frame
+from zephyr_remote_openocd.protocol.wire import encode_frame, encode_log_data
 
 RELAY_CHUNK_SIZE = 64 * 1024
 MAX_PROTOCOL_OUTPUT_BYTES = 16 * 1024 * 1024
@@ -22,14 +22,22 @@ protocol_output: contextvars.ContextVar[ProtocolOutput | None] = contextvars.Con
 )
 
 
-def emit(kind: str, **values: object) -> None:
-    frame = encode_frame(kind, **values)
+def _admit(frame: bytes, *, log: bool = False) -> None:
     output = protocol_output.get()
     if output is None:
         sys.stdout.write(frame.decode("utf-8"))
         sys.stdout.flush()
     else:
-        output.enqueue(frame)
+        output.enqueue(frame, log=log)
+
+
+def emit(kind: str, **values: object) -> None:
+    _admit(encode_frame(kind, **values))
+
+
+def emit_log(offset: int, data: bytes) -> None:
+    """Admit one LOG_DATA frame, charged against the writer's log credit."""
+    _admit(encode_log_data(offset, data), log=True)
 
 
 def error(message: object, code: str = "HELPER_ERROR") -> None:
@@ -79,8 +87,12 @@ class ProtocolOutput:
         except (AttributeError, io.UnsupportedOperation):
             # In-memory callers have no Unix fd or external backpressure.
             self.descriptor = None
-        self.frames: deque[bytes] = deque()
+        self.frames: deque[tuple[bytes, bool]] = deque()
         self.pending_bytes = 0
+        # Encoded LOG_DATA admitted but not yet written. Completing such a
+        # frame sets the coalescing latch; the writer never waits on a reader.
+        self.log_pending = 0
+        self.credit_returned = asyncio.Event()
         self.offset = 0
         self.available = asyncio.Event()
         self.empty = asyncio.Event()
@@ -90,7 +102,7 @@ class ProtocolOutput:
         if self.descriptor is not None:
             self.was_blocking = _acquire_nonblocking(self.descriptor)
 
-    def enqueue(self, frame: bytes) -> None:
+    def enqueue(self, frame: bytes, *, log: bool = False) -> None:
         if self.failure is not None:
             raise self.failure
         if self.descriptor is None:
@@ -99,8 +111,10 @@ class ProtocolOutput:
             return
         if self.pending_bytes + len(frame) > MAX_PROTOCOL_OUTPUT_BYTES:
             raise BufferError("protocol output backlog exceeded its bound")
-        self.frames.append(frame)
+        self.frames.append((frame, log))
         self.pending_bytes += len(frame)
+        if log:
+            self.log_pending += len(frame)
         self.empty.clear()
         self.available.set()
 
@@ -125,7 +139,7 @@ class ProtocolOutput:
             while True:
                 await self.available.wait()
                 while self.frames:
-                    frame = self.frames[0]
+                    frame, log = self.frames[0]
                     try:
                         count = os.write(self.descriptor, memoryview(frame)[self.offset :])
                     except BlockingIOError:
@@ -136,6 +150,9 @@ class ProtocolOutput:
                     if self.offset == len(frame):
                         self.frames.popleft()
                         self.offset = 0
+                        if log:
+                            self.log_pending -= len(frame)
+                            self.credit_returned.set()
                 self.available.clear()
                 self.empty.set()
         except Exception as exc:
@@ -159,6 +176,7 @@ class ProtocolOutput:
         finally:
             self.frames.clear()
             self.pending_bytes = 0
+            self.log_pending = 0
             self.offset = 0
             self.empty.set()
 

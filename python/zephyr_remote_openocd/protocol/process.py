@@ -9,7 +9,11 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from zephyr_remote_openocd.protocol.arguments import ArgumentTemplate, TclWord
+from zephyr_remote_openocd.protocol.arguments import (
+    ArgumentTemplate,
+    TclWord,
+    log_spool_requested,
+)
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
 
 _EVIDENCE_NAME = re.compile(r"[A-Za-z0-9_]+")
@@ -76,6 +80,18 @@ class ProcessSpec:
         ):
             raise ValueError("argv templates must target unique non-prefix argument indices")
         object.__setattr__(self, "argv_templates", templates)
+        log_spool_requested(
+            (template for _, template in templates),
+            (check.template for check in required_paths if check.template is not None),
+        )
+
+    @property
+    def uses_log_spool(self) -> bool:
+        """Whether argv requests the session log channel; invalid placements raise."""
+        return log_spool_requested(
+            (template for _, template in self.argv_templates),
+            (check.template for check in self.required_paths if check.template is not None),
+        )
 
 
 def _normalized_process_fields(

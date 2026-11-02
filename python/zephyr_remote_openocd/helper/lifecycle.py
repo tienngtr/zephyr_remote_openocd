@@ -19,6 +19,7 @@ from zephyr_remote_openocd.protocol.outcome import (
     CleanupReport,
     CompletionPolicy,
     Diagnostic,
+    LogReport,
     Outcome,
     TerminalSnapshot,
     Trigger,
@@ -259,7 +260,7 @@ class LifecycleAuthority[RequestT: StartupRequest]:
         else:
             self._state = Terminating(attempt, outcome)
 
-    def freeze(self, cleanup: CleanupReport) -> TerminalSnapshot:
+    def freeze(self, cleanup: CleanupReport, log: LogReport | None = None) -> TerminalSnapshot:
         """Freeze once, independently of terminal admission or delivery."""
         state = self._state
         if isinstance(state, Closed):
@@ -271,6 +272,6 @@ class LifecycleAuthority[RequestT: StartupRequest]:
             and cleanup.child_disposal != "unconfirmed"
         ):
             raise LifecycleError("unsettled attempt cannot claim confirmed disposal")
-        snapshot = TerminalSnapshot(state.outcome, cleanup)
+        snapshot = TerminalSnapshot(state.outcome, cleanup, log)
         self._state = Closed(state.attempt, snapshot)
         return snapshot

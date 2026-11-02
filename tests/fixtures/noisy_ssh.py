@@ -53,6 +53,7 @@ def control() -> None:
                 "workspace_disposal": "confirmed",
                 "residual_resources": [],
             },
+            "log": None,
         }
     )
 

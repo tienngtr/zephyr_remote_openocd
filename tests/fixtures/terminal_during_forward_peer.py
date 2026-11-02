@@ -47,6 +47,7 @@ def control(root: Path) -> None:
         cleanup=dict(
             child_disposal="confirmed", workspace_disposal="confirmed", residual_resources=[]
         ),
+        log=None,
     )
 
 

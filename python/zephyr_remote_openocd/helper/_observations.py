@@ -42,6 +42,24 @@ class ReadinessPoll(NamedTuple):
     child: SupervisedProcess
 
 
+class LogChunk(NamedTuple):
+    """Bytes read from the log channel; empty at its final end-of-file."""
+
+    chunk: bytes
+
+
+class LogCredit(NamedTuple):
+    """The writer completed LOG_DATA; repeated returns coalesce in one latch."""
+
+
+class LogReaderStopped(NamedTuple):
+    """The log reader ended after recording a deferred read failure."""
+
+
+class LogDeadline(NamedTuple):
+    """The final log drain reached its absolute deadline."""
+
+
 class SignalReceived(NamedTuple):
     signum: int
 
@@ -64,6 +82,10 @@ Observation = (
     | ChildExited
     | Deadline
     | ReadinessPoll
+    | LogChunk
+    | LogCredit
+    | LogReaderStopped
+    | LogDeadline
     | SignalReceived
     | ObservationFailed
     | GroupCleaned

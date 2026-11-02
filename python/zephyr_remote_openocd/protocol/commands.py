@@ -7,7 +7,8 @@ START decoding owns wire shape and context: exact field sets, JSON types for
 values without a domain model, cross-field indexes, and where Tcl words may
 appear. Domain constructors (`ListenerSpec`, `ArgumentTemplate`, `TclWord`,
 `SessionValue`, `CompletionPolicy`) own value invariants, and decoding always
-constructs them rather than restating their checks.
+constructs them rather than restating their checks. The single valid placement
+of the `log_spool` session value is context, shared with `ProcessSpec`.
 """
 
 from __future__ import annotations
@@ -17,7 +18,12 @@ from collections.abc import Iterable
 from typing import Any, NamedTuple
 
 from zephyr_remote_openocd.protocol.addresses import validate_preferred_address
-from zephyr_remote_openocd.protocol.arguments import ArgumentTemplate, SessionValue, TclWord
+from zephyr_remote_openocd.protocol.arguments import (
+    ArgumentTemplate,
+    SessionValue,
+    TclWord,
+    log_spool_requested,
+)
 from zephyr_remote_openocd.protocol.listeners import ListenerSpec, validated_listeners
 from zephyr_remote_openocd.protocol.outcome import CompletionPolicy
 from zephyr_remote_openocd.protocol.process import ProcessSpec, valid_evidence_name
@@ -160,6 +166,18 @@ class StartRequest(NamedTuple):
     argv_templates: tuple[tuple[int, ArgumentTemplate], ...]
     preferred_address: str | None
 
+    @property
+    def uses_log_spool(self) -> bool:
+        """Whether the runner placed the session log channel in argv."""
+        return log_spool_requested(
+            (template for _, template in self.argv_templates),
+            (
+                check.path
+                for check in self.required_paths
+                if isinstance(check.path, ArgumentTemplate)
+            ),
+        )
+
 
 def _parse_required_paths(values: object) -> tuple[RequiredPath, ...]:
     if not isinstance(values, list):
@@ -215,6 +233,11 @@ def _decode_start(message: dict[str, Any]) -> StartRequest:
     templates = _parse_argv_templates(message["argv_templates"], len(argv), literal_prefix)
     preferred_address = message["preferred_address"]
     validate_preferred_address(preferred_address)
+    # Log-channel placement is context: only one complete argv Tcl word may use it.
+    log_spool_requested(
+        (template for _, template in templates),
+        (check.path for check in checks if isinstance(check.path, ArgumentTemplate)),
+    )
     return StartRequest(
         CompletionPolicy(message["completion_policy"]),
         tuple(argv),

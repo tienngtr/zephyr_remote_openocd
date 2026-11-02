@@ -9,6 +9,7 @@ import fcntl
 import json
 import os
 import signal
+import stat
 import subprocess
 import sys
 from collections.abc import Buffer, Callable, Coroutine, Iterable, Iterator, Mapping, Sequence
@@ -20,6 +21,7 @@ from typing import IO, TYPE_CHECKING, Any, Literal, cast
 from unittest.mock import create_autospec
 
 import pytest
+from zephyr_remote_openocd.helper import _log_relay as log_relay
 from zephyr_remote_openocd.helper import _process as helper_process
 from zephyr_remote_openocd.helper import _session as helper_session
 from zephyr_remote_openocd.helper import _streams as helper_streams
@@ -30,23 +32,30 @@ from zephyr_remote_openocd.helper._observations import (
     ChildOutput,
     ControlEOF,
     Deadline,
+    GroupCleaned,
+    LogCredit,
+    LogDeadline,
     Observation,
     ReadinessPoll,
+    SignalReceived,
 )
 from zephyr_remote_openocd.helper._process import ChildAcquisition, SupervisedProcess
 from zephyr_remote_openocd.helper._session import HelperSession
-from zephyr_remote_openocd.helper.lifecycle import Closed, Starting
+from zephyr_remote_openocd.helper.lifecycle import Closed, Starting, Terminating
 from zephyr_remote_openocd.protocol import commands as protocol_commands
+from zephyr_remote_openocd.protocol.arguments import log_spool_template
 from zephyr_remote_openocd.protocol.commands import encode_release, encode_start
 from zephyr_remote_openocd.protocol.outcome import (
     ChildResult,
     CleanupReport,
     CompletionPolicy,
+    LogReport,
     TerminalSnapshot,
     Trigger,
 )
 from zephyr_remote_openocd.protocol.process import ProcessSpec, RequiredPathSpec
-from zephyr_remote_openocd.protocol.wire import decode_terminal
+from zephyr_remote_openocd.protocol.tcl import tcl_quote
+from zephyr_remote_openocd.protocol.wire import MAX_LOG_DATA_BYTES, decode_terminal, encode_log_data
 
 from tests.helper_process_support import dispose_child_groups
 from tests.support import ROOT
@@ -1782,10 +1791,12 @@ def test_native_signal_delivery_linearizes_after_blocked_commit(
     else:
         freeze = session.lifecycle.freeze
 
-        def signal_then_freeze(cleanup: CleanupReport) -> TerminalSnapshot:
+        def signal_then_freeze(
+            cleanup: CleanupReport, log: LogReport | None = None
+        ) -> TerminalSnapshot:
             signal.raise_signal(signal.SIGTERM)
             assert session._signal_scope.pending_signum is None
-            return freeze(cleanup)
+            return freeze(cleanup, log)
 
         monkeypatch.setattr(session.lifecycle, "freeze", signal_then_freeze)
         writer.close()
@@ -2039,3 +2050,529 @@ def test_address_lease_cleanup_failure_preserves_startup_failure(
     finally:
         if lease is not None:
             lease.close()
+
+
+# OpenOCD log channel relay (SAD §38.8). Only the protocol writer's LOG_DATA
+# admission is faked, so tests control when written frames return credit, and
+# the final drain deadline is controlled as a clock.
+
+LOG_CHILD = str(ROOT / "tests/fixtures/log_writer_child.py")
+
+
+def _pattern(count: int) -> bytes:
+    return (bytes(range(256)) * (count // 256 + 1))[:count]
+
+
+def _log_spec(
+    count: int, then: str, policy: CompletionPolicy = CompletionPolicy.LIVE_SERVER
+) -> ProcessSpec:
+    template = log_spool_template()
+    return ProcessSpec(
+        (sys.executable, LOG_CHILD, template.preview(), str(count), then),
+        literal_prefix=2,
+        argv_templates=((2, template),),
+        completion_policy=policy,
+    )
+
+
+class FakeLogWriter:
+    """Record admitted LOG_DATA; while held, admitted frames keep their credit."""
+
+    def __init__(self, *, hold: bool) -> None:
+        self.hold = hold
+        self.frames: list[tuple[int, bytes]] = []
+
+    def emit(self, offset: int, data: bytes) -> None:
+        self.frames.append((offset, data))
+        output = helper_streams.protocol_output.get()
+        if self.hold and output is not None:
+            output.log_pending += len(encode_log_data(offset, data))
+
+    @property
+    def data(self) -> bytes:
+        offsets = [offset for offset, _ in self.frames]
+        received = [len(data) for _, data in self.frames]
+        assert offsets == [sum(received[:index]) for index in range(len(received))]
+        assert all(0 < size <= MAX_LOG_DATA_BYTES for size in received)
+        return b"".join(data for _, data in self.frames)
+
+
+def _install(
+    monkeypatch: pytest.MonkeyPatch, writer: FileIO, *, hold: bool = False, release: bool = True
+) -> FakeLogWriter:
+    """Fake LOG_DATA admission; a live session is released once its log is written."""
+    log_writer = FakeLogWriter(hold=hold)
+    record = helper_streams.emit
+
+    def emit(kind: str, **fields: object) -> None:
+        record(kind, **fields)
+        if release and kind == "CHILD_OUTPUT" and fields.get("payload") == "written":
+            _release(writer)
+
+    monkeypatch.setattr(helper_streams, "emit", emit)
+    monkeypatch.setattr(helper_streams, "emit_log", log_writer.emit)
+    return log_writer
+
+
+def _immediate_drain_deadline(monkeypatch: pytest.MonkeyPatch, anchored: list[object]) -> None:
+    async def expire(owner: HelperSession) -> None:
+        # The clock is the faked boundary: record the phase at arming, then
+        # expire at once instead of after LOG_DRAIN_DEADLINE seconds.
+        anchored.append(owner.lifecycle.state)
+        await owner._events.put(LogDeadline())
+
+    monkeypatch.setattr(HelperSession, "_observe_log_deadline", expire)
+
+
+@pytest.mark.timeout(60)
+def test_complete_relay_is_the_exact_channel_stream_and_settles_before_removal(
+    coordinated_helper: CoordinatedHelper, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session, writer, events, _children = coordinated_helper
+    log_writer = _install(monkeypatch, writer, release=False)
+    remove = workspace_module.remove_workspace
+    at_removal: list[tuple[bool, bool, int]] = []
+
+    def remove_after_decision(work: Path) -> None:
+        relay = session._log
+        assert relay is not None
+        channel = os.stat(work / log_relay.LOG_CHANNEL, follow_symlinks=False)
+        at_removal.append(
+            (relay.decision is not None, relay.descriptors_open, stat.S_IMODE(channel.st_mode))
+        )
+        assert stat.S_ISFIFO(channel.st_mode)
+        remove(work)
+
+    monkeypatch.setattr(workspace_module, "remove_workspace", remove_after_decision)
+    size = 3 * MAX_LOG_DATA_BYTES + 123
+    writer.write(encode_start(_log_spec(size, "exit", CompletionPolicy.PROCESS_EXIT), ()))
+    _run_terminated(session, fails=False)
+    snapshot = _terminal_event(events)
+    attempt = next(fields["argv"] for kind, fields in events if kind == "ATTEMPT")
+    assert isinstance(attempt, list)
+    assert attempt[2] == tcl_quote(str(session.work / log_relay.LOG_CHANNEL))
+    assert snapshot.outcome.trigger == Trigger.CHILD_EXIT
+    assert snapshot.outcome.primary_failure is None
+    assert snapshot.log is not None and snapshot.log.complete
+    assert snapshot.log.byte_count == size
+    assert log_writer.data == _pattern(size)
+    # The decision and descriptor closure precede workspace removal.
+    assert at_removal == [(True, False, 0o600)]
+    assert not session.work.exists()
+
+
+@pytest.mark.timeout(60)
+def test_overflow_while_active_keeps_draining_and_ends_incomplete_without_termination(
+    coordinated_helper: CoordinatedHelper, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session, writer, events, children = coordinated_helper
+    # The writer never returns credit, so the relay buffer must fill.
+    log_writer = _install(monkeypatch, writer, hold=True)
+    monkeypatch.setattr(log_relay, "LOG_RELAY_BUFFER_BYTES", 4096)
+    anchored: list[object] = []
+    _immediate_drain_deadline(monkeypatch, anchored)
+    # Far more than the FIFO, the buffer, and the credit together: the child
+    # finishes only if the relay keeps reading and discarding.
+    size = 4 * 1024 * 1024
+    writer.write(encode_start(_log_spec(size, "wait"), ()))
+    _run_terminated(session, fails=False)
+    snapshot = _terminal_event(events)
+    kinds = [kind for kind, _ in events]
+    assert kinds.count("READY") == 1
+    # Overflow neither terminated the session nor became a failure.
+    assert snapshot.outcome.trigger == Trigger.CONTROLLER_EOF
+    assert snapshot.outcome.primary_failure is None
+    assert not snapshot.outcome.diagnostics
+    assert snapshot.log is not None and not snapshot.log.complete
+    assert snapshot.log.diagnostic is not None
+    assert snapshot.log.diagnostic.code == "LOG_RELAY_OVERFLOW"
+    received = log_writer.data
+    assert 0 < len(received) == snapshot.log.byte_count < size
+    assert received == _pattern(size)[: len(received)]
+    assert all(isinstance(state, Terminating) for state in anchored) and len(anchored) == 1
+    assert snapshot.cleanup.confirmed and children[0].group_disposed
+
+
+@pytest.mark.timeout(60)
+def test_final_drain_ends_at_its_deadline_with_an_exact_prefix(
+    coordinated_helper: CoordinatedHelper, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session, writer, events, _children = coordinated_helper
+    log_writer = _install(monkeypatch, writer, hold=True, release=False)
+    anchored: list[object] = []
+    _immediate_drain_deadline(monkeypatch, anchored)
+    size = 1024 * 1024  # Within the relay buffer, beyond the held credit.
+    writer.write(encode_start(_log_spec(size, "exit", CompletionPolicy.PROCESS_EXIT), ()))
+    _run_terminated(session, fails=False)
+    snapshot = _terminal_event(events)
+    assert snapshot.outcome.trigger == Trigger.CHILD_EXIT
+    assert snapshot.outcome.primary_failure is None
+    assert snapshot.log is not None and not snapshot.log.complete
+    assert snapshot.log.diagnostic is not None
+    assert snapshot.log.diagnostic.code == "LOG_DRAIN_DEADLINE"
+    received = log_writer.data
+    assert received == _pattern(size)[: snapshot.log.byte_count] and received
+    assert len(anchored) == 1 and isinstance(anchored[0], Terminating)
+    assert not session.work.exists()
+
+
+def _failing_log_read(
+    monkeypatch: pytest.MonkeyPatch, session: HelperSession, when: Callable[[], bool]
+) -> list[int]:
+    read = os.read
+    failures: list[int] = []
+
+    def controlled(descriptor: int, size: int) -> bytes:
+        relay = session._log
+        if relay is not None and descriptor == relay.read_descriptor and when():
+            failures.append(descriptor)
+            raise OSError(errno.EIO, "injected log channel read failure")
+        return read(descriptor, size)
+
+    monkeypatch.setattr(os, "read", controlled)
+    return failures
+
+
+@pytest.mark.timeout(60)
+def test_log_read_failure_while_openocd_may_write_is_a_helper_failure(
+    coordinated_helper: CoordinatedHelper, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session, writer, events, children = coordinated_helper
+    _install(monkeypatch, writer)
+    failures = _failing_log_read(monkeypatch, session, lambda: True)
+    writer.write(encode_start(_log_spec(16, "wait"), ()))
+    _run_terminated(session, fails=True)
+    snapshot = _terminal_event(events)
+    assert failures
+    assert snapshot.outcome.trigger == Trigger.HELPER_FAILURE
+    assert _failure_code(snapshot) == "OBSERVER_FAILURE"
+    assert snapshot.log is not None and not snapshot.log.complete
+    assert snapshot.log.diagnostic is not None
+    assert snapshot.log.diagnostic.code == "LOG_READ_FAILURE"
+    assert snapshot.cleanup.confirmed and children[0].group_disposed
+    assert not session.work.exists()
+
+
+@pytest.mark.timeout(60)
+def test_log_read_failure_after_confirmed_disposal_only_makes_the_relay_incomplete(
+    coordinated_helper: CoordinatedHelper, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session, writer, events, children = coordinated_helper
+    log_writer = _install(monkeypatch, writer)
+
+    def disposed() -> bool:
+        return session._log is not None and session._log.disposal_confirmed
+
+    failures = _failing_log_read(monkeypatch, session, disposed)
+    remove = workspace_module.remove_workspace
+    artifact_modes: list[int] = []
+
+    def remove_and_inspect(work: Path) -> None:
+        artifact = os.stat(work / "readiness")
+        assert stat.S_ISREG(artifact.st_mode)
+        artifact_modes.append(stat.S_IMODE(artifact.st_mode))
+        remove(work)
+
+    monkeypatch.setattr(workspace_module, "remove_workspace", remove_and_inspect)
+    writer.write(encode_start(_log_spec(16, "wait"), ()))
+    _run_terminated(session, fails=False)
+    snapshot = _terminal_event(events)
+    assert failures
+    assert snapshot.outcome.trigger == Trigger.CONTROLLER_EOF
+    assert snapshot.outcome.primary_failure is None
+    assert not snapshot.outcome.diagnostics
+    assert snapshot.log is not None and not snapshot.log.complete
+    assert snapshot.log.diagnostic is not None
+    assert snapshot.log.diagnostic.code == "LOG_READ_FAILURE"
+    assert log_writer.data == _pattern(16)
+    assert artifact_modes == [0o600]
+    assert snapshot.cleanup.confirmed and children[0].group_disposed
+
+
+@pytest.mark.timeout(60)
+def test_unconfirmed_disposal_cuts_the_relay_and_closes_its_descriptors(
+    coordinated_helper: CoordinatedHelper, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session, writer, events, children = coordinated_helper
+    _install(monkeypatch, writer)
+    terminate = helper_process.SupervisedProcess.terminate
+
+    async def uncertain(child: SupervisedProcess) -> None:
+        await terminate(child)
+        child.group_disposed = False
+        raise OSError("group disposal could not be established")
+
+    monkeypatch.setattr(helper_process.SupervisedProcess, "terminate", uncertain)
+    writer.write(encode_start(_log_spec(16, "wait"), ()))
+    try:
+        _run_terminated(session, fails=True)
+        snapshot = _terminal_event(events)
+        assert snapshot.cleanup.child_disposal == "unconfirmed"
+        assert snapshot.log is not None and not snapshot.log.complete
+        assert snapshot.log.diagnostic is not None
+        assert snapshot.log.diagnostic.code == "LOG_DISPOSAL_UNCONFIRMED"
+        relay = session._log
+        assert relay is not None and not relay.descriptors_open
+        # The workspace is retained for the unconfirmed child, not the relay.
+        assert session.work.is_dir()
+    finally:
+        for stream in (children[0].process.stdout, children[0].process.stderr):
+            if stream is not None:
+                stream.close()
+
+
+def test_credit_returned_while_the_observation_queue_is_full_is_not_lost(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(workspace_module, "workspace_root", lambda: tmp_path)
+    session = HelperSession.create()
+    read_fd, write_fd = os.pipe()
+    monkeypatch.setattr(sys, "stdout", SimpleNamespace(fileno=lambda: write_fd))
+
+    async def run() -> list[Observation]:
+        output = helper_streams.ProtocolOutput()
+        writer_task = asyncio.create_task(output.run())
+        for _ in range(session._events.maxsize):
+            session._events.put_nowait(SignalReceived(0))
+        credit = asyncio.create_task(session._observe_log_credit(output))
+        # The writer completes LOG_DATA while the coordinator queue is full:
+        # it only sets the latch, so it neither blocks nor loses the return.
+        for offset in (0, 1):
+            output.enqueue(encode_log_data(offset, b"x"), log=True)
+            await output.empty.wait()
+            assert output.log_pending == 0
+            await asyncio.sleep(0)
+            assert session._events.full()
+        observed = [await session._events.get() for _ in range(session._events.maxsize)]
+        # The blocked publication, then the return latched while it was blocked.
+        while sum(isinstance(item, LogCredit) for item in observed) < 2:
+            observed.append(await session._events.get())
+        credit.cancel()
+        writer_task.cancel()
+        await asyncio.gather(credit, writer_task, return_exceptions=True)
+        return observed
+
+    try:
+        observed = asyncio.run(run())
+        assert sum(isinstance(item, LogCredit) for item in observed) == 2
+        assert not any(isinstance(item, LogCredit) for item in observed[: session._events.maxsize])
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+        session.release_workspace()
+
+
+def test_relay_admits_no_byte_after_the_first_discarded_byte(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Draining after overflow cannot let later channel bytes leave a gap."""
+    relay = log_relay.LogRelay.create(tmp_path)
+    admitted = FakeLogWriter(hold=False)
+    monkeypatch.setattr(helper_streams, "emit_log", admitted.emit)
+    monkeypatch.setattr(log_relay, "LOG_RELAY_BUFFER_BYTES", 8)
+    try:
+        relay.accept(b"abcdef")
+        relay.accept(b"ghijkl")  # Only "gh" fits; the rest is discarded.
+        relay.pump()
+        relay.accept(b"mn")  # There is room again, but continuity is lost.
+        relay.pump()
+        relay.accept(b"")
+        relay.confirm_disposal()
+        relay.decide()
+    finally:
+        relay.close()
+    assert admitted.data == b"abcdefgh"
+    assert relay.decision is not None and not relay.decision.complete
+    assert relay.decision.byte_count == 8
+    assert relay.decision.diagnostic is not None
+    assert relay.decision.diagnostic.code == "LOG_RELAY_OVERFLOW"
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("disposal", ("confirmed", "unconfirmed"))
+@pytest.mark.parametrize("buffered", (False, True), ids=("empty-buffer", "buffered-prefix"))
+def test_active_log_read_failure_is_decided_only_after_disposal_and_final_drain(
+    coordinated_helper: CoordinatedHelper,
+    monkeypatch: pytest.MonkeyPatch,
+    buffered: bool,
+    disposal: str,
+) -> None:
+    """An active read failure is the fatal fact; the log decision still waits.
+
+    Termination, process-group disposal, the confirmed close or the cut, and
+    the final drain of already-buffered bytes all precede the decision.
+    """
+    session, writer, events, children = coordinated_helper
+    # While held, admitted frames keep their credit, so later bytes stay buffered.
+    log_writer = _install(monkeypatch, writer, hold=buffered, release=False)
+    size = 512 * 1024
+    read = os.read
+    received = 0
+    failed_at: list[int] = []
+
+    def fail_final_chunk(descriptor: int, count: int) -> bytes:
+        nonlocal received
+        relay = session._log
+        if relay is None or descriptor != relay.read_descriptor:
+            return read(descriptor, count)
+        chunk = read(descriptor, count)
+        if received + len(chunk) >= size:
+            # The child is alive and still owns its log descriptor.
+            failed_at.append(received)
+            raise OSError(errno.EIO, "injected log channel read failure")
+        received += len(chunk)
+        return chunk
+
+    order: list[str] = []
+    decided: list[tuple[str, bool]] = []
+    log_disposal = HelperSession._log_disposal
+    decide = log_relay.LogRelay.decide
+
+    def disposal_then_drain(owner: HelperSession, confirmed: bool) -> None:
+        order.append("disposal")
+        output = helper_streams.protocol_output.get()
+        if buffered and output is not None:
+            # The consumer catches up only now, during the final drain.
+            log_writer.hold = False
+            output.log_pending = 0
+            output.credit_returned.set()
+        log_disposal(owner, confirmed)
+
+    def record_decision(relay: log_relay.LogRelay, **options: bool) -> None:
+        if relay.decision is None:
+            order.append("decide")
+            decided.append((type(session.lifecycle.state).__name__, relay.disposal_confirmed))
+        decide(relay, **options)
+
+    terminate = helper_process.SupervisedProcess.terminate
+
+    async def uncertain(child: SupervisedProcess) -> None:
+        await terminate(child)
+        child.group_disposed = False
+        raise OSError("group disposal could not be established")
+
+    monkeypatch.setattr(os, "read", fail_final_chunk)
+    monkeypatch.setattr(HelperSession, "_log_disposal", disposal_then_drain)
+    monkeypatch.setattr(log_relay.LogRelay, "decide", record_decision)
+    if disposal == "unconfirmed":
+        monkeypatch.setattr(helper_process.SupervisedProcess, "terminate", uncertain)
+    writer.write(encode_start(_log_spec(size, "wait"), ()))
+    try:
+        _run_terminated(session, fails=True)
+        snapshot = _terminal_event(events)
+        assert failed_at
+        # The read failure is the lifecycle cause.
+        assert snapshot.outcome.trigger == Trigger.HELPER_FAILURE
+        assert _failure_code(snapshot) == "OBSERVER_FAILURE"
+        # One decision, during termination, after disposal closed the
+        # keep-open writer (confirmed) or cut the relay (unconfirmed).
+        assert order.index("disposal") < order.index("decide")
+        assert decided == [("Terminating", disposal == "confirmed")]
+        # Every byte read before the failure was delivered, buffered or not.
+        assert log_writer.data == _pattern(size)[: failed_at[0]]
+        assert snapshot.log is not None and not snapshot.log.complete
+        assert snapshot.log.byte_count == failed_at[0]
+        assert snapshot.log.diagnostic is not None
+        assert snapshot.log.diagnostic.code == "LOG_READ_FAILURE"
+        assert session._log is not None and not session._log.descriptors_open
+    finally:
+        for stream in (children[0].process.stdout, children[0].process.stderr):
+            if stream is not None:
+                stream.close()
+
+
+class _SaturatedPublication(asyncio.Queue[Observation]):
+    """Hold a GroupCleaned publication until log chunks have filled the queue.
+
+    While it is held, the coordinator's ``get`` waits too, so the log reader
+    fills the queue. The publication then enters the ordinary blocking
+    ``put`` behind a full queue, and the coordinator resumes. This only
+    arranges the interleaving; it does not decide who is served next.
+    """
+
+    def __init__(self, maxsize: int, on_publication: Callable[[], None]) -> None:
+        super().__init__(maxsize)
+        self.holding = False
+        self.full_at_publication: bool | None = None
+        self._on_publication = on_publication
+
+    async def put(self, item: Observation) -> None:
+        if isinstance(item, GroupCleaned):
+            self.holding = True
+            while not self.full():
+                await asyncio.sleep(0)
+            self.full_at_publication = self.full()
+            self._on_publication()
+            self.holding = False
+        await super().put(item)
+
+    async def get(self) -> Observation:
+        while self.holding:
+            await asyncio.sleep(0)
+        return await super().get()
+
+
+# A lost publication would leave the coordinator waiting in its own loop,
+# which absorbs the signal-method timeout; the thread method still ends it.
+@pytest.mark.timeout(60, method="thread")
+def test_group_cleanup_completes_while_an_escaped_writer_saturates_the_queue(
+    coordinated_helper: CoordinatedHelper, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Process-group cleanup reaches the coordinator through a log-saturated queue.
+
+    A descendant outside the owned group keeps writing the log channel after
+    the group is gone, so the log reader keeps the bounded observation queue
+    full when GroupCleaned is published. The session must still settle the
+    attempt, decide the log, remove the workspace, and end.
+    """
+    session, writer, events, children = coordinated_helper
+    pid_file = tmp_path / "escaped-writer"
+    escaped_alive_at_publication: list[bool] = []
+
+    def record_writer() -> None:
+        try:
+            os.kill(int(pid_file.read_text()), 0)
+        except ProcessLookupError:
+            escaped_alive_at_publication.append(False)
+        else:
+            escaped_alive_at_publication.append(True)
+
+    queue = _SaturatedPublication(session._events.maxsize, record_writer)
+    session._events = queue
+    log_writer = FakeLogWriter(hold=True)
+    monkeypatch.setattr(helper_streams, "emit_log", log_writer.emit)
+    _immediate_drain_deadline(monkeypatch, [])
+    record = helper_streams.emit
+
+    def emit(kind: str, **fields: object) -> None:
+        record(kind, **fields)
+        if kind == "CHILD_OUTPUT" and fields.get("payload") == "written":
+            _release(writer)
+
+    monkeypatch.setattr(helper_streams, "emit", emit)
+    template = log_spool_template()
+    child = (
+        sys.executable,
+        str(ROOT / "tests/fixtures/escaped_log_writer.py"),
+        template.preview(),
+        str(pid_file),
+    )
+    writer.write(
+        encode_start(ProcessSpec(child, literal_prefix=2, argv_templates=((2, template),)), ())
+    )
+    try:
+        _run_terminated(session, fails=False)
+        snapshot = _terminal_event(events)
+        assert queue.full_at_publication is True
+        # The writer outlived the group and was still producing at publication;
+        # closing the read end later ends it with EPIPE.
+        assert escaped_alive_at_publication == [True]
+        assert snapshot.outcome.trigger == Trigger.CONTROLLER_EOF
+        assert snapshot.outcome.primary_failure is None
+        assert snapshot.cleanup.confirmed and children[0].group_disposed
+        assert snapshot.log is not None and not snapshot.log.complete
+        assert not session.work.exists()
+    finally:
+        if pid_file.exists():
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(int(pid_file.read_text()), signal.SIGKILL)

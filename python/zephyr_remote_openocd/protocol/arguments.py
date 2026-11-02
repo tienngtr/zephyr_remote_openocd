@@ -15,6 +15,7 @@ from zephyr_remote_openocd.protocol.tcl import tcl_quote
 class SessionValue(Enum):
     WORKSPACE = "workspace"
     ADDRESS = "address"
+    LOG_SPOOL = "log_spool"
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,34 @@ class ArgumentTemplate:
         return [encode(part) for part in self.parts]
 
 
+def log_spool_template() -> ArgumentTemplate:
+    """Return the only template form that may reference the session log channel."""
+    return ArgumentTemplate((TclWord((SessionValue.LOG_SPOOL,)),))
+
+
+def _references_log_spool(parts: Iterable[str | SessionValue | TclWord]) -> bool:
+    return any(
+        part is SessionValue.LOG_SPOOL
+        or isinstance(part, TclWord)
+        and SessionValue.LOG_SPOOL in part.parts
+        for part in parts
+    )
+
+
+def log_spool_requested(
+    argv_templates: Iterable[ArgumentTemplate], path_templates: Iterable[ArgumentTemplate]
+) -> bool:
+    """Validate log-channel references; their exact argv form requests the channel."""
+    if any(_references_log_spool(template.parts) for template in path_templates):
+        raise ValueError("required paths cannot reference the log channel")
+    references = [template for template in argv_templates if _references_log_spool(template.parts)]
+    if any(template != log_spool_template() for template in references):
+        raise ValueError("the log channel is valid only as one complete Tcl-word argument")
+    if len(references) > 1:
+        raise ValueError("at most one argument may reference the log channel")
+    return bool(references)
+
+
 def _render_parts(
     parts: Iterable[str | SessionValue | TclWord], replacements: Mapping[str, str]
 ) -> str:
@@ -83,6 +112,7 @@ def _render_parts(
 def materialize_path(value: str | ArgumentTemplate, *, workspace: str, address: str) -> str:
     if isinstance(value, str):
         return value
+    # Required paths cannot reference the log channel; START validation rejects it.
     return _render_parts(value.parts, {"workspace": workspace, "address": address})
 
 
@@ -93,6 +123,7 @@ def materialize_argv(
     address: str,
     literal_prefix: int = 0,
     argv_templates: Iterable[tuple[int, ArgumentTemplate]] = (),
+    log_spool: str | None = None,
 ) -> tuple[str, ...]:
     """Resolve only explicit runner-owned templates, preserving all literal text.
 
@@ -100,6 +131,8 @@ def materialize_argv(
     diagnostics never reconstruct session expansion independently.
     """
     replacements = {"workspace": workspace, "address": address}
+    if log_spool is not None:
+        replacements["log_spool"] = log_spool
     templates = dict(argv_templates)
     return tuple(
         _render_parts(templates[index].parts, replacements)

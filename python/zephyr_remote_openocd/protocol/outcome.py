@@ -154,13 +154,39 @@ class CleanupReport:
 
 
 @dataclass(frozen=True, slots=True)
+class LogReport:
+    """Remote relay completeness of the session log channel, not the local file."""
+
+    byte_count: int
+    complete: bool
+    diagnostic: Diagnostic | None = None
+
+    def __post_init__(self) -> None:
+        if isinstance(self.byte_count, bool) or not isinstance(self.byte_count, int):
+            raise ValueError("log byte count must be an integer")
+        if self.byte_count < 0:
+            raise ValueError("log byte count must not be negative")
+        if (self.diagnostic is None) != self.complete:
+            raise ValueError("an incomplete log, and only an incomplete log, has a diagnostic")
+
+
+@dataclass(frozen=True, slots=True)
 class TerminalSnapshot:
     outcome: Outcome
     cleanup: CleanupReport
+    # Null exactly when START did not request the log channel. Log completeness
+    # never selects or replaces a primary failure.
+    log: LogReport | None = None
 
     def __post_init__(self) -> None:
         if self.cleanup.child_disposal == "not_acquired" and self.outcome.child_result is not None:
             raise ValueError("child observation is incompatible with no child acquisition")
+        if (
+            self.log is not None
+            and self.log.complete
+            and self.cleanup.child_disposal == "unconfirmed"
+        ):
+            raise ValueError("a complete log requires confirmed or no child acquisition")
         if (
             not self.cleanup.confirmed
             and self.outcome.primary_failure is None
@@ -169,4 +195,5 @@ class TerminalSnapshot:
             raise ValueError("unconfirmed disposal requires a failure diagnostic")
 
     def operation_failed(self, policy: CompletionPolicy) -> bool:
+        """Remote operation result; an incomplete log is applied at local projection."""
         return not self.cleanup.confirmed or self.outcome.operation_failed(policy)

@@ -6,6 +6,7 @@ import json
 
 import pytest
 from zephyr_remote_openocd.protocol import commands as protocol_commands
+from zephyr_remote_openocd.protocol.arguments import materialize_argv
 from zephyr_remote_openocd.protocol.commands import StartRequest
 
 
@@ -113,6 +114,76 @@ def test_decode_command_rejects_tcl_quoting_in_a_filesystem_path(
     start_command["required_paths"] = [
         {"kind": "file", "path": {"parts": [{"tcl_word": ["not a path template"]}]}}
     ]
+    with pytest.raises(ValueError):
+        _decode(start_command)
+
+
+LOG_SPOOL_WORD = {"tcl_word": [{"session": "log_spool"}]}
+
+
+def test_log_spool_in_its_one_form_requests_the_log_channel(
+    start_command: dict[str, object],
+) -> None:
+    start_command["argv"] = ["openocd", "--log_output", "{log_spool}"]
+    start_command["literal_prefix"] = 2
+    start_command["argv_templates"] = [{"index": 2, "parts": [LOG_SPOOL_WORD]}]
+    request = _decode(start_command)
+    assert request.uses_log_spool
+    assert materialize_argv(
+        request.argv,
+        workspace="/w",
+        address="127.64.0.7",
+        literal_prefix=request.literal_prefix,
+        argv_templates=request.argv_templates,
+        log_spool="/w/$log [x]",
+    ) == ("openocd", "--log_output", '"/w/\\$log \\[x\\]"')
+
+
+def test_start_without_log_spool_requests_no_log_channel(
+    start_command: dict[str, object],
+) -> None:
+    assert not _decode(start_command).uses_log_spool
+
+
+@pytest.mark.parametrize(
+    ("templates", "required_path"),
+    (
+        pytest.param([{"index": 1, "parts": [{"session": "log_spool"}]}], None, id="plain-part"),
+        pytest.param(
+            [{"index": 1, "parts": [{"tcl_word": [{"session": "log_spool"}, ".log"]}]}],
+            None,
+            id="tcl-word-suffix",
+        ),
+        pytest.param(
+            [{"index": 1, "parts": [{"tcl_word": ["/", {"session": "log_spool"}]}]}],
+            None,
+            id="tcl-word-prefix",
+        ),
+        pytest.param(
+            [{"index": 1, "parts": ["log_output ", LOG_SPOOL_WORD]}], None, id="template-prefix"
+        ),
+        pytest.param(
+            [{"index": 1, "parts": [LOG_SPOOL_WORD, LOG_SPOOL_WORD]}], None, id="repeated-word"
+        ),
+        pytest.param(
+            [{"index": 1, "parts": [LOG_SPOOL_WORD]}, {"index": 2, "parts": [LOG_SPOOL_WORD]}],
+            None,
+            id="second-template",
+        ),
+        pytest.param(
+            [], {"kind": "file", "path": {"parts": [{"session": "log_spool"}]}}, id="required-path"
+        ),
+    ),
+)
+def test_log_spool_outside_its_one_form_is_rejected_before_startup(
+    start_command: dict[str, object],
+    templates: list[object],
+    required_path: dict[str, object] | None,
+) -> None:
+    start_command["argv"] = ["openocd", "first", "second"]
+    start_command["argv_templates"] = templates
+    if required_path is not None:
+        start_command["required_paths"] = [required_path]
     with pytest.raises(ValueError):
         _decode(start_command)
 

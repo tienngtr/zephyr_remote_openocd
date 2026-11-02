@@ -8,6 +8,8 @@ same codec can be bundled with the remote helper.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import ipaddress
 import json
 import math
@@ -20,6 +22,7 @@ from zephyr_remote_openocd.protocol.outcome import (
     CleanupReport,
     CompletionPolicy,
     Diagnostic,
+    LogReport,
     Outcome,
     TerminalSnapshot,
     Trigger,
@@ -27,6 +30,8 @@ from zephyr_remote_openocd.protocol.outcome import (
 
 VERSION = 1
 MAX_FRAME_SIZE = 1024 * 1024
+MAX_LOG_DATA_BYTES = 64 * 1024
+_MAX_LOG_DATA_TEXT = 4 * ((MAX_LOG_DATA_BYTES + 2) // 3)
 _RESIDUALS = frozenset(
     (
         "child_producer",
@@ -205,6 +210,39 @@ def _cleanup(value: object) -> CleanupReport:
     return CleanupReport(**value)
 
 
+def _log(value: object) -> LogReport | None:
+    if value is None:
+        return None
+    if (
+        not _exact(value, {"byte_count", "complete", "diagnostic"})
+        or not integer(value["byte_count"], low=0)
+        or not isinstance(value["complete"], bool)
+    ):
+        raise ProtocolError("invalid log report")
+    diagnostic = None if value["diagnostic"] is None else _diagnostic(value["diagnostic"])
+    return LogReport(value["byte_count"], value["complete"], diagnostic)
+
+
+def log_data(message: dict[str, Any]) -> bytes:
+    """Decode the exact bytes of a LOG_DATA event from canonical standard base64."""
+    text = message["data"]
+    try:
+        if not isinstance(text, str) or not 0 < len(text) <= _MAX_LOG_DATA_TEXT:
+            raise ValueError("invalid size")
+        data = base64.b64decode(text, validate=True)
+        if base64.b64encode(data).decode("ascii") != text:
+            raise ValueError("non-canonical encoding")
+    except (binascii.Error, ValueError) as error:
+        raise ProtocolError(f"invalid LOG_DATA data: {error}") from error
+    if not 0 < len(data) <= MAX_LOG_DATA_BYTES:
+        raise ProtocolError("invalid LOG_DATA data size")
+    return data
+
+
+def encode_log_data(offset: int, data: bytes) -> bytes:
+    return encode_frame("LOG_DATA", offset=offset, data=base64.b64encode(data).decode("ascii"))
+
+
 def decode_terminal(message: dict[str, Any]) -> TerminalSnapshot:
     try:
         if (
@@ -218,6 +256,7 @@ def decode_terminal(message: dict[str, Any]) -> TerminalSnapshot:
                     "diagnostics",
                     "child_result",
                     "cleanup",
+                    "log",
                 },
             )
             or message["type"] != "SESSION_ENDED"
@@ -233,13 +272,17 @@ def decode_terminal(message: dict[str, Any]) -> TerminalSnapshot:
             tuple(_diagnostic(item) for item in message["diagnostics"]),
             _child_result(message["child_result"]),
         )
-        return TerminalSnapshot(outcome, _cleanup(message["cleanup"]))
+        return TerminalSnapshot(outcome, _cleanup(message["cleanup"]), _log(message["log"]))
     except (ValueError, TypeError, RecursionError) as error:
         raise ProtocolError(f"invalid terminal outcome: {error}") from error
 
 
 def terminal_fields(snapshot: TerminalSnapshot) -> dict[str, Any]:
-    fields = {**asdict(snapshot.outcome), "cleanup": asdict(snapshot.cleanup)}
+    fields = {
+        **asdict(snapshot.outcome),
+        "cleanup": asdict(snapshot.cleanup),
+        "log": None if snapshot.log is None else asdict(snapshot.log),
+    }
     # Convert tuple collections to JSON arrays and validate all domain fields
     # before writer admission; no truncated substitute terminal is fabricated.
     decode_terminal(decode_frame(encode_frame("SESSION_ENDED", **fields)))
@@ -292,6 +335,9 @@ def validate_event(message: dict[str, Any]) -> None:
             and isinstance(message["line_end"], bool)
             and (bool(message["payload"]) or message["line_end"])
         )
+    elif kind == "LOG_DATA":
+        log_data(message)
+        valid = integer(message["offset"], low=0)
     elif kind == "SESSION_ENDED":
         decode_terminal(message)
     if not valid:
@@ -303,19 +349,34 @@ _FIELDS = {
     "ATTEMPT": {"argv"},
     "READY": {"remote_address", "child_pid"},
     "CHILD_OUTPUT": {"stream", "payload", "line_end"},
-    "SESSION_ENDED": {"trigger", "primary_failure", "diagnostics", "child_result", "cleanup"},
+    "LOG_DATA": {"offset", "data"},
+    "SESSION_ENDED": {
+        "trigger",
+        "primary_failure",
+        "diagnostics",
+        "child_result",
+        "cleanup",
+        "log",
+    },
 }
 
 
 class EventOrder:
     """Validate admission and terminal claims against the observed history."""
 
-    def __init__(self, policy: CompletionPolicy = CompletionPolicy.LIVE_SERVER) -> None:
+    def __init__(
+        self,
+        policy: CompletionPolicy = CompletionPolicy.LIVE_SERVER,
+        *,
+        log_requested: bool = False,
+    ) -> None:
         self.policy = policy
+        self.log_requested = log_requested
         self.created = False
         self.attempted = False
         self.ready = False
         self.child_output_seen = False
+        self.log_bytes = 0
         self.ended = False
 
     def accept(self, message: dict[str, Any]) -> None:
@@ -339,11 +400,22 @@ class EventOrder:
             if not self.attempted:
                 raise ProtocolError("output from an unadmitted attempt")
             self.child_output_seen = True
+        elif kind == "LOG_DATA":
+            if not self.attempted or not self.log_requested:
+                raise ProtocolError("log data without a requested log channel and attempt")
+            if message["offset"] != self.log_bytes:
+                raise ProtocolError("LOG_DATA offset differs from the received total")
+            self.log_bytes += len(log_data(message))
+            self.child_output_seen = True
         elif kind == "SESSION_ENDED":
             snapshot = decode_terminal(message)
             result = snapshot.outcome.child_result
             if result is not None and not self.attempted:
                 raise ProtocolError("child result without an admitted attempt")
+            if (snapshot.log is not None) != self.log_requested:
+                raise ProtocolError("terminal log report disagrees with START")
+            if snapshot.log is not None and snapshot.log.byte_count != self.log_bytes:
+                raise ProtocolError("terminal log byte count differs from received LOG_DATA")
             if self.created and snapshot.cleanup.workspace_disposal == "not_created":
                 raise ProtocolError("created workspace reported as not created")
             if (
