@@ -330,6 +330,18 @@ RTT-server acceptance combines an active GDB session with a bidirectional RTT
 exchange. The debugserver variant waits for a connection to the local GDB
 endpoint before launching its independent client; runner diagnostic wording
 is not a readiness interface.
+`--log-file` acceptance runs only on Zephyr 4.5 builds. The stalled-consumer
+nodes stop the local `west` process with `SIGSTOP` while its SSH transports keep
+running, and flood OpenOCD's log beyond the remote helper's relay buffer. The
+flash node stops `west` once the remote OpenOCD process is observed and
+requires fresh serial output from the selected image while `west` is stopped;
+the debugserver node stops it once the local Tcl endpoint accepts connections,
+then requires Tcl and an independent GDB client to keep working. Both require
+an incomplete-log failure and a local file whose flood records form a gapless
+prefix. The semihosting node requires the console output on the runner's
+standard output and not in the log file. The real-OpenOCD SSH nodes for
+readiness and the log relay need an OpenOCD build with the `dummy` adapter
+and are skipped without one.
 
 Run the desired layers explicitly:
 

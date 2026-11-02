@@ -16,9 +16,7 @@ Before using the runner, make sure that:
   a stable Zephyr 4.4.x or 4.5.x release with its configured Python
   environment, and west. Development versions and release candidates are not
   supported.
-- **The board build** supports Zephyr's built-in `openocd` runner. On Zephyr
-  4.5, it must not pass `--log-file` to the runner; see
-  [`--log-file` on Zephyr 4.5](docs/user/operations.md#--log-file-on-zephyr-45).
+- **The board build** supports Zephyr's built-in `openocd` runner.
 - **The local SSH client** meets the
   [SSH client requirements](docs/user/configuration.md#ssh-client-requirements),
   including the

@@ -12,7 +12,8 @@ reported message or a symptom in the table below, or browse the sections. The
 | `board BOARD does not support runner remote_openocd` | [West reports that the board does not support runner `remote_openocd`](#west-reports-that-the-board-does-not-support-runner-remote_openocd) |
 | `unsupported Zephyr VERSION in PATH`, `cannot read Zephyr version from PATH` | [`remote_openocd` reports an unsupported Zephyr version](#remote_openocd-reports-an-unsupported-zephyr-version) |
 | `cannot determine active Zephyr source` | [`remote_openocd` reports an unsupported Zephyr version](#remote_openocd-reports-an-unsupported-zephyr-version) |
-| `remote_openocd --log-file is not supported on Zephyr 4.5` | [`--log-file` on Zephyr 4.5](operations.md#--log-file-on-zephyr-45) |
+| `cannot open OpenOCD log file`, `OpenOCD log file is not a regular file`, `cannot prepare OpenOCD log file` | [The OpenOCD log file is rejected](#the-openocd-log-file-is-rejected) |
+| `OpenOCD log relay is incomplete`, `cannot write OpenOCD log file` | [The OpenOCD log file is incomplete](#the-openocd-log-file-is-incomplete) |
 | `runner NAME received unknown arguments` after switching Zephyr releases | [Switch Zephyr releases](operations.md#switch-zephyr-releases) |
 | CMake configuration or regeneration fails with a configuration error | [CMake configuration errors](configuration.md#cmake-configuration-errors) |
 | `ZEPHYR_REMOTE_OPENOCD_CONFIG must be an absolute pathname` | [The configuration path is rejected](#the-configuration-path-is-rejected) |
@@ -330,6 +331,23 @@ Read the relayed OpenOCD output, and run the command with `west -v` to see the
 effective remote OpenOCD argv; see
 [Fixed OpenOCD arguments](configuration.md#fixed-openocd-arguments).
 
+### The OpenOCD log file is rejected
+
+`--log-file` must name a regular file that the local user can create or
+write; see [`--log-file` on Zephyr 4.5](operations.md#--log-file-on-zephyr-45).
+The command fails before the remote session starts, and OpenOCD does not start:
+
+- `OpenOCD log file is not a regular file: PATH`: the path names a FIFO,
+  terminal, other character device, or process-substitution path. The target
+  is not modified.
+- `cannot open OpenOCD log file PATH: ...`: the file cannot be opened for
+  writing, for example because its directory is missing or not writable. A
+  FIFO without a reader also reports this message.
+- `cannot prepare OpenOCD log file PATH: ...`: the opened file could not be
+  inspected or truncated.
+
+Choose a regular file in a writable local directory, or omit the option.
+
 ### OpenOCD cannot acquire the probe
 
 If OpenOCD cannot acquire the requested probe or channel because another
@@ -424,6 +442,28 @@ OpenOCD result nor proof of remote cleanup.
    session.
 4. Before removing retained workspace data, follow
    [Retained session data](#retained-session-data).
+
+### The OpenOCD log file is incomplete
+
+With `--log-file`, the command fails when the local file does not receive
+OpenOCD's whole log, even if OpenOCD and the operation otherwise succeeded.
+OpenOCD keeps running and a running GDB client is not interrupted; the failure
+is reported when the command ends. The file keeps the log delivered up to the
+first missing byte. If another failure or Ctrl-C ends the command, that
+failure is reported first and the log failure as additional detail.
+
+- `OpenOCD log relay is incomplete: CODE: ...`: the remote helper could not
+  relay the whole log. `LOG_RELAY_OVERFLOW` means OpenOCD logged faster than
+  the connection and the local machine accepted the data, and the remote
+  helper's bounded buffer filled. `LOG_DRAIN_DEADLINE` means delivery did not
+  finish within the final deadline after OpenOCD stopped. Other codes report
+  that OpenOCD's cleanup or the log read could not be confirmed.
+- `cannot write OpenOCD log file: ...`: writing the local file failed, for
+  example because the disk is full. The runner keeps receiving log data
+  without writing it.
+
+Lowering the OpenOCD debug level, or logging less in the OpenOCD
+configuration, reduces the log volume that the relay must deliver.
 
 ### `CONTROLLER_LEASE_LOST`
 

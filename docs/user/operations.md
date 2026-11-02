@@ -44,14 +44,65 @@ which the built-in `openocd` runner ignores it.
 
 ### `--log-file` on Zephyr 4.5
 
-On Zephyr 4.5, `remote_openocd` rejects the built-in runner's `--log-file`
-option with any value, including an empty one. The command fails before
-contacting the remote with
-`remote_openocd --log-file is not supported on Zephyr 4.5`. This also applies
-when the board or build passes the option to the `openocd` runner, for example
-through `BOARD_RUNNER_ARGS_openocd`; remove it from those arguments and
-reconfigure the build so that `remote_openocd` can run. OpenOCD output still
-appears in the local terminal.
+On Zephyr 4.5, `--log-file=PATH` writes OpenOCD's log to a file on the local
+machine, as with the built-in runner. Zephyr 4.4 has no such option. For
+example:
+
+```sh
+west debug -r remote_openocd --remote lab --log-file=openocd.log
+```
+
+The option also takes effect when the board or build passes it to the
+`openocd` runner, for example through `BOARD_RUNNER_ARGS_openocd`. A relative
+path is resolved against the current directory of the west process, and an
+empty value means no log file.
+
+The remote helper relays OpenOCD's logger output to the local file while
+OpenOCD runs:
+
+- **The file contains the exact log bytes.** It holds OpenOCD's log from its
+  first byte, unaltered and in order. If delivery stops early, the file keeps
+  the part delivered so far and nothing after it.
+- **Other output stays in the terminal.** Output that OpenOCD writes outside
+  its logger, such as its startup banner and semihosting console output, still
+  appears in the relayed OpenOCD output. Log data has no ordering relative to
+  that output.
+- **Log records name the remote log channel.** Where OpenOCD reports its log
+  destination, it names a file in the remote session workspace, not the local
+  path.
+
+The local path must name a regular file. The runner creates it if it is
+missing and truncates it before the remote session starts, even if the
+operation fails later.
+
+**Differences from the built-in runner:**
+
+- **Only regular files are accepted.** A FIFO, terminal, other character
+  device, or process-substitution path is rejected without being modified,
+  instead of being passed to OpenOCD.
+- **The path is used literally.** OpenOCD does not evaluate it as Tcl, and it
+  is never sent to the remote host.
+- **The file is opened early.** An open or validation failure fails the
+  command before the remote session starts, instead of OpenOCD continuing
+  with its log on the terminal.
+- **Log failures fail the command.** An incomplete log or a local write
+  failure fails the command; see
+  [The OpenOCD log file is incomplete](troubleshooting.md#the-openocd-log-file-is-incomplete).
+- **A `log_output` redirect keeps earlier content.** A redirect in the OpenOCD
+  configuration that names the same path does not truncate content already in
+  the local file.
+
+OpenOCD configuration and fixed arguments interact with the option as
+follows:
+
+- **`log_output` with a path** in OpenOCD configuration or commands sends
+  later log records to that path on the remote host, resolved like other
+  remote OpenOCD file operations. Those records are not in the local file.
+- **`log_output` without a path, or `log_output default`,** sends later
+  records to OpenOCD's standard error, which appears in the terminal.
+- **A log option in the fixed `openocd_command` arguments** does not determine
+  the session's log output when `--log-file` is given. OpenOCD may still
+  create that option's file on the remote host.
 
 ## Commands at a glance
 
