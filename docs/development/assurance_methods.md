@@ -17,17 +17,42 @@ The central distinction is between **maintained verification** and
 
 Maintained verification protects established behavior continuously. It must be
 deterministic, understandable, and cheap enough to justify its ongoing
-maintenance cost. Exploratory assurance is investigation: it may generate large
+maintenance cost. Exploratory assurance is investigation, carried out as a
+bounded **campaign** against one stated uncertainty: it may generate large
 input spaces, perturb the implementation, repeat executions, inject unusual
 failures, or build a temporary reference model to search for counterexamples.
 Its tooling is disposable.
 
-A campaign answers a bounded question, minimizes any counterexample it finds,
-and retains only the knowledge that justifies permanent maintenance. Exploratory
-tooling does not become maintained infrastructure merely because it found
-something.
+Each campaign answers a bounded question, minimizes any counterexample it
+finds, and retains only the knowledge that justifies permanent maintenance; see
+[Promoting results](#promoting-results).
 
-## Campaign discipline
+Choose a technique by the uncertainty being investigated:
+
+| Uncertainty | Technique |
+| --- | --- |
+| Do parsers, serializers, framing, path normalization, or numeric limits hold far beyond hand-written examples? | [Property-based testing and fuzzing](#property-based-testing-and-fuzzing) |
+| Would the maintained tests notice a plausible wrong decision? | [Mutation testing](#mutation-testing-and-deliberate-defect-injection) |
+| Does every acquired resource keep a cleanup owner, and does failure precedence hold, when failure hits an acquisition or ownership handoff? | [Fault injection](#fault-injection-at-effect-and-ownership-boundaries) |
+| Do event orderings in a lifecycle or other temporal contract stay within the contract? | [Model-based and state-machine testing](#model-based-and-state-machine-testing) |
+| Does a timing-dependent or cumulative defect appear under repetition or realistic scale? | [Stress, scale, and repeated execution](#stress-scale-and-repeated-execution) |
+| Do fakes and stand-ins match the real external component? | [Probing real dependencies](#probing-real-dependencies) |
+| Does behavior match Zephyr's OpenOCD runner, or the implementation being replaced? | [Differential testing](#differential-testing) |
+| Which decisions do the measured test runs never exercise? | [Coverage and decision analysis](#coverage-and-decision-analysis) |
+
+## Running a campaign
+
+A campaign moves through these steps:
+
+1. [Scope](#scope)
+2. [Setup](#setup)
+3. [Oracles](#oracles)
+4. [Harness sensitivity](#harness-sensitivity)
+5. [Records](#records)
+6. [Minimization](#minimization)
+7. [Failure classification](#classifying-failures)
+8. [Promotion](#promoting-results)
+9. [Reporting](#reporting-and-closure)
 
 ### Scope
 
@@ -46,13 +71,36 @@ and stress iterations are evidence about effort, not objectives. Reaching a
 large number is not a stop condition, and failing to reach one is not a reason
 to continue.
 
+### Setup
+
+- **Location.** Keep campaign tooling and its third-party dependencies under
+  the ignored `.scratch/` tree, so that they stay out of commits. Put agent
+  investigations under `.scratch/agents/`.
+- **Dependencies.** Install exploratory tools, such as property-testing,
+  mutation, or model-checking packages, into a scratch environment rather than
+  adding them to `requirements_dev.txt`.
+- **Source-rewriting tools.** Run tools that rewrite source, such as mutation
+  testers, on a separate copy or worktree so an interrupted run cannot leave
+  mutated production code behind.
+- **External resources.** Campaigns that use SSH hosts or hardware follow the
+  external-test rules in [`testing.md`](testing.md) where they apply:
+  confirm the selection before running, run destructive work serially, and
+  inspect cleanup before a target is reused.
+
+> [!WARNING]
+> Campaign artifacts that may be shared, including reports in pull requests,
+> follow the same restrictions as committed files: no credentials, lab
+> identities, device paths, or other lab-specific data listed in
+> [`CONTRIBUTING.md`](../../CONTRIBUTING.md#commits-and-pull-requests).
+
 ### Oracles
 
 An oracle decides whether an observed result is acceptable. State it before
 generating cases. Useful oracles include:
 
 - a documented invariant, such as "every frame a validated sender emits is
-  accepted by the receiver" or "no process group outlives its session";
+  accepted by the receiver" or "every acquired resource has a cleanup owner
+  until confirmed disposal or explicit residual responsibility";
 - a round-trip relation, such as encoding then decoding a value from the
   documented protocol domain;
 - a small independent model of allowed states and transitions;
@@ -64,14 +112,21 @@ generating cases. Useful oracles include:
 
 Write the oracle from the specification, not from production output or
 production code. An oracle that reimplements the production algorithm tends to
-agree with the same mistakes. Equally, an oracle that is stricter than the
-contract produces false failures: a generic rule such as "the first injected
-fault is always the primary failure" can be unsound when the contract permits a
-racing consequence to be recorded first. Where the contract permits several
-outcomes, the oracle accepts exactly that set; the
+agree with the same mistakes.
+
+An oracle that is stricter than the contract produces false failures. For
+example, a generic rule such as "the first injected fault is always the primary
+failure" is unsound when the contract permits a racing consequence to be
+recorded first.
+
+Where the contract permits several outcomes, the oracle accepts exactly that
+set. The permitted orderings are defined by the [SRS](../requirements/SRS.md)
+and, for Protocol v1 session histories, by the
+[protocol's allowed histories](../architecture/protocol.md#allowed-session-histories-and-failure-boundaries);
+the
 [differential acceptance decisions](../traceability/verification.md#differential-acceptance-decisions)
-record which orderings are benign nondeterminism and which are required
-behavior.
+summarize which lifecycle orderings are benign nondeterminism and which are
+required behavior.
 
 ### Harness sensitivity
 
@@ -90,30 +145,11 @@ region, or a fault hook that never fires, looks the same as a clean result.
 Record whether each injection point and generator strategy was actually
 exercised.
 
-### Execution and reproducibility
-
-Keep campaign tooling and its third-party dependencies under the ignored
-`.scratch/` tree (agent investigations under `.scratch/agents/`). Install
-exploratory tools such as property-testing, mutation, or model-checking
-packages into a scratch environment rather than adding them to
-`requirements_dev.txt`. Run tools that rewrite source, such as mutation
-testers, on a separate copy or worktree so an interrupted run cannot leave
-mutated production code behind. Tools named in this document are examples to
-help investigate a technique, not project requirements; choose whatever suits
-the question.
+### Records
 
 Campaign tooling may be rougher than maintained tests, but failures must be
 reproducible and interpretable. Record the code revision, seeds or settings,
-and minimized counterexamples while investigating. Campaigns that use SSH hosts
-or hardware follow the external-test rules in [`testing.md`](testing.md):
-destructive work runs serially and cleanup is inspected before a target is
-reused. Never record credentials, lab identities, or device paths in campaign
-artifacts that may be shared.
-
-Expect harness defects. Generators, oracles, and stand-ins written quickly will
-be wrong in places; each failure must be classified as a production defect, a
-harness defect, a contract ambiguity, or behavior of an unsupported environment
-before anything changes in the repository.
+and minimized counterexamples while investigating.
 
 ### Minimization
 
@@ -123,19 +159,108 @@ smallest counterexample that fails for that one reason. A large generated
 input, a long random history, or a timing-dependent failure should not become
 the regression when a small deterministic case protects the same behavior.
 
-## Property-based testing and fuzzing
+### Classifying failures
+
+Expect harness defects: generators, oracles, and stand-ins written quickly will
+be wrong in places. Classify each failure before anything changes in the
+repository:
+
+| Classification | What to keep |
+| --- | --- |
+| Production defect | The fix and the smallest deterministic regression that protects the violated contract. |
+| Contract ambiguity | If the distinction is material, a proposed resolution, recorded in the SRS, SAD, or protocol document once accepted. |
+| Harness defect | A harness fix only as far as the investigation needs; no product regression. |
+| Unsupported-environment behavior | A classification against the supported environment; no silently widened support contract and no defensive code for configurations production never uses. |
+| External-component hazard | Documentation in the user documentation, or a proposed transport requirement, rather than a workaround. |
+| Gap in the maintained tests | A maintained regression when the gap exposes a distinct requirement or invariant. |
+| Lab artifact | The observation in the campaign report; no repository change. |
+
+[Promoting results](#promoting-results) gives more detail on production
+defects, contract ambiguities, and when to keep a generated property.
+
+## Promoting results
+
+A campaign can finish without changing the repository. That is a valid result
+when the stated uncertainty was explored substantially and every observed
+failure is explained.
+
+When a production defect is found, keep the fix and the smallest deterministic
+regression that protects the violated contract, at the smallest useful
+maintained layer under the rules in [`test_design.md`](test_design.md). Do not
+keep the exploratory harness merely because it found the problem.
+
+When a generated property is itself a concise, durable statement of the
+contract, keeping the property can be better than reducing it to one example.
+This suits pure, inexpensive boundaries such as codec round trips and chunking
+invariance. A promoted property is maintained verification, so it must run
+deterministically. Promoting a property that needs a new developer dependency
+is a maintenance decision in its own right; a deterministic enumeration, such
+as every split point of a small stream, often protects the same contract
+without one.
+
+When the investigation exposes an ambiguity in the specification or
+architecture and the distinction is material, propose a resolution to the SRS,
+SAD, or protocol document rather than silently strengthening or weakening a
+requirement. Changes to Protocol v1 or the configuration schema need explicit
+authorization and the coupled updates described in
+[`CONTRIBUTING.md`](../../CONTRIBUTING.md#production-code-rules). Do not force
+the implementation or tests to standardize behavior that the project
+deliberately leaves unspecified or outside its supported environment.
+
+Mutation sets, reference models, generated corpora, stress harnesses, and
+campaign-specific instrumentation normally stay in `.scratch/` and may be
+deleted afterwards. Their absence from the maintained suite does not erase the
+evidence retained as regressions, contract clarifications, and qualification
+records.
+
+## Reporting and closure
+
+Keep a campaign report short enough to review and specific enough to show what
+was exercised. Include:
+
+- the code revision and the surfaces in scope;
+- the properties or failure hypotheses;
+- the oracle and how its sensitivity was checked;
+- the execution scale, where meaningful;
+- each counterexample and its classification;
+- any regressions or contract changes;
+- unexplained failures;
+- the known limits of the evidence.
+
+Reports belong with the work they justify: in the pull request, issue, or
+scratch notes. Seeds, counts, mutant inventories, and individual findings do not
+belong in this document; promote only reusable lessons here.
+
+Close the campaign explicitly, stating whether any production defects or
+ambiguities remain unexplained and whether the [stop condition](#scope) has
+been met, and whether further work on the same surface is justified. Continuing to invent targets after the stated uncertainty is resolved
+adds investigation and maintenance cost without adding much confidence.
+
+Explore broadly enough to challenge the implementation, then leave the
+maintained repository smaller and clearer than the exploration that produced
+the evidence.
+
+## Techniques
+
+Each technique below covers what it suits, how to apply it here, and what to
+keep. Named tools such as Hypothesis, mutmut, and TLC are examples to help
+investigate a technique, not project requirements; choose whatever suits the
+question.
+
+### Property-based testing and fuzzing
+
+Property-based testing and fuzzing are most useful where the input space is far
+larger than any reasonable set of hand-written examples: parsers, serializers,
+framed protocols, path normalization, numeric limits, and combinations of
+individually valid fields.
 
 Property-based testing generates many inputs and checks a relation that should
 hold for all of them. Fuzzing more broadly means exploring generated or mutated
 input, from raw bytes to structured protocol messages. In practice the two
-overlap: structured, property-checked generation is the common form here. In
-Python, [Hypothesis](https://hypothesis.readthedocs.io/) is a widely used
-property-based testing library: it draws inputs from composable strategies and
-automatically shrinks a failing input toward a minimal counterexample.
-
-Both are most useful where the input space is far larger than any reasonable
-set of hand-written examples: parsers, serializers, framed protocols, path
-normalization, numeric limits, and combinations of individually valid fields.
+overlap: structured, property-checked generation is the common form in this
+project. In Python, [Hypothesis](https://hypothesis.readthedocs.io/) is a widely
+used property-based testing library: it draws inputs from composable strategies
+and automatically shrinks a failing input toward a minimal counterexample.
 
 A property states behavior more general than one example. For a framed
 protocol, useful properties include:
@@ -148,16 +273,16 @@ protocol, useful properties include:
   through an unrelated exception type;
 - complete and incremental decoding agree exactly at the size limit.
 
+For the fragmentation property, a generator can produce several valid frames,
+concatenate them, split the stream at random positions, and feed the pieces to
+the incremental decoder. This explores far more fragmentation patterns than
+hand-picked examples, without making each split a maintained test.
+
 Scope each property to the contractual input domain, not to whatever a
 low-level function happens to accept. A permissive encoder may accept values
 outside the protocol, such as a mapping key that JSON serialization silently
 converts to a string. That value does not round-trip, but the result violates
 no contract unless a production sender can produce it.
-
-For the second property, a generator can produce several valid frames,
-concatenate them, split the stream at random positions, and feed the pieces to
-the incremental decoder. This explores far more fragmentation patterns than
-hand-picked examples, without making each split a maintained test.
 
 Bias generation toward boundaries. Empty values, values one past a limit,
 Booleans where integers are expected (Python's `bool` is an `int`), unusual or
@@ -176,17 +301,25 @@ A clean run does not prove correctness. Its value is bounded by generator
 reach, oracle strength, execution budget, and the surfaces exercised. Report
 those limits rather than an example count.
 
-## Mutation testing and deliberate defect injection
+### Mutation testing and deliberate defect injection
 
 Mutation testing asks whether the maintained tests notice small, plausible
 corruptions of the implementation. A tool systematically inverts conditions,
 shifts boundary operators, removes validation, changes constants, or replaces
 return values, runs the suite against each variant, and reports which variants
 ("mutants") no test detected. Deliberate defect injection is the same idea
-applied by hand to a few chosen locations, usually to check that a new harness
-or oracle is sensitive. In Python, [mutmut](https://github.com/boxed/mutmut) is
-one such mutation testing tool; it generates mutants of the source, runs the
-test suite against each, and reports the survivors.
+applied by hand to a few chosen locations, usually for a
+[harness sensitivity](#harness-sensitivity) check.
+
+Broad mutation runs are expensive and noisy, so they belong to campaigns rather
+than to every change. A few targeted mutants are the cheapest way to validate a
+new property, model, or stress harness: if representative corruptions survive,
+improve the oracle before trusting a large clean run.
+
+In Python, [mutmut](https://github.com/boxed/mutmut) is one such mutation
+testing tool; it generates mutants of the source, runs the test suite against
+each, and reports the survivors. Run it on a separate copy or worktree; see
+[Setup](#setup).
 
 Coverage shows that code ran; mutation shows whether any test would notice it
 being wrong. A covered line can still hold an untested decision. For example,
@@ -208,12 +341,7 @@ as killed because the suite timed out or ran out of resources under a heavily
 parallel run has not been detected by an assertion. Recheck kills that relied
 on timeouts, and avoid treating a crash of the harness as detection.
 
-Broad mutation runs are expensive and noisy, so they belong to campaigns rather
-than to every change. A few targeted mutants are the cheapest way to validate a
-new property, model, or stress harness: if representative corruptions survive,
-improve the oracle before trusting a large clean run.
-
-## Fault injection at effect and ownership boundaries
+### Fault injection at effect and ownership boundaries
 
 Fault injection forces an operation to fail at a chosen point so cleanup,
 ownership, failure precedence, and rollback can be observed. It suits
@@ -231,10 +359,27 @@ before creation and after normal adoption misses that interval.
 
 A boundary campaign therefore injects failures, including `BaseException`
 interruptions such as `KeyboardInterrupt`, immediately before and after each
-acquisition and ownership transfer, and during cleanup itself. It checks
-externally relevant results: no leaked process group, no listening forward, the
-remote workspace removed or deliberately retained, exactly one terminal result,
-and the established primary failure preserved alongside secondary diagnostics.
+acquisition and ownership transfer, and during cleanup itself. The campaign
+checks externally relevant results, using the ownership terms defined in
+[SAD §43.1](../architecture/SAD.md#431-architecture-maintenance-invariants):
+
+- each process group is confirmed disposed, unless the injected fault prevents
+  disposal; then the outcome reports unconfirmed disposal together with a
+  residual resource and a failure diagnostic, and the operation fails;
+- no runner-owned forward is still listening; forwarding state retained by an
+  external connection-sharing mechanism is outside runner ownership;
+- the remote workspace is removed or deliberately retained;
+- at most one terminal outcome is committed, and a missing one is reported as
+  infrastructure uncertainty;
+- the established primary failure is preserved alongside secondary
+  diagnostics.
+
+The contract excludes arbitrary exceptions synthetically injected inside
+CPython before it publishes a process cleanup handle; failures caused only by
+such injections are out of scope. Native signal delivery in that interval stays
+in scope: the signal is deferred or latched, and process creation still
+completes into its owner
+([REQ-FUNC-HELP-012](../requirements/SRS.md#req-func-help-012)).
 
 Exploratory fault injection may use temporary patches or narrow private hooks to
 reach otherwise inaccessible points. Those hooks do not carry over
@@ -242,7 +387,7 @@ automatically. A defect found this way becomes a regression under the
 constraints on private hooks and fault injection in
 [`test_design.md`](test_design.md).
 
-## Model-based and state-machine testing
+### Model-based and state-machine testing
 
 Model-based testing compares production behavior with a smaller description of
 the allowed states and transitions. State-machine testing generates sequences
@@ -269,20 +414,24 @@ once, rather than from available machine time.
 
 A model can also be checked before any implementation exists. A model checker
 such as TLA+'s TLC can explore every interleaving of a small concurrent design,
-including separate steps for a fact occurring, being recognized, being queued,
-and being dispatched, and can compare candidate designs before a protocol or
-lifecycle change is committed. Checking a variant with one safeguard removed
-shows which part of the design each property depends on. A model check verifies
-the model, not the code: the implementation still needs regressions at the
-interleavings the model showed to matter.
+including separate steps for a fact occurring, being recognized, being blocked
+during publication, being queued, and being dispatched, and can compare
+candidate designs before a protocol or lifecycle change is committed. Checking
+a variant with one safeguard removed shows which part of the design each
+property depends on. A model check verifies the model, not the code: the
+implementation still needs regressions at the interleavings the model showed
+to matter.
 
 A model earns permanent maintenance when the contract is central, stable, and
 compact enough that disagreement between model and implementation is itself
-useful evidence. A larger model built to explore one redesign is normally
-discarded once its counterexamples and design conclusions are recorded as
-regressions and architecture.
+useful evidence, and when it encodes the documented contract rather than
+copying production authority or ownership machinery, which
+[`test_design.md`](test_design.md) rules out as a parallel test-only model. A
+larger model built to explore one redesign is normally discarded once its
+counterexamples and design conclusions are recorded as regressions and
+architecture.
 
-## Stress, scale, and repeated execution
+### Stress, scale, and repeated execution
 
 Stress testing repeats real behavior to raise the chance of observing races,
 leaks, scheduler-sensitive failures, or cumulative state corruption. It is
@@ -295,8 +444,10 @@ a debug server, that pause at named gates. The harness then releases gated
 events in seeded orders. A seed reproduces the order at gate granularity, and
 the stand-ins record ground truth, such as which input the remote side could
 actually read, so the oracle judges the outcome against what actually happened
-rather than what was intended. Check for leaked processes, sockets, and files
-after each iteration, not only at the end of the run.
+rather than what was intended.
+
+Check for leaked processes, sockets, and files after each iteration, not only at
+the end of the run, so that a leak is tied to the iteration that caused it.
 
 Repeated success is weaker evidence than a deterministic invariant, so stress
 is discovery or qualification rather than the only permanent protection. When
@@ -308,10 +459,11 @@ problems deterministic tests cannot express.
 Scale is a related axis. Inputs of realistic size, such as a complete
 third-party script tree rather than a handful of generated files, can expose
 superlinear cost that small generated cases never show. Treat performance as a
-finding only against a stated expectation, and keep the regression at the level
-of the algorithmic property where possible rather than as a timing assertion.
+finding only against a stated expectation. Maintained regressions do not assert
+elapsed or performance timing: keep the regression at the level of the algorithmic property, and keep
+performance measurements as campaign evidence.
 
-## Probing real dependencies
+### Probing real dependencies
 
 Fakes and stand-ins encode assumptions about external components. Exploratory
 probes against the real component, in unusual but supported configurations,
@@ -322,13 +474,14 @@ fake would have modelled, because the fake was written from the same
 assumptions as the production code.
 
 Classify each observation as a production defect, an external-component
-hazard to document, or a lab artifact. A finding that the maintained external
-layers can reproduce deterministically becomes a regression there. Behavior
-that the project cannot control, such as an incompatible configuration of a
-user's SSH client, belongs in the user documentation or the transport
+hazard to document, or a lab artifact; see
+[Classifying failures](#classifying-failures). A finding that the maintained
+external layers can reproduce deterministically becomes a regression there.
+Behavior that the project cannot control, such as an incompatible configuration
+of a user's SSH client, belongs in the user documentation or the transport
 requirements rather than in a workaround.
 
-## Differential testing
+### Differential testing
 
 Differential testing runs equivalent inputs through two implementations and
 compares observable results. It needs a credible reference and an intent to
@@ -346,88 +499,44 @@ an optimization or restructuring. The previous version becomes the reference
 for behavior the change is meant to preserve, and generated inputs compare the
 two before the old version is deleted.
 
-Every mismatch needs classification. The reference may have behavior this
-project intentionally rejects or changes. Normalize only known, documented
-differences, and keep scenarios that exercise a deliberate difference out of
-the comparison rather than normalizing the difference away; broad normalization
-hides regressions. A new intentional difference is a contract decision recorded
-in the requirements and in the
-[differential acceptance decisions](../traceability/verification.md#differential-acceptance-decisions),
-not only in the harness.
+Classify every mismatch with the built-in runner by the rules in
+[SAD §16.1](../architecture/SAD.md#161-classifying-built-in-runner-behavior);
+for example, a difference in the board's OpenOCD command recipe is a regression
+unless another requirement defines remote behavior.
 
-## Coverage and decision analysis
+Normalize only known, documented differences, so that broad normalization does
+not hide regressions. Exclude scenarios that exercise a deliberate difference
+from the comparison instead of normalizing the difference away.
+
+Record contract decisions outside the harness. A new deliberate semantic or
+correctness difference from the built-in runner is added to
+[REQ-FUNC-OPT-008](../requirements/SRS.md#req-func-opt-008) and classified in
+the
+[differential acceptance decisions](../traceability/verification.md#differential-acceptance-decisions),
+which also classify permitted lifecycle orderings. When it concerns an
+inherited flash option, the
+[built-in runner compatibility record](../architecture/builtin_openocd_compatibility.md)
+explains it.
+
+### Coverage and decision analysis
 
 Coverage is a lens for choosing targets, not an assurance method by itself.
 Statement and branch coverage, described in
-[`testing.md`](testing.md#coverage), show code the maintained suite never
-executes. Execution alone does not show that a test would detect a wrong
-decision; use uncovered or weakly exercised decisions to choose targets for
-mutation, generated inputs, or focused regressions.
+[`testing.md`](testing.md#coverage), show code that the measured host-side runs
+did not execute; the same section lists what the measurement cannot see.
+Execution alone does not show that a test would detect a wrong decision; use
+uncovered or weakly exercised decisions to choose targets for mutation,
+generated inputs, or focused regressions.
 
 For a decision with several conditions, a decision table is a practical review
 tool: list each combination of conditions that leads to a distinct outcome,
 then map every row to a maintained test or to an argument that the row is
-unreachable. Rows with neither are the gaps. Formal MC/DC measurement is not
-required for this project, but its underlying question is useful: can each
-important condition change the outcome while the others are held fixed?
-Mutants that replace a single condition with a constant probe the same question
-from the other direction.
+unreachable. Rows with neither are the gaps. Formal modified
+condition/decision coverage (MC/DC) measurement is not required for this
+project, but its underlying question is useful: can each important condition
+change the outcome while the others are held fixed? Mutants that replace a
+single condition with a constant probe the same question from the other
+direction.
 
 Do not add tests solely to raise a percentage; that rewards tests of incidental
 implementation detail.
-
-## Promoting results
-
-A campaign can finish without changing the repository. That is a valid result
-when the stated uncertainty was explored substantially and every observed
-failure is explained.
-
-When a production defect is found, keep the fix and the smallest deterministic
-regression that protects the violated contract, at an existing maintained
-boundary. Do not keep the exploratory harness merely because it found the
-problem.
-
-When a generated property is itself a concise, durable statement of the
-contract, keeping the property can be better than reducing it to one example.
-This suits pure, inexpensive boundaries such as codec round trips and chunking
-invariance. Promoting a property that needs a new developer dependency is a
-maintenance decision in its own right; a deterministic enumeration, such as
-every split point of a small stream, often protects the same contract without
-one.
-
-When the investigation exposes an ambiguity in the specification or
-architecture, resolve the contract if the distinction is material, updating the
-SRS, SAD, or protocol document as the repository guidelines require. Do not
-force the implementation or tests to standardize behavior that the project
-deliberately leaves unspecified or outside its supported environment.
-
-When the only problem is in the harness, fix it as needed to finish the
-investigation and add no product regression for it.
-
-Mutation sets, reference models, generated corpora, stress harnesses, and
-campaign-specific instrumentation normally stay in `.scratch/` and may be
-deleted afterwards. Their absence from the maintained suite does not erase the
-evidence retained as regressions, contract clarifications, and qualification
-records.
-
-## Reporting and closure
-
-A campaign report is short enough to review and specific enough to show what
-was exercised: the code revision, surfaces in scope, properties or failure
-hypotheses, the oracle and how its sensitivity was checked, execution scale
-where meaningful, each counterexample and its classification, any regressions
-or contract changes, unexplained failures, and the known limits of the
-evidence.
-
-Reports belong with the work they justify: in the pull request, issue, or
-scratch notes. Seeds, counts, mutant inventories, and individual findings do not
-belong in this document; promote only reusable lessons here.
-
-Close the campaign explicitly, stating whether any production defects or
-ambiguities remain unexplained and whether further work on the same surface is
-justified. Continuing to invent targets after the stated uncertainty is resolved
-adds investigation and maintenance cost without adding much confidence.
-
-Explore broadly enough to challenge the implementation, then leave the
-maintained repository smaller and clearer than the exploration that produced
-the evidence.

@@ -1,5 +1,5 @@
-# Developer and test tooling only; normal module use relies on Zephyr 4.4's
-# configured Python environment and does not install this file.
+# Developer and test tooling only; normal module use relies on the configured
+# Python environment of Zephyr 4.4 or 4.5 and does not install this file.
 actionlint-py
 check-jsonschema
 coverage>=7.10.3

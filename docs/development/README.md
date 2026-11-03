@@ -1,11 +1,13 @@
 # Development Documentation
 
-Contributor testing and hardware-inventory guidance:
+Guidance for contributors who run, write, or extend the project's tests:
 
-- [`hardware_inventories.md`](hardware_inventories.md) describes local YAML hardware
-  inventories and operation selection.
-- [`testing.md`](testing.md) describes the pytest layers and commands.
-- [`test_design.md`](test_design.md) contains the guidelines on how to write good tests.
-- [`assurance_methods.md`](assurance_methods.md) describes bounded exploratory
-  campaigns such as property-based, mutation, fault-injection, model, and stress
-  testing, and what to retain from them.
+- [Testing layers](testing.md): the pytest layers, their commands, and
+  external-test setup.
+- [Test design guidelines](test_design.md): how to write maintained tests.
+- [Hardware inventories](hardware_inventories.md): local YAML inventories for
+  SSH integration and hardware tests, including builds, profiles, operations,
+  and running selected tests.
+- [Exploratory assurance methods](assurance_methods.md): bounded campaigns
+  beyond the maintained suite, such as property-based, mutation,
+  fault-injection, model-based, and stress testing, and what to keep from them.
