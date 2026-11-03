@@ -29,8 +29,30 @@ runs:
       run: |
         sudo apt-get update
         sudo apt-get install --no-install-recommends -y ninja-build openocd
+    # A release tag fixes the manifest and every module revision, so its
+    # workspace can be reused; maintenance branches move and are fetched anew.
+    - name: Select Zephyr workspace cache
+      id: workspace-cache
+      env:
+        ZEPHYR_REF: ${{ inputs.zephyr_ref }}
+      shell: bash
+      run: |
+        if [[ "$ZEPHYR_REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          printf 'enabled=true\n' >> "$GITHUB_OUTPUT"
+        fi
+    - name: Restore cached Zephyr workspace
+      id: workspace-restore
+      if: steps.workspace-cache.outputs.enabled == 'true'
+      uses: actions/cache/restore@v6
+      with:
+        path: ${{ runner.temp }}/zephyr-workspace
+        key: >-
+          zephyr-workspace-v1-${{ inputs.zephyr_ref }}-${{
+            hashFiles('.github/actions/run-zephyr-integration/action.yml')
+          }}
     # The clean-install test requires module paths outside the project root.
     - name: Initialize Zephyr workspace
+      if: steps.workspace-restore.outputs.cache-hit != 'true'
       env:
         ZEPHYR_REF: ${{ inputs.zephyr_ref }}
       shell: bash
@@ -38,15 +60,26 @@ runs:
         west init -m https://github.com/zephyrproject-rtos/zephyr
         --mr "$ZEPHYR_REF" -o=--depth=1
         "$RUNNER_TEMP/zephyr-workspace"
-    - name: Update selected Zephyr modules and install dependencies
+    - name: Update selected Zephyr modules
+      if: steps.workspace-restore.outputs.cache-hit != 'true'
       shell: bash
+      working-directory: ${{ runner.temp }}/zephyr-workspace
       run: |
-        workspace="$RUNNER_TEMP/zephyr-workspace"
-        export ZEPHYR_BASE="$workspace/zephyr"
-        cd "$workspace"
         west config manifest.project-filter -- '-.*,+cmsis,+cmsis_6,+hal_rpi_pico'
         west update --narrow -o=--depth=1
-        python -m pip install -r "$ZEPHYR_BASE/scripts/requirements-base.txt"
+    # Save before anything else writes into the workspace.
+    - name: Save Zephyr workspace
+      if: >-
+        steps.workspace-cache.outputs.enabled == 'true' &&
+        steps.workspace-restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: ${{ runner.temp }}/zephyr-workspace
+        key: ${{ steps.workspace-restore.outputs.cache-primary-key }}
+    - name: Install Zephyr Python dependencies
+      shell: bash
+      run: |
+        python -m pip install -r "$RUNNER_TEMP/zephyr-workspace/zephyr/scripts/requirements-base.txt"
         printf 'WEST=%s\n' "$(command -v west)" >> "$GITHUB_ENV"
     - name: Fetch source-switching release fixtures
       if: inputs.suite == 'source-switching'
