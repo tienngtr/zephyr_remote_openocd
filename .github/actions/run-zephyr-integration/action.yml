@@ -84,6 +84,13 @@ runs:
       with:
         sdk_version: ${{ steps.sdk.outputs.version }}
         toolchain: arm-zephyr-eabi
+    - name: Keep subprocess coverage out of Zephyr build scripts
+      if: inputs.coverage_file != ''
+      shell: bash
+      run: |
+        site_packages="$(python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"
+        cp tests/ci/coverage/zro_ci_coverage_scope.py \
+          tests/ci/coverage/a0_zro_ci_coverage_scope.pth "$site_packages/"
     - name: Run Zephyr integration suite
       env:
         COVERAGE_FILE: ${{ inputs.coverage_file }}
