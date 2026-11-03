@@ -46,7 +46,8 @@ on Python 3.12, 3.13, 3.14, and 3.15, static checks, the SSH suite against an
 isolated SSH server container, and the full
 Zephyr 4.4.x and 4.5.x integration suites with real workspaces and SDKs. These
 suites run real Zephyr CMake configuration and west runner commands in recording
-mode; they do not compile or execute firmware. The self-contained suite runs
+mode; they do not compile or execute firmware. The Zephyr 4.4.0
+source-switching tests run in their own job, and the self-contained suite runs
 on parallel `pytest-xdist` workers. The SSH server has its own
 filesystem,
 process namespace, and network namespace; the tests use the real SSH client

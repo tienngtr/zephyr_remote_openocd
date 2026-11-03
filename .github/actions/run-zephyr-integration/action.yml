@@ -6,10 +6,12 @@ inputs:
   zephyr_ref:
     description: Zephyr Git ref to initialize
     required: true
-  source_switching:
-    description: Also run the fixed 4.4 to 4.5 to 4.4 source-switch matrix
+  suite:
+    description: >-
+      'main' runs the suite except the source-switch matrix;
+      'source-switching' runs only the fixed 4.4 to 4.5 to 4.4 matrix
     required: false
-    default: 'false'
+    default: main
   coverage_file:
     description: Coverage data file to create; empty disables coverage collection
     required: false
@@ -47,7 +49,7 @@ runs:
         python -m pip install -r "$ZEPHYR_BASE/scripts/requirements-base.txt"
         printf 'WEST=%s\n' "$(command -v west)" >> "$GITHUB_ENV"
     - name: Fetch source-switching release fixtures
-      if: inputs.source_switching == 'true'
+      if: inputs.suite == 'source-switching'
       shell: bash
       run: >-
         git -C "$RUNNER_TEMP/zephyr-workspace/zephyr"
@@ -55,6 +57,7 @@ runs:
     # Ordinary static checks cannot resolve Zephyr's runners package, so the
     # adapter's upstream base class is checked only here.
     - name: Type-check against the selected Zephyr runners
+      if: inputs.suite == 'main'
       env:
         MYPYPATH: ${{ runner.temp }}/zephyr-workspace/zephyr/scripts/west_commands
       shell: bash
@@ -84,20 +87,19 @@ runs:
     - name: Run Zephyr integration suite
       env:
         COVERAGE_FILE: ${{ inputs.coverage_file }}
-        SOURCE_SWITCHING: ${{ inputs.source_switching }}
+        SUITE: ${{ inputs.suite }}
         OPENOCD_DEFAULT_PATH: /usr/share/openocd/scripts
         ZEPHYR_BASE: ${{ runner.temp }}/zephyr-workspace/zephyr
       shell: bash
       run: |
         mkdir -p .scratch
-        pytest_args=(
-          tests/zephyr_integration
-          -m zephyr
-          --require-external-tests
-        )
-        if [[ "$SOURCE_SWITCHING" != true ]]; then
-          pytest_args+=(--ignore=tests/zephyr_integration/test_switching.py)
-        fi
+        switching=tests/zephyr_integration/test_switching.py
+        pytest_args=(-m zephyr --require-external-tests)
+        case "$SUITE" in
+          main) pytest_args+=(tests/zephyr_integration "--ignore=$switching") ;;
+          source-switching) pytest_args+=("$switching") ;;
+          *) echo "Unknown Zephyr integration suite: $SUITE" >&2; exit 1 ;;
+        esac
         if [[ -n "$COVERAGE_FILE" ]]; then
           pytest_args+=(--cov --cov-config=.coveragerc --cov-report=)
         fi

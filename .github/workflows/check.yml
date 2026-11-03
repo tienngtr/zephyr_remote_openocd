@@ -115,9 +115,21 @@ jobs:
       - uses: ./.github/actions/run-zephyr-integration
         with:
           zephyr_ref: v4.4.0
-          source_switching: 'true'
           coverage_file: .coverage.zephyr-4-4-0-integration
           coverage_artifact: coverage-zephyr-4-4-0-integration
+
+  # The source-switch matrix is the slowest single Zephyr test and is
+  # independent of the rest of the suite, so it runs beside it.
+  zephyr-source-switching:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/run-zephyr-integration
+        with:
+          zephyr_ref: v4.4.0
+          suite: source-switching
+          coverage_file: .coverage.zephyr-source-switching
+          coverage_artifact: coverage-zephyr-source-switching
 
   zephyr-4-4-branch-integration:
     continue-on-error: true
@@ -148,7 +160,12 @@ jobs:
           zephyr_ref: v4.5-branch
 
   coverage:
-    needs: [self-contained-tests, ssh-integration, zephyr-4-4-0-integration, zephyr-4-5-0-integration]
+    needs:
+      - self-contained-tests
+      - ssh-integration
+      - zephyr-4-4-0-integration
+      - zephyr-source-switching
+      - zephyr-4-5-0-integration
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
