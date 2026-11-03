@@ -198,6 +198,10 @@ subject of at most 72 characters, a blank line, and a concise body explaining
 the change with lines of at most 80 characters. Review the complete diff,
 exclude unrelated changes, and never rewrite history unless authorized.
 
-Never commit credentials, hosts, device paths, capability values, expected lab
-output, populated inventories, generated builds, or `.scratch/` artifacts. Use
+Follow the sensitive-data rules in
+[`CONTRIBUTING.md`](CONTRIBUTING.md#sensitive-data) for every commit, issue,
+pull request, description, comment, and review you write, including pasted logs
+and excerpts. They forbid lab-specific data such as credentials, hosts, device
+paths, capability values, expected lab output, and populated inventories,
+forbid committing generated builds or `.scratch/` artifacts, and require
 placeholders in committed examples.

@@ -88,10 +88,9 @@ to continue.
   inspect cleanup before a target is reused.
 
 > [!WARNING]
-> Campaign artifacts that may be shared, including reports in pull requests,
-> follow the same restrictions as committed files: no credentials, lab
-> identities, device paths, or other lab-specific data listed in
-> [`CONTRIBUTING.md`](../../CONTRIBUTING.md#commits-and-pull-requests).
+> Campaign artifacts that may be shared, including reports in issues and pull
+> requests, follow the [sensitive-data rules](../../CONTRIBUTING.md#sensitive-data):
+> no credentials, lab identities, device paths, or other lab-specific data.
 
 ### Oracles
 

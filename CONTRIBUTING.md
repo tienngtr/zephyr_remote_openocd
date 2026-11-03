@@ -225,12 +225,26 @@ publication, reader-settlement, or cleanup fault injection when the precise
 interleaving is the regression under test; document that reason at the hook.
 See [test design](docs/development/test_design.md).
 
-## Commits and pull requests
+## Sensitive data
 
 > [!IMPORTANT]
-> Never put credentials, SSH host identities, probe serials, serial-device
-> paths, populated hardware inventories, generated builds, `.scratch/` files,
-> or other lab-specific sensitive data in pull requests or committed files.
+> Never put lab-specific data in commits, issues, pull requests, or their
+> descriptions, comments, and reviews. This applies to logs and excerpts
+> pasted into them too.
+
+Lab-specific data includes:
+
+- credentials, keys, and tokens;
+- host names, addresses, and SSH host identities;
+- probe serials and other capability values from a hardware inventory;
+- serial-device and other device paths, and remote workspace paths;
+- expected lab output and serial captures;
+- populated hardware inventories.
+
+Use placeholders in committed examples and in shared excerpts. Generated builds
+and `.scratch/` files are local; never commit them.
+
+## Commits and pull requests
 
 - Keep each commit focused. Commit messages must pass gitlint's default rules,
   including a subject of at most 72 characters, a blank second line, a

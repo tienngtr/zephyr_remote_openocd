@@ -4,9 +4,10 @@ A hardware inventory connects external tests to a contributor's Zephyr
 workspace, remote OpenOCD host, and physical targets.
 
 > [!IMPORTANT]
-> Populated inventories contain lab-specific data. Never commit a populated
-> inventory, generated build, serial capture, credential, remote host identity,
-> probe identifier, capability value, device path, or remote workspace. Use
+> Populated inventories contain lab-specific data. Never put a populated
+> inventory, or the hosts, probe identifiers, device paths, and serial
+> captures it leads to, in commits, issues, or pull requests; see the
+> [sensitive-data rules](../../CONTRIBUTING.md#sensitive-data). Use
 > placeholders in committed examples.
 
 ## Quick start
