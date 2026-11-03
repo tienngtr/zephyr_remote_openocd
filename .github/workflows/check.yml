@@ -17,6 +17,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Documentation-only branches skip the external suites; static checks and
+  # the self-contained suite still run. Any doubt runs everything.
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+    steps:
+      - name: Classify branch changes
+        id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          code=true
+          # Compare the whole branch with main, not just this push: an earlier
+          # code push may have been cancelled by a later documentation push.
+          if [[ "$EVENT" == push && "$REF" != refs/heads/main ]] &&
+            files="$(gh api "repos/$REPOSITORY/compare/main...$SHA" \
+              --jq 'if (.files | length) < 300 then .files[].filename else error end')" &&
+            [[ -n "$files" ]] &&
+            ! grep -qvE '^docs/|\.md$' <<< "$files"; then
+            code=false
+          fi
+          printf 'code=%s\n' "$code" | tee -a "$GITHUB_OUTPUT"
+
   static-checks:
     runs-on: ubuntu-24.04
     steps:
@@ -69,6 +97,8 @@ jobs:
           retention-days: 1
 
   ssh-integration:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -116,6 +146,8 @@ jobs:
         run: docker rm --force zro-ci-ssh || true
 
   zephyr-4-4-0-integration:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -128,6 +160,8 @@ jobs:
   # The source-switch matrix is the slowest single Zephyr test and is
   # independent of the rest of the suite, so it runs beside it.
   zephyr-source-switching:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -151,6 +185,8 @@ jobs:
           zephyr_ref: v4.4-branch
 
   zephyr-4-5-0-integration:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7

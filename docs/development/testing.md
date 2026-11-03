@@ -51,7 +51,10 @@ source-switching tests run in their own job, and the self-contained suite runs
 on parallel `pytest-xdist` workers. Release tag pushes do not run the
 workflow. The informational suites against the upstream `v4.4-branch` and
 `v4.5-branch` maintenance branches run on `main`, nightly, and on manual
-dispatch rather than on every branch push. Coverage jobs do not trace Python
+dispatch rather than on every branch push. A branch whose changes from `main`
+touch only `docs/` and Markdown files skips the SSH and Zephyr suites and the
+coverage report; static checks and the self-contained suite still run.
+Coverage jobs do not trace Python
 processes whose main script is in a Zephyr tree's `scripts` directory
 (`tests/ci/coverage/`); those Kconfig, devicetree, and build helpers cannot run
 measured code. The SSH server has its own
