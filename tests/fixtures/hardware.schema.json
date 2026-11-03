@@ -417,7 +417,7 @@
       "properties": {
         "application": {
           "$ref": "#/$defs/nonemptyString",
-          "description": "Application directory. Relative paths resolve beneath zephyr_base and may not escape it; absolute paths name external applications.",
+          "description": "Application directory. Relative paths resolve beneath zephyr_base, may not contain '..', and do not expand '~'; absolute paths name external applications.",
           "examples": [
             "samples/hello_world"
           ]
@@ -428,12 +428,12 @@
         },
         "west_args": {
           "$ref": "#/$defs/stringArray",
-          "description": "Arguments inserted into west build before the application and CMake separator.",
+          "description": "Arguments appended to west build after the application and -d build directory, before --pristine=never and the CMake separator.",
           "default": []
         },
         "cmake_args": {
           "$ref": "#/$defs/stringArray",
-          "description": "CMake cache arguments passed after west build's -- separator.",
+          "description": "CMake cache arguments passed after west build's -- separator on cold builds; warm builds omit them.",
           "default": [],
           "examples": [
             [
@@ -523,7 +523,7 @@
         },
         "probe_serial": {
           "$ref": "#/$defs/nonemptyString",
-          "description": "Probe identifier passed to west as --dev-id. Set it when the remote host can see multiple probes."
+          "description": "Probe identifier appended to the runner arguments as --serial=<value> unless runner_args already contain a --serial argument. Set it when the remote host can see multiple probes."
         },
         "runner_args": {
           "$ref": "#/$defs/stringArray",
@@ -800,7 +800,7 @@
         },
         "output": {
           "$ref": "#/$defs/nonemptyString",
-          "description": "Application-specific text required in relayed semihosting stdout/stderr."
+          "description": "Python regular expression for application-specific text, searched for in relayed semihosting stdout/stderr; escape metacharacters that must match literally."
         },
         "timeout": {
           "$ref": "#/$defs/positiveNumber",

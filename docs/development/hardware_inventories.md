@@ -177,7 +177,9 @@ Zephyr and ccache directories, see [Build cache](testing.md#build-cache).
 ### Profiles
 
 A profile selects one build. Every operation in that profile shares its build,
-`probe_serial`, `runner_args`, and `environment`. Profiles do not inherit
+`probe_serial`, `runner_args`, and `environment`. `probe_serial` is appended to the
+runner arguments as `--serial=<value>` unless `runner_args` already contain a
+`--serial` argument. Profiles do not inherit
 settings from each other. A profile `environment` key is valid only when the
 selected host lists it in `forward_env`; the value is relayed literally to
 remote OpenOCD.
