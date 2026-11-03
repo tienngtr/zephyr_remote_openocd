@@ -25,8 +25,8 @@
 
 **Contributors and maintainers**
 
-- [Development guides](development/): testing, test design, and
-  hardware-inventory guidance.
+- [Development guides](development/): testing, test design,
+  hardware-inventory, and exploratory assurance guidance.
 - [Traceability](traceability/): mapping from requirements to maintained
   verification evidence.
 - [Contributing](../CONTRIBUTING.md): developer setup, checks, and
