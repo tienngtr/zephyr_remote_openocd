@@ -48,7 +48,10 @@ Zephyr 4.4.x and 4.5.x integration suites with real workspaces and SDKs. These
 suites run real Zephyr CMake configuration and west runner commands in recording
 mode; they do not compile or execute firmware. The Zephyr 4.4.0
 source-switching tests run in their own job, and the self-contained suite runs
-on parallel `pytest-xdist` workers. Coverage jobs do not trace Python
+on parallel `pytest-xdist` workers. Release tag pushes do not run the
+workflow. The informational suites against the upstream `v4.4-branch` and
+`v4.5-branch` maintenance branches run on `main`, nightly, and on manual
+dispatch rather than on every branch push. Coverage jobs do not trace Python
 processes whose main script is in a Zephyr tree's `scripts` directory
 (`tests/ci/coverage/`); those Kconfig, devicetree, and build helpers cannot run
 measured code. The SSH server has its own

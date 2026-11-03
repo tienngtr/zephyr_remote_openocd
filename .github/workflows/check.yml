@@ -3,7 +3,14 @@
 name: checks
 
 on:
+  # Branch pushes only: a release tag points at a commit its branch already
+  # validated.
   push:
+    branches: ['**']
+  # Nightly run that tracks the upstream Zephyr maintenance branches.
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
 
 concurrency:
   group: checks-${{ github.ref }}
@@ -132,6 +139,9 @@ jobs:
           coverage_artifact: coverage-zephyr-source-switching
 
   zephyr-4-4-branch-integration:
+    # Upstream drift does not depend on the pushed change; check it on main,
+    # nightly, and on demand.
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
     continue-on-error: true
     runs-on: ubuntu-24.04
     steps:
@@ -151,6 +161,9 @@ jobs:
           coverage_artifact: coverage-zephyr-4-5-0-integration
 
   zephyr-4-5-branch-integration:
+    # Upstream drift does not depend on the pushed change; check it on main,
+    # nightly, and on demand.
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
     continue-on-error: true
     runs-on: ubuntu-24.04
     steps:
