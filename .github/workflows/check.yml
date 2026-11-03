@@ -36,12 +36,12 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Run self-contained tests
         if: ${{ !matrix.coverage }}
-        run: pytest
+        run: pytest -n auto
       - name: Run self-contained tests with coverage
         if: ${{ matrix.coverage }}
         env:
           COVERAGE_FILE: .coverage.self-contained-tests
-        run: pytest --cov --cov-config=.coveragerc --cov-report=
+        run: pytest -n auto --cov --cov-config=.coveragerc --cov-report=
       # Configuration change detection relies on CMake generator behavior, so
       # also exercise it with the minimum CMake version that Zephyr 4.4 supports.
       - name: Run CMake configuration tests with minimum supported CMake
@@ -51,7 +51,7 @@ jobs:
           "$RUNNER_TEMP/cmake-minimum/bin/python" -m pip install cmake==3.20.5
           cmake_bin="$("$RUNNER_TEMP/cmake-minimum/bin/python" -c 'import cmake; print(cmake.CMAKE_BIN_DIR)')"
           PATH="$cmake_bin:$PATH" cmake --version
-          PATH="$cmake_bin:$PATH" pytest tests/local_integration/test_cmake_configuration.py
+          PATH="$cmake_bin:$PATH" pytest -n auto tests/local_integration/test_cmake_configuration.py
       - uses: actions/upload-artifact@v7
         if: ${{ matrix.coverage }}
         with:
