@@ -33,7 +33,7 @@ the checks that ran and any applicable external tests that could not run.
 
 | Change | Required checks |
 | --- | --- |
-| Every change | `.venv/bin/python -m pytest` and `.venv/bin/python scripts/contributor/static_check.py` |
+| Every change | `.venv/bin/python -m pytest -n auto` and `.venv/bin/python scripts/contributor/static_check.py` |
 | Zephyr runner or build integration | Applicable Zephyr integration tests against both Zephyr 4.4.x and 4.5.x |
 | SSH, helper, session, or forwarding | Applicable SSH integration tests, when a suitable host is available |
 | Flash, debug, RTT, semihosting, or other board-visible behavior | Affected hardware tests, when suitable hardware is available |
@@ -70,7 +70,7 @@ Collect branch coverage for production code, runner entry points, maintained
 scripts, and local Python helper subprocesses with:
 
 ```sh
-.venv/bin/python -m pytest --cov --cov-config=.coveragerc \
+.venv/bin/python -m pytest -n auto --cov --cov-config=.coveragerc \
   --cov-report=term-missing
 ```
 

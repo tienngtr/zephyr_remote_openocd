@@ -41,9 +41,13 @@ their own values, independently of the developer's shell configuration.
 Run the checks that every change needs:
 
 ```sh
-.venv/bin/python -m pytest
+.venv/bin/python -m pytest -n auto
 .venv/bin/python scripts/contributor/static_check.py
 ```
+
+`-n auto` runs the suite on one `pytest-xdist` worker per CPU, as CI does.
+The suite is safe to run in parallel; omit the option for a serial run. The
+external-layer commands below run serially.
 
 The ordinary pytest command runs only hardware-free unit and local-process
 tests:
@@ -63,7 +67,7 @@ Actions runs the same check on Python 3.12:
 python3 -m venv .scratch/cmake-3.20.5
 .scratch/cmake-3.20.5/bin/python -m pip install cmake==3.20.5
 PATH="$(.scratch/cmake-3.20.5/bin/python -c 'import cmake; print(cmake.CMAKE_BIN_DIR)'):$PATH" \
-.venv/bin/python -m pytest tests/local_integration/test_cmake_configuration.py
+.venv/bin/python -m pytest -n auto tests/local_integration/test_cmake_configuration.py
 ```
 
 ## External tests
@@ -501,7 +505,7 @@ package, west runner entry point, maintained scripts, the module's CMake-time
 scripts, and locally launched Python helper subprocesses with:
 
 ```sh
-.venv/bin/python -m pytest --cov --cov-config=.coveragerc \
+.venv/bin/python -m pytest -n auto --cov --cov-config=.coveragerc \
   --cov-report=term-missing
 ```
 
