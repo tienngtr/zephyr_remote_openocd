@@ -513,7 +513,7 @@ correctness difference from the built-in runner is added to
 the
 [differential acceptance decisions](../traceability/verification.md#differential-acceptance-decisions),
 which also classify permitted lifecycle orderings. When it concerns an
-inherited flash option, the
+inherited flash option or `debugserver --serial`, the
 [built-in runner compatibility record](../architecture/builtin_openocd_compatibility.md)
 explains it.
 

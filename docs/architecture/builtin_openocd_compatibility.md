@@ -2,10 +2,17 @@
 
 This record applies the classification rules in
 [SAD §16.1](SAD.md#161-classifying-built-in-runner-behavior) to the flash
-options of Zephyr's built-in `openocd` runner and keeps the upstream evidence
-for each classification. [REQ-FUNC-OPT-008](../requirements/SRS.md#req-func-opt-008)
-remains the normative list of deliberate differences; this record explains
-them. Review it whenever support for another Zephyr release is added.
+options of Zephyr's built-in `openocd` runner and to its `debugserver`
+handling of `--serial`, and keeps the upstream evidence for each
+classification. [REQ-FUNC-OPT-008](../requirements/SRS.md#req-func-opt-008)
+remains the normative list of deliberate differences; this record explains the
+ones that come from these options. The Zephyr 4.5 `--log-file` differences in
+that list come from relaying the OpenOCD log to a local file instead; they are
+specified in [REQ-FUNC-LOG-001](../requirements/SRS.md#req-func-log-001)
+through [REQ-FUNC-LOG-005](../requirements/SRS.md#req-func-log-005) and
+described in [SAD §38.8](SAD.md#388-openocd-log-relay) and
+[§39](SAD.md#39-local-session-lifecycle). Review this record whenever support
+for another Zephyr release is added.
 
 Last reviewed on 2026-11-01 against Zephyr v4.4.0, v4.4.2, and v4.5.0.
 Upstream code links point to release tags; history links point to commits and
@@ -127,7 +134,6 @@ whether an ELF load reaches flash depends on the target and the OpenOCD build.
 The final v4.5.0 source preserves these flash behaviors. Its additional debug
 command phases, RTOS eligibility, and interactive-client API are adapted as
 described in [SAD §16](SAD.md#16-zephyr-runner-reuse-strategy). Its `--log-file`
-option is supported through the remote log relay
-([SAD §38.8](SAD.md#388-openocd-log-relay)); its deliberate differences are
-listed in REQ-FUNC-OPT-008. Release candidates and development versions remain
+option is supported through the remote log relay; its deliberate differences
+are outside this record, as described above. Release candidates and development versions remain
 unsupported.

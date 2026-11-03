@@ -802,8 +802,9 @@ option. The log relay is described in §38.8.
 Built-in runner behavior is reproduced or deliberately changed according to the
 following rules. The
 [built-in OpenOCD runner compatibility record](builtin_openocd_compatibility.md)
-applies them to the inherited flash options with upstream evidence and is
-reviewed when support for another Zephyr release is added.
+applies them to the inherited flash options and to `debugserver --serial`
+with upstream evidence and is reviewed when support for another Zephyr release
+is added.
 
 - **Requests and recipe.** An inherited option either requests an effect on the
   target or configures how the board achieves it. Image selection, `--erase`,
