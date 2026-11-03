@@ -69,6 +69,12 @@ jobs:
       - uses: ./.github/actions/install-python-tools
         with:
           python-version: ${{ matrix.python-version }}
+      # The interactive Ctrl-C ownership tests drive a host GDB and are
+      # skipped without one.
+      - name: Install host GDB
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y gdb
       - name: Run self-contained tests
         if: ${{ !matrix.coverage }}
         run: pytest -n auto

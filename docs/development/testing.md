@@ -406,7 +406,8 @@ substitute for testing the configured remote executable.
 GitHub Actions runs on Linux hosts. Its independent validation jobs are:
 
 - **Self-contained suite** on Python 3.12, 3.13, 3.14, and 3.15, using parallel
-  `pytest-xdist` workers.
+  `pytest-xdist` workers. Each job installs a host `gdb`, so the interactive
+  Ctrl-C ownership tests run rather than skip.
 - **Static checks.**
 - **SSH suite** against an isolated SSH server container with its own
   filesystem, process namespace, and network namespace. The job supplies an
